@@ -145,7 +145,7 @@ export class TransactionsView extends BaseView {
             <i data-lucide="check-square"></i>
             <span class="hidden md:inline ml-1">Select</span>
           </button>
-          <button class="btn btn-primary" onclick="window.__app.openModal('tx')">
+          <button class="btn btn-primary" onclick="window.__app.openModal('transaction')">
             <i data-lucide="plus"></i> Add
           </button>
         </div>
@@ -285,7 +285,7 @@ export class TransactionsView extends BaseView {
       return `
         <div class="card p-10 text-center">
           ${this.emptyState('No transactions found', 'Adjust filters or add a new one.')}
-          <button class="btn btn-primary mt-4" onclick="window.__app.openModal('tx')">
+          <button class="btn btn-primary mt-4" onclick="window.__app.openModal('transaction')">
             <i data-lucide="plus"></i> Add transaction
           </button>
         </div>`;

@@ -220,7 +220,7 @@ export class ReportsView extends BaseView {
             ${tops.map(({ t, value }) => {
               const cat = state.categories.find((c) => c.id === t.categoryId);
               return `
-                <button onclick="window.__app.openModal('tx',{id:'${t.id}'})"
+                <button onclick="window.__app.openModal('transaction',{id:'${t.id}'})"
                         class="w-full text-left flex items-center gap-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-900 rounded">
                   <div class="icon-pill" style="background:${(cat?.color||'#71717a')}22;color:${cat?.color||'#71717a'};width:30px;height:30px">
                     <i data-lucide="${cat?.icon||'circle'}" style="width:14px;height:14px"></i>

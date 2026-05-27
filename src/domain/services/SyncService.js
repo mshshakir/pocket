@@ -25,6 +25,7 @@ export class SyncService {
   #cloudVersion = 0;
   #saveTimer = null;
   #channel = null;
+  #subscribed = false;
 
   // Optimistic-UI tracking for family sharing
   #pendingRemovals  = new Set();
@@ -87,6 +88,7 @@ export class SyncService {
     this.#pendingRemovals.clear();
     this.#pendingAdditions.clear();
     this.#cloudVersion = 0;
+    this.#subscribed = false;
     this.#emitStatus('local');
     this.#emitUser(null);
   }
@@ -239,7 +241,8 @@ export class SyncService {
   // ── Real-time subscription ────────────────────────────────────────────
 
   #subscribe() {
-    if (!this.#sb || !this.#user) return;
+    if (!this.#sb || !this.#user || this.#subscribed) return;
+    this.#subscribed = true;
     // Main user-data channel
     this.#channel = this.#sb
       .channel('pocket_realtime_' + this.#user.id)

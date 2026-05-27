@@ -44,7 +44,7 @@ export class DashboardView extends BaseView {
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Dashboard</h1>
         </div>
         <button class="btn btn-primary hidden md:inline-flex"
-                onclick="window.__app.openModal('tx')">
+                onclick="window.__app.openModal('transaction')">
           <i data-lucide="plus"></i> New transaction
         </button>
       </div>

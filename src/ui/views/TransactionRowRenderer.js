@@ -126,7 +126,7 @@ export class TransactionRowRenderer {
     // ── Click / delete handlers ───────────────────────────────────────
     const clickFn = isShared
       ? ((perm === 'edit' || perm === 'full') ? `window.__app.openSharedTxEdit(${shareIndex},'${t.id}')` : null)
-      : `window.__app.openModal('tx',{id:'${t.id}'})`;
+      : `window.__app.openModal('transaction',{id:'${t.id}'})`;
     const deleteFn = isShared
       ? `window.__app.deleteSharedTx(${shareIndex},'${t.id}')`
       : `window.__app.deleteTx('${t.id}')`;
