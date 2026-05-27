@@ -94,40 +94,61 @@ export class SyncService {
   async restoreSession() {
     if (!this.#sb) return;
 
-    // onAuthStateChange handles OAuth redirects (fires SIGNED_IN after token exchange)
-    this.#sb.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_IN' && session?.user && !this.#user) {
-        this.#user = session.user;
-        await this.pull();
-        this.#subscribe();
-        this.#emitUser(this.#user);
-        if (window.location.hash.includes('access_token')) {
-          history.replaceState(null, '', window.location.pathname);
-        }
-        // Re-render the full app after OAuth sign-in
-        this.#bus.emit('auth:changed', { user: this.#user });
-      } else if (event === 'SIGNED_OUT') {
-        this.#user = null;
-        this.#emitUser(null);
-        this.#bus.emit('auth:changed', { user: null });
-      }
-    });
+    // Use onAuthStateChange as the single source of truth.
+    // In Supabase v2 it fires 'INITIAL_SESSION' on every page load
+    // (including OAuth redirects) before any getSession() call returns.
+    return new Promise((resolve) => {
+      let settled = false;
 
-    const { data: sessionData } = await this.#sb.auth.getSession();
-    if (sessionData?.session?.user) {
-      this.#user = sessionData.session.user;
-      const isFirst = await this.pull();
-      this.#subscribe();
-      this.#emitUser(this.#user);
-      if (window.location.hash.includes('access_token')) {
-        history.replaceState(null, '', window.location.pathname);
-      }
-      return { isFirstSignIn: isFirst };
-    } else {
-      // Always emit null so Navigation renders the sign-in button
-      this.#emitUser(null);
-      return { isFirstSignIn: false, needsSignIn: true };
-    }
+      this.#sb.auth.onAuthStateChange(async (event, session) => {
+        // ── Initial page load & OAuth redirect ────────────────────────
+        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+          if (session?.user && !this.#user) {
+            this.#user = session.user;
+
+            // Show the signed-in user in the nav immediately (before pull)
+            this.#emitUser(this.#user);
+            this.#emitStatus('syncing');
+            this.#bus.emit('auth:changed', { user: this.#user });
+
+            // Clean OAuth hash from URL
+            if (window.location.hash.includes('access_token')) {
+              history.replaceState(null, '', window.location.pathname);
+            }
+
+            const isFirst = await this.pull();
+            this.#subscribe();
+
+            if (!settled) {
+              settled = true;
+              resolve({ isFirstSignIn: isFirst });
+            }
+          } else if (!session?.user && !settled) {
+            // No session — show sign-in button right away
+            this.#emitUser(null);
+            this.#bus.emit('auth:changed', { user: null });
+            settled = true;
+            resolve({ isFirstSignIn: false, needsSignIn: true });
+          }
+        }
+
+        // ── Subsequent sign-out ───────────────────────────────────────
+        if (event === 'SIGNED_OUT') {
+          this.#user = null;
+          this.#emitUser(null);
+          this.#bus.emit('auth:changed', { user: null });
+        }
+      });
+
+      // Safety fallback — resolve after 8 s if no auth event fires
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          this.#emitUser(null);
+          resolve({ isFirstSignIn: false, needsSignIn: true });
+        }
+      }, 8000);
+    });
   }
 
   get currentUser() {
