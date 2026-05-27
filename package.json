@@ -1,0 +1,12 @@
+{
+  "name": "pocket-budget-app",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npx esbuild src/app.js --bundle --format=iife --global-name=_PocketApp --outfile=bundle.js --log-level=warning",
+    "watch": "npx esbuild src/app.js --bundle --format=iife --global-name=_PocketApp --outfile=bundle.js --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

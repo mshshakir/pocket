@@ -1,0 +1,5 @@
+node_modules/
+deploy-to-github.ps1
+check-deploy.ps1
+budgetapp-prompt.md
+mumineen_calendar_js-main/
