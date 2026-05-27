@@ -75,10 +75,14 @@ export class Navigation {
     if (typeof lucide !== 'undefined') lucide.createIcons();
   }
 
+  // Sub-routes that should light up a parent nav item
+  static #ALIAS = { accountDetail: 'accounts' };
+
   #renderSidebar(current) {
+    const active = Navigation.#ALIAS[current] ?? current;
     return NAV_ITEMS
       .map((n) => `
-        <a class="nav-item ${current === n.id ? 'active' : ''}"
+        <a class="nav-item ${active === n.id ? 'active' : ''}"
            onclick="window.__app.navigate('${n.id}')">
           <i data-lucide="${n.icon}"></i> ${n.label}
         </a>`)
@@ -86,9 +90,10 @@ export class Navigation {
   }
 
   #renderBottomTabs(current) {
+    const active = Navigation.#ALIAS[current] ?? current;
     return MOBILE_TABS
       .map((n) => `
-        <a class="tab-item ${current === n.id ? 'active' : ''}"
+        <a class="tab-item ${active === n.id ? 'active' : ''}"
            onclick="window.__app.navigate('${n.id}')">
           <i data-lucide="${n.icon}" style="width:22px;height:22px"></i>
           <span>${n.label}</span>

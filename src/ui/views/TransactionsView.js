@@ -235,7 +235,7 @@ export class TransactionsView extends BaseView {
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Period</label>
-          <select class="select" onchange="window.__app.txFilterSetRange(this.value)">
+          <select class="select" onchange="window.__app.txFilterSet('range',this.value)">
             ${[['7','Last 7 days'],['30','Last 30 days'],['90','Last 90 days'],['365','Last 12 months'],['all','All time']]
               .map(([v,l]) => `<option value="${v}" ${f.range===v?'selected':''}>${l}</option>`).join('')}
           </select>

@@ -83,15 +83,16 @@ export class Modal {
 
     this.#active           = name;
     this.#currentOpts      = opts;
+
+    // Let the view reset its per-open state before we render
+    view.onOpen?.(opts, this.#card);
+
     this.#card.innerHTML   = view.render(opts);
     this.#backdrop.classList.add('open');
     document.body.style.overflow = 'hidden';
 
     // Re-run Lucide icon replacement inside the new content
     if (typeof lucide !== 'undefined') lucide.createIcons();
-
-    // Notify any post-open hooks
-    view.onOpen?.(opts, this.#card);
 
     EventBus.getInstance().emit('modal:opened', { name, opts });
   }

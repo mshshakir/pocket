@@ -33,11 +33,57 @@ export class TransactionModal {
   #splits        = [];
   #splitsEnabled = false;
   #sharedTxMode  = null; // { shareIndex, accountId, editTxId? } | null
+  #currentType   = null; // overrides data.type when user switches tabs
+  #splitsSeeded  = false; // true after initial seed; prevents re-seed on refresh
 
   constructor() {
     this.#store = Store.getInstance();
     this.#fx    = new CurrencyService();
     this.#hijri = new HijriCalendarService();
+  }
+
+  // ── Public API (called by app.js) ────────────────────────────────────
+
+  /** @returns {Array} current split rows */
+  get splits()        { return this.#splits; }
+  /** @returns {boolean} */
+  get splitsEnabled() { return this.#splitsEnabled; }
+
+  setType(type) { this.#currentType = type; }
+
+  toggleSplits() {
+    this.#splitsEnabled = !this.#splitsEnabled;
+    if (this.#splitsEnabled && this.#splits.length === 0) {
+      this.#splits.push({ categoryId: null, amount: 0 });
+    }
+  }
+
+  addSplit() {
+    this.#splits.push({ categoryId: null, amount: 0 });
+  }
+
+  removeSplit(i) {
+    this.#splits.splice(i, 1);
+    if (this.#splits.length === 0) this.#splitsEnabled = false;
+  }
+
+  setSplitField(i, field, val) {
+    if (this.#splits[i]) this.#splits[i][field] = val;
+  }
+
+  setSplitAmount(i, val, currency) {
+    if (this.#splits[i]) {
+      this.#splits[i].amount = this.#fx.toMinor(Number(val) || 0, currency);
+    }
+  }
+
+  applyScanResult(items) {
+    const state = this.#store.getState();
+    this.#splitsEnabled = items.length > 1;
+    this.#splits = items.map((item) => ({
+      categoryId: null,
+      amount: this.#fx.toMinor(Number(item.amount) || 0, item.currency || state.user.homeCurrency),
+    }));
   }
 
   // ── Modal strategy contract ───────────────────────────────────────────
@@ -49,6 +95,7 @@ export class TransactionModal {
     this.#sharedTxMode = sharedTxMode || null;
 
     const editing = id ? state.transactions.find((t) => t.id === id) : null;
+
     const data    = editing
       ? { ...editing }
       : (prefill || {
@@ -70,13 +117,16 @@ export class TransactionModal {
       if (pair) data.transferToAccountId = pair.accountId;
     }
 
-    // Seed splits
-    this.#splits        = editing && Array.isArray(editing.splits)   ? editing.splits.map((s) => ({ ...s }))
-                        : prefill && Array.isArray(prefill?.splits)  ? prefill.splits.map((s) => ({ ...s }))
-                        : [];
-    this.#splitsEnabled = this.#splits.length > 0;
+    // Seed splits only once per open session; subsequent refreshes keep in-memory state
+    if (!this.#splitsSeeded) {
+      this.#splits        = editing && Array.isArray(editing.splits)   ? editing.splits.map((s) => ({ ...s }))
+                          : prefill && Array.isArray(prefill?.splits)  ? prefill.splits.map((s) => ({ ...s }))
+                          : [];
+      this.#splitsEnabled = this.#splits.length > 0;
+      this.#splitsSeeded  = true;
+    }
 
-    const type        = data.type || 'expense';
+    const type        = this.#currentType || data.type || 'expense';
     const amountValue = editing ? this.#fx.fromMinor(editing.amount, editing.currency) : (data.amount ?? 0);
     const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
@@ -183,9 +233,13 @@ export class TransactionModal {
   }
 
   onOpen(opts, card) {
+    // Reset type override so fresh opens start from data.type / 'expense'
+    this.#currentType   = null;
+    this.#splits        = [];
+    this.#splitsEnabled = false;
+    this.#splitsSeeded  = false;
     // Initialize FX panel if transfer
-    const state = this.#store.getState();
-    const data  = opts?.prefill || {};
+    const data = opts?.prefill || {};
     if (data.type === 'transfer') {
       setTimeout(() => window.__app?.updateTransferFxPanel?.(false), 0);
     }

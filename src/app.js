@@ -55,6 +55,7 @@ import { CsvModal }         from './ui/modals/CsvModal.js';
 import { DebtModal }        from './ui/modals/DebtModal.js';
 import { FamilyModal }      from './ui/modals/FamilyModal.js';
 import { AuthModal }        from './ui/modals/AuthModal.js';
+import { RegularItemModal } from './ui/modals/RegularItemModal.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -217,6 +218,7 @@ export class Application {
     this.#modal.register('debtPayment',  this.#debtModal);
     this.#modal.register('familyMember', this.#familyModal);
     this.#modal.register('auth',         new AuthModal());
+    this.#modal.register('regularItem',  new RegularItemModal());
     _step('✔ modals registered');
 
     // 7. Subscribe to events — Router emits { route }, not { id }
@@ -738,7 +740,7 @@ export class Application {
     lucide?.createIcons?.();
   }
 
-  setSplitAmount(i, val) { this.#txModal?.setSplitAmount?.(i, val); }
+  setSplitAmount(i, val, currency) { this.#txModal?.setSplitAmount?.(i, val, currency); }
   setSplitField(i, field, val) { this.#txModal?.setSplitField?.(i, field, val); }
 
   setTxType(type) {
@@ -959,7 +961,7 @@ export class Application {
   openAccountDetail(id, sharedMeta = null) {
     const v = this.#getOrCreateView('accountDetail');
     v.setAccount(id, sharedMeta);
-    this.#router.navigate('accounts'); // stays on accounts route
+    this.#router.navigate('accountDetail');
     this.#render();
   }
 
@@ -1355,6 +1357,54 @@ export class Application {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Regular items CRUD
+  // ──────────────────────────────────────────────────────────────────────────
+
+  submitRegularItem(event, id) {
+    event.preventDefault();
+    const fd    = new FormData(event.target);
+    const data  = Object.fromEntries(fd.entries());
+    const state = this.#store.getState();
+    if (!Array.isArray(state.regularItems)) state.regularItems = [];
+
+    const currency = data.currency || state.user.homeCurrency;
+    const payload = {
+      name:          (data.name || '').trim(),
+      defaultAmount: this.#fx.toMinor(parseFloat(data.defaultAmount) || 0, currency),
+      currency,
+      accountId:     data.accountId  || null,
+      categoryId:    data.categoryId || null,
+      icon:          data.icon  || 'coffee',
+      color:         data.color || '#f97316',
+    };
+
+    if (!payload.name) return this.#toast.show('Name is required');
+
+    if (id) {
+      const item = state.regularItems.find((i) => i.id === id);
+      if (item) Object.assign(item, payload);
+    } else {
+      state.regularItems.push({ id: IdGenerator.generate('ri'), ...payload });
+    }
+
+    this.#store.persist();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(id ? 'Item updated' : 'Item added');
+    this.#sync.schedulePush?.();
+  }
+
+  deleteRegularItem(id) {
+    if (!confirm('Delete this regular item?')) return;
+    const state = this.#store.getState();
+    state.regularItems = (state.regularItems || []).filter((i) => i.id !== id);
+    this.#store.persist();
+    this.closeModal();
+    this.#render();
+    this.#sync.schedulePush?.();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Calendar view
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -1721,6 +1771,8 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #render() {
+    // Inject live shared data so views can read state._sharedData
+    this.#store.getState()._sharedData = this.#sync.sharedData;
     const route = this.#router.current || 'dashboard';
     this.#renderView(route);
     this.#nav.render(route);

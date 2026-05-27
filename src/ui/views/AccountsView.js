@@ -138,7 +138,7 @@ export class AccountsView extends BaseView {
         return `
           <div class="card p-5 relative overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
                style="border-color:#818cf822"
-               onclick="window.__app.openAccountDetail('${a.id}')">
+               onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${si}})">
             <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${a.color || '#818cf8'}22"></div>
             <div class="flex items-start gap-3 relative">
               <div class="icon-pill" style="background:${a.color || '#818cf8'};color:white">
