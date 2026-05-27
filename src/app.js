@@ -224,8 +224,9 @@ export class Application {
     // 7. Subscribe to events — Router emits { route }, not { id }
     this.#bus.on('route:changed', ({ route }) => this.#renderView(route));
     this.#bus.on('toast',         ({ message }) => this.#toast.show(message));
-    // Re-render full app when auth state changes (covers OAuth redirect + sign-out)
-    this.#bus.on('auth:changed',  () => this.#render());
+    // Re-render when auth or shared-data changes
+    this.#bus.on('auth:changed',   () => this.#render());
+    this.#bus.on('state:changed',  () => this.#render());
     _step('✔ events wired');
 
     // 8. Initial render
@@ -247,9 +248,45 @@ export class Application {
 
   navigate(id) {
     if (id === '__add')  return this.openModal('transaction', {});
-    if (id === '__more') return this.openModal('more', {});
+    if (id === '__more') return this.#openMoreMenu();
     this.#router.navigate(id);
     this.#render();
+  }
+
+  /** Open a bottom-sheet "More" menu showing nav items not in the mobile tab bar. */
+  #openMoreMenu() {
+    const MORE_ITEMS = [
+      { id: 'accounts',   label: 'Accounts',          icon: 'wallet'         },
+      { id: 'budgets',    label: 'Budgets',            icon: 'target'         },
+      { id: 'debts',      label: 'Debts',              icon: 'hand-coins'     },
+      { id: 'categories', label: 'Categories',         icon: 'tags'           },
+      { id: 'reports',    label: 'Reports',            icon: 'pie-chart'      },
+      { id: 'family',     label: 'Family',             icon: 'users'          },
+    ];
+    const items = MORE_ITEMS.map((n) => `
+      <button type="button"
+              onclick="window.__app.closeModal();window.__app.navigate('${n.id}')"
+              class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl
+                     bg-zinc-50 dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700
+                     transition-colors text-zinc-700 dark:text-zinc-200">
+        <i data-lucide="${n.icon}" style="width:24px;height:24px"></i>
+        <span class="text-xs font-medium">${n.label}</span>
+      </button>`).join('');
+
+    this.#modal.open('_raw', {
+      html: `
+        <div class="p-5" style="min-width:320px;max-width:420px">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-base font-semibold">More</h3>
+            <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+          <div class="grid grid-cols-3 gap-3">
+            ${items}
+          </div>
+        </div>`,
+    });
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -766,33 +803,65 @@ export class Application {
     } catch { el.textContent = ''; }
   }
 
-  updateTransferFxPanel(fromCcy, toCcy) {
-    const panel = document.getElementById('transferFxPanel');
+  /**
+   * Refresh the transfer FX panel.
+   * @param {boolean} userChangedRate  true when the user manually edited the rate field;
+   *                                   false (default) means auto-fill rate from FX table.
+   * Called by TransactionModal with false on account/amount change, true on rate input.
+   */
+  updateTransferFxPanel(userChangedRate = false) {
+    const panel = document.getElementById('fxPanel');
     if (!panel) return;
-    if (!fromCcy || !toCcy || fromCcy === toCcy) {
-      panel.classList.add('hidden'); return;
+
+    // Resolve currencies from the form's account selects
+    const state    = this.#store.getState();
+    const fromAccId = document.querySelector('[name=accountId]')?.value;
+    const toAccId   = document.querySelector('[name=transferToAccountId]')?.value;
+    const fromAcc   = state.accounts.find((a) => a.id === fromAccId);
+    const toAcc     = state.accounts.find((a) => a.id === toAccId);
+
+    if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) {
+      panel.style.display = 'none';
+      return;
     }
-    panel.classList.remove('hidden');
-    const rate   = ((FX[toCcy] || 1) / (FX[fromCcy] || 1)).toFixed(6);
-    const rateEl = document.getElementById('transferAutoRate');
-    if (rateEl) rateEl.textContent = `1 ${fromCcy} = ${rate} ${toCcy}`;
+
+    panel.style.display = '';
+    const fromCcy  = fromAcc.currency;
+    const toCcy    = toAcc.currency;
+    const autoRate = (FX[toCcy] || 1) / (FX[fromCcy] || 1);
+
+    const rateInp = document.getElementById('fxRate');
+    if (!userChangedRate || !(parseFloat(rateInp?.value) > 0)) {
+      if (rateInp) rateInp.value = autoRate.toFixed(6);
+    }
+
+    const rate    = parseFloat(rateInp?.value) || autoRate;
+    const fromAmt = parseFloat(document.querySelector('[name=amount]')?.value) || 0;
+    const toAmt   = fromAmt * rate;
+
+    const fromCcyEl  = document.getElementById('fxFromCcy');
+    const toCcyEl    = document.getElementById('fxToCcy');
+    const toAmtEl    = document.getElementById('fxToAmount');
+    const rateNoteEl = document.getElementById('fxRateNote');
+
+    if (fromCcyEl)  fromCcyEl.textContent  = fromCcy;
+    if (toCcyEl)    toCcyEl.textContent    = toCcy;
+    if (toAmtEl)    toAmtEl.textContent    = this.#fx.formatMoney(this.#fx.toMinor(toAmt, toCcy), toCcy);
+    if (rateNoteEl) rateNoteEl.textContent = `Auto: 1 ${fromCcy} = ${autoRate.toFixed(4)} ${toCcy}`;
   }
 
   resetTransferFx() {
-    const inp = document.getElementById('transferRate');
-    if (!inp) return;
-    const from = document.querySelector('[name=currency]')?.value;
-    const to   = document.querySelector('[name=transferToAccountId]')
-      ? (() => {
-          const sel = document.querySelector('[name=transferToAccountId]');
-          const state = this.#store.getState();
-          const acc = state.accounts.find((a) => a.id === sel?.value);
-          return acc?.currency;
-        })()
-      : null;
-    if (from && to && from !== to) {
-      inp.value = ((FX[to] || 1) / (FX[from] || 1)).toFixed(6);
+    const state    = this.#store.getState();
+    const toAccId  = document.querySelector('[name=transferToAccountId]')?.value;
+    const fromAccId = document.querySelector('[name=accountId]')?.value;
+    const fromAcc  = state.accounts.find((a) => a.id === fromAccId);
+    const toAcc    = state.accounts.find((a) => a.id === toAccId);
+    if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) return;
+    const rateInp = document.getElementById('fxRate');
+    if (rateInp) {
+      rateInp.value = ((FX[toAcc.currency] || 1) / (FX[fromAcc.currency] || 1)).toFixed(6);
     }
+    this.updateTransferFxPanel(false);
   }
 
   onTxAccountChange(sel) {
