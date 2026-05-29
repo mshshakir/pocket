@@ -127,20 +127,30 @@ export class SyncService {
       };
 
       this.#sb.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+        if (event === 'SIGNED_IN') {
+          // Always settle on an explicit sign-in (covers OAuth redirect + token refresh)
           await settle(session?.user ?? null);
         }
 
-        // ── Subsequent sign-out ───────────────────────────────────────
-        if (event === 'SIGNED_OUT') {
+        if (event === 'INITIAL_SESSION') {
+          if (session?.user) {
+            // Valid session already in storage — settle immediately
+            await settle(session.user);
+          }
+          // If session is null, Supabase may still be refreshing an expired token.
+          // Don't settle yet; wait for SIGNED_IN or the fallback timeout below.
+        }
+
+        // ── Subsequent sign-out (after initial session established) ───
+        if (event === 'SIGNED_OUT' && settled) {
           this.#user = null;
           this.#emitUser(null);
           this.#bus.emit('auth:changed', { user: null });
         }
       });
 
-      // Safety fallback: if INITIAL_SESSION never fires (e.g. slow network),
-      // try getSession() directly, then resolve after a short wait
+      // Safety fallback: fires if neither INITIAL_SESSION(user) nor SIGNED_IN
+      // arrives within 4 s — at that point we can be confident there is no session.
       setTimeout(async () => {
         if (settled) return;
         try {
@@ -149,7 +159,7 @@ export class SyncService {
         } catch (_) {
           await settle(null);
         }
-      }, 3000);
+      }, 4000);
     });
   }
 
