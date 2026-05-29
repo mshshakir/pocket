@@ -905,11 +905,13 @@ export class Application {
     this.updateTransferFxPanel(false);
   }
 
-  onTxAccountChange(sel) {
-    const state  = this.#store.getState();
-    const acc    = state.accounts.find((a) => a.id === sel?.value);
-    const curEl  = document.querySelector('[name=currency]');
-    if (curEl && acc) curEl.value = acc.currency;
+  onTxAccountChange(accId) {
+    const state = this.#store.getState();
+    // Check own accounts first, then shared accounts
+    const acc = state.accounts.find((a) => a.id === accId)
+      || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    const curEl = document.querySelector('[name=currency]');
+    if (curEl && acc?.currency) curEl.value = acc.currency;
   }
 
   suggestCategory(payee) {

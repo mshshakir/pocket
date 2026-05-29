@@ -289,6 +289,7 @@ export class SyncService {
     const { error } = await this.#sb.from('family_contributions').insert({
       owner_id:     ownerId,
       member_email: this.#user.email,
+      account_id:   txData.accountId ?? null,
       tx_data:      txData,
       synced:       false,
     });
