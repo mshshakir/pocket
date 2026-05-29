@@ -157,44 +157,24 @@ export class Application {
 
   /** Boot the application. Call once after DOMContentLoaded. */
   async init() {
-    const _step = (() => {
-      const vc = document.getElementById('viewContent');
-      if (vc && !vc.querySelector('#_dbg')) {
-        const el = document.createElement('div');
-        el.id = '_dbg';
-        el.style.cssText = 'position:fixed;top:8px;right:8px;z-index:9999;background:#1e293b;color:#94a3b8;font:12px/1.6 monospace;padding:8px 12px;border-radius:8px;max-width:340px;';
-        document.body.appendChild(el);
-      }
-      return (msg) => {
-        const el = document.getElementById('_dbg');
-        if (el) el.innerHTML += msg + '<br>';
-      };
-    })();
-
-    _step('▶ init() started');
-
     // 1. Load or seed state
     this.#store.init(() => SeedFactory.create());
     this.#ensureUserDefaults();
-    _step('✔ store ready');
 
     // 2. Process any missed recurring items
     this.#recurring.process();
-    _step('✔ recurring processed');
 
     // 3. Apply saved theme immediately (before first render)
     this.#applyTheme();
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (this.#store.getState().user.theme === 'system') this.#applyTheme();
     });
-    _step('✔ theme applied');
 
     // 4. Expose dispatch surface early so onclick handlers work from first render
     window.__app = this;
 
     // 5. Mount UI components
     const container = document.getElementById('app');
-    _step('container=' + (container ? 'found' : 'NULL'));
     this.#toast.mount(container);
     this.#modal.mount(container);
     this.#nav.mount({
@@ -202,7 +182,6 @@ export class Application {
       onAdd:      ()   => this.openModal('transaction', {}),
       onMore:     ()   => this.openModal('more', {}),
     });
-    _step('✔ components mounted');
 
     // 6. Register all modals
     this.#txModal     = new TransactionModal();
@@ -219,24 +198,25 @@ export class Application {
     this.#modal.register('familyMember', this.#familyModal);
     this.#modal.register('auth',         new AuthModal());
     this.#modal.register('regularItem',  new RegularItemModal());
-    _step('✔ modals registered');
 
-    // 7. Subscribe to events — Router emits { route }, not { id }
+    // 7. Subscribe to events
+    // route:changed → only re-render the view panel (not the whole shell)
     this.#bus.on('route:changed', ({ route }) => this.#renderView(route));
     this.#bus.on('toast',         ({ message }) => this.#toast.show(message));
-    // Re-render when auth or shared-data changes
-    this.#bus.on('auth:changed',   () => this.#render());
+    // state:changed fires after pull/replaceState completes — full re-render
     this.#bus.on('state:changed',  () => this.#render());
-    _step('✔ events wired');
+    // auth:changed → only update the auth pill + nav; full re-render happens
+    // after restoreSession() resolves (via .then(#render)) to avoid showing
+    // seed data briefly before the cloud pull completes
+    this.#bus.on('auth:changed', ({ user }) => {
+      this.#nav.renderAuthPill(user ?? null);
+      if (!user) this.#render(); // sign-out: show seed/default data immediately
+    });
 
-    // 8. Initial render
+    // 8. Initial render (shows locally-cached or seed data while Supabase loads)
     this.#render();
-    _step('✔ render() called');
 
-    // 9. Remove debug overlay on success
-    setTimeout(() => { document.getElementById('_dbg')?.remove(); }, 2000);
-
-    // 10. Init Supabase (non-blocking — runs after first paint)
+    // 9. Init Supabase — restores session, pulls cloud data, then re-renders
     if (this.#sync.init()) {
       this.#sync.restoreSession().then(() => this.#render());
     }
