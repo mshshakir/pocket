@@ -128,9 +128,11 @@ export class Application {
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
   #importPlan     = null;
-  #swipeTxId      = null;
-  #swipeStartX    = 0;
-  #swipeDeltaX    = 0;
+  #swipeTxId          = null;
+  #swipeStartX        = 0;
+  #swipeDeltaX        = 0;
+  #swipeShareIndex    = -1;
+  #swipeIsOwnContrib  = false;
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -621,6 +623,25 @@ export class Application {
     this.#render();
     this.#toast.show('Transaction deleted');
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Member-side delete for a transaction they contributed to a shared account.
+   * Sends a delete-marker contribution row to the owner and applies an
+   * optimistic removal to the local shared view immediately.
+   */
+  async deleteSharedContrib(shareIndex, txId) {
+    if (!confirm('Delete this transaction?')) return;
+    const state = this.#store.getState();
+    const share = (state._sharedData || [])[shareIndex];
+    if (!share?._ownerId) return this.#toast.show('Shared account not found');
+    try {
+      await this.#sync.deleteContribution(share._ownerId, txId);
+      this.#render();
+      this.#toast.show('Transaction deleted');
+    } catch (e) {
+      this.#toast.show('Failed to delete: ' + (e.message || e));
+    }
   }
 
   // Bulk delete — collects selectedIds from whichever view is active
@@ -1554,10 +1575,18 @@ export class Application {
   // Swipe-to-delete (touch)
   // ──────────────────────────────────────────────────────────────────────────
 
-  onTxSwipeStart(event, id) {
-    this.#swipeTxId  = id;
-    this.#swipeStartX = event.touches[0]?.clientX ?? 0;
-    this.#swipeDeltaX = 0;
+  /**
+   * @param {TouchEvent} event
+   * @param {string}     id            Transaction ID
+   * @param {number}     shareIndex    Index into _sharedData (-1 for owned tx)
+   * @param {boolean}    isOwnContrib  True if this is a member's own contribution
+   */
+  onTxSwipeStart(event, id, shareIndex = -1, isOwnContrib = false) {
+    this.#swipeTxId       = id;
+    this.#swipeShareIndex = shareIndex;
+    this.#swipeIsOwnContrib = !!isOwnContrib;
+    this.#swipeStartX     = event.touches[0]?.clientX ?? 0;
+    this.#swipeDeltaX     = 0;
   }
 
   onTxSwipeMove(event) {
@@ -1571,12 +1600,23 @@ export class Application {
     if (!this.#swipeTxId) return;
     const el = document.getElementById(`tx-row-${this.#swipeTxId}`);
     if (this.#swipeDeltaX < -80) {
-      this.deleteTx(this.#swipeTxId);
+      const id  = this.#swipeTxId;
+      const si  = this.#swipeShareIndex;
+      const own = this.#swipeIsOwnContrib;
+      if (si >= 0 && own) {
+        this.deleteSharedContrib(si, id);
+      } else if (si >= 0) {
+        this.deleteSharedTx(si, id);
+      } else {
+        this.deleteTx(id);
+      }
     } else if (el) {
       el.style.transform = '';
     }
-    this.#swipeTxId   = null;
-    this.#swipeDeltaX = 0;
+    this.#swipeTxId         = null;
+    this.#swipeShareIndex   = -1;
+    this.#swipeIsOwnContrib = false;
+    this.#swipeDeltaX       = 0;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1899,7 +1939,9 @@ export class Application {
 
   #render() {
     // Inject live shared data so views can read state._sharedData
-    this.#store.getState()._sharedData = this.#sync.sharedData;
+    const state = this.#store.getState();
+    state._sharedData        = this.#sync.sharedData;
+    state._currentUserEmail  = this.#sync.currentUser?.email || null;
     const route = this.#router.current || 'dashboard';
     this.#renderView(route);
     this.#nav.render(route);

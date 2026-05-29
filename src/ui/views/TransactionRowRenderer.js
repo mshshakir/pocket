@@ -74,9 +74,12 @@ export class TransactionRowRenderer {
       ? ((share?.permission || {})[account.id] || 'view')
       : (isShared ? 'view' : 'owner');
 
+    const currentUserEmail = state._currentUserEmail || null;
+
     return {
       account, perm, shareIndex, isShared, share, cats, txs,
       home:      state.user.homeCurrency,
+      currentUserEmail,
       canDelete: perm === 'full' || perm === 'owner',
       canEditTx: perm === 'edit' || perm === 'full' || perm === 'owner',
       findCat:     (id) => cats.find((c) => c.id === id) || null,
@@ -96,7 +99,8 @@ export class TransactionRowRenderer {
 
   #renderRow(t, ctx) {
     const { account, perm, shareIndex, isShared, canDelete, home,
-            findCat, catFullName, txs, multiSelect, selectedIds } = ctx;
+            findCat, catFullName, txs, multiSelect, selectedIds,
+            currentUserEmail } = ctx;
 
     const cat = findCat(t.categoryId);
     const acc = account || this.#getAccount(t.accountId);
@@ -124,11 +128,19 @@ export class TransactionRowRenderer {
     const color = sign === '-' ? 'text-rose-500' : sign === '+' ? 'text-emerald-500' : 'text-zinc-500';
 
     // ── Click / delete handlers ───────────────────────────────────────
+    // Shared member can delete transactions THEY added, regardless of permission level
+    const isOwnContrib = isShared && !!currentUserEmail && t.addedBy === currentUserEmail;
+    const canDeleteRow = canDelete || isOwnContrib;
+
     const clickFn = isShared
       ? ((perm === 'edit' || perm === 'full') ? `window.__app.openSharedTxEdit(${shareIndex},'${t.id}')` : null)
       : `window.__app.openModal('transaction',{id:'${t.id}'})`;
+
+    // Use deleteSharedContrib for own contributions; deleteSharedTx for full-access deletes
     const deleteFn = isShared
-      ? `window.__app.deleteSharedTx(${shareIndex},'${t.id}')`
+      ? (isOwnContrib
+          ? `window.__app.deleteSharedContrib(${shareIndex},'${t.id}')`
+          : `window.__app.deleteSharedTx(${shareIndex},'${t.id}')`)
       : `window.__app.deleteTx('${t.id}')`;
 
     // ── Sub-line ──────────────────────────────────────────────────────
@@ -210,11 +222,11 @@ export class TransactionRowRenderer {
       ? `<button onclick="${clickFn}" class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900 transition">${rowBody}</button>`
       : `<div class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5">${rowBody}</div>`;
 
-    return canDelete
+    return canDeleteRow
       ? `<div class="tx-swipe-wrapper"
-             ontouchstart="window.__app.onTxSwipeStart(event,'${t.id}',${shareIndex !== null ? shareIndex : -1})"
+             ontouchstart="window.__app.onTxSwipeStart(event,'${t.id}',${shareIndex !== null ? shareIndex : -1},${isOwnContrib})"
              ontouchmove="window.__app.onTxSwipeMove(event)"
-             ontouchend="window.__app.onTxSwipeEnd(event)">
+             ontouchend="window.__app.onTxSwipeEnd()">
            <div class="tx-delete-bg"><i data-lucide="trash-2" style="color:white;width:18px;height:18px"></i></div>
            ${inner}
          </div>`

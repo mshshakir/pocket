@@ -306,6 +306,31 @@ export class SyncService {
     if (error) throw error;
   }
 
+  /**
+   * Ask the owner to delete a specific transaction the member previously added.
+   * Inserts a delete-marker contribution row and adds txId to the local
+   * pendingRemovals set so the member's view updates optimistically.
+   */
+  async deleteContribution(ownerId, txId) {
+    if (!this.#sb || !this.#user) throw new Error('Not signed in');
+    // Optimistic removal on member side
+    this.#pendingRemovals.add(txId);
+    const { error } = await this.#sb.from('family_contributions').insert({
+      owner_id:     ownerId,
+      member_email: this.#user.email,
+      account_id:   null,
+      tx_data:      { _delete: true, targetId: txId },
+      synced:       false,
+    });
+    if (error) {
+      this.#pendingRemovals.delete(txId); // roll back optimistic removal
+      throw error;
+    }
+    // Re-pull so the optimistic removal is applied to #sharedData immediately
+    await this.#pullFamilyShares();
+    this.#bus.emit('state:changed', this.#store.getState());
+  }
+
   async #pushFamilyShares() {
     const state = this.#store.getState();
     if (!this.#sb || !this.#user || !state.family?.length) return;
