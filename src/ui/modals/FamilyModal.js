@@ -46,6 +46,24 @@ export class FamilyModal {
     delete this.#pendingPerms[accountId];
   }
 
+  /**
+   * Visually highlight the selected level label for an account and update
+   * the matching radio input's checked state.
+   * Call this from app.js after setPendingPerm() to keep the UI in sync.
+   */
+  highlightPermLevel(accountId, level) {
+    const container = document.getElementById(`accLevels_${accountId}`);
+    if (!container) return;
+    container.querySelectorAll('.perm-lvl-label').forEach((lbl) => {
+      const isSelected = lbl.dataset.lvl === level;
+      const color      = lbl.dataset.color || '#e4e4e7';
+      lbl.style.color       = isSelected ? color : '';
+      lbl.style.borderColor = isSelected ? color : '#e4e4e7';
+      const radio = lbl.querySelector('input[type="radio"]');
+      if (radio) radio.checked = isSelected;
+    });
+  }
+
   render(opts = {}) {
     const { id } = opts;
     const state   = this.#store.getState();
@@ -174,22 +192,25 @@ export class FamilyModal {
         <!-- Access level picker (visible when toggled on) -->
         <div id="accLevels_${acc.id}" class="${current ? '' : 'hidden'}">
           <div class="grid grid-cols-2 gap-1.5">
-            ${FAMILY_ACCESS_LEVELS.map((lvl) => `
-              <label class="flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors
-                            ${current === lvl.id ? 'border-current' : 'border-zinc-200 dark:border-zinc-800'}
+            ${FAMILY_ACCESS_LEVELS.map((lvl) => {
+              const sel = current === lvl.id;
+              return `
+              <label class="perm-lvl-label flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors
                             hover:bg-zinc-50 dark:hover:bg-zinc-800"
-                     style="${current === lvl.id ? `color:${lvl.color};border-color:${lvl.color}` : ''}">
+                     data-acc="${acc.id}" data-lvl="${lvl.id}" data-color="${lvl.color}"
+                     style="${sel ? `color:${lvl.color};border-color:${lvl.color}` : 'border-color:#e4e4e7'}"
+                     onclick="window.__app.updatePermLevel('${acc.id}', '${lvl.id}')">
                 <input type="radio" name="perm_${acc.id}" value="${lvl.id}"
                        class="sr-only"
-                       ${current === lvl.id ? 'checked' : ''}
-                       onchange="window.__app.updatePermLevel('${acc.id}', '${lvl.id}')">
+                       ${sel ? 'checked' : ''}>
                 <i data-lucide="${lvl.icon}"
                    style="width:13px;height:13px;margin-top:2px;flex-shrink:0;color:${lvl.color}"></i>
                 <div>
                   <div class="text-xs font-medium">${lvl.label}</div>
                   <div class="text-xs text-zinc-500 leading-tight">${lvl.desc}</div>
                 </div>
-              </label>`).join('')}
+              </label>`;
+            }).join('')}
           </div>
         </div>
       </div>`;

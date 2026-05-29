@@ -1448,29 +1448,15 @@ export class Application {
     if (!enabled) {
       this.#familyModal?.removePendingPerm(accountId);
     } else {
-      // Default to 'view' when first enabling; check the view radio
+      // Default to 'view' when first enabling
       this.#familyModal?.setPendingPerm(accountId, 'view');
-      const radio = document.querySelector(`input[name="perm_${accountId}"][value="view"]`);
-      if (radio) radio.checked = true;
+      this.#familyModal?.highlightPermLevel(accountId, 'view');
     }
   }
 
   updatePermLevel(accountId, level) {
-    // Persist level into FamilyModal and update label borders
     this.#familyModal?.setPendingPerm(accountId, level);
-    document.querySelectorAll(`input[name="perm_${accountId}"]`).forEach((r) => {
-      const lbl = r.closest('label');
-      if (!lbl) return;
-      if (r.checked) {
-        // Color from FAMILY_ACCESS_LEVELS
-        const acc = document.querySelector(`#accLevels_${accountId} input[value="${level}"]`);
-        // We can't easily get lvl.color here without re-importing, so use CSS data or just use the checked state
-        lbl.style.color = r.value === level ? '' : '';
-      } else {
-        lbl.style.color = '';
-        lbl.style.borderColor = '';
-      }
-    });
+    this.#familyModal?.highlightPermLevel(accountId, level);
   }
 
   pickMemberColor(color) {
