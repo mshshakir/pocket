@@ -181,6 +181,7 @@ export class Application {
       onNavigate: (id) => this.navigate(id),
       onAdd:      ()   => this.openModal('transaction', {}),
       onMore:     ()   => this.openModal('more', {}),
+      onSignOut:  ()   => this.signOut(),
     });
 
     // 6. Register all modals
@@ -1444,22 +1445,19 @@ export class Application {
   toggleAccountPerm(accountId, enabled) {
     const levelsDiv = document.getElementById(`accLevels_${accountId}`);
     if (levelsDiv) levelsDiv.classList.toggle('hidden', !enabled);
-    const perms = this.#familyModal?.getPendingPerms?.() ?? {};
     if (!enabled) {
-      delete perms[accountId];
-    } else if (!perms[accountId]) {
-      perms[accountId] = 'view';
+      this.#familyModal?.removePendingPerm(accountId);
+    } else {
+      // Default to 'view' when first enabling; check the view radio
+      this.#familyModal?.setPendingPerm(accountId, 'view');
       const radio = document.querySelector(`input[name="perm_${accountId}"][value="view"]`);
       if (radio) radio.checked = true;
     }
-    // FamilyModal stores perms internally; we just update DOM
   }
 
   updatePermLevel(accountId, level) {
-    // Update label borders and propagate to FamilyModal pendingPerms
-    if (this.#familyModal?.setPendingPerm) {
-      this.#familyModal.setPendingPerm(accountId, level);
-    }
+    // Persist level into FamilyModal and update label borders
+    this.#familyModal?.setPendingPerm(accountId, level);
     document.querySelectorAll(`input[name="perm_${accountId}"]`).forEach((r) => {
       const lbl = r.closest('label');
       if (!lbl) return;
@@ -1812,6 +1810,20 @@ export class Application {
         state.accounts.push({ id, name: na.name, type: na.type, currency: na.currency, color: na.color, icon: na.icon || 'wallet', archived: false, balance: 0 });
         accMap[norm(na.name)] = id;
       }
+    });
+
+    // Override new-account currencies with the most-used currency from their transactions
+    const currencyVotes = {}; // norm(accName) → { currency → count }
+    plan.txDrafts.forEach((d) => {
+      const key = norm(d.accountName);
+      if (!currencyVotes[key]) currencyVotes[key] = {};
+      if (d.currency) currencyVotes[key][d.currency] = (currencyVotes[key][d.currency] || 0) + 1;
+    });
+    state.accounts.forEach((a) => {
+      const votes = currencyVotes[norm(a.name)];
+      if (!votes) return;
+      const dominant = Object.entries(votes).sort((x, y) => y[1] - x[1])[0]?.[0];
+      if (dominant) a.currency = dominant;
     });
 
     // Create new categories (parents first)

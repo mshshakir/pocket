@@ -21,6 +21,9 @@ export class Navigation {
   /** @type {EventBus} */         #bus;
   /** @type {Router} */           #router;
 
+  /** Last known sync status — re-applied whenever the pill is re-rendered */
+  #lastSyncStatus = null;
+
   /** Callbacks set by Application so navigation can trigger actions */
   #onNavigate = null;
   #onAdd      = null;
@@ -59,7 +62,10 @@ export class Navigation {
 
     // Update auth pill when auth state changes
     this.#bus.on('sync:user',   ({ user })   => this.renderAuthPill(user));
-    this.#bus.on('sync:status', ({ status }) => this.updateSyncIndicator(status));
+    this.#bus.on('sync:status', ({ status }) => {
+      this.#lastSyncStatus = status;
+      this.updateSyncIndicator(status);
+    });
 
     this.render();
     // Show sign-in button immediately — will be replaced once auth resolves
@@ -119,11 +125,16 @@ export class Navigation {
             <div class="text-xs font-medium truncate">${this.#esc(user.email || '')}</div>
             <div id="syncIndicator" class="flex items-center gap-1 mt-0.5"></div>
           </div>
-          <button onclick="window.__app.signOut()" title="Sign out"
-                  class="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
-            <i data-lucide="log-out" style="width:14px;height:14px"></i>
+          <button id="signOutBtn" title="Sign out"
+                  class="p-1.5 -mr-1 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors">
+            <i data-lucide="log-out" style="width:15px;height:15px"></i>
           </button>
         </div>`;
+      // Wire sign-out via addEventListener (more reliable than inline onclick)
+      const btn = this.#authPill.querySelector('#signOutBtn');
+      if (btn) btn.addEventListener('click', () => this.#onSignOut?.());
+      // Re-apply the last known sync status so the indicator is never blank
+      if (this.#lastSyncStatus) this.updateSyncIndicator(this.#lastSyncStatus);
     } else {
       this.#authPill.innerHTML = `
         <button onclick="window.__app.openModal('auth')"

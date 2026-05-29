@@ -36,6 +36,16 @@ export class FamilyModal {
     return { ...this.#pendingPerms };
   }
 
+  /** Set a single account permission (called live as user clicks radio buttons). */
+  setPendingPerm(accountId, level) {
+    this.#pendingPerms[accountId] = level;
+  }
+
+  /** Remove a permission entry when the toggle is turned off. */
+  removePendingPerm(accountId) {
+    delete this.#pendingPerms[accountId];
+  }
+
   render(opts = {}) {
     const { id } = opts;
     const state   = this.#store.getState();
