@@ -387,17 +387,27 @@ export class Application {
     const state= this.#store.getState();
 
     // ── Shared-account contribution mode ──────────────────────────────────
-    // When a family member adds/edits a tx in a shared account, send it to
+    // When a family member adds a tx to a shared account (via sharedTxMode modal
+    // or via the regular FAB modal with a shared account selected), send it to
     // the owner via family_contributions instead of saving locally.
-    const sharedMode = this.#txModal?.sharedTxMode;
-    if (sharedMode && !id) {
+    const sharedMode  = this.#txModal?.sharedTxMode;
+    const allShared   = this.#sync.sharedData || [];
+    // Find if the selected accountId belongs to any share
+    const sharedMatch = !sharedMode && allShared.find((s) =>
+      (s.accounts || []).some((a) => a.id === data.accountId),
+    );
+
+    if ((sharedMode || sharedMatch) && !id) {
       const currency  = data.currency;
       const minor     = this.#fx.toMinor(data.amount, currency);
-      const sharedAcc = this.#sync.sharedData?.[sharedMode.shareIndex];
+      const sharedAcc = sharedMode
+        ? allShared[sharedMode.shareIndex]
+        : sharedMatch;
       if (!sharedAcc?._ownerId) return this.#toast.show('Shared account not found');
+      const accountId = sharedMode ? (sharedMode.accountId || data.accountId) : data.accountId;
       const tx = {
         id:          IdGenerator.generate('tx'),
-        accountId:   sharedMode.accountId || data.accountId,
+        accountId:   accountId,
         categoryId:  data.categoryId || null,
         amount:      minor,
         currency,
@@ -647,6 +657,21 @@ export class Application {
   async deleteSharedTx(shareIndex, txId) {
     await this.#sync.deleteSharedTx?.(shareIndex, txId);
     this.#render();
+  }
+
+  /** Submit a delete contribution for a shared-account transaction. */
+  async deleteSharedTxContrib(shareIndex, txId) {
+    if (!confirm('Delete this transaction from the shared account?')) return;
+    const sharedData = this.#sync.sharedData;
+    const share = sharedData?.[shareIndex];
+    if (!share?._ownerId) return this.#toast.show('Shared account not found');
+    try {
+      await this.#sync.submitContribution(share._ownerId, { _delete: true, targetId: txId, id: txId });
+      this.closeModal();
+      this.#toast.show('Delete request submitted to owner');
+    } catch (e) {
+      this.#toast.show('Failed: ' + (e.message || e));
+    }
   }
 
   openSharedTxModal(shareIndex, accountId) {

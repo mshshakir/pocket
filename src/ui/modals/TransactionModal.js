@@ -134,22 +134,30 @@ export class TransactionModal {
 
     this.#sharedTxMode = sharedTxMode || null;
 
+    // For shared-mode edits, look up the tx in the shared snapshot
+    const sharedEditTx = sharedTxMode?.editTxId
+      ? (state._sharedData?.[sharedTxMode.shareIndex]?.transactions || [])
+          .find((t) => t.id === sharedTxMode.editTxId)
+      : null;
+
     const editing = id ? state.transactions.find((t) => t.id === id) : null;
 
     const data    = editing
       ? { ...editing }
-      : (prefill || {
-          type:               'expense',
-          amount:             0,
-          currency:           state.user.defaultCurrency || state.user.homeCurrency,
-          accountId:          state.accounts[0]?.id,
-          categoryId:         '',
-          payee:              '',
-          note:               '',
-          date:               new Date().toISOString().slice(0, 10),
-          paymentType:        'card',
-          transferToAccountId:'',
-        });
+      : sharedEditTx
+        ? { ...sharedEditTx }
+        : (prefill || {
+            type:               'expense',
+            amount:             0,
+            currency:           state.user.defaultCurrency || state.user.homeCurrency,
+            accountId:          state.accounts[0]?.id,
+            categoryId:         '',
+            payee:              '',
+            note:               '',
+            date:               new Date().toISOString().slice(0, 10),
+            paymentType:        'card',
+            transferToAccountId:'',
+          });
 
     // Enrich transfer-edit: surface pair account
     if (editing?.type === 'transfer' && editing.transferPairId) {
@@ -175,11 +183,23 @@ export class TransactionModal {
     }
 
     const type        = this.#currentType || data.type || 'expense';
-    const amountValue = editing
-      ? this.#fx.fromMinor(editing.amount, editing.currency)
+    const amountValue = (editing || sharedEditTx)
+      ? this.#fx.fromMinor(data.amount, data.currency)
       : (data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0);
     const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
+
+    // Resolve the shared account object so we can show its name
+    const sharedAccObj = isSharedMode
+      ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || [])
+          .find((a) => a.id === this.#sharedTxMode.accountId)
+      : null;
+
+    // Determine delete eligibility for shared-mode edit
+    const sharedPerm   = isSharedMode
+      ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.permission || {})[this.#sharedTxMode.accountId]
+      : null;
+    const canDeleteShared = isSharedMode && sharedEditTx && ['full', 'edit', 'owner'].includes(sharedPerm);
     const todayH      = this.#hijri.toHijri(data.date);
     const miqaat      = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
     const hijriLabel  = this.#hijri.format(data.date, { long: true });
@@ -193,14 +213,14 @@ export class TransactionModal {
     return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ''}')" class="p-5">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">${editing || isSharedMode ? 'Edit transaction' : 'New transaction'}</h3>
+          <h3 class="text-lg font-semibold">${editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
             <i data-lucide="x"></i>
           </button>
         </div>
 
-        <div class="grid grid-cols-${isSharedMode ? '2' : '3'} gap-2 mb-4">
-          ${['expense', 'income', ...(isSharedMode ? [] : ['transfer'])].map((t) => `
+        <div class="grid grid-cols-3 gap-2 mb-4">
+          ${['expense', 'income', 'transfer'].map((t) => `
             <button type="button" onclick="window.__app.setTxType('${t}')"
                     class="btn ${type === t ? 'btn-primary' : 'btn-outline'} justify-center">
               ${t.charAt(0).toUpperCase() + t.slice(1)}
@@ -215,11 +235,9 @@ export class TransactionModal {
                    style="border:none" name="amount" type="number" step="0.01" required
                    value="${amountValue || ''}" placeholder="0.00" autofocus
                    oninput="window.__app.updateTransferFxPanel(false)">
-            ${isSharedMode
-              ? `<input type="hidden" name="currency" value="${data.currency}"><span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${data.currency}</span>`
-              : `<select class="select w-24" name="currency" onchange="window.__app.updateTransferFxPanel(false)">
-                   ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
-                 </select>`}
+            <select class="select w-24" name="currency" onchange="window.__app.updateTransferFxPanel(false)">
+              ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
+            </select>
           </div>
         </div>
 
@@ -274,7 +292,14 @@ export class TransactionModal {
         ${editing?.createdAt ? `<div class="text-xs text-zinc-400 mb-3">Entered ${new Date(editing.createdAt).toLocaleString()}${editing.addedBy ? ` by ${this.#esc(editing.addedBy)}` : ''}</div>` : ''}
 
         <div class="flex items-center gap-2">
-          ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : ''}
+          ${editing
+            ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>`
+            : canDeleteShared
+              ? `<button type="button" class="btn btn-outline text-rose-500"
+                         onclick="window.__app.deleteSharedTxContrib(${this.#sharedTxMode.shareIndex},'${sharedEditTx.id}')">
+                   <i data-lucide="trash-2"></i> Delete
+                 </button>`
+              : ''}
           <div class="flex-1"></div>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
@@ -346,10 +371,16 @@ export class TransactionModal {
         .map((a) => `<option value="${a.id}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} (shared)</option>`),
     ).join('');
 
+    const sharedAccName = isSharedMode
+      ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || [])
+          .find((a) => a.id === this.#sharedTxMode.accountId)?.name || 'Shared account'
+      : null;
+
     const accountSelect = isSharedMode
       ? `<input type="hidden" name="accountId" value="${this.#sharedTxMode.accountId}">
-         <div class="select flex items-center gap-2 opacity-60 cursor-not-allowed">
-           <i data-lucide="lock" style="width:13px;height:13px"></i> Shared account
+         <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
+           <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
+           <span class="truncate">${this.#esc(sharedAccName)}</span>
          </div>`
       : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
            <optgroup label="My accounts">

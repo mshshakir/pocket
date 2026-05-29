@@ -102,36 +102,33 @@ export class SyncService {
     return new Promise((resolve) => {
       let settled = false;
 
-      this.#sb.auth.onAuthStateChange(async (event, session) => {
-        // ── Initial page load & OAuth redirect ────────────────────────
-        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
-          if (session?.user && !this.#user) {
-            this.#user = session.user;
-
-            // Show the signed-in user in the nav immediately (before pull)
-            this.#emitUser(this.#user);
-            this.#emitStatus('syncing');
-            this.#bus.emit('auth:changed', { user: this.#user });
-
-            // Clean OAuth hash from URL
-            if (window.location.hash.includes('access_token')) {
-              history.replaceState(null, '', window.location.pathname);
-            }
-
-            const isFirst = await this.pull();
-            this.#subscribe();
-
-            if (!settled) {
-              settled = true;
-              resolve({ isFirstSignIn: isFirst });
-            }
-          } else if (!session?.user && !settled) {
-            // No session — show sign-in button right away
-            this.#emitUser(null);
-            this.#bus.emit('auth:changed', { user: null });
-            settled = true;
-            resolve({ isFirstSignIn: false, needsSignIn: true });
+      const settle = async (user) => {
+        if (settled) return;
+        settled = true;
+        if (user && !this.#user) {
+          this.#user = user;
+          this.#emitUser(user);
+          this.#emitStatus('syncing');
+          this.#bus.emit('auth:changed', { user });
+          if (window.location.hash.includes('access_token')) {
+            history.replaceState(null, '', window.location.pathname);
           }
+          const isFirst = await this.pull();
+          this.#subscribe();
+          resolve({ isFirstSignIn: isFirst });
+        } else {
+          // No valid session — reset store to seed data so cached user
+          // finances are not exposed while the user is signed out
+          this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+          this.#emitUser(null);
+          this.#bus.emit('auth:changed', { user: null });
+          resolve({ isFirstSignIn: false, needsSignIn: true });
+        }
+      };
+
+      this.#sb.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+          await settle(session?.user ?? null);
         }
 
         // ── Subsequent sign-out ───────────────────────────────────────
@@ -142,14 +139,17 @@ export class SyncService {
         }
       });
 
-      // Safety fallback — resolve after 8 s if no auth event fires
-      setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          this.#emitUser(null);
-          resolve({ isFirstSignIn: false, needsSignIn: true });
+      // Safety fallback: if INITIAL_SESSION never fires (e.g. slow network),
+      // try getSession() directly, then resolve after a short wait
+      setTimeout(async () => {
+        if (settled) return;
+        try {
+          const { data } = await this.#sb.auth.getSession();
+          await settle(data?.session?.user ?? null);
+        } catch (_) {
+          await settle(null);
         }
-      }, 8000);
+      }, 3000);
     });
   }
 
@@ -287,9 +287,10 @@ export class SyncService {
   async submitContribution(ownerId, txData) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
     const { error } = await this.#sb.from('family_contributions').insert({
-      owner_id: ownerId,
-      tx_data:  txData,
-      synced:   false,
+      owner_id:     ownerId,
+      member_email: this.#user.email,
+      tx_data:      txData,
+      synced:       false,
     });
     if (error) throw error;
   }

@@ -130,11 +130,8 @@ export class AccountDetailView extends BaseView {
       date: new Date().toISOString().slice(0, 10), paymentType: 'card',
     }).replace(/'/g, '&#39;');
 
-    const newTxBtn = canAdd
-      ? (isShared
-          ? `<button class="btn btn-primary" onclick="window.__app.openSharedTxModal(${shareIndex},'${a.id}')"><i data-lucide="plus"></i><span class="hidden md:inline ml-1">New</span></button>`
-          : `<button class="btn btn-primary" onclick="window.__app.openModal('transaction',{prefill:${newTxPrefill}})"><i data-lucide="plus"></i><span class="hidden md:inline ml-1">New</span></button>`)
-      : '';
+    // "New transaction" button removed from header — use the FAB (bottom-right ＋) instead
+    const newTxBtn = '';
 
     const permLabel = this.#accessLabel(perm);
     const backFn    = isShared
