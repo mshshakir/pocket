@@ -828,8 +828,8 @@ export class Application {
     lucide?.createIcons?.();
   }
 
-  addSplit() {
-    this.#txModal?.addSplit?.();
+  addSplit(defaultAccountId = null) {
+    this.#txModal?.addSplit?.(defaultAccountId || document.querySelector('[name=accountId]')?.value || null);
     this.#modal.refresh();
     lucide?.createIcons?.();
   }
@@ -840,7 +840,12 @@ export class Application {
     lucide?.createIcons?.();
   }
 
-  setSplitAmount(i, val, currency) { this.#txModal?.setSplitAmount?.(i, val, currency); }
+  setSplitAmount(i, val, currency) {
+    this.#txModal?.setSplitAmount?.(i, val, currency);
+    // Re-render modal so the split total tracker updates live
+    this.#modal.refresh();
+    lucide?.createIcons?.();
+  }
   setSplitField(i, field, val) { this.#txModal?.setSplitField?.(i, field, val); }
 
   setTxType(type) {

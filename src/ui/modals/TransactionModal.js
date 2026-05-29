@@ -58,12 +58,12 @@ export class TransactionModal {
   toggleSplits() {
     this.#splitsEnabled = !this.#splitsEnabled;
     if (this.#splitsEnabled && this.#splits.length === 0) {
-      this.#splits.push({ categoryId: null, amount: 0 });
+      this.#splits.push({ categoryId: null, accountId: null, amount: 0 });
     }
   }
 
-  addSplit() {
-    this.#splits.push({ categoryId: null, amount: 0 });
+  addSplit(defaultAccountId = null) {
+    this.#splits.push({ categoryId: null, accountId: defaultAccountId, amount: 0 });
   }
 
   removeSplit(i) {
@@ -242,7 +242,7 @@ export class TransactionModal {
         </div>
 
         ${type === 'transfer' ? this.#transferFields(data, state) : ''}
-        ${type !== 'transfer' && this.#splitsEnabled ? this.#splitsArea(data, cats, type) : ''}
+        ${type !== 'transfer' && this.#splitsEnabled ? this.#splitsArea(data, cats, type, state.accounts, amountValue) : ''}
         ${type !== 'transfer' && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode) : ''}
 
         <div class="grid grid-cols-2 gap-3 mb-3">
@@ -410,42 +410,88 @@ export class TransactionModal {
       </div>`;
   }
 
-  #splitsArea(data, cats, type) {
+  #splitsArea(data, cats, type, accounts = [], totalMajor = 0) {
     const filteredCats = cats.filter((c) => c.type === type);
+    const currency     = data.currency || 'USD';
+
+    // Compute running sum of splits in major units
+    const splitSum = this.#splits.reduce((s, sp) => s + this.#fx.fromMinor(sp.amount || 0, currency), 0);
+    const diff     = totalMajor - splitSum;
+    const diffAbs  = Math.abs(diff);
+    const diffFmt  = this.#fx.formatMoney(this.#fx.toMinor(diffAbs, currency), currency);
+
+    let diffHtml = '';
+    if (Math.abs(diff) >= 0.005) {
+      const over  = diff < 0;
+      const color = over ? 'text-rose-500' : 'text-amber-500';
+      const label = over
+        ? `<span class="${color} font-medium">${diffFmt} over</span>`
+        : `<span class="${color} font-medium">${diffFmt} remaining</span>`;
+      diffHtml = `<div class="flex items-center gap-1 text-xs mt-1">${label}</div>`;
+    } else {
+      diffHtml = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
+    }
+
+    const sumFmt   = this.#fx.formatMoney(this.#fx.toMinor(splitSum, currency), currency);
+    const totalFmt = this.#fx.formatMoney(this.#fx.toMinor(totalMajor, currency), currency);
+
     return `
       <input type="hidden" name="accountId" value="${data.accountId || ''}">
       <div class="mb-3">
-        <div class="flex items-center justify-between mb-2">
-          <label class="text-xs text-zinc-500 uppercase tracking-wider">Split</label>
+        <div class="flex items-center justify-between mb-1">
+          <label class="text-xs text-zinc-500 uppercase tracking-wider">Split entries</label>
           <button type="button" onclick="window.__app.toggleSplits()"
                   class="text-xs text-rose-500 hover:text-rose-700">
             <i data-lucide="x" style="width:11px;height:11px;display:inline"></i> Remove splits
           </button>
         </div>
-        <div id="splitsContainer" class="space-y-2">
-          ${this.#splits.map((s, i) => this.#splitRow(s, i, filteredCats, data.currency)).join('')}
+
+        <!-- Total vs split sum tracker -->
+        <div class="card-muted rounded-xl px-3 py-2 mb-2 flex items-center justify-between">
+          <div class="text-xs text-zinc-500">Split total</div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-semibold">${sumFmt}</span>
+            <span class="text-xs text-zinc-400">of</span>
+            <span class="text-sm font-semibold">${totalFmt}</span>
+          </div>
         </div>
-        <button type="button" onclick="window.__app.addSplit()"
+        ${diffHtml}
+
+        <div id="splitsContainer" class="space-y-2 mt-2">
+          ${this.#splits.map((s, i) => this.#splitRow(s, i, filteredCats, currency, accounts, data.accountId)).join('')}
+        </div>
+        <button type="button" onclick="window.__app.addSplit('${this.#esc(data.accountId || '')}')"
                 class="btn btn-ghost text-xs mt-2 w-full border border-dashed border-zinc-300 dark:border-zinc-700">
           <i data-lucide="plus" style="width:13px;height:13px"></i> Add split
         </button>
       </div>`;
   }
 
-  #splitRow(s, i, cats, currency) {
+  #splitRow(s, i, cats, currency, accounts = [], defaultAccountId = null) {
+    const accId = s.accountId || defaultAccountId || '';
     return `
-      <div class="grid grid-cols-3 gap-2 items-center">
-        <select class="select text-sm" onchange="window.__app.setSplitField(${i},'categoryId',this.value)">
-          <option value="">— Uncat —</option>
-          ${cats.map((c) => `<option value="${c.id}" ${s.categoryId===c.id?'selected':''}>${this.#esc(c.name)}</option>`).join('')}
-        </select>
-        <input class="input text-sm" type="number" step="0.01" placeholder="Amount"
-               value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ''}"
-               onchange="window.__app.setSplitAmount(${i},this.value,'${currency}')">
-        <button type="button" onclick="window.__app.removeSplit(${i})"
-                class="btn btn-ghost text-rose-500 text-xs">
-          <i data-lucide="trash-2" style="width:13px;height:13px"></i>
-        </button>
+      <div class="card-muted rounded-xl p-2 space-y-1.5">
+        <div class="flex gap-2">
+          <select class="select text-sm flex-1" name="split_cat_${i}"
+                  onchange="window.__app.setSplitField(${i},'categoryId',this.value)">
+            <option value="">— Uncategorised —</option>
+            ${cats.map((c) => `<option value="${c.id}" ${s.categoryId===c.id?'selected':''}>${this.#esc(c.name)}</option>`).join('')}
+          </select>
+          <button type="button" onclick="window.__app.removeSplit(${i})"
+                  class="btn btn-ghost text-rose-500 flex-shrink-0 px-2">
+            <i data-lucide="trash-2" style="width:13px;height:13px"></i>
+          </button>
+        </div>
+        <div class="flex gap-2">
+          <select class="select text-sm flex-1" name="split_acc_${i}"
+                  onchange="window.__app.setSplitField(${i},'accountId',this.value)">
+            ${accounts.map((a) => `<option value="${a.id}" ${accId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
+          </select>
+          <input class="input text-sm w-28 flex-shrink-0" type="number" step="0.01" placeholder="0.00"
+                 name="split_amt_${i}"
+                 value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ''}"
+                 oninput="window.__app.setSplitAmount(${i},this.value,'${currency}')">
+        </div>
       </div>`;
   }
 
