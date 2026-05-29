@@ -35,6 +35,7 @@ export class TransactionModal {
   #sharedTxMode  = null; // { shareIndex, accountId, editTxId? } | null
   #currentType   = null; // overrides data.type when user switches tabs
   #splitsSeeded  = false; // true after initial seed; prevents re-seed on refresh
+  #scanData      = null; // { amount, categoryId, note } populated by applyScanResult for single-item scans
 
   constructor() {
     this.#store = Store.getInstance();
@@ -50,6 +51,9 @@ export class TransactionModal {
   get splitsEnabled() { return this.#splitsEnabled; }
 
   setType(type) { this.#currentType = type; }
+
+  /** @returns {{shareIndex:number, accountId:string, editTxId?:string}|null} */
+  get sharedTxMode() { return this.#sharedTxMode; }
 
   toggleSplits() {
     this.#splitsEnabled = !this.#splitsEnabled;
@@ -77,13 +81,49 @@ export class TransactionModal {
     }
   }
 
+  /**
+   * Apply AI receipt-scan results to the modal.
+   * items: [{ description, amount, currency, categoryName, quantity, unit, note }]
+   * amounts are expected in MAJOR decimal units (e.g. 4.99 not 499).
+   */
   applyScanResult(items) {
-    const state = this.#store.getState();
-    this.#splitsEnabled = items.length > 1;
-    this.#splits = items.map((item) => ({
-      categoryId: null,
-      amount: this.#fx.toMinor(Number(item.amount) || 0, item.currency || state.user.homeCurrency),
-    }));
+    const state    = this.#store.getState();
+    const homeCcy  = state.user.homeCurrency || 'USD';
+    const expCats  = state.categories.filter((c) => c.type === 'expense' || !c.type);
+
+    const parsed = items.map((item) => {
+      const currency = item.currency || homeCcy;
+      // amount from AI is in major units (e.g. 4.99); convert to minor (499)
+      const amount   = this.#fx.toMinor(Number(item.amount) || 0, currency);
+
+      // Match categoryName to a local category (case-insensitive partial match)
+      const nameHint  = (item.categoryName || '').toLowerCase();
+      const cat = nameHint
+        ? expCats.find((c) => c.name.toLowerCase() === nameHint)
+          || expCats.find((c) => c.name.toLowerCase().includes(nameHint) || nameHint.includes(c.name.toLowerCase()))
+        : null;
+
+      // Build note: description + quantity/unit details
+      const noteParts = [item.description || ''];
+      if (item.quantity) noteParts.push(item.quantity);
+      if (item.unit && item.unit !== item.quantity) noteParts.push(item.unit);
+      if (item.note)     noteParts.push(item.note);
+      const note = [...new Set(noteParts.filter(Boolean))].join(' · ');
+
+      return { categoryId: cat?.id || null, amount, note, currency };
+    });
+
+    if (parsed.length === 1) {
+      // Single item: fill the main form fields, no splits needed
+      this.#scanData      = parsed[0];
+      this.#splitsEnabled = false;
+      this.#splits        = [];
+    } else {
+      // Multiple items: enable splits
+      this.#scanData      = null;
+      this.#splitsEnabled = true;
+      this.#splits        = parsed.map((p) => ({ categoryId: p.categoryId, amount: p.amount }));
+    }
   }
 
   // ── Modal strategy contract ───────────────────────────────────────────
@@ -126,8 +166,18 @@ export class TransactionModal {
       this.#splitsSeeded  = true;
     }
 
+    // Overlay single-item scan data onto a new transaction's default fields
+    if (this.#scanData && !editing) {
+      if (this.#scanData.amount)     data.amount     = this.#scanData.amount;
+      if (this.#scanData.categoryId) data.categoryId = this.#scanData.categoryId;
+      if (this.#scanData.note)       data.note       = this.#scanData.note;
+      if (this.#scanData.currency)   data.currency   = this.#scanData.currency;
+    }
+
     const type        = this.#currentType || data.type || 'expense';
-    const amountValue = editing ? this.#fx.fromMinor(editing.amount, editing.currency) : (data.amount ?? 0);
+    const amountValue = editing
+      ? this.#fx.fromMinor(editing.amount, editing.currency)
+      : (data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0);
     const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
     const todayH      = this.#hijri.toHijri(data.date);
@@ -238,6 +288,7 @@ export class TransactionModal {
     this.#splits        = [];
     this.#splitsEnabled = false;
     this.#splitsSeeded  = false;
+    this.#scanData      = null;
     // Initialize FX panel if transfer
     const data = opts?.prefill || {};
     if (data.type === 'transfer') {

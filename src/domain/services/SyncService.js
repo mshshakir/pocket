@@ -222,6 +222,9 @@ export class SyncService {
         await this.#pullFamilyShares();
         await this.#pullMemberContributions();
         this.#emitStatus('synced');
+        // Re-emit state:changed so views update with freshly-loaded shared data
+        // (replaceState() emits state:changed before #pullFamilyShares() runs)
+        this.#bus.emit('state:changed', this.#store.getState());
         return false;
       } else {
         // First sign-in
@@ -274,6 +277,22 @@ export class SyncService {
   }
 
   // ── Family sharing (private) ─────────────────────────────────────────
+
+  /**
+   * Submit a transaction on behalf of a shared-account member.
+   * Inserts a row into `family_contributions` so the owner can pull and apply it.
+   * @param {string} ownerId  Supabase user ID of the account owner
+   * @param {object} txData   Transaction object to contribute
+   */
+  async submitContribution(ownerId, txData) {
+    if (!this.#sb || !this.#user) throw new Error('Not signed in');
+    const { error } = await this.#sb.from('family_contributions').insert({
+      owner_id: ownerId,
+      tx_data:  txData,
+      synced:   false,
+    });
+    if (error) throw error;
+  }
 
   async #pushFamilyShares() {
     const state = this.#store.getState();

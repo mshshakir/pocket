@@ -400,11 +400,47 @@ export class Application {
   // Transaction CRUD
   // ──────────────────────────────────────────────────────────────────────────
 
-  submitTx(event, id) {
+  async submitTx(event, id) {
     event.preventDefault();
     const fd   = new FormData(event.target);
     const data = Object.fromEntries(fd.entries());
     const state= this.#store.getState();
+
+    // ── Shared-account contribution mode ──────────────────────────────────
+    // When a family member adds/edits a tx in a shared account, send it to
+    // the owner via family_contributions instead of saving locally.
+    const sharedMode = this.#txModal?.sharedTxMode;
+    if (sharedMode && !id) {
+      const currency  = data.currency;
+      const minor     = this.#fx.toMinor(data.amount, currency);
+      const sharedAcc = this.#sync.sharedData?.[sharedMode.shareIndex];
+      if (!sharedAcc?._ownerId) return this.#toast.show('Shared account not found');
+      const tx = {
+        id:          IdGenerator.generate('tx'),
+        accountId:   sharedMode.accountId || data.accountId,
+        categoryId:  data.categoryId || null,
+        amount:      minor,
+        currency,
+        exchangeRate: (FX[currency] || 1) / (FX[state.user.homeCurrency] || 1),
+        refAmount:   this.#fx.convert(minor, currency, state.user.homeCurrency),
+        payee:       data.payee || '',
+        note:        data.note || '',
+        date:        data.date,
+        type:        data.type || 'expense',
+        paymentType: data.paymentType || 'card',
+        recordState: 'cleared',
+        createdAt:   new Date().toISOString(),
+        addedBy:     this.#sync.getSbUser?.()?.email || null,
+      };
+      try {
+        await this.#sync.submitContribution(sharedAcc._ownerId, tx);
+        this.closeModal();
+        this.#toast.show('Transaction submitted to owner');
+      } catch (e) {
+        this.#toast.show('Failed to submit: ' + (e.message || e));
+      }
+      return;
+    }
 
     const currency = data.currency;
     const minor    = this.#fx.toMinor(data.amount, currency);
@@ -893,6 +929,23 @@ export class Application {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
+      const state     = this.#store.getState();
+      const catNames  = state.categories
+        .filter((c) => c.type === 'expense' || !c.type)
+        .map((c) => c.name)
+        .join(', ');
+      const prompt = [
+        'You are a receipt parser. Extract every line item from this receipt image.',
+        'Return ONLY a valid JSON array — no markdown, no code fences, nothing else.',
+        'Each element must have these exact fields:',
+        '  description: string — item name',
+        '  amount: number — in MAJOR currency units with decimal (e.g. 4.99, not 499)',
+        '  currency: string — ISO 4217 code (e.g. "USD", "PKR"). Detect from receipt or use "' + (state.user.homeCurrency || 'USD') + '".',
+        '  categoryName: string — pick the single best match from this list: [' + (catNames || 'Food, Transport, Shopping') + ']. Use null if none fit.',
+        '  quantity: string — quantity with unit if visible (e.g. "2x", "500ml", "1kg"), else null',
+        '  note: string — any extra details like size, variant, or pack info visible on the receipt, else null',
+      ].join('\n');
+
       const resp = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
         {
@@ -901,7 +954,7 @@ export class Application {
           body: JSON.stringify({
             contents: [{
               parts: [
-                { text: 'Extract line items from this receipt as JSON: [{description, amount, currency}]. Amounts in minor decimal units. Just the JSON array.' },
+                { text: prompt },
                 { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } },
               ],
             }],
