@@ -220,9 +220,18 @@ export class Application {
     // auth:changed → only update the auth pill + nav; full re-render happens
     // after restoreSession() resolves (via .then(#render)) to avoid showing
     // seed data briefly before the cloud pull completes
-    this.#bus.on('auth:changed', ({ user }) => {
+    this.#bus.on('auth:changed', ({ user, showSignIn }) => {
       this.#nav.renderAuthPill(user ?? null);
-      if (!user) this.#render(); // sign-out: show seed/default data immediately
+      if (!user) {
+        this.#render(); // show seed/default data immediately
+        // If the session was invalidated by the backend (or the user signed out),
+        // open the auth modal after a short delay so the UI finishes updating first
+        if (showSignIn) {
+          setTimeout(() => {
+            if (!this.#sync.currentUser) this.openModal('auth');
+          }, 300);
+        }
+      }
     });
 
     // 8. Initial render (shows locally-cached or seed data while Supabase loads)
@@ -230,7 +239,15 @@ export class Application {
 
     // 9. Init Supabase — restores session, pulls cloud data, then re-renders
     if (this.#sync.init()) {
-      this.#sync.restoreSession().then(() => this.#render());
+      this.#sync.restoreSession().then(({ needsSignIn } = {}) => {
+        this.#render();
+        // No valid session found on load — prompt the user to sign in
+        if (needsSignIn) {
+          setTimeout(() => {
+            if (!this.#sync.currentUser) this.openModal('auth');
+          }, 300);
+        }
+      });
     }
   }
 
@@ -307,7 +324,24 @@ export class Application {
   getSbUser()     { return this.#sync.getSbUser?.() ?? null; }
 
   async signInWithGoogle() { await this.#sync.signInWithGoogle(); }
-  async signOut()          { await this.#sync.signOut(); this.#render(); }
+
+  /**
+   * Sign out — always succeeds locally even if the Supabase revocation request
+   * fails (network down, session already expired, etc.).
+   * The auth pill updates instantly; the sign-in modal is shown automatically
+   * via the auth:changed event with showSignIn: true.
+   */
+  async signOut() {
+    // sync.signOut() fires auth.signOut() as fire-and-forget.
+    // Supabase calls onAuthStateChange(SIGNED_OUT) synchronously before the network
+    // request, so the SIGNED_OUT handler runs before this function returns.
+    // That handler (when #user is set) emits auth:changed { showSignIn: true }
+    // which schedules the auth modal — so we must NOT open it here too.
+    try {
+      await this.#sync.signOut();
+    } catch (_) { /* safety net — signOut is fire-and-forget internally */ }
+    this.#render();
+  }
 
   setSbUrl(v) {
     const s = this.#store.getState();

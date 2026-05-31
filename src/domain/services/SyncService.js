@@ -83,17 +83,29 @@ export class SyncService {
 
   async signOut() {
     if (!this.#sb) return;
-    await this.#sb.auth.signOut();
-    this.#user = null;
-    this.#channel = null;
-    this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
-    this.#sharedData = [];
-    this.#pendingRemovals.clear();
-    this.#pendingAdditions.clear();
-    this.#cloudVersion = 0;
-    this.#subscribed = false;
-    this.#emitStatus('local');
-    this.#emitUser(null);
+
+    // Fire-and-forget: Supabase v2 calls onAuthStateChange(SIGNED_OUT) synchronously
+    // inside auth.signOut() before the network revocation request.  The SIGNED_OUT
+    // handler below resets state when #user is still set.  We guard with `if (this.#user)`
+    // after this call as a fallback for Supabase versions that fire SIGNED_OUT
+    // asynchronously — whichever path runs first wins, the other is a no-op.
+    this.#sb.auth.signOut().catch(() => {});
+
+    // If SIGNED_OUT hasn't fired yet (async path), reset state now and emit showSignIn.
+    // If it already fired (sync path, #user already null), these are no-ops.
+    if (this.#user) {
+      this.#user = null;
+      this.#channel = null;
+      this.#subscribed = false;
+      this.#cloudVersion = 0;
+      this.#sharedData = [];
+      this.#pendingRemovals.clear();
+      this.#pendingAdditions.clear();
+      this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+      this.#emitStatus('local');
+      this.#emitUser(null);
+      this.#bus.emit('auth:changed', { user: null, showSignIn: true });
+    }
   }
 
   async restoreSession() {
@@ -120,40 +132,53 @@ export class SyncService {
           this.#subscribe();
           resolve({ isFirstSignIn: isFirst });
         } else {
-          // No valid session — reset store to seed data so cached user
-          // finances are not exposed while the user is signed out
+          // No valid session — reset store so cached finances are not exposed
           this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
           this.#emitUser(null);
+          this.#emitStatus('local');
           this.#bus.emit('auth:changed', { user: null });
+          // Signal the app to open the sign-in modal
           resolve({ isFirstSignIn: false, needsSignIn: true });
         }
       };
 
       this.#sb.auth.onAuthStateChange(async (event, session) => {
         if (event === 'SIGNED_IN') {
-          // Always settle on an explicit sign-in (covers OAuth redirect + token refresh)
           await settle(session?.user ?? null);
         }
 
         if (event === 'INITIAL_SESSION') {
           if (session?.user) {
-            // Valid session already in storage — settle immediately
             await settle(session.user);
           }
-          // If session is null, Supabase may still be refreshing an expired token.
-          // Don't settle yet; wait for SIGNED_IN or the fallback timeout below.
+          // session is null → token may still be refreshing; wait for SIGNED_IN or timeout
         }
 
-        // ── Subsequent sign-out (after initial session established) ───
-        if (event === 'SIGNED_OUT' && settled) {
-          this.#user = null;
-          this.#emitUser(null);
-          this.#bus.emit('auth:changed', { user: null });
+        // SIGNED_OUT fires on explicit sign-out, on backend session invalidation
+        // (expired token, remote sign-out), and on failed token refresh.
+        if (event === 'SIGNED_OUT') {
+          if (this.#user) {
+            // A session was active — clear everything and show sign-in prompt.
+            // (signOut() fire-and-forget may have already cleared #user first;
+            //  if so, this branch is skipped avoiding double-reset.)
+            this.#user = null;
+            this.#sharedData = [];
+            this.#pendingRemovals.clear();
+            this.#pendingAdditions.clear();
+            this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+            this.#emitStatus('local');
+            this.#emitUser(null);
+            this.#bus.emit('auth:changed', { user: null, showSignIn: true });
+          } else if (!settled) {
+            // SIGNED_OUT during initial session restore = token refresh failed.
+            // Settle immediately as "no session" instead of waiting for the 4s timeout.
+            settle(null);
+          }
+          // If #user is null AND settled, signOut() already handled this — no-op.
         }
       });
 
-      // Safety fallback: fires if neither INITIAL_SESSION(user) nor SIGNED_IN
-      // arrives within 4 s — at that point we can be confident there is no session.
+      // Fallback: if INITIAL_SESSION never fires (slow network), getSession() after 4 s
       setTimeout(async () => {
         if (settled) return;
         try {
