@@ -112,6 +112,45 @@ export class AccountService {
     this.#store.flush();
   }
 
+  // ── Ledger ──────────────────────────────────────────────────────────
+
+  /**
+   * Compute the sum of all transaction impacts on an account from the ledger.
+   * This is what `account.balance` should equal when the ledger is clean.
+   * Handles splits, transfers (using transferDir), and cross-currency conversions.
+   *
+   * @param {object}   account      Account object
+   * @param {object[]} transactions Full transaction array
+   * @returns {number} minor units in the account's currency
+   */
+  ledgerSum(account, transactions) {
+    let sum = 0;
+    for (const t of transactions) {
+      const touches =
+        t.accountId === account.id ||
+        (Array.isArray(t.splits) && t.splits.some((s) => (s.accountId || t.accountId) === account.id));
+      if (!touches) continue;
+
+      if (Array.isArray(t.splits) && t.splits.length) {
+        for (const s of t.splits) {
+          if ((s.accountId || t.accountId) !== account.id) continue;
+          const m = this.#fx.convert(s.amount, t.currency, account.currency);
+          if (t.type === 'expense') sum -= m;
+          else if (t.type === 'income') sum += m;
+        }
+      } else {
+        const m = this.#fx.convert(t.amount, t.currency, account.currency);
+        if (t.type === 'expense')      sum -= m;
+        else if (t.type === 'income')  sum += m;
+        else if (t.type === 'transfer') {
+          if (t.transferDir === 'out') sum -= m;
+          else if (t.transferDir === 'in') sum += m;
+        }
+      }
+    }
+    return Math.round(sum);
+  }
+
   // ── Balance management ───────────────────────────────────────────────
 
   /**

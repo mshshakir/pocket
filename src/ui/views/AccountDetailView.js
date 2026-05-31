@@ -8,12 +8,14 @@
 import { BaseView }               from './BaseView.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 import { TransactionService }     from '../../domain/services/TransactionService.js';
+import { AccountService }         from '../../domain/services/AccountService.js';
 import { ReportService }          from '../../domain/services/ReportService.js';
 import { TX_SORT_OPTIONS }        from '../../data/constants.js';
 
 export class AccountDetailView extends BaseView {
   /** @type {TransactionRowRenderer} */ #rowRenderer;
   /** @type {TransactionService} */     #txService;
+  /** @type {AccountService} */         #accountService;
   /** @type {ReportService} */          #reports;
 
   // ── Per-view state ────────────────────────────────────────────────────
@@ -27,9 +29,10 @@ export class AccountDetailView extends BaseView {
 
   constructor() {
     super();
-    this.#rowRenderer = new TransactionRowRenderer();
-    this.#txService   = new TransactionService();
-    this.#reports     = new ReportService();
+    this.#rowRenderer   = new TransactionRowRenderer();
+    this.#txService     = new TransactionService();
+    this.#accountService = new AccountService();
+    this.#reports       = new ReportService();
   }
 
   // ── Public setters ────────────────────────────────────────────────────
@@ -116,12 +119,21 @@ export class AccountDetailView extends BaseView {
         (dayGroups[t.date] = dayGroups[t.date] || []).push(t);
       });
     }
-    allTxs.forEach((t) => {
+    // Build monthlyInOut + running end-of-month balance.
+    // opening = legacy residual not covered by any transaction (reuses already-computed ledgerSum).
+    // opening balance = legacy residual not covered by any transaction (only meaningful for owners).
+    const opening = canManage ? (a.balance - ledgerSum) : null;
+    const sortedAll = allTxs.slice().sort((x, y) => x.date.localeCompare(y.date));
+    let running = opening ?? 0;
+    sortedAll.forEach((t) => {
       const ym = t.date.slice(0, 7);
-      if (!monthlyInOut[ym]) monthlyInOut[ym] = { income: 0, expense: 0 };
+      // endBalance starts null — only populated when canManage so dividers don't show
+      // a meaningless cumulative sum for shared accounts.
+      if (!monthlyInOut[ym]) monthlyInOut[ym] = { income: 0, expense: 0, endBalance: null };
       const imp = this.#txService.impactOnAccount(t, a);
-      if (imp.dir === '+') monthlyInOut[ym].income  += imp.minorInAcc;
-      else if (imp.dir === '-') monthlyInOut[ym].expense += imp.minorInAcc;
+      if (imp.dir === '+') { running += imp.minorInAcc; monthlyInOut[ym].income  += imp.minorInAcc; }
+      else if (imp.dir === '-') { running -= imp.minorInAcc; monthlyInOut[ym].expense += imp.minorInAcc; }
+      if (canManage) monthlyInOut[ym].endBalance = running;
     });
 
     // ── New-tx prefill ─────────────────────────────────────────────────
@@ -152,7 +164,7 @@ export class AccountDetailView extends BaseView {
         ${newTxBtn}
       </div>
 
-      ${this.#bulkBar()}
+      ${this.#bulkBar(isShared, shareIndex)}
 
       ${canManage && Math.abs(residual) >= 1 ? `
         <div class="card-muted p-3 mb-4" style="border-color:#fcd34d">
@@ -221,6 +233,7 @@ export class AccountDetailView extends BaseView {
             <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"></i>
             <input class="input pl-9" placeholder="Search payee or note..."
                    value="${this.escapeHtml(f.search)}"
+                   data-focus-key="accDetailSearch"
                    oninput="window.__app.setAccDetailFilter('search',this.value)">
           </div>
           <select class="select md:w-36" onchange="window.__app.setAccDetailFilter('range',this.value)">
@@ -280,66 +293,115 @@ export class AccountDetailView extends BaseView {
       <div class="flex items-center gap-2 my-3 px-1">
         <span class="text-xs font-semibold text-zinc-700 dark:text-zinc-300 shrink-0">${this.escapeHtml(label)}</span>
         <div class="flex-1 border-t border-zinc-200 dark:border-zinc-700"></div>
-        ${tot.income  ? `<span class="text-xs text-emerald-600 dark:text-emerald-400 shrink-0">+${this.formatMoney(tot.income,  a.currency)}</span>` : ''}
+        ${tot.income  ? `<span class="text-xs text-emerald-600 dark:text-emerald-400 shrink-0">+${this.formatMoney(tot.income, a.currency)}</span>` : ''}
         ${tot.expense ? `<span class="text-xs text-rose-500 shrink-0">-${this.formatMoney(tot.expense, a.currency)}</span>` : ''}
+        ${tot.endBalance != null ? `<span class="text-xs text-zinc-500 shrink-0">bal ${this.formatMoney(tot.endBalance, a.currency)}</span>` : ''}
       </div>`;
   }
 
+  /**
+   * Full year × month grid — one row per year, 12 monthly columns, year-end column.
+   * Each cell shows end-of-month balance (top) and net change (bottom, color-coded).
+   */
   #monthlyView(a, transactions) {
-    const all     = transactions.filter((t) => this.#txTouchesAccount(t, a.id));
-    const home    = this.homeCurrency;
-    const byMonth = {};
-    let running   = 0;
+    const all    = transactions.filter((t) => this.#txTouchesAccount(t, a.id));
+    if (!all.length) return `<div class="card p-8 text-center">${this.emptyState('No transactions yet', '')}</div>`;
+
+    const ledger  = this.#ledgerSum(a, transactions);
+    const opening = a.balance - ledger;
     const sorted  = all.slice().sort((x, y) => x.date.localeCompare(y.date));
+
+    // Build month-data map
+    const monthData = {}; // 'YYYY-MM' → { income, expense, net, balance, hasActivity }
+    let running = opening;
     sorted.forEach((t) => {
       const ym  = t.date.slice(0, 7);
       const imp = this.#txService.impactOnAccount(t, a);
-      if (!byMonth[ym]) byMonth[ym] = { income: 0, expense: 0, endBalance: 0 };
-      if (imp.dir === '+') { running += imp.minorInAcc; byMonth[ym].income  += imp.minorInAcc; }
-      if (imp.dir === '-') { running -= imp.minorInAcc; byMonth[ym].expense += imp.minorInAcc; }
-      byMonth[ym].endBalance = running;
+      if (!monthData[ym]) monthData[ym] = { income: 0, expense: 0, net: 0, balance: 0, hasActivity: false };
+      monthData[ym].hasActivity = true;
+      if (imp.dir === '+') { running += imp.minorInAcc; monthData[ym].income += imp.minorInAcc; }
+      else if (imp.dir === '-') { running -= imp.minorInAcc; monthData[ym].expense += imp.minorInAcc; }
+      monthData[ym].net     = monthData[ym].income - monthData[ym].expense;
+      monthData[ym].balance = running;
     });
-    const months = Object.keys(byMonth).sort().reverse();
-    if (!months.length) return `<div class="card p-8 text-center">${this.emptyState('No transactions yet', '')}</div>`;
+
+    const firstYM  = sorted[0].date.slice(0, 7);
+    const now      = new Date();
+    const lastYM   = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const firstYear = +firstYM.slice(0, 4);
+    const lastYear  = +lastYM.slice(0, 4);
+    const years = [];
+    for (let yr = lastYear; yr >= firstYear; yr--) years.push(yr);
+
+    // Plain number formatter — currency stated once in header.
+    // toMinor(1, ccy) gives the minor-unit factor (100 for USD, 1 for JPY, 1000 for BHD).
+    const factor   = this.toMinor(1, a.currency);
+    const digits   = factor === 1 ? 0 : factor === 1000 ? 3 : 2;
+    const fmtPlain = new Intl.NumberFormat(undefined, { style: 'decimal', minimumFractionDigits: digits, maximumFractionDigits: digits });
+    const fp       = (minor) => fmtPlain.format(this.fromMinor(minor, a.currency));
+    const monthShort = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1).toLocaleDateString(undefined, { month: 'short' }));
+
     return `
-      <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
-        ${months.map((ym) => {
-          const r = byMonth[ym];
-          const [y, m] = ym.split('-').map(Number);
-          const label  = new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-          return `
-            <div class="flex items-center gap-3 px-4 py-3">
-              <div class="flex-1">
-                <div class="font-medium text-sm">${this.escapeHtml(label)}</div>
-                <div class="text-xs text-zinc-500">
-                  <span class="text-emerald-500">+${this.formatMoney(r.income, a.currency)}</span> in
-                  · <span class="text-rose-500">-${this.formatMoney(r.expense, a.currency)}</span> out
-                </div>
-              </div>
-              <div class="text-right">
-                <div class="text-sm font-semibold ${r.endBalance < 0 ? 'text-rose-500' : ''}">${this.formatMoney(r.endBalance, a.currency)}</div>
-                <div class="text-xs text-zinc-500">end balance</div>
-              </div>
-            </div>`;
-        }).join('')}
+      <p class="text-xs text-zinc-500 mb-2">All figures in <span class="font-medium text-zinc-700 dark:text-zinc-300">${a.currency}</span> · End-of-month balance (top) · monthly net (bottom)</p>
+      <div class="card overflow-auto mb-4">
+        <table class="w-full text-sm" style="min-width:820px">
+          <thead>
+            <tr class="text-zinc-500 text-xs uppercase tracking-wider border-b border-zinc-200 dark:border-zinc-800">
+              <th class="text-left py-2 px-3 sticky left-0 bg-white dark:bg-zinc-950">Year</th>
+              ${monthShort.map((m) => `<th class="text-right py-2 px-2">${m}</th>`).join('')}
+              <th class="text-right py-2 px-3">Year-end</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${years.map((yr) => {
+              let eoy = null;
+              const cells = [];
+              for (let mm = 1; mm <= 12; mm++) {
+                const ym = `${yr}-${String(mm).padStart(2, '0')}`;
+                const d  = monthData[ym];
+                if (!d) { cells.push(`<td class="text-right py-2 px-2 text-zinc-400">—</td>`); continue; }
+                eoy = d.balance;
+                const dim      = d.hasActivity ? '' : 'opacity-50';
+                const netSign  = d.net >= 0 ? '+' : '-';
+                const netColor = d.net > 0 ? 'text-emerald-500' : d.net < 0 ? 'text-rose-500' : 'text-zinc-400';
+                const balColor = d.balance < 0 ? 'text-rose-500' : '';
+                cells.push(`
+                  <td class="text-right py-2 px-2 ${dim}">
+                    <div class="font-medium tabular-nums ${balColor}">${fp(d.balance)}</div>
+                    ${d.hasActivity ? `<div class="text-[10px] tabular-nums ${netColor}">${netSign}${fp(Math.abs(d.net))}</div>` : ''}
+                  </td>`);
+              }
+              return `
+                <tr class="border-b border-zinc-100 dark:border-zinc-900">
+                  <td class="font-semibold py-2 px-3 sticky left-0 bg-white dark:bg-zinc-950">${yr}</td>
+                  ${cells.join('')}
+                  <td class="text-right py-2 px-3 font-semibold tabular-nums">${eoy != null ? fp(eoy) : '—'}</td>
+                </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
       </div>`;
   }
 
-  #bulkBar() {
+  #bulkBar(isShared = false, shareIndex = null) {
     if (!this.#multiSelect) return '';
-    const n          = this.#selectedIds.size;
+    const n           = this.#selectedIds.size;
     const allSelected = this.#visibleIds.length > 0 && this.#visibleIds.every((id) => this.#selectedIds.has(id));
+    const deleteAction = isShared && shareIndex !== null
+      ? `window.__app.bulkDeleteSharedAccTx(${shareIndex})`
+      : `window.__app.bulkDeleteAccTx()`;
     return `
       <div class="fixed bottom-20 md:bottom-6 left-0 right-0 flex justify-center z-40 px-4">
         <div class="card flex items-center gap-2 px-3 py-3 shadow-2xl" style="max-width:520px;width:100%">
           <span class="text-sm font-medium">${n} selected</span>
-          <button class="btn btn-ghost text-sm px-2" onclick="${allSelected ? 'window.__app.deselectAllAccTx()' : 'window.__app.selectAllAccTx()'}">
+          <button class="btn btn-ghost text-sm px-2"
+                  onclick="${allSelected ? 'window.__app.deselectAllAccTx()' : 'window.__app.selectAllAccTx()'}">
             <i data-lucide="${allSelected ? 'square' : 'check-square'}"></i>
             <span class="hidden md:inline ml-1">${allSelected ? 'Deselect all' : 'Select all'}</span>
           </button>
           <div class="flex-1"></div>
           <button class="btn btn-ghost text-sm" onclick="window.__app.toggleAccountMultiSelect()">Cancel</button>
-          ${n > 0 ? `<button class="btn btn-outline text-rose-500 text-sm" onclick="window.__app.bulkDeleteAccTx()"><i data-lucide="trash-2"></i> Delete</button>` : ''}
+          ${n > 0 ? `<button class="btn btn-outline text-rose-500 text-sm" onclick="${deleteAction}"><i data-lucide="trash-2"></i> Delete</button>` : ''}
         </div>
       </div>`;
   }
@@ -350,15 +412,9 @@ export class AccountDetailView extends BaseView {
     return false;
   }
 
+  /** Delegates to AccountService — single source of truth for ledger computation. */
   #ledgerSum(account, transactions) {
-    let sum = 0;
-    for (const t of transactions) {
-      if (!this.#txTouchesAccount(t, account.id)) continue;
-      const imp = this.#txService.impactOnAccount(t, account);
-      if (imp.dir === '+') sum += imp.minorInAcc;
-      else if (imp.dir === '-') sum -= imp.minorInAcc;
-    }
-    return sum;
+    return this.#accountService.ledgerSum(account, transactions);
   }
 
   #withinRange(iso, range) {

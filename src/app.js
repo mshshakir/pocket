@@ -54,6 +54,7 @@ import { SettingsModal }    from './ui/modals/SettingsModal.js';
 import { CsvModal }         from './ui/modals/CsvModal.js';
 import { DebtModal }        from './ui/modals/DebtModal.js';
 import { FamilyModal }      from './ui/modals/FamilyModal.js';
+import { ReconcileModal }   from './ui/modals/ReconcileModal.js';
 import { AuthModal }        from './ui/modals/AuthModal.js';
 import { RegularItemModal } from './ui/modals/RegularItemModal.js';
 
@@ -121,18 +122,24 @@ export class Application {
   #views = /** @type {Map<string,object>} */ (new Map());
 
   // ── Modals (registered instances) ─────────────────────────────────────────
-  #txModal     = null;  // TransactionModal — kept for split-state access
-  #familyModal = null;  // FamilyModal — kept for pendingPerms access
-  #debtModal   = null;  // DebtModal — kept for payment-mode routing
+  #txModal        = null;  // TransactionModal — kept for split-state access
+  #familyModal    = null;  // FamilyModal — kept for pendingPerms access
+  #debtModal      = null;  // DebtModal — kept for payment-mode routing
+  #reconcileModal = null;  // ReconcileModal — kept for ledger-sum access
 
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
   #importPlan     = null;
   #swipeTxId          = null;
   #swipeStartX        = 0;
+  #swipeStartY        = 0;
+  #swipeLastX         = 0;   // updated on every move; used by swipeEnd (no event arg needed)
   #swipeDeltaX        = 0;
+  #swipeAxis          = null;   // 'x' | 'y' | null
+  #swipeTriggered     = false;
   #swipeShareIndex    = -1;
   #swipeIsOwnContrib  = false;
+  #swipeWrapper       = null;   // the .tx-swipe-wrapper element, stored on start
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -187,9 +194,10 @@ export class Application {
     });
 
     // 6. Register all modals
-    this.#txModal     = new TransactionModal();
-    this.#familyModal = new FamilyModal();
-    this.#debtModal   = new DebtModal();
+    this.#txModal        = new TransactionModal();
+    this.#familyModal    = new FamilyModal();
+    this.#debtModal      = new DebtModal();
+    this.#reconcileModal = new ReconcileModal();
     this.#modal.register('transaction',  this.#txModal);
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
@@ -201,6 +209,7 @@ export class Application {
     this.#modal.register('familyMember', this.#familyModal);
     this.#modal.register('auth',         new AuthModal());
     this.#modal.register('regularItem',  new RegularItemModal());
+    this.#modal.register('reconcile',    this.#reconcileModal);
 
     // 7. Subscribe to events
     // route:changed → only re-render the view panel (not the whole shell)
@@ -751,7 +760,7 @@ export class Application {
   }
 
   bulkDeleteAccTx() {
-    const v = this.#views.get('accounts');
+    const v = this.#views.get('accountDetail');
     if (!v) return;
     const ids = v.selectedIds ?? new Set();
     if (!ids.size) return;
@@ -768,6 +777,29 @@ export class Application {
     this.#render();
     this.#toast.show(`${ids.size} transactions deleted`);
     this.#sync.schedulePush?.();
+  }
+
+  /** Bulk delete selected transactions in a shared account view. */
+  async bulkDeleteSharedAccTx(shareIndex) {
+    const v = this.#views.get('accountDetail');
+    if (!v) return;
+    const ids = [...(v.selectedIds ?? new Set())];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} transaction${ids.length === 1 ? '' : 's'}?`)) return;
+    const state = this.#store.getState();
+    const share = (state._sharedData || [])[shareIndex];
+    if (!share?._ownerId) { this.#toast.show('Shared account not found'); return; }
+    let done = 0, failed = 0;
+    for (const txId of ids) {
+      try {
+        await this.#sync.deleteContribution(share._ownerId, txId);
+        done++;
+      } catch (_) { failed++; }
+    }
+    v.clearMultiSelect?.();
+    this.#render();
+    if (failed) this.#toast.show(`${done} deleted, ${failed} failed`);
+    else this.#toast.show(`${done} transaction${done > 1 ? 's' : ''} deleted`);
   }
 
   // ── Transaction filters ──────────────────────────────────────────────────
@@ -1133,38 +1165,82 @@ export class Application {
     this.#render();
   }
 
+  /** Opens the ReconcileModal — the modal computes the residual via AccountService.ledgerSum(). */
   reconcileAccount(id) {
-    const state = this.#store.getState();
-    const a     = state.accounts.find((x) => x.id === id);
+    const state  = this.#store.getState();
+    const a      = state.accounts.find((x) => x.id === id);
     if (!a) return;
-    // Recompute balance from ledger
-    const ledger = state.transactions.filter((t) => {
-      if (t.accountId === id) return true;
-      if (Array.isArray(t.splits)) return t.splits.some((s) => s.accountId === id);
-      return false;
-    });
-    let bal = 0;
-    ledger.forEach((t) => {
-      if (Array.isArray(t.splits) && t.splits.length) {
-        t.splits.filter((s) => s.accountId === id).forEach((s) => {
-          const m = this.#fx.convert(s.amount, t.currency, a.currency);
-          if (t.type === 'expense') bal -= m;
-          else if (t.type === 'income') bal += m;
-        });
-      } else {
-        const m = this.#fx.convert(t.amount, t.currency, a.currency);
-        if (t.type === 'expense') bal -= m;
-        else if (t.type === 'income') bal += m;
-        else if (t.type === 'transfer') {
-          if (t.transferDir === 'out') bal -= m;
-          else if (t.transferDir === 'in') bal += m;
-        }
-      }
-    });
-    a.balance = Math.round(bal);
+    const ledger = this.#accounts.ledgerSum(a, state.transactions);
+    if (Math.abs(a.balance - ledger) < 1) {
+      this.#toast.show('Already reconciled — no residual to log');
+      return;
+    }
+    this.#modal.open('reconcile', { id });
+  }
+
+  /** Reconcile option A — called by ReconcileModal's "Add entry" button. */
+  reconcileAddEntry(id) {
+    const state  = this.#store.getState();
+    const a      = state.accounts.find((x) => x.id === id);
+    if (!a) return;
+    const ledger   = this.#accounts.ledgerSum(a, state.transactions);
+    const residual = a.balance - ledger;
+    if (Math.abs(residual) < 1) { this.closeModal(); this.#toast.show('No residual to log'); return; }
+
+    // Date: one day before earliest tx on this account, or today
+    const earliest = state.transactions
+      .filter((t) => t.accountId === a.id && t.date)
+      .sort((x, y) => x.date.localeCompare(y.date))[0];
+    let dateIso = new Date().toISOString().slice(0, 10);
+    if (earliest) {
+      const d = new Date(earliest.date + 'T12:00:00');
+      d.setDate(d.getDate() - 1);
+      dateIso = d.toISOString().slice(0, 10);
+    }
+
+    const tx = {
+      id:          IdGenerator.generate('tx'),
+      accountId:   a.id,
+      categoryId:  null,
+      amount:      Math.abs(residual),
+      currency:    a.currency,
+      exchangeRate: 1,
+      refAmount:   Math.abs(residual),
+      payee:       'Opening balance',
+      note:        'Reconciled from existing account balance',
+      date:        dateIso,
+      paymentType: 'cash',
+      recordState: 'cleared',
+      type:        residual > 0 ? 'income' : 'expense',
+      transferPairId: null,
+      splits:      null,
+      tags:        ['opening-balance', 'reconciled'],
+      createdAt:   new Date().toISOString(),
+    };
+    // Don't applyBalances — a.balance is already correct; we're adding the missing ledger entry.
+    state.transactions.push(tx);
     this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.closeModal();
     this.#render();
-    this.#toast.show('Balance reconciled from ledger');
+    const sign = residual >= 0 ? '+' : '-';
+    this.#toast.show(`Reconciled · added ${sign}${this.#fx.formatMoney(Math.abs(residual), a.currency)} opening balance entry`);
+  }
+
+  /** Reconcile option B — called by ReconcileModal's "Recalculate" button. */
+  reconcileRecalculate(id) {
+    const state  = this.#store.getState();
+    const a      = state.accounts.find((x) => x.id === id);
+    if (!a) return;
+    const ledger   = this.#accounts.ledgerSum(a, state.transactions);
+    const residual = a.balance - ledger;
+    if (Math.abs(residual) < 1) { this.closeModal(); this.#toast.show('No residual'); return; }
+    if (!confirm(`Balance will change from ${this.#fx.formatMoney(a.balance, a.currency)} to ${this.#fx.formatMoney(ledger, a.currency)}. No transactions are modified. Continue?`)) return;
+    a.balance = ledger;
+    this.#store.persist();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`Balance recalculated to ${this.#fx.formatMoney(ledger, a.currency)}`);
   }
 
   async refreshSharedAccount(shareIndex) {
@@ -1587,41 +1663,73 @@ export class Application {
    * @param {boolean}    isOwnContrib  True if this is a member's own contribution
    */
   onTxSwipeStart(event, id, shareIndex = -1, isOwnContrib = false) {
-    this.#swipeTxId       = id;
-    this.#swipeShareIndex = shareIndex;
+    if (event.touches.length !== 1) return;
+    this.#swipeTxId         = id;
+    this.#swipeShareIndex   = shareIndex;
     this.#swipeIsOwnContrib = !!isOwnContrib;
-    this.#swipeStartX     = event.touches[0]?.clientX ?? 0;
-    this.#swipeDeltaX     = 0;
+    this.#swipeStartX       = event.touches[0].clientX;
+    this.#swipeStartY       = event.touches[0].clientY;
+    this.#swipeLastX        = this.#swipeStartX;
+    this.#swipeDeltaX       = 0;
+    this.#swipeAxis         = null;
+    this.#swipeTriggered    = false;
+    // Store the wrapper element so swipeEnd can find .tx-row-content without needing event.currentTarget
+    this.#swipeWrapper      = event.currentTarget;
   }
 
   onTxSwipeMove(event) {
-    if (!this.#swipeTxId) return;
-    this.#swipeDeltaX = (event.touches[0]?.clientX ?? 0) - this.#swipeStartX;
-    const el = document.getElementById(`tx-row-${this.#swipeTxId}`);
-    if (el) el.style.transform = `translateX(${Math.min(0, this.#swipeDeltaX)}px)`;
+    if (!this.#swipeTxId || this.#swipeTriggered) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - this.#swipeStartX;
+    const dy = touch.clientY - this.#swipeStartY;
+    this.#swipeLastX = touch.clientX;
+
+    // Lock axis after 4 px of movement
+    if (!this.#swipeAxis) {
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4)
+        this.#swipeAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      return;
+    }
+    if (this.#swipeAxis !== 'x') return;
+
+    this.#swipeDeltaX = dx;
+    if (dx < 0) {
+      event.preventDefault();
+      const c = this.#swipeWrapper?.querySelector('.tx-row-content');
+      if (c) c.style.transform = `translateX(${Math.max(dx, -80)}px)`;
+    }
   }
 
+  // Called from ontouchend with no arguments — uses stored state instead of event.
   onTxSwipeEnd() {
-    if (!this.#swipeTxId) return;
-    const el = document.getElementById(`tx-row-${this.#swipeTxId}`);
-    if (this.#swipeDeltaX < -80) {
+    if (!this.#swipeTxId || this.#swipeTriggered) return;
+    const dx = this.#swipeLastX - this.#swipeStartX;
+    const c  = this.#swipeWrapper?.querySelector('.tx-row-content');
+
+    if (dx < -55) {
+      this.#swipeTriggered = true;
+      if (c) {
+        c.style.transition = 'transform .15s ease, opacity .18s ease';
+        c.style.transform  = 'translateX(-80px)';
+        c.style.opacity    = '0';
+      }
       const id  = this.#swipeTxId;
       const si  = this.#swipeShareIndex;
       const own = this.#swipeIsOwnContrib;
-      if (si >= 0 && own) {
-        this.deleteSharedContrib(si, id);
-      } else if (si >= 0) {
-        this.deleteSharedTx(si, id);
-      } else {
-        this.deleteTx(id);
-      }
-    } else if (el) {
-      el.style.transform = '';
+      setTimeout(() => {
+        if (si >= 0 && own) this.deleteSharedContrib(si, id);
+        else if (si >= 0)   this.deleteSharedTx(si, id);
+        else                this.deleteTx(id);
+        this.#swipeTxId = null;
+      }, 200);
+    } else {
+      if (c) { c.style.transition = ''; c.style.transform = ''; }
+      this.#swipeTxId = null;
     }
-    this.#swipeTxId         = null;
-    this.#swipeShareIndex   = -1;
-    this.#swipeIsOwnContrib = false;
-    this.#swipeDeltaX       = 0;
+    this.#swipeDeltaX    = 0;
+    this.#swipeAxis      = null;
+    this.#swipeTriggered = false;
+    this.#swipeWrapper   = null;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1957,10 +2065,30 @@ export class Application {
     const view    = this.#getOrCreateView(routeId);
     const content = document.getElementById('viewContent');
     if (!content) return;
+
+    // ── Save focus state before replacing innerHTML ────────────────────
+    const active   = document.activeElement;
+    const focusKey = active?.dataset?.focusKey || null;
+    let selStart = null, selEnd = null;
+    if (focusKey) {
+      try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (_) {}
+    }
+
     const html = view.render?.() ?? '';
     content.innerHTML = html;
     view.onAfterRender?.();
     lucide?.createIcons?.();
+
+    // ── Restore focus after render ─────────────────────────────────────
+    if (focusKey) {
+      const el = content.querySelector(`[data-focus-key="${focusKey}"]`);
+      if (el) {
+        el.focus({ preventScroll: true });
+        if (selStart != null && typeof el.setSelectionRange === 'function') {
+          try { el.setSelectionRange(selStart, selEnd); } catch (_) {}
+        }
+      }
+    }
   }
 
   #getOrCreateView(id) {
