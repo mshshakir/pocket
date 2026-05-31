@@ -304,7 +304,7 @@ export class TransactionModal {
           <label class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl">
             <div class="icon-pill" style="background:#8b5cf622;color:#8b5cf6;flex-shrink:0"><i data-lucide="scan-line"></i></div>
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium">${state.user.geminiApiKey ? 'Scan receipt with Gemini AI' : 'Scan receipt with AI'}</div>
+              <div class="text-sm font-medium scan-label-text">${state.user.geminiApiKey ? 'Scan receipt with Gemini AI' : 'Scan receipt with AI'}</div>
               <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? 'Reads items · assigns your categories · pre-fills splits' : 'Add free Google AI key in Settings to enable'}</div>
             </div>
             <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">

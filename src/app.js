@@ -26,6 +26,7 @@ import { CategoryService }     from './domain/services/CategoryService.js';
 import { TransactionService }  from './domain/services/TransactionService.js';
 import { BudgetService }       from './domain/services/BudgetService.js';
 import { RecurringService }    from './domain/services/RecurringService.js';
+import { ReceiptScanService } from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 
 // ── UI components ────────────────────────────────────────────────────────────
@@ -241,6 +242,14 @@ export class Application {
     if (this.#sync.init()) {
       this.#sync.restoreSession().then(({ needsSignIn } = {}) => {
         this.#render();
+
+        // Mirror the reference's updateAuthUI() call after pull() completes:
+        // re-render the auth pill so #lastSyncStatus ('synced' or 'error') is
+        // applied to the freshly-created syncIndicator element.  Without this,
+        // any render() call between emitStatus('synced') and here could leave the
+        // indicator blank or stuck on 'Syncing…'.
+        this.#nav.renderAuthPill(this.#sync.currentUser);
+
         // No valid session found on load — prompt the user to sign in
         if (needsSignIn) {
           setTimeout(() => {
@@ -1169,73 +1178,55 @@ export class Application {
     if (curEl && acc?.currency) curEl.value = acc.currency;
   }
 
-  suggestCategory(payee) {
-    const state = this.#store.getState();
-    const key   = (payee || '').toLowerCase();
-    const catId = state.merchantCategories?.[key];
-    if (!catId) return;
-    const sel = document.querySelector('[name=categoryId]');
-    if (sel) sel.value = catId;
-  }
-
+  /**
+   * Receipt scan — UI coordinator.
+   *
+   * Delegates all Gemini API interaction to ReceiptScanService (domain layer).
+   * This method is responsible only for:
+   *   1. Checking the API key and opening Settings if missing
+   *   2. Updating the scan-label button text during the async call
+   *   3. Opening a fresh pre-filled transaction modal on success
+   *   4. Showing a specific error toast and restoring the button on failure
+   */
   async scanReceipt(input) {
     const file = input?.files?.[0];
     if (!file) return;
-    const key = this.#store.getState().user.geminiApiKey;
-    if (!key) return this.#toast.show('Add a Gemini API key in Settings first');
-    this.#toast.show('Scanning receipt…');
-    try {
-      const base64 = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
-        r.onerror = rej;
-        r.readAsDataURL(file);
-      });
-      const state     = this.#store.getState();
-      const catNames  = state.categories
-        .filter((c) => c.type === 'expense' || !c.type)
-        .map((c) => c.name)
-        .join(', ');
-      const prompt = [
-        'You are a receipt parser. Extract every line item from this receipt image.',
-        'Return ONLY a valid JSON array — no markdown, no code fences, nothing else.',
-        'Each element must have these exact fields:',
-        '  description: string — item name',
-        '  amount: number — in MAJOR currency units with decimal (e.g. 4.99, not 499)',
-        '  currency: string — ISO 4217 code (e.g. "USD", "PKR"). Detect from receipt or use "' + (state.user.homeCurrency || 'USD') + '".',
-        '  categoryName: string — pick the single best match from this list: [' + (catNames || 'Food, Transport, Shopping') + ']. Use null if none fit.',
-        '  quantity: string — quantity with unit if visible (e.g. "2x", "500ml", "1kg"), else null',
-        '  note: string — any extra details like size, variant, or pack info visible on the receipt, else null',
-      ].join('\n');
 
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: prompt },
-                { inlineData: { mimeType: file.type || 'image/jpeg', data: base64 } },
-              ],
-            }],
-          }),
-        },
-      );
-      const json = await resp.json();
-      const raw  = json.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-      const items = JSON.parse(raw.replace(/```json|```/g, '').trim());
-      if (items.length && this.#txModal) {
-        this.#txModal.applyScanResult?.(items);
-        this.#modal.refresh();
-        lucide?.createIcons?.();
-      }
-      this.#toast.show(items.length ? `${items.length} item(s) detected` : 'No items found');
-    } catch (e) {
-      this.#toast.show('Scan failed: ' + e.message);
+    // ── No API key → open Settings immediately (mirror reference behaviour) ──
+    if (!this.#store.getState().user.geminiApiKey?.trim()) {
+      this.#toast.show('Add your free Google AI key in Settings first');
+      this.openModal('settings');
+      input.value = '';
+      return;
     }
-    input.value = '';
+
+    // ── Scanning feedback: update the button label (mirror reference) ─────
+    const scanLabel = input.closest('label');
+    const scanText  = scanLabel?.querySelector('.scan-label-text');
+    if (scanText) scanText.textContent = 'Scanning…';
+    this.#toast.show('Scanning receipt with Gemini AI…');
+
+    try {
+      const scanner = new ReceiptScanService();
+      const prefill = await scanner.scan(file);
+
+      // Close the current modal (if open) and open a fresh, fully pre-filled one
+      this.closeModal();
+      this.openModal('transaction', { prefill });
+      this.#toast.show('Receipt scanned · review and save');
+    } catch (e) {
+      // ── Specific error for missing key (thrown by ReceiptScanService) ──
+      if (e.message === 'NO_API_KEY') {
+        this.#toast.show('Add your free Google AI key in Settings first');
+        this.openModal('settings');
+      } else {
+        this.#toast.show('Scan failed: ' + (e.message || 'Unknown error'));
+      }
+      // Restore button label on any failure
+      if (scanText) scanText.textContent = 'Scan receipt with Gemini AI';
+    } finally {
+      input.value = '';
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
