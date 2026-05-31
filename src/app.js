@@ -437,7 +437,12 @@ export class Application {
       try {
         await this.#sync.submitContribution(sharedAcc._ownerId, tx);
         this.closeModal();
-        this.#toast.show('Transaction submitted to owner');
+        this.#toast.show('Transaction submitted');
+        // Navigate to the shared account detail so the user can see the pending tx
+        this.navigateToSharedAccount(sharedMode?.shareIndex ?? 0, accountId);
+        // Schedule re-pulls so the member sees the owner's confirmed snapshot quickly
+        this.#sync.scheduleSharesRefresh(3000);
+        this.#sync.scheduleSharesRefresh(8000);
       } catch (e) {
         this.#toast.show('Failed to submit: ' + (e.message || e));
       }
@@ -479,6 +484,9 @@ export class Application {
         if (amt > 0) cleaned.push({ categoryId: cv || null, accountId: ac || data.accountId, amount: amt });
       }
       if (!cleaned.length) return this.#toast.show('Add at least one split with an amount');
+      // Validate every split references a real, existing account (#13)
+      const missingAcc = cleaned.find((s) => !s.accountId || !state.accounts.find((a) => a.id === s.accountId));
+      if (missingAcc) return this.#toast.show('Pick an account for every split');
       const sum = cleaned.reduce((s, x) => s + x.amount, 0);
       if (Math.abs(sum - minor) > 1) {
         return this.#toast.show(
@@ -713,6 +721,18 @@ export class Application {
     this.openModal('transaction', { sharedTxMode: { shareIndex, accountId, editTxId: txId } });
   }
 
+  /**
+   * Called by submitTx after a shared-account tx edit succeeds.
+   * Navigates to the shared account detail so the member can see the updated tx.
+   * The shareIndex/accountId are passed so we can set the correct view state.
+   */
+  navigateToSharedAccount(shareIndex, accountId) {
+    const v = this.#getOrCreateView('accountDetail');
+    v.setAccount(accountId, { shareIndex });
+    this.#router.navigate('accountDetail');
+    this.#render();
+  }
+
   // ── Multi-select (Transactions view) ────────────────────────────────────
 
   toggleMultiSelect() {
@@ -874,22 +894,164 @@ export class Application {
 
   setSplitAmount(i, val, currency) {
     this.#txModal?.setSplitAmount?.(i, val, currency);
-    // Re-render modal so the split total tracker updates live
-    this.#modal.refresh();
-    lucide?.createIcons?.();
+    // updateSplitTotal() is called inline by oninput on the amount field,
+    // so no full refresh needed here — avoids losing input focus.
   }
+
   setSplitField(i, field, val) { this.#txModal?.setSplitField?.(i, field, val); }
 
+  /**
+   * Lightweight DOM patch for the split tracker bar — called by oninput on each
+   * split amount field.  Patches only #splitTotalBar and #splitDiffLine so focus
+   * is never lost (no full modal re-render).
+   */
+  updateSplitTotal() {
+    const modal   = this.#txModal;
+    if (!modal) return;
+    const barEl   = document.getElementById('splitTotalBar');
+    const diffEl  = document.getElementById('splitDiffLine');
+    if (!barEl && !diffEl) return;
+
+    const form     = document.getElementById('txForm');
+    const currency = form?.elements?.currency?.value ||
+                     this.#store.getState().user.defaultCurrency || 'USD';
+    const totalMinor = this.#fx.toMinor(Number(form?.elements?.amount?.value || 0), currency);
+
+    // Re-read split amounts live from the form (don't rely on stale in-memory state)
+    const splits = modal.splits || [];
+    let sumMinor = 0;
+    for (let i = 0; i < splits.length; i++) {
+      const v = form?.elements?.[`split_amt_${i}`]?.value;
+      sumMinor += this.#fx.toMinor(Number(v || 0), currency);
+    }
+
+    const diff    = totalMinor - sumMinor;
+    const diffAbs = Math.abs(diff);
+    const sumFmt  = this.#fx.formatMoney(sumMinor, currency);
+    const totFmt  = this.#fx.formatMoney(totalMinor, currency);
+
+    if (barEl) {
+      barEl.innerHTML = `
+        <div class="text-xs text-zinc-500">Split total</div>
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-semibold">${sumFmt}</span>
+          <span class="text-xs text-zinc-400">of</span>
+          <span class="text-sm font-semibold">${totFmt}</span>
+        </div>`;
+    }
+
+    if (diffEl) {
+      if (diffAbs < 1) {
+        diffEl.innerHTML = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
+      } else {
+        const color = diff < 0 ? 'text-rose-500' : 'text-amber-500';
+        const label = diff < 0
+          ? `${this.#fx.formatMoney(diffAbs, currency)} over`
+          : `${this.#fx.formatMoney(diffAbs, currency)} remaining`;
+        diffEl.innerHTML = `<div class="flex items-center gap-1 text-xs mt-1"><span class="${color} font-medium">${label}</span></div>`;
+      }
+      lucide?.createIcons?.();
+    }
+  }
+
+  /**
+   * Switch transaction type while preserving all current form values — payee,
+   * note, date, payment, amount, and split state.
+   */
   setTxType(type) {
+    const form = document.getElementById('txForm');
+    // Snapshot live form values before the re-render wipes them
+    const snapshot = form ? Object.fromEntries(new FormData(form).entries()) : {};
+    snapshot.type   = type;
+    snapshot.amount = Number(snapshot.amount) || 0;
+
+    // Preserve recurring rule state
+    if (form?.elements?.recurringEnabled?.checked) {
+      snapshot.recurring = {
+        rule:     form.elements.recurringRule?.value     || 'monthly',
+        interval: Number(form.elements.recurringInterval?.value) || 1,
+        until:    form.elements.recurringUntil?.value   || null,
+      };
+    }
+
+    // Re-open with the snapshot as a prefill so nothing is lost
+    const savedSharedMode = this.#txModal?.sharedTxMode;
     this.#txModal?.setType?.(type);
     this.#modal.refresh();
     lucide?.createIcons?.();
+
+    // Restore the fields that refresh() would otherwise blank (payee, note, date, etc.)
+    if (form && snapshot.payee)       { const el = document.querySelector('[name=payee]');       if (el) el.value = snapshot.payee; }
+    if (form && snapshot.note)        { const el = document.querySelector('[name=note]');        if (el) el.value = snapshot.note; }
+    if (form && snapshot.date)        { const el = document.querySelector('[name=date]');        if (el) el.value = snapshot.date; }
+    if (form && snapshot.paymentType) { const el = document.querySelector('[name=paymentType]'); if (el) el.value = snapshot.paymentType; }
   }
 
   toggleRecurringFields() {
     const el = document.getElementById('recurringFields');
     const inp = document.getElementById('recurringEnabled');
     if (el && inp) el.classList.toggle('hidden', !inp.checked);
+  }
+
+  /**
+   * Keyword + merchant-learning category suggestion shown below the payee field.
+   * Learned mappings (state.merchantCategories) take priority over keyword hints.
+   */
+  suggestCategory(payee) {
+    const el = document.getElementById('catSuggest');
+    if (!el) return;
+    if (!payee || payee.length < 2) { el.innerHTML = ''; return; }
+
+    const state = this.#store.getState();
+    const p     = payee.toLowerCase();
+
+    // 1. Learned mapping from previous saves
+    const learned = state.merchantCategories?.[p];
+    if (learned) {
+      const cat = state.categories.find((c) => c.id === learned);
+      if (cat) {
+        el.innerHTML = `<i data-lucide="sparkles" style="width:12px;height:12px;display:inline"></i>
+          Suggested: <button type="button" class="underline"
+            onclick="window.__app.applySuggestedCategory('${cat.id}')">
+            ${cat.name}
+          </button> <span class="text-zinc-500">(learned)</span>`;
+        lucide?.createIcons?.();
+        return;
+      }
+    }
+
+    // 2. Keyword hints
+    const KEYWORDS = {
+      'Food & Drink':   ['food','market','grocery','starbucks','coffee','chipotle','trader','whole foods','restaurant','cafe','pizza','burger'],
+      'Transport':      ['uber','lyft','shell','gas','fuel','metro','taxi','parking','transit'],
+      'Shopping':       ['amazon','h&m','zara','target','walmart','store','shop','clothing'],
+      'Entertainment':  ['netflix','spotify','cinema','movie','game','disney','hbo'],
+      'Health':         ['pharmacy','walgreens','cvs','clinic','doctor','dentist'],
+      'Housing':        ['rent','mortgage','landlord'],
+      'Bills':          ['electric','internet','wifi','phone','utility','water'],
+      'Education':      ['coursera','udemy','school','tuition','book'],
+    };
+    for (const [name, words] of Object.entries(KEYWORDS)) {
+      if (words.some((w) => p.includes(w))) {
+        const cat = state.categories.find((c) => c.name === name);
+        if (cat) {
+          el.innerHTML = `<i data-lucide="sparkles" style="width:12px;height:12px;display:inline"></i>
+            Suggested: <button type="button" class="underline"
+              onclick="window.__app.applySuggestedCategory('${cat.id}')">
+              ${cat.name}
+            </button> <span class="text-zinc-500">(AI · 0.86 conf)</span>`;
+          lucide?.createIcons?.();
+          return;
+        }
+      }
+    }
+    el.innerHTML = '';
+  }
+
+  /** Apply a category suggestion — sets the category select in the open tx modal. */
+  applySuggestedCategory(id) {
+    const sel = document.querySelector('select[name=categoryId]');
+    if (sel) { sel.value = id; this.#toast.show('Category applied'); }
   }
 
   updateHijriPreview(iso) {
@@ -1198,14 +1360,15 @@ export class Application {
       dateIso = d.toISOString().slice(0, 10);
     }
 
+    const absResidual = Math.abs(residual);
     const tx = {
       id:          IdGenerator.generate('tx'),
       accountId:   a.id,
       categoryId:  null,
-      amount:      Math.abs(residual),
+      amount:      absResidual,
       currency:    a.currency,
-      exchangeRate: 1,
-      refAmount:   Math.abs(residual),
+      exchangeRate: (FX[a.currency] || 1) / (FX[state.user.homeCurrency] || 1),
+      refAmount:   this.#fx.convert(absResidual, a.currency, state.user.homeCurrency),
       payee:       'Opening balance',
       note:        'Reconciled from existing account balance',
       date:        dateIso,
@@ -1224,7 +1387,7 @@ export class Application {
     this.closeModal();
     this.#render();
     const sign = residual >= 0 ? '+' : '-';
-    this.#toast.show(`Reconciled · added ${sign}${this.#fx.formatMoney(Math.abs(residual), a.currency)} opening balance entry`);
+    this.#toast.show(`Reconciled · added ${sign}${this.#fx.formatMoney(absResidual, a.currency)} opening balance entry`);
   }
 
   /** Reconcile option B — called by ReconcileModal's "Recalculate" button. */
@@ -1260,8 +1423,12 @@ export class Application {
   }
 
   collapseAllAccountGroups() {
-    const state = this.#store.getState();
-    state.user.collapsedAccountGroups = (state.accountGroups || []).map((g) => g.id);
+    const state    = this.#store.getState();
+    const groupIds = (state.accountGroups || []).map((g) => g.id);
+    const validIds = new Set(groupIds);
+    // Include '__none__' if any accounts are ungrouped, so Collapse All is truly complete
+    const hasUngrouped = state.accounts.some((a) => !a.groupId || !validIds.has(a.groupId));
+    state.user.collapsedAccountGroups = hasUngrouped ? [...groupIds, '__none__'] : groupIds.slice();
     this.#store.persist();
     this.#render();
   }

@@ -9,15 +9,17 @@
  *   'sync:status'    { status: 'local'|'syncing'|'synced'|'error' }
  *   'sync:user'      { user: object|null }
  */
-import { Store }      from '../../core/Store.js';
-import { EventBus }   from '../../core/EventBus.js';
-import { SeedFactory } from '../../data/seed.js';
+import { Store }          from '../../core/Store.js';
+import { EventBus }       from '../../core/EventBus.js';
+import { SeedFactory }    from '../../data/seed.js';
 import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../../data/constants.js';
-import { RecurringService } from './RecurringService.js';
+import { RecurringService }  from './RecurringService.js';
+import { CurrencyService }   from './CurrencyService.js';
 
 export class SyncService {
-  /** @type {Store} */    #store;
-  /** @type {EventBus} */ #bus;
+  /** @type {Store} */           #store;
+  /** @type {EventBus} */        #bus;
+  /** @type {CurrencyService} */ #fx;
 
   // Supabase SDK client (null until sbInit() succeeds)
   #sb = null;
@@ -35,6 +37,7 @@ export class SyncService {
   constructor() {
     this.#store = Store.getInstance();
     this.#bus   = EventBus.getInstance();
+    this.#fx    = new CurrencyService();
   }
 
   // ── Init ─────────────────────────────────────────────────────────────
@@ -290,45 +293,134 @@ export class SyncService {
 
   /**
    * Submit a transaction on behalf of a shared-account member.
-   * Inserts a row into `family_contributions` so the owner can pull and apply it.
+   *
+   * Uses upsert with ignoreDuplicates so a retry never causes a constraint error.
+   * Applies an optimistic balance update to #sharedData immediately so the
+   * member sees the correct balance without waiting for the owner snapshot.
+   * Tracks the tx in #pendingAdditions so it survives the next pullFamilyShares.
+   *
    * @param {string} ownerId  Supabase user ID of the account owner
    * @param {object} txData   Transaction object to contribute
    */
   async submitContribution(ownerId, txData) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
-    const { error } = await this.#sb.from('family_contributions').insert({
+    const { error } = await this.#sb.from('family_contributions').upsert({
       owner_id:     ownerId,
-      member_email: this.#user.email,
+      member_email: this.#user.email.toLowerCase(),
       account_id:   txData.accountId ?? null,
       tx_data:      txData,
       synced:       false,
-    });
+    }, { onConflict: 'id', ignoreDuplicates: true });
     if (error) throw error;
+
+    // Optimistic: add tx to #sharedData and update balance
+    const shareIndex = this.#sharedData.findIndex((s) => s._ownerId === ownerId);
+    if (shareIndex >= 0) {
+      this.#sharedData[shareIndex].transactions = [
+        txData,
+        ...(this.#sharedData[shareIndex].transactions || []),
+      ];
+      this.#sharedApplyBalance(shareIndex, txData.accountId, txData, false);
+      this.#pendingAdditions.set(txData.id, { tx: txData, shareIndex });
+      this.#bus.emit('state:changed', this.#store.getState());
+    }
   }
 
   /**
    * Ask the owner to delete a specific transaction the member previously added.
-   * Inserts a delete-marker contribution row and adds txId to the local
-   * pendingRemovals set so the member's view updates optimistically.
+   *
+   * Uses upsert with a stable `del_${txId}` id so the marker is idempotent:
+   * a double-tap never causes a unique-constraint error.
+   * Applies an optimistic balance revert and hides the tx from #sharedData
+   * immediately via #pendingRemovals.
+   *
+   * @param {string} ownerId  Owner's Supabase user ID
+   * @param {string} txId     Transaction ID to delete
    */
   async deleteContribution(ownerId, txId) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
-    // Optimistic removal on member side
+
+    // Guard: if already pending removal, just clean up UI — no duplicate DB write
+    if (this.#pendingRemovals.has(txId)) {
+      this.#sharedData.forEach((share) => {
+        share.transactions = (share.transactions || []).filter((t) => t.id !== txId);
+      });
+      this.#bus.emit('state:changed', this.#store.getState());
+      return;
+    }
+
+    // Optimistic: revert balance and hide the tx
     this.#pendingRemovals.add(txId);
-    const { error } = await this.#sb.from('family_contributions').insert({
+    const shareIndex = this.#sharedData.findIndex((s) =>
+      (s.transactions || []).some((t) => t.id === txId),
+    );
+    if (shareIndex >= 0) {
+      const tx = (this.#sharedData[shareIndex].transactions || []).find((t) => t.id === txId);
+      if (tx) this.#sharedApplyBalance(shareIndex, tx.accountId, tx, true);
+      this.#sharedData[shareIndex].transactions =
+        (this.#sharedData[shareIndex].transactions || []).filter((t) => t.id !== txId);
+      this.#bus.emit('state:changed', this.#store.getState());
+    }
+
+    // Stable delete-marker id = 'del_' + txId → upsert is idempotent on double-tap
+    const { error } = await this.#sb.from('family_contributions').upsert({
       owner_id:     ownerId,
-      member_email: this.#user.email,
+      member_email: this.#user.email.toLowerCase(),
       account_id:   null,
-      tx_data:      { _delete: true, targetId: txId },
+      tx_data:      { _delete: true, id: `del_${txId}`, targetId: txId },
       synced:       false,
-    });
+    }, { onConflict: 'id', ignoreDuplicates: true });
+
     if (error) {
-      this.#pendingRemovals.delete(txId); // roll back optimistic removal
+      // Roll back optimistic removal
+      this.#pendingRemovals.delete(txId);
       throw error;
     }
-    // Re-pull so the optimistic removal is applied to #sharedData immediately
-    await this.#pullFamilyShares();
-    this.#bus.emit('state:changed', this.#store.getState());
+  }
+
+  /**
+   * Schedule a pullFamilyShares + state:changed after a delay.
+   * Called after shared tx submit/delete to get the owner's confirmed snapshot.
+   * @param {number} delayMs
+   */
+  scheduleSharesRefresh(delayMs) {
+    setTimeout(async () => {
+      if (!this.#sb || !this.#user) return;
+      try {
+        await this.#pullFamilyShares();
+        this.#bus.emit('state:changed', this.#store.getState());
+      } catch (_) {}
+    }, delayMs);
+  }
+
+  /**
+   * Optimistically update a shared account's balance when a member tx is added/removed.
+   * Mirrors the reference's _sharedApplyBalance.
+   *
+   * @param {number}  shareIndex  Index into #sharedData
+   * @param {string}  accountId   Account the tx affects
+   * @param {object}  tx          Transaction object
+   * @param {boolean} reverse     true = revert (delete), false = apply (add)
+   */
+  #sharedApplyBalance(shareIndex, accountId, tx, reverse = false) {
+    const share = this.#sharedData[shareIndex];
+    if (!share) return;
+
+    const applyToAccount = (accId, amount, currency) => {
+      const acc = (share.accounts || []).find((a) => a.id === accId);
+      if (!acc) return;
+      const m     = this.#fx.convert(amount, currency, acc.currency);
+      const delta = tx.type === 'expense' ? -m : tx.type === 'income' ? m : 0;
+      acc.balance += reverse ? -delta : delta;
+    };
+
+    if (Array.isArray(tx.splits) && tx.splits.length) {
+      for (const s of tx.splits) {
+        applyToAccount(s.accountId || accountId, s.amount, tx.currency);
+      }
+    } else {
+      applyToAccount(accountId, tx.amount, tx.currency);
+    }
   }
 
   async #pushFamilyShares() {
@@ -387,16 +479,26 @@ export class SyncService {
         .filter((r) => r.snapshot && r.owner_id !== this.#user.id)
         .map((r) => ({ ...r.snapshot, _ownerId: r.owner_id }));
 
-      // Re-apply pending optimistic mutations
+      // Re-apply pending removals — clean up once the server confirms removal
+      for (const txId of [...this.#pendingRemovals]) {
+        if (!rawIds.has(txId)) this.#pendingRemovals.delete(txId);
+      }
       if (this.#pendingRemovals.size) {
-        for (const txId of [...this.#pendingRemovals]) {
-          if (!rawIds.has(txId)) this.#pendingRemovals.delete(txId);
-        }
-        if (this.#pendingRemovals.size) {
-          this.#sharedData.forEach((share) => {
-            share.transactions = (share.transactions || []).filter((t) => !this.#pendingRemovals.has(t.id));
-          });
-        }
+        this.#sharedData.forEach((share) => {
+          share.transactions = (share.transactions || []).filter((t) => !this.#pendingRemovals.has(t.id));
+        });
+      }
+
+      // Re-apply pending additions — keep optimistically-added txs visible until
+      // the owner's snapshot arrives (which will include them).
+      for (const [txId, { tx, shareIndex }] of [...this.#pendingAdditions]) {
+        const share = this.#sharedData[shareIndex];
+        if (!share) { this.#pendingAdditions.delete(txId); continue; }
+        // Once the server includes the tx in the snapshot, drop it from pending
+        const alreadyIn = (share.transactions || []).some((t) => t.id === txId);
+        if (alreadyIn) { this.#pendingAdditions.delete(txId); continue; }
+        // Still pending — prepend to the share's transaction list
+        share.transactions = [tx, ...(share.transactions || [])];
       }
     } catch (e) { console.warn('[SyncService] pullFamilyShares error:', e); }
   }

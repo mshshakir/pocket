@@ -9,9 +9,10 @@
  * the name 'tx' and called via modal.open('tx', { id?, prefill? }).
  * All DOM interaction after render is handled through window.__app.* handlers.
  */
-import { Store }               from '../../core/Store.js';
-import { CurrencyService }     from '../../domain/services/CurrencyService.js';
-import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
+import { Store }                    from '../../core/Store.js';
+import { CurrencyService }          from '../../domain/services/CurrencyService.js';
+import { HijriCalendarService }     from '../../domain/services/HijriCalendarService.js';
+import { CategoryOptionRenderer }   from '../components/CategoryOptionRenderer.js';
 import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
 
 /** Payment methods available by default. */
@@ -58,12 +59,23 @@ export class TransactionModal {
   toggleSplits() {
     this.#splitsEnabled = !this.#splitsEnabled;
     if (this.#splitsEnabled && this.#splits.length === 0) {
-      this.#splits.push({ categoryId: null, accountId: null, amount: 0 });
+      // Seed two rows matching the reference — both default to the current account
+      const accId = document.querySelector('[name=accountId]')?.value ||
+                    this.#store.getState().accounts[0]?.id || null;
+      this.#splits.push(
+        { categoryId: null, accountId: accId, amount: 0 },
+        { categoryId: null, accountId: accId, amount: 0 },
+      );
     }
+    if (!this.#splitsEnabled) this.#splits = [];
   }
 
   addSplit(defaultAccountId = null) {
-    this.#splits.push({ categoryId: null, accountId: defaultAccountId, amount: 0 });
+    // Prefer the last split's account, then the passed default, then the first account
+    const accId = this.#splits[this.#splits.length - 1]?.accountId ||
+                  defaultAccountId ||
+                  this.#store.getState().accounts[0]?.id || null;
+    this.#splits.push({ categoryId: null, accountId: accId, amount: 0 });
   }
 
   removeSplit(i) {
@@ -159,10 +171,18 @@ export class TransactionModal {
             transferToAccountId:'',
           });
 
-    // Enrich transfer-edit: surface pair account
+    // Enrich transfer-edit: surface pair account and stored exchange rate
     if (editing?.type === 'transfer' && editing.transferPairId) {
       const pair = state.transactions.find((t) => t.id === editing.transferPairId);
-      if (pair) data.transferToAccountId = pair.accountId;
+      if (pair) {
+        data.transferToAccountId = pair.accountId;
+        // Preserve the rate the user manually set when originally saving
+        if (!data.transferRate && editing.currency !== pair.currency && editing.amount && pair.amount) {
+          const storedRate = this.#fx.fromMinor(pair.amount, pair.currency) /
+                             this.#fx.fromMinor(editing.amount, editing.currency);
+          data.transferRate = storedRate;
+        }
+      }
     }
 
     // Seed splits only once per open session; subsequent refreshes keep in-memory state
@@ -235,9 +255,12 @@ export class TransactionModal {
                    style="border:none" name="amount" type="number" step="0.01" required
                    value="${amountValue || ''}" placeholder="0.00" autofocus
                    oninput="window.__app.updateTransferFxPanel(false)">
-            <select class="select w-24" name="currency" onchange="window.__app.updateTransferFxPanel(false)">
-              ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
-            </select>
+            ${isSharedMode
+              ? `<input type="hidden" name="currency" value="${data.currency}">
+                 <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${data.currency}</span>`
+              : `<select class="select w-24" name="currency" onchange="window.__app.updateTransferFxPanel(false)">
+                   ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
+                 </select>`}
           </div>
         </div>
 
@@ -351,6 +374,7 @@ export class TransactionModal {
           <span>1 <span id="fxFromCcy" class="font-medium"></span> =</span>
           <input class="input flex-1 max-w-[140px]" type="number" step="any" min="0"
                  name="transferRate" id="fxRate"
+                 value="${data.transferRate ? Number(data.transferRate).toFixed(6) : ''}"
                  oninput="window.__app.updateTransferFxPanel(true)" placeholder="0.00">
           <span class="font-medium" id="fxToCcy"></span>
         </div>
@@ -404,7 +428,7 @@ export class TransactionModal {
           </div>
           <select class="select" name="categoryId">
             <option value="">— Uncategorised —</option>
-            ${this.#categoryOptions(cats, data.categoryId, type)}
+            ${CategoryOptionRenderer.render(cats, data.categoryId, type)}
           </select>
         </div>
       </div>`;
@@ -446,8 +470,8 @@ export class TransactionModal {
           </button>
         </div>
 
-        <!-- Total vs split sum tracker -->
-        <div class="card-muted rounded-xl px-3 py-2 mb-2 flex items-center justify-between">
+        <!-- Total vs split sum tracker — id="splitTotalBar" patched by updateSplitTotal() -->
+        <div id="splitTotalBar" class="card-muted rounded-xl px-3 py-2 mb-2 flex items-center justify-between">
           <div class="text-xs text-zinc-500">Split total</div>
           <div class="flex items-center gap-2">
             <span class="text-sm font-semibold">${sumFmt}</span>
@@ -455,7 +479,7 @@ export class TransactionModal {
             <span class="text-sm font-semibold">${totalFmt}</span>
           </div>
         </div>
-        ${diffHtml}
+        <div id="splitDiffLine">${diffHtml}</div>
 
         <div id="splitsContainer" class="space-y-2 mt-2">
           ${this.#splits.map((s, i) => this.#splitRow(s, i, filteredCats, currency, accounts, data.accountId)).join('')}
@@ -467,6 +491,12 @@ export class TransactionModal {
       </div>`;
   }
 
+  /**
+   * Render one split row.
+   * Uses CategoryOptionRenderer for proper optgroup hierarchy + orphan rescue.
+   * The oninput on the amount field calls updateSplitTotal() — a lightweight
+   * DOM patch — instead of a full modal refresh, so focus is never lost.
+   */
   #splitRow(s, i, cats, currency, accounts = [], defaultAccountId = null) {
     const accId = s.accountId || defaultAccountId || '';
     return `
@@ -475,7 +505,7 @@ export class TransactionModal {
           <select class="select text-sm flex-1" name="split_cat_${i}"
                   onchange="window.__app.setSplitField(${i},'categoryId',this.value)">
             <option value="">— Uncategorised —</option>
-            ${cats.map((c) => `<option value="${c.id}" ${s.categoryId===c.id?'selected':''}>${this.#esc(c.name)}</option>`).join('')}
+            ${CategoryOptionRenderer.render(cats, s.categoryId, null)}
           </select>
           <button type="button" onclick="window.__app.removeSplit(${i})"
                   class="btn btn-ghost text-rose-500 flex-shrink-0 px-2">
@@ -490,7 +520,7 @@ export class TransactionModal {
           <input class="input text-sm w-28 flex-shrink-0" type="number" step="0.01" placeholder="0.00"
                  name="split_amt_${i}"
                  value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ''}"
-                 oninput="window.__app.setSplitAmount(${i},this.value,'${currency}')">
+                 oninput="window.__app.setSplitAmount(${i},this.value,'${currency}');window.__app.updateSplitTotal()">
         </div>
       </div>`;
   }
@@ -520,22 +550,8 @@ export class TransactionModal {
       </div>`;
   }
 
-  #categoryOptions(allCats, selectedId, typeFilter) {
-    const matchType = (c) => !typeFilter || c.type === typeFilter;
-    const roots     = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
-    let out = '';
-    for (const root of roots) {
-      const children = allCats.filter((c) => c.parentId === root.id && matchType(c));
-      if (children.length > 0) {
-        out += `<optgroup label="${this.#esc(root.name)}">`;
-        children.forEach((c) => { out += `<option value="${c.id}" ${c.id===selectedId?'selected':''}>${this.#esc(c.name)}</option>`; });
-        out += `</optgroup>`;
-      } else if (matchType(root)) {
-        out += `<option value="${root.id}" ${root.id===selectedId?'selected':''}>${this.#esc(root.name)}</option>`;
-      }
-    }
-    return out;
-  }
+  // Category options are now rendered by CategoryOptionRenderer.render() —
+  // the static class provides optgroup hierarchy and orphan rescue in one place.
 
   #esc(s) {
     return (s || '').toString().replace(
