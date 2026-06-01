@@ -79,6 +79,7 @@
   .skeleton { background:linear-gradient(90deg,#f4f4f5 25%,#e4e4e7 50%,#f4f4f5 75%); background-size:200% 100%; animation:shimmer 1.5s infinite; border-radius:8px; }
   html.dark .skeleton { background:linear-gradient(90deg,#18181b 25%,#27272a 50%,#18181b 75%); background-size:200% 100%; }
   @keyframes shimmer { 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Modal ── */
   .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); backdrop-filter:blur(2px); z-index:50; display:none; }
@@ -127,6 +128,9 @@
     .max-w-5xl { max-width:none !important; }
     .card, .card-muted { border-color:#e4e4e7 !important; background:#fff !important; page-break-inside:avoid; }
     .btn { display:none !important; }
+    button[onclick] { display: none !important; }
+    main { padding-left: 0 !important; }
+    a, button { color: inherit !important; }
     canvas { max-height:240px; }
   }
 </style>
@@ -140,9 +144,7 @@
       <div class="w-8 h-8 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center font-semibold text-sm">P</div>
       <span class="font-semibold tracking-tight">Pocket</span>
     </div>
-    <button class="btn btn-ghost" onclick="window.__app.openModal('settings',{})" title="Settings">
-      <i data-lucide="settings"></i>
-    </button>
+    <button class="btn btn-ghost" onclick="window.__app.toggleTheme()" title="Theme"><i data-lucide="sun-moon"></i></button>
   </div>
 </header>
 
@@ -165,6 +167,7 @@
     <div class="mt-auto pt-4 border-t border-zinc-200 dark:border-zinc-800 flex flex-col gap-1">
       <!-- Auth pill injected by Navigation component -->
       <div id="authPill"></div>
+      <button class="nav-item w-full" onclick="window.__app.toggleTheme()"><i data-lucide="sun-moon"></i> Toggle theme</button>
       <button class="nav-item w-full"
               onclick="window.__app.openModal('settings',{})">
         <i data-lucide="settings"></i> Settings

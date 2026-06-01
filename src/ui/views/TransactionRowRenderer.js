@@ -133,7 +133,7 @@ export class TransactionRowRenderer {
     const canDeleteRow = canDelete || isOwnContrib;
 
     const clickFn = isShared
-      ? ((perm === 'edit' || perm === 'full') ? `window.__app.openSharedTxEdit(${shareIndex},'${t.id}')` : null)
+      ? ((perm === 'edit' || perm === 'full') ? `window.__app.openSharedTxEdit(${shareIndex},'${acc?.id || t.accountId}','${t.id}')` : null)
       : `window.__app.openModal('transaction',{id:'${t.id}'})`;
 
     // Use deleteSharedContrib for own contributions; deleteSharedTx for full-access deletes

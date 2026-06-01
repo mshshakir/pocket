@@ -115,16 +115,22 @@ export class DebtsView extends BaseView {
       </div>`;
   }
 
-  /** Remaining balance = principal − sum of payment transactions */
+  /** Remaining balance = principal − sum of payment transactions (cross-currency aware) */
   #remaining(d, state) {
-    const payments = state.transactions.filter((t) => t.debtId === d.id && t.id !== d.initialTxId);
-    const paid     = payments.reduce((s, t) => s + t.amount, 0);
+    const payments = state.transactions.filter(
+      t => t.debtId === d.id && t.id !== d.initialTxId &&
+           (t.debtRole === 'payment' || t.type === 'expense' || t.type === 'income'),
+    );
+    const paid = payments.reduce((sum, t) => {
+      const fromCcy = t.currency || d.currency;
+      return sum + this.convert(t.amount, fromCcy, d.currency);
+    }, 0);
     return Math.max(0, d.principal - paid);
   }
 
   /** Total amount paid back so far */
   #paidAmount(d, state) {
     const payments = state.transactions.filter((t) => t.debtId === d.id && t.id !== d.initialTxId);
-    return payments.reduce((s, t) => s + t.amount, 0);
+    return payments.reduce((s, t) => s + this.convert(t.amount, t.currency || d.currency, d.currency), 0);
   }
 }

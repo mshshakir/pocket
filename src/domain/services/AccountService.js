@@ -164,8 +164,11 @@ export class AccountService {
     if (!acc) return;
 
     if (tx.type === 'transfer') {
-      if (tx.transferDir === 'out') acc.balance -= tx.amount;
-      else if (tx.transferDir === 'in') acc.balance += tx.amount;
+      // Convert to the account's currency — a cross-currency transfer leg's
+      // amount is in tx.currency, not necessarily acc.currency (#17).
+      const converted = this.#fx.convert(tx.amount, tx.currency, acc.currency);
+      if (tx.transferDir === 'out') acc.balance -= converted;
+      else if (tx.transferDir === 'in') acc.balance += converted;
     } else if (Array.isArray(tx.splits) && tx.splits.length) {
       for (const split of tx.splits) {
         const splitAcc = this.find(split.accountId || tx.accountId);
@@ -192,8 +195,11 @@ export class AccountService {
     if (!acc) return;
 
     if (tx.type === 'transfer') {
-      if (tx.transferDir === 'out') acc.balance += tx.amount;
-      else if (tx.transferDir === 'in') acc.balance -= tx.amount;
+      // Mirror of applyBalances — convert so apply/revert cancel exactly for
+      // cross-currency transfer legs (#17).
+      const converted = this.#fx.convert(tx.amount, tx.currency, acc.currency);
+      if (tx.transferDir === 'out') acc.balance += converted;
+      else if (tx.transferDir === 'in') acc.balance -= converted;
     } else if (Array.isArray(tx.splits) && tx.splits.length) {
       for (const split of tx.splits) {
         const splitAcc = this.find(split.accountId || tx.accountId);

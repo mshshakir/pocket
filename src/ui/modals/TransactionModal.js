@@ -36,7 +36,6 @@ export class TransactionModal {
   #sharedTxMode  = null; // { shareIndex, accountId, editTxId? } | null
   #currentType   = null; // overrides data.type when user switches tabs
   #splitsSeeded  = false; // true after initial seed; prevents re-seed on refresh
-  #scanData      = null; // { amount, categoryId, note } populated by applyScanResult for single-item scans
 
   constructor() {
     this.#store = Store.getInstance();
@@ -90,51 +89,6 @@ export class TransactionModal {
   setSplitAmount(i, val, currency) {
     if (this.#splits[i]) {
       this.#splits[i].amount = this.#fx.toMinor(Number(val) || 0, currency);
-    }
-  }
-
-  /**
-   * Apply AI receipt-scan results to the modal.
-   * items: [{ description, amount, currency, categoryName, quantity, unit, note }]
-   * amounts are expected in MAJOR decimal units (e.g. 4.99 not 499).
-   */
-  applyScanResult(items) {
-    const state    = this.#store.getState();
-    const homeCcy  = state.user.homeCurrency || 'USD';
-    const expCats  = state.categories.filter((c) => c.type === 'expense' || !c.type);
-
-    const parsed = items.map((item) => {
-      const currency = item.currency || homeCcy;
-      // amount from AI is in major units (e.g. 4.99); convert to minor (499)
-      const amount   = this.#fx.toMinor(Number(item.amount) || 0, currency);
-
-      // Match categoryName to a local category (case-insensitive partial match)
-      const nameHint  = (item.categoryName || '').toLowerCase();
-      const cat = nameHint
-        ? expCats.find((c) => c.name.toLowerCase() === nameHint)
-          || expCats.find((c) => c.name.toLowerCase().includes(nameHint) || nameHint.includes(c.name.toLowerCase()))
-        : null;
-
-      // Build note: description + quantity/unit details
-      const noteParts = [item.description || ''];
-      if (item.quantity) noteParts.push(item.quantity);
-      if (item.unit && item.unit !== item.quantity) noteParts.push(item.unit);
-      if (item.note)     noteParts.push(item.note);
-      const note = [...new Set(noteParts.filter(Boolean))].join(' · ');
-
-      return { categoryId: cat?.id || null, amount, note, currency };
-    });
-
-    if (parsed.length === 1) {
-      // Single item: fill the main form fields, no splits needed
-      this.#scanData      = parsed[0];
-      this.#splitsEnabled = false;
-      this.#splits        = [];
-    } else {
-      // Multiple items: enable splits
-      this.#scanData      = null;
-      this.#splitsEnabled = true;
-      this.#splits        = parsed.map((p) => ({ categoryId: p.categoryId, amount: p.amount }));
     }
   }
 
@@ -194,14 +148,6 @@ export class TransactionModal {
       this.#splitsSeeded  = true;
     }
 
-    // Overlay single-item scan data onto a new transaction's default fields
-    if (this.#scanData && !editing) {
-      if (this.#scanData.amount)     data.amount     = this.#scanData.amount;
-      if (this.#scanData.categoryId) data.categoryId = this.#scanData.categoryId;
-      if (this.#scanData.note)       data.note       = this.#scanData.note;
-      if (this.#scanData.currency)   data.currency   = this.#scanData.currency;
-    }
-
     const type        = this.#currentType || data.type || 'expense';
     const amountValue = (editing || sharedEditTx)
       ? this.#fx.fromMinor(data.amount, data.currency)
@@ -224,11 +170,6 @@ export class TransactionModal {
     const miqaat      = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
     const hijriLabel  = this.#hijri.format(data.date, { long: true });
     const hijriPreview= `${hijriLabel}${miqaat ? ` · <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ''}`;
-
-    const paymentTypes = [
-      ...DEFAULT_PAYMENT_TYPES,
-      ...new Set(state.transactions.map((t) => t.paymentType).filter((p) => p && !DEFAULT_PAYMENT_TYPES.includes(p))),
-    ];
 
     return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ''}')" class="p-5">
@@ -273,12 +214,14 @@ export class TransactionModal {
             <label class="text-xs text-zinc-500">Date</label>
             <input class="input" type="date" name="date" value="${data.date}"
                    oninput="window.__app.updateHijriPreview(this.value)">
-            <div id="hijriPreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
+            <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
           </div>
           <div>
             <label class="text-xs text-zinc-500">Payment</label>
-            <select class="select" name="paymentType">
-              ${paymentTypes.map((p) => `<option value="${p}" ${data.paymentType===p?'selected':''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`).join('')}
+            <select class="select" name="paymentType"
+              onchange="window.__app?.addCustomPaymentType?.(this)"
+              data-prev="${data.paymentType || 'card'}">
+              ${(window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES).map((p) => `<option value="${p}" ${(data.paymentType||'card')===p?'selected':''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`).join('')}
               <option value="__add_payment__">＋ Add custom…</option>
             </select>
           </div>
@@ -336,7 +279,6 @@ export class TransactionModal {
     this.#splits        = [];
     this.#splitsEnabled = false;
     this.#splitsSeeded  = false;
-    this.#scanData      = null;
     // Initialize FX panel if transfer
     const data = opts?.prefill || {};
     if (data.type === 'transfer') {

@@ -105,6 +105,16 @@ export class RegularItemModal {
           </select>
         </div>
 
+        <!-- Frequency -->
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500">Frequency</label>
+          <select class="select" name="frequency">
+            <option value="daily"   ${data.frequency === 'daily'   ? 'selected' : ''}>Daily</option>
+            <option value="weekly"  ${data.frequency === 'weekly'  ? 'selected' : ''}>Weekly</option>
+            <option value="monthly" ${(!data.frequency || data.frequency === 'monthly') ? 'selected' : ''}>Monthly</option>
+          </select>
+        </div>
+
         <!-- Icon -->
         <div class="mb-3">
           <label class="text-xs text-zinc-500 block mb-1">Icon</label>

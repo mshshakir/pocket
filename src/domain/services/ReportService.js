@@ -23,12 +23,15 @@ export class ReportService {
 
   // ── Date helpers ─────────────────────────────────────────────────────
 
-  /** @param {string} iso @param {number|'all'} days @returns {boolean} */
-  withinRange(iso, days) {
-    if (days === 'all') return true;
-    const d     = new Date(iso + 'T12:00:00');
+  /** @param {string} iso @param {number|'all'|'month'} range @returns {boolean} */
+  withinRange(iso, range) {
+    if (range === 'all') return true;
+    const d = new Date(iso + 'T12:00:00');
+    // 'month' = current calendar month to date. Passing it as a numeric range
+    // would coerce to NaN, making every comparison fail (#8).
+    if (range === 'month') return d >= this.startOfMonth();
     const start = new Date();
-    start.setDate(start.getDate() - Number(days));
+    start.setDate(start.getDate() - Number(range));
     return d >= start;
   }
 
@@ -137,34 +140,38 @@ export class ReportService {
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
 
-    // Roll back every tx to get to the state before any transaction
-    const accountSvc = { revertBalances: (t) => this.#revert(t, state) };
-    for (let i = txsAsc.length - 1; i >= 0; i--) accountSvc.revertBalances(txsAsc[i]);
+    // The walk below temporarily mutates account balances. Wrap it in try/finally
+    // so an exception mid-walk never leaves balances permanently corrupted (#28).
+    try {
+      // Roll back every tx to get to the state before any transaction
+      const accountSvc = { revertBalances: (t) => this.#revert(t, state) };
+      for (let i = txsAsc.length - 1; i >= 0; i--) accountSvc.revertBalances(txsAsc[i]);
 
-    const series  = [{ date: txsAsc[0].date, netWorth: totalNW() }];
-    let curDate   = null;
+      const series  = [{ date: txsAsc[0].date, netWorth: totalNW() }];
+      let curDate   = null;
 
-    for (const t of txsAsc) {
-      if (curDate !== null && curDate !== t.date) {
-        series.push({ date: curDate, netWorth: totalNW() });
+      for (const t of txsAsc) {
+        if (curDate !== null && curDate !== t.date) {
+          series.push({ date: curDate, netWorth: totalNW() });
+        }
+        curDate = t.date;
+        this.#apply(t, state);
       }
-      curDate = t.date;
-      this.#apply(t, state);
+      if (curDate) series.push({ date: curDate, netWorth: totalNW() });
+
+      const today = new Date().toISOString().slice(0, 10);
+      if (series[series.length - 1].date !== today) {
+        series.push({ date: today, netWorth: totalNW() });
+      }
+
+      return series;
+    } finally {
+      // Restore balances no matter what
+      snap.forEach(({ id, bal }) => {
+        const a = state.accounts.find((x) => x.id === id);
+        if (a) a.balance = bal;
+      });
     }
-    if (curDate) series.push({ date: curDate, netWorth: totalNW() });
-
-    const today = new Date().toISOString().slice(0, 10);
-    if (series[series.length - 1].date !== today) {
-      series.push({ date: today, netWorth: totalNW() });
-    }
-
-    // Restore balances
-    snap.forEach(({ id, bal }) => {
-      const a = state.accounts.find((x) => x.id === id);
-      if (a) a.balance = bal;
-    });
-
-    return series;
   }
 
   /**

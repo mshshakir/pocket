@@ -33,4 +33,40 @@ export class CsvModal {
         </div>
       </div>`;
   }
+
+  downloadFailedRows(rows) {
+    if (!rows?.length) return;
+    const headers = Object.keys(rows[0]).filter(k => k !== '_error');
+    const lines = [
+      [...headers, '_Error'].join(','),
+      ...rows.map(r => [
+        ...headers.map(h => JSON.stringify(r[h] ?? '')),
+        JSON.stringify(r._error || ''),
+      ].join(',')),
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'import_errors.csv' });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async #commitChunked(txDrafts, applyFn) {
+    const CHUNK = 25;
+    for (let i = 0; i < txDrafts.length; i += CHUNK) {
+      txDrafts.slice(i, i + CHUNK).forEach(applyFn);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  static normaliseType(raw) {
+    let type = (raw || '').toLowerCase().trim();
+    if (type === 'debit')                   type = 'expense';
+    if (type === 'credit')                  type = 'income';
+    if (type === 'borrow')                  type = 'borrowed';
+    if (type === 'lend' || type === 'loan') type = 'lent';
+    return type;
+  }
 }

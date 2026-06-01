@@ -26,8 +26,10 @@ import { CategoryService }     from './domain/services/CategoryService.js';
 import { TransactionService }  from './domain/services/TransactionService.js';
 import { BudgetService }       from './domain/services/BudgetService.js';
 import { RecurringService }    from './domain/services/RecurringService.js';
-import { ReceiptScanService } from './domain/services/ReceiptScanService.js';
+import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
+import { ThemeService }        from './domain/services/ThemeService.js';
+import { PaymentTypeService }  from './domain/services/PaymentTypeService.js';
 
 // ── UI components ────────────────────────────────────────────────────────────
 import { Toast }      from './ui/components/Toast.js';
@@ -57,7 +59,9 @@ import { DebtModal }        from './ui/modals/DebtModal.js';
 import { FamilyModal }      from './ui/modals/FamilyModal.js';
 import { ReconcileModal }   from './ui/modals/ReconcileModal.js';
 import { AuthModal }        from './ui/modals/AuthModal.js';
-import { RegularItemModal } from './ui/modals/RegularItemModal.js';
+import { RegularItemModal }     from './ui/modals/RegularItemModal.js';
+import { DayLogsModal }         from './ui/modals/DayLogsModal.js';
+import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -113,6 +117,8 @@ export class Application {
   /** @type {BudgetService}        */ #budgets;
   /** @type {RecurringService}     */ #recurring;
   /** @type {SyncService}          */ #sync;
+  /** @type {ThemeService}         */ #themeService;
+  /** @type {PaymentTypeService}   */ #paymentTypeService;
 
   // ── UI components ──────────────────────────────────────────────────────────
   /** @type {Toast}      */ #toast;
@@ -123,10 +129,12 @@ export class Application {
   #views = /** @type {Map<string,object>} */ (new Map());
 
   // ── Modals (registered instances) ─────────────────────────────────────────
-  #txModal        = null;  // TransactionModal — kept for split-state access
-  #familyModal    = null;  // FamilyModal — kept for pendingPerms access
-  #debtModal      = null;  // DebtModal — kept for payment-mode routing
-  #reconcileModal = null;  // ReconcileModal — kept for ledger-sum access
+  #txModal           = null;  // TransactionModal — kept for split-state access
+  #familyModal       = null;  // FamilyModal — kept for pendingPerms access
+  #debtModal         = null;  // DebtModal — kept for payment-mode routing
+  #reconcileModal    = null;  // ReconcileModal — kept for ledger-sum access
+  #dayLogsModal      = null;  // DayLogsModal
+  #currencySetupModal= null;  // CurrencySetupModal
 
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
@@ -156,6 +164,8 @@ export class Application {
     this.#budgets     = new BudgetService();
     this.#recurring   = new RecurringService();
     this.#sync        = new SyncService();
+    this.#themeService       = new ThemeService(this.#store);
+    this.#paymentTypeService = new PaymentTypeService(this.#store);
     this.#toast       = new Toast();
     this.#modal       = new Modal();
     this.#nav         = new Navigation();
@@ -199,6 +209,12 @@ export class Application {
     this.#familyModal    = new FamilyModal();
     this.#debtModal      = new DebtModal();
     this.#reconcileModal = new ReconcileModal();
+    this.#dayLogsModal   = new DayLogsModal({
+      store:           this.#store,
+      hijriService:    this.#hijri,
+      currencyService: this.#fx,
+    });
+    this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
     this.#modal.register('transaction',  this.#txModal);
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
@@ -211,6 +227,8 @@ export class Application {
     this.#modal.register('auth',         new AuthModal());
     this.#modal.register('regularItem',  new RegularItemModal());
     this.#modal.register('reconcile',    this.#reconcileModal);
+    this.#modal.register('dayLogs',      this.#dayLogsModal);
+    this.#modal.register('currencySetup',this.#currencySetupModal);
 
     // 7. Subscribe to events
     // route:changed → only re-render the view panel (not the whole shell)
@@ -240,7 +258,8 @@ export class Application {
 
     // 9. Init Supabase — restores session, pulls cloud data, then re-renders
     if (this.#sync.init()) {
-      this.#sync.restoreSession().then(({ needsSignIn } = {}) => {
+      this.#sync.restoreSession().then((result = {}) => {
+        const { needsSignIn, isFirstSignIn } = result;
         this.#render();
 
         // Mirror the reference's updateAuthUI() call after pull() completes:
@@ -249,6 +268,11 @@ export class Application {
         // any render() call between emitStatus('synced') and here could leave the
         // indicator blank or stuck on 'Syncing…'.
         this.#nav.renderAuthPill(this.#sync.currentUser);
+
+        // First sign-in → open currency setup wizard
+        if (isFirstSignIn) {
+          setTimeout(() => this.openModal('currencySetup'), 600);
+        }
 
         // No valid session found on load — prompt the user to sign in
         if (needsSignIn) {
@@ -303,6 +327,12 @@ export class Application {
           <div class="grid grid-cols-3 gap-3">
             ${items}
           </div>
+          <div class="pt-3 border-t border-zinc-200 dark:border-zinc-800 mt-2">
+            <button class="btn btn-outline w-full gap-2"
+              onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('settings',{}),50)">
+              <i data-lucide="settings"></i> Settings
+            </button>
+          </div>
         </div>`,
     });
   }
@@ -330,7 +360,7 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   isManagedMode() { return this.#sync.isManagedMode(); }
-  getSbUser()     { return this.#sync.getSbUser?.() ?? null; }
+  getSbUser()     { return this.#sync.currentUser ?? null; }
 
   async signInWithGoogle() { await this.#sync.signInWithGoogle(); }
 
@@ -404,11 +434,37 @@ export class Application {
     this.#toast.show('Date format: ' + v);
   }
 
+  toggleTheme() {
+    const next = this.#themeService.toggle();
+    this.#toast.show(`Theme: ${next}`);
+    this.#render();
+  }
+
   setTheme(v) {
-    this.#store.getState().user.theme = v;
-    this.#store.persist();
-    this.#applyTheme();
+    // ThemeService.set() persists + emits state:changed itself — no extra persist (#15).
+    this.#themeService.set(v);
     this.closeModal(); this.#render();
+    this.#toast.show(`Theme: ${v}`);
+  }
+
+  get paymentTypeService() { return this.#paymentTypeService; }
+
+  addCustomPaymentType(sel) {
+    const val = sel.value;
+    if (val !== '__add_payment__') {
+      sel.dataset.prev = val;
+      return;
+    }
+    const name = prompt('Custom payment type name:');
+    if (!name?.trim()) {
+      sel.value = sel.dataset.prev || 'card';
+      return;
+    }
+    const added = this.#paymentTypeService.addCustom(name);
+    if (added) {
+      sel.dataset.prev = added;
+      this.#modal.refresh();
+    }
   }
 
   toggleHijri() {
@@ -421,9 +477,8 @@ export class Application {
   setCalendarMode(v) {
     this.#store.getState().user.calendarMode = v;
     this.#store.persist();
-    // Re-open settings so the new selection is reflected
-    this.openModal('settings', {});
     this.#render();
+    this.#toast.show(`Calendar mode: ${v}`);
   }
 
   setGeminiKey(v) {
@@ -460,14 +515,18 @@ export class Application {
         : sharedMatch;
       if (!sharedAcc?._ownerId) return this.#toast.show('Shared account not found');
       const accountId = sharedMode ? (sharedMode.accountId || data.accountId) : data.accountId;
+      // The tx lives in the OWNER's book, so exchangeRate/refAmount must be
+      // relative to the owner's home currency (carried in the share snapshot),
+      // not the contributing member's home currency (#21).
+      const ownerHome = sharedAcc.homeCurrency || state.user.homeCurrency;
       const tx = {
         id:          IdGenerator.generate('tx'),
         accountId:   accountId,
         categoryId:  data.categoryId || null,
         amount:      minor,
         currency,
-        exchangeRate: (FX[currency] || 1) / (FX[state.user.homeCurrency] || 1),
-        refAmount:   this.#fx.convert(minor, currency, state.user.homeCurrency),
+        exchangeRate: (FX[currency] || 1) / (FX[ownerHome] || 1),
+        refAmount:   this.#fx.convert(minor, currency, ownerHome),
         payee:       data.payee || '',
         note:        data.note || '',
         date:        data.date,
@@ -475,7 +534,7 @@ export class Application {
         paymentType: data.paymentType || 'card',
         recordState: 'cleared',
         createdAt:   new Date().toISOString(),
-        addedBy:     this.#sync.getSbUser?.()?.email || null,
+        addedBy:     this.#sync.currentUser?.email || null,
       };
       try {
         await this.#sync.submitContribution(sharedAcc._ownerId, tx);
@@ -556,13 +615,9 @@ export class Application {
       if (!tx) return;
       if (data.type === 'transfer' && tx.type === 'transfer' && tx.transferPairId) {
         const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-        // Revert both legs
-        const fa0 = state.accounts.find((a) => a.id === tx.accountId);
-        if (fa0) fa0.balance += this.#fx.convert(tx.amount, tx.currency, fa0.currency);
-        if (pair) {
-          const ta0 = state.accounts.find((a) => a.id === pair.accountId);
-          if (ta0) ta0.balance -= this.#fx.convert(pair.amount, pair.currency, ta0.currency);
-        }
+        // Revert both legs honoring their direction (works whether the edited
+        // leg is 'out' or 'in') before re-normalizing tx='out' / pair='in'.
+        this.#revertTransferPair(tx, pair, state);
         Object.assign(tx, {
           accountId: data.accountId, categoryId: null,
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
@@ -614,7 +669,7 @@ export class Application {
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
           paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
           transferPairId: toId, transferRate: xfer?.rate ?? null, transferDir: 'out', tags: [],
-          createdAt: now, addedBy: this.#sync.getSbUser?.()?.email || null,
+          createdAt: now, addedBy: this.#sync.currentUser?.email || null,
         };
         const txTo = {
           id: toId, accountId: data.transferToAccountId, categoryId: null,
@@ -624,7 +679,7 @@ export class Application {
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
           paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
           transferPairId: fromId, transferRate: xfer?.rate ?? null, transferDir: 'in', tags: [],
-          createdAt: now, addedBy: this.#sync.getSbUser?.()?.email || null,
+          createdAt: now, addedBy: this.#sync.currentUser?.email || null,
         };
         state.transactions.push(txFrom, txTo);
         const fa = state.accounts.find((a) => a.id === data.accountId);
@@ -641,7 +696,7 @@ export class Application {
           paymentType: data.paymentType, recordState: 'cleared', type: data.type,
           transferPairId: null, tags: [], splits, recurring,
           createdAt: new Date().toISOString(),
-          addedBy: this.#sync.getSbUser?.()?.email || null,
+          addedBy: this.#sync.currentUser?.email || null,
         };
         state.transactions.push(tx);
         this.#applyBalances(tx, state);
@@ -667,13 +722,8 @@ export class Application {
     if (!tx) return;
     if (tx.type === 'transfer' && tx.transferPairId) {
       const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-      if (pair) {
-        const fa = state.accounts.find((a) => a.id === tx.accountId);
-        if (fa) fa.balance += this.#fx.convert(tx.amount, tx.currency, fa.currency);
-        const ta = state.accounts.find((a) => a.id === pair.accountId);
-        if (ta) ta.balance -= this.#fx.convert(pair.amount, pair.currency, ta.currency);
-        state.transactions = state.transactions.filter((x) => x.id !== pair.id);
-      }
+      this.#revertTransferPair(tx, pair, state);
+      if (pair) state.transactions = state.transactions.filter((x) => x.id !== pair.id);
     } else {
       this.#revertBalances(tx, state);
     }
@@ -716,13 +766,8 @@ export class Application {
       if (!tx) return;
       if (tx.type === 'transfer' && tx.transferPairId) {
         const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-        if (pair) {
-          const fa = state.accounts.find((a) => a.id === tx.accountId);
-          if (fa) fa.balance += this.#fx.convert(tx.amount, tx.currency, fa.currency);
-          const ta = state.accounts.find((a) => a.id === pair.accountId);
-          if (ta) ta.balance -= this.#fx.convert(pair.amount, pair.currency, ta.currency);
-          state.transactions = state.transactions.filter((x) => x.id !== pair.id);
-        }
+        this.#revertTransferPair(tx, pair, state);
+        if (pair) state.transactions = state.transactions.filter((x) => x.id !== pair.id);
       } else {
         this.#revertBalances(tx, state);
       }
@@ -735,10 +780,21 @@ export class Application {
     this.#sync.schedulePush?.();
   }
 
-  // Shared (family) tx ops — delegate to SyncService
+  // Shared (family) tx ops — delegate to SyncService.
+  // Full-access members delete another member's tx by sending the owner a
+  // delete-marker contribution (SyncService.deleteContribution), which also
+  // applies an optimistic local revert.
   async deleteSharedTx(shareIndex, txId) {
-    await this.#sync.deleteSharedTx?.(shareIndex, txId);
-    this.#render();
+    if (!confirm('Delete this transaction?')) return;
+    const share = this.#sync.sharedData?.[shareIndex];
+    if (!share?._ownerId) return this.#toast.show('Shared account not found');
+    try {
+      await this.#sync.deleteContribution(share._ownerId, txId);
+      this.#render();
+      this.#toast.show('Transaction deleted');
+    } catch (e) {
+      this.#toast.show('Failed to delete: ' + (e.message || e));
+    }
   }
 
   /** Submit a delete contribution for a shared-account transaction. */
@@ -805,19 +861,19 @@ export class Application {
   // ── Multi-select (Account detail view) ──────────────────────────────────
 
   toggleAccountMultiSelect() {
-    const v = this.#views.get('accounts');
+    const v = this.#views.get('accountDetail');
     v?.toggleMultiSelect?.();
     this.#render();
   }
 
   selectAllAccTx() {
-    const v = this.#views.get('accounts');
+    const v = this.#views.get('accountDetail');
     v?.selectAll?.();
     this.#render();
   }
 
   deselectAllAccTx() {
-    const v = this.#views.get('accounts');
+    const v = this.#views.get('accountDetail');
     v?.deselectAll?.();
     this.#render();
   }
@@ -1104,7 +1160,7 @@ export class Application {
       const state = this.#store.getState();
       if (!state.user.showHijri) { el.textContent = ''; return; }
       const h = this.#hijri.toHijri(new Date(iso));
-      el.textContent = `${h.day} ${this.#hijri.monthsLong()[h.month - 1]} ${h.year}`;
+      el.textContent = `${h.day} ${this.#hijri.monthsLong[h.month]} ${h.year}`;
     } catch { el.textContent = ''; }
   }
 
@@ -1302,7 +1358,13 @@ export class Application {
 
   deleteAccount(id) {
     const state = this.#store.getState();
-    if (state.transactions.some((t) => t.accountId === id)) {
+    // Also guard against accounts referenced only by a split leg, not just the
+    // primary accountId — otherwise deleting orphans those splits (#25).
+    const referenced = state.transactions.some((t) =>
+      t.accountId === id ||
+      (Array.isArray(t.splits) && t.splits.some((s) => (s.accountId || t.accountId) === id)),
+    );
+    if (referenced) {
       return this.#toast.show('Archive instead — account has transactions');
     }
     if (!confirm('Delete this account?')) return;
@@ -1514,7 +1576,11 @@ export class Application {
 
   collapseAllCategories() {
     const state = this.#store.getState();
-    state.user.collapsedCategories = state.categories.filter((c) => !c.parentId).map((c) => c.id);
+    if (!Array.isArray(state.user.collapsedCategories)) state.user.collapsedCategories = [];
+    const parentIds = state.categories
+      .filter(c => !c.parentId && state.categories.some(ch => ch.parentId === c.id))
+      .map(c => c.id);
+    state.user.collapsedCategories = [...new Set([...state.user.collapsedCategories, ...parentIds])];
     this.#store.persist();
     this.#render();
   }
@@ -1648,7 +1714,10 @@ export class Application {
 
     // Check if fully repaid
     const payments = state.transactions.filter((t) => t.debtId === debtId && t.id !== debt.initialTxId);
-    const paid     = payments.reduce((s, t) => s + t.amount, 0);
+    // Convert each payment into the debt's currency before comparing against the
+    // principal — summing raw cross-currency amounts triggers auto-paid at the
+    // wrong threshold (#11).
+    const paid = payments.reduce((s, t) => s + this.#fx.convert(t.amount, t.currency, debt.currency), 0);
     if (paid >= debt.principal - 1) debt.status = 'paid';
 
     this.#store.persist();
@@ -1783,6 +1852,7 @@ export class Application {
       categoryId:    data.categoryId || null,
       icon:          data.icon  || 'coffee',
       color:         data.color || '#f97316',
+      frequency:     data.frequency  || 'monthly',
     };
 
     if (!payload.name) return this.#toast.show('Name is required');
@@ -1803,12 +1873,101 @@ export class Application {
 
   deleteRegularItem(id) {
     if (!confirm('Delete this regular item?')) return;
-    const state = this.#store.getState();
-    state.regularItems = (state.regularItems || []).filter((i) => i.id !== id);
+    const s = this.#store.getState();
+    // Revert balances for all transactions linked to this regular item
+    const linked = (s.transactions || []).filter(t => t.regularItemId === id);
+    linked.forEach(t => this.#revertBalances(t, s));
+    s.transactions = (s.transactions || []).filter(t => t.regularItemId !== id);
+    s.regularItems = (s.regularItems || []).filter(i => i.id !== id);
     this.#store.persist();
     this.closeModal();
     this.#render();
     this.#sync.schedulePush?.();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Regular item log methods (DayLogsModal handlers)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  submitRegularLog(e, date) {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const itemId = fd.get('itemId');
+    const s = this.#store.getState();
+    const item = (s.regularItems || []).find(i => i.id === itemId);
+    if (!item) return;
+    const qty = parseFloat(fd.get('qty')) || 1;
+    const unitPrice = parseFloat(fd.get('unitPrice')) || 0;
+    const currency = item.currency || s.user.homeCurrency;
+    const unitMinor = this.#fx.toMinor(unitPrice, currency);
+    const totalMinor = Math.round(unitMinor * qty);
+    const accountId = item.accountId || s.accounts[0]?.id;
+    const tx = {
+      id: IdGenerator.generate('tx'),
+      regularItemId: itemId,
+      accountId,
+      date,
+      amount: totalMinor,
+      unitAmount: unitMinor,
+      qty,
+      currency,
+      description: item.name,
+      payee: item.name,
+      note: '',
+      type: 'expense',
+      categoryId: item.categoryId || null,
+      splits: [],
+      paymentType: 'cash',
+      recurring: false,
+      recordState: 'cleared',
+      createdAt: new Date().toISOString(),
+    };
+    this.#applyBalances(tx, s);
+    s.transactions.push(tx);
+    this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.openModal('dayLogs', { date });
+  }
+
+  deleteRegularLog(logId, date) {
+    const s = this.#store.getState();
+    const tx = s.transactions.find(t => t.id === logId);
+    if (tx) {
+      this.#revertBalances(tx, s);
+      s.transactions = s.transactions.filter(t => t.id !== logId);
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+    }
+    this.openModal('dayLogs', { date });
+  }
+
+  prefillRegularLog(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const price = parseFloat(opt?.dataset?.price) || 0;
+    const unitEl  = document.getElementById('dayLogUnit');
+    const qtyEl   = document.getElementById('dayLogQty');
+    const totalEl = document.getElementById('dayLogTotal');
+    if (unitEl)  unitEl.value  = price > 0 ? price.toFixed(2) : '';
+    if (totalEl && qtyEl) {
+      const qty = parseFloat(qtyEl.value) || 1;
+      totalEl.value = price > 0 ? (price * qty).toFixed(2) : '';
+    }
+  }
+
+  updateRegularLogTotal() {
+    const qty  = parseFloat(document.getElementById('dayLogQty')?.value)  || 1;
+    const unit = parseFloat(document.getElementById('dayLogUnit')?.value) || 0;
+    const el   = document.getElementById('dayLogTotal');
+    if (el) el.value = (qty * unit).toFixed(2);
+  }
+
+  saveCurrencySetup() {
+    const sel = document.getElementById('setupCurrency');
+    if (sel) this.#store.getState().user.homeCurrency = sel.value;
+    this.#store.persist();
+    this.closeModal();
+    this.#toast.show(`Home currency set to ${sel?.value || ''}`);
+    this.#render();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2249,7 +2408,9 @@ export class Application {
     state._currentUserEmail  = this.#sync.currentUser?.email || null;
     const route = this.#router.current || 'dashboard';
     this.#renderView(route);
-    this.#nav.render(route);
+    // Navigation.render() reads the active route from the Router itself; passing
+    // a stale route arg here was ignored and risked an active-state race (#24).
+    this.#nav.render();
     lucide?.createIcons?.();
   }
 
@@ -2308,9 +2469,7 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #applyTheme() {
-    const t    = this.#store.getState().user.theme;
-    const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-    document.documentElement.classList.toggle('dark', dark);
+    this.#themeService.apply();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2333,6 +2492,63 @@ export class Application {
     if (!Array.isArray(state.family))             state.family             = [];
     if (!Array.isArray(state.user.collapsedAccountGroups)) state.user.collapsedAccountGroups = [];
     if (!state.merchantCategories) state.merchantCategories = {};
+
+    // customPaymentTypes back-fill
+    if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
+
+    // collapsedCategories back-fill
+    if (!Array.isArray(state.user.collapsedCategories)) state.user.collapsedCategories = [];
+
+    // regularItems.accountId back-fill
+    if (Array.isArray(state.regularItems)) {
+      state.regularItems.forEach(it => {
+        if (!it.accountId && Array.isArray(state.accounts) && state.accounts[0]?.id) {
+          it.accountId = state.accounts[0].id;
+        }
+      });
+    }
+
+    // Migrate legacy regularLogs → real transactions
+    if (Array.isArray(state.regularLogs) && state.regularLogs.length > 0) {
+      if (!Array.isArray(state.transactions)) state.transactions = [];
+      state.regularLogs.forEach(log => {
+        const exists = state.transactions.some(t => t.id === log.id || t.regularLogId === log.id);
+        if (!exists) {
+          state.transactions.push({
+            id: log.id,
+            regularLogId: log.id,
+            regularItemId: log.regularItemId,
+            accountId: log.accountId || state.accounts?.[0]?.id,
+            date: log.date,
+            amount: log.amount,
+            currency: log.currency || state.user?.homeCurrency || 'USD',
+            description: log.note || '',
+            payee: log.note || '',
+            note: '',
+            type: 'expense',
+            categoryId: null,
+            splits: [],
+            paymentType: 'cash',
+            recurring: false,
+            qty: log.qty || 1,
+            unitAmount: log.unitAmount || log.amount,
+            recordState: 'cleared',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      });
+      delete state.regularLogs;
+    }
+
+    // Budget period schema: collapse legacy 'monthly' to the canonical
+    // 'gregorian'. Only 'hijri' is special-cased everywhere else, so this keeps
+    // a single non-hijri value and stops the first edit from silently mutating
+    // the stored period (#12/#18).
+    if (Array.isArray(state.budgets)) {
+      state.budgets.forEach((b) => {
+        if (b && b.period !== 'hijri') b.period = 'gregorian';
+      });
+    }
 
     // One-time backfill: infer transfer direction from creation order
     if (!state._transferDirBackfilled) {
@@ -2374,6 +2590,10 @@ export class Application {
   }
 
   #revertBalances(tx, state) {
+    // Reverting a transfer leg must honor its direction: an 'out' leg was
+    // debited on apply (revert => credit), an 'in' leg was credited (revert
+    // => debit). Treating every leg as 'out' corrupts balances (#6/#19).
+    const transferSign = (leg) => (leg.transferDir === 'in' ? -1 : 1);
     if (Array.isArray(tx.splits) && tx.splits.length) {
       for (const s of tx.splits) {
         const acc = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
@@ -2381,7 +2601,7 @@ export class Application {
         const m = this.#fx.convert(s.amount, tx.currency, acc.currency);
         if (tx.type === 'expense') acc.balance += m;
         else if (tx.type === 'income') acc.balance -= m;
-        else if (tx.type === 'transfer' && tx.transferPairId) acc.balance += m;
+        else if (tx.type === 'transfer' && tx.transferPairId) acc.balance += transferSign(tx) * m;
       }
       return;
     }
@@ -2390,7 +2610,28 @@ export class Application {
     const m = this.#fx.convert(tx.amount, tx.currency, a.currency);
     if (tx.type === 'expense') a.balance += m;
     else if (tx.type === 'income') a.balance -= m;
-    else if (tx.type === 'transfer' && tx.transferPairId) a.balance += m;
+    else if (tx.type === 'transfer' && tx.transferPairId) a.balance += transferSign(tx) * m;
+  }
+
+  /**
+   * Revert both legs of a transfer pair to account balances, honoring each
+   * leg's direction.  Single source of truth used by delete/bulk-delete/edit
+   * paths so they no longer hardcode the deleted tx as the 'out' leg (#7/#22).
+   * @param {object}  tx    One leg of the transfer (may be 'in' or 'out')
+   * @param {object?} pair  The opposite leg (may be undefined)
+   * @param {object}  state
+   */
+  #revertTransferPair(tx, pair, state) {
+    const revertLeg = (leg) => {
+      if (!leg) return;
+      const acc = state.accounts.find((a) => a.id === leg.accountId);
+      if (!acc) return;
+      const m = this.#fx.convert(leg.amount, leg.currency, acc.currency);
+      // 'out' leg was debited on apply => add back; 'in' leg was credited => subtract.
+      acc.balance += (leg.transferDir === 'in' ? -m : m);
+    };
+    revertLeg(tx);
+    revertLeg(pair);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2420,7 +2661,8 @@ export class Application {
 
   #withinRange(iso, days) {
     if (days === 'all') return true;
-    const d     = new Date(iso);
+    // Anchor at local noon so dates on the 1st aren't dropped in UTC- zones (#27).
+    const d     = new Date(iso + 'T12:00:00');
     const start = new Date();
     start.setDate(start.getDate() - Number(days));
     return d >= start;
@@ -2477,8 +2719,10 @@ export class Application {
       const date = this.#parseImportDate(r.date, userPref);
       if (!date) return;
       let type = (r.type || 'expense').toLowerCase();
-      if (type === 'debit') type = 'expense';
-      if (type === 'credit') type = 'income';
+      if (type === 'debit')                   type = 'expense';
+      if (type === 'credit')                  type = 'income';
+      if (type === 'borrow')                  type = 'borrowed';
+      if (type === 'lend' || type === 'loan') type = 'lent';
       if (!['expense','income','transfer','borrowed','lent'].includes(type)) return;
 
       const acctName = (r.account || '').trim();
@@ -2685,6 +2929,16 @@ function _showError(err) {
     + '</pre>';
   target.prepend(div);
 }
+
+// ── Window globals for HTML onclick= wrappers ──────────────────────────────
+window.toggleTheme           = ()      => window.__app.toggleTheme();
+window.setTheme              = (m)     => window.__app.setTheme(m);
+window.addCustomPaymentType  = (s)     => window.__app.addCustomPaymentType(s);
+window.submitRegularLog      = (e, d)  => window.__app.submitRegularLog(e, d);
+window.deleteRegularLog      = (id, d) => window.__app.deleteRegularLog(id, d);
+window.prefillRegularLog     = (s)     => window.__app.prefillRegularLog(s);
+window.updateRegularLogTotal = ()      => window.__app.updateRegularLogTotal();
+window.saveCurrencySetup     = ()      => window.__app.saveCurrencySetup();
 
 function _boot() {
   let app;

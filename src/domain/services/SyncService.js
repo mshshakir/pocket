@@ -15,6 +15,7 @@ import { SeedFactory }    from '../../data/seed.js';
 import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../../data/constants.js';
 import { RecurringService }  from './RecurringService.js';
 import { CurrencyService }   from './CurrencyService.js';
+import { AccountService }    from './AccountService.js';
 
 export class SyncService {
   /** @type {Store} */           #store;
@@ -197,6 +198,16 @@ export class SyncService {
 
   get sharedData() {
     return this.#sharedData;
+  }
+
+  /**
+   * Public entry point to re-pull family shares from the cloud and notify the
+   * UI.  The heavy lifting stays in the private #pullFamilyShares(); this
+   * wrapper exists because private fields are inaccessible from app.js (#3/#16).
+   */
+  async pullFamilyShares() {
+    await this.#pullFamilyShares();
+    this.#bus.emit('state:changed', this.#store.getState());
   }
 
   // ── Save / Push ───────────────────────────────────────────────────────
@@ -459,6 +470,9 @@ export class SyncService {
       if (!sharedIds.length) continue;
       const snapshot = {
         sharedBy:     state.user.name || this.#user.email,
+        // Owner's home currency so members can embed correct exchangeRate /
+        // refAmount on contributed transactions (#21).
+        homeCurrency: state.user.homeCurrency,
         permission:   permMap,
         accounts:     state.accounts.filter((a) => sharedIds.includes(a.id)),
         transactions: state.transactions.filter((t) =>
@@ -544,9 +558,12 @@ export class SyncService {
 
       if (deleteRows.length) {
         const deleteIds = new Set(deleteRows.map((r) => r.tx_data.targetId || r.tx_data.id));
+        // Revert each deleted contribution's balance impact before removing it —
+        // otherwise the owner's account balances stay permanently wrong (#23).
+        const accountSvc = new AccountService();
         state.transactions
           .filter((t) => deleteIds.has(t.id))
-          .forEach((t) => { try { /* revert handled externally */ } catch (_) {} });
+          .forEach((t) => { try { accountSvc.revertBalances(t); } catch (_) {} });
         state.transactions = state.transactions.filter((t) => !deleteIds.has(t.id));
       }
 

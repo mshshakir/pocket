@@ -138,7 +138,7 @@ export class FamilyView extends BaseView {
     const sharedData = state._sharedData || [];
     if (!sharedData.length) return '';
 
-    const cards = sharedData.map((share) => {
+    const cards = sharedData.map((share, shareIndex) => {
       const sharedAccs = (share.accounts || []).map((a) => {
         const perm = (share.permission || {})[a.id] || 'view';
         const lvl  = ACCESS_LEVELS[perm] || ACCESS_LEVELS.view;
@@ -160,7 +160,7 @@ export class FamilyView extends BaseView {
           <div class="space-y-2">
             ${sharedAccs.map(({ a, lvl }) => `
               <div class="flex items-center gap-2 cursor-pointer hover:opacity-80"
-                   onclick="window.__app.openAccountDetail('${a.id}')">
+                   onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${shareIndex}})">
                 <div class="icon-pill w-7 h-7 rounded-lg flex-shrink-0"
                      style="background:${a.color || '#818cf8'}22;color:${a.color || '#818cf8'}">
                   <i data-lucide="${a.icon || 'wallet'}" style="width:13px;height:13px"></i>

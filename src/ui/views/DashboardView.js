@@ -129,7 +129,6 @@ export class DashboardView extends BaseView {
 
   #drawChart() {
     const { state, homeCurrency: home } = this;
-    const monthStart = this.#reports.startOfMonth();
     const spending   = this.#reports.spendingByCategory('month');
 
     const ctx = document.getElementById('dashChart');
@@ -145,12 +144,9 @@ export class DashboardView extends BaseView {
         return cat ? { cat, amount } : null;
       })
       .filter(Boolean)
-      .filter(({ amount }) => {
-        const sinceMonthStart = state.transactions.some(
-          (t) => t.type === 'expense' && new Date(t.date + 'T12:00:00') >= monthStart,
-        );
-        return sinceMonthStart || amount > 0;
-      })
+      // spendingByCategory already restricts to this month and returns positive
+      // sums per category; the old global check was all-or-nothing (#9).
+      .filter(({ amount }) => amount > 0)
       .slice(0, 6);
 
     if (!items.length) {

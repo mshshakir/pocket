@@ -225,11 +225,14 @@ export class DebtModal {
 
   // ── Helpers ──────────────────────────────────────────────────────────
 
-  /** Compute remaining balance of a debt (principal minus sum of payments). */
+  /** Compute remaining balance of a debt (principal minus sum of payments, cross-currency aware). */
   #debtRemaining(debt, state) {
     const payments = state.transactions
       .filter((t) => t.debtId === debt.id && t.id !== debt.initialTxId);
-    const paid = payments.reduce((s, t) => s + (t.amount || 0), 0);
+    const paid = payments.reduce((sum, t) => {
+      const fromCcy = t.currency || debt.currency;
+      return sum + this.#fx.convert(t.amount || 0, fromCcy, debt.currency);
+    }, 0);
     return Math.max(0, debt.principal - paid);
   }
 

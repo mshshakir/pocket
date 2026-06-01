@@ -99,10 +99,10 @@ export class SeedFactory {
     });
 
     const budgets = [
-      { id: uid('bg'), categoryId: catBy('Food & Drink'),  amount:  60000, currency: 'USD', period: 'monthly', rollover: false },
-      { id: uid('bg'), categoryId: catBy('Transport'),     amount:  20000, currency: 'USD', period: 'monthly', rollover: false },
-      { id: uid('bg'), categoryId: catBy('Shopping'),      amount:  25000, currency: 'USD', period: 'monthly', rollover: false },
-      { id: uid('bg'), categoryId: catBy('Entertainment'), amount:  10000, currency: 'USD', period: 'monthly', rollover: false },
+      { id: uid('bg'), categoryId: catBy('Food & Drink'),  amount:  60000, currency: 'USD', period: 'gregorian', rollover: false },
+      { id: uid('bg'), categoryId: catBy('Transport'),     amount:  20000, currency: 'USD', period: 'gregorian', rollover: false },
+      { id: uid('bg'), categoryId: catBy('Shopping'),      amount:  25000, currency: 'USD', period: 'gregorian', rollover: false },
+      { id: uid('bg'), categoryId: catBy('Entertainment'), amount:  10000, currency: 'USD', period: 'gregorian', rollover: false },
     ];
 
     return {

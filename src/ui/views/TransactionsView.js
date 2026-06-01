@@ -189,6 +189,7 @@ export class TransactionsView extends BaseView {
             <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" style="width:15px;height:15px"></i>
             <input class="input pl-9" placeholder="Search payee, note or category…"
                    value="${this.escapeHtml(f.search)}"
+                   data-focus-key="txSearch"
                    oninput="window.__app.txFilterSet('search',this.value)" />
           </div>
           <button class="btn ${this.#filterOpen ? 'btn-primary' : 'btn-outline'} relative shrink-0"

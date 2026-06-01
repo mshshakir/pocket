@@ -88,8 +88,8 @@ export class AccountDetailView extends BaseView {
     let mthIn = 0, mthOut = 0, lifetimeIn = 0, lifetimeOut = 0;
     for (const t of allTxs) {
       const imp = this.#txService.impactOnAccount(t, a);
-      if (imp.dir === '+') { lifetimeIn  += imp.minorInAcc; if (new Date(t.date) >= ms) mthIn  += imp.minorInAcc; }
-      if (imp.dir === '-') { lifetimeOut += imp.minorInAcc; if (new Date(t.date) >= ms) mthOut += imp.minorInAcc; }
+      if (imp.dir === '+') { lifetimeIn  += imp.minorInAcc; if (new Date(t.date + 'T12:00:00') >= ms) mthIn  += imp.minorInAcc; }
+      if (imp.dir === '-') { lifetimeOut += imp.minorInAcc; if (new Date(t.date + 'T12:00:00') >= ms) mthOut += imp.minorInAcc; }
     }
 
     // ── Reconcile (owner only) ─────────────────────────────────────────
@@ -158,7 +158,7 @@ export class AccountDetailView extends BaseView {
         <div class="flex-1"></div>
         ${isShared ? `<span class="chip" style="background:#818cf822;color:#818cf8">${permLabel} · Shared by ${this.escapeHtml(share?.sharedBy || '')}</span>` : ''}
         ${canManage && Math.abs(residual) >= 1 ? `<button class="btn btn-outline text-amber-600" onclick="window.__app.reconcileAccount('${a.id}')" title="Balance out of sync"><i data-lucide="scale"></i><span class="hidden md:inline ml-1">Reconcile</span></button>` : ''}
-        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(this)" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ''}
+        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(${shareIndex})" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ''}
         ${(canManage || canDelete) ? `<button class="btn ${this.#multiSelect ? 'btn-primary' : 'btn-outline'}" onclick="window.__app.toggleAccountMultiSelect()" title="Select multiple"><i data-lucide="check-square"></i></button>` : ''}
         ${canManage ? `<button class="btn btn-outline" onclick="window.__app.openModal('account',{id:'${a.id}'})"><i data-lucide="pencil"></i><span class="hidden md:inline ml-1">Edit</span></button>` : ''}
         ${newTxBtn}

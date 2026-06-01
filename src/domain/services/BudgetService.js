@@ -124,7 +124,7 @@ export class BudgetService {
       categoryId: data.categoryId,
       amount:     data.amount,
       currency:   data.currency,
-      period:     data.period   || 'monthly',
+      period:     data.period === 'hijri' ? 'hijri' : 'gregorian',
       rollover:   data.rollover || false,
     };
     this.#store.getState().budgets.push(budget);
