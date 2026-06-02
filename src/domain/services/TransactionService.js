@@ -137,45 +137,6 @@ export class TransactionService {
     return tx;
   }
 
-  /**
-   * Create a transfer (two paired transactions: out-leg + in-leg).
-   * @param {object} opts
-   * @returns {{ from: object, to: object }}
-   */
-  createTransfer(opts) {
-    const { fromAccountId, toAccountId, fromAmount, toAmount, currency, toCurrency,
-            date, payee, note, paymentType, tags, exchangeRate } = opts;
-
-    const fromId = IdGenerator.generate('tx');
-    const toId   = IdGenerator.generate('tx');
-
-    const fromTx = this.create({
-      id:             fromId,
-      accountId:      fromAccountId,
-      type:           'transfer',
-      transferDir:    'out',
-      transferPairId: toId,
-      transferRate:   exchangeRate,
-      amount:         fromAmount,
-      currency,
-      date, payee, note, paymentType, tags,
-    });
-
-    const toTx = this.create({
-      id:             toId,
-      accountId:      toAccountId,
-      type:           'transfer',
-      transferDir:    'in',
-      transferPairId: fromId,
-      transferRate:   exchangeRate,
-      amount:         toAmount ?? fromAmount,
-      currency:       toCurrency ?? currency,
-      date, payee, note, paymentType, tags,
-    });
-
-    return { from: fromTx, to: toTx };
-  }
-
   // ── Update ───────────────────────────────────────────────────────────
 
   /**

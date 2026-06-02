@@ -645,8 +645,9 @@ export class Application {
           if (ta1) ta1.balance += this.#fx.convert(pair.amount, pair.currency, ta1.currency);
         }
       } else {
-        this.#revertBalances(tx, state);
-        Object.assign(tx, {
+        // Non-transfer edit → TransactionService.update reverts old balances,
+        // applies the new ones, and persists+notifies (single source of truth).
+        this.#transactions.update(id, {
           accountId: data.accountId,
           categoryId: splits ? null : (data.categoryId || null),
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
@@ -654,7 +655,6 @@ export class Application {
           paymentType: data.paymentType, type: data.type,
           splits, recurring,
         });
-        this.#applyBalances(tx, state);
       }
     } else {
       // New transaction
@@ -688,19 +688,18 @@ export class Application {
         const ta = state.accounts.find((a) => a.id === data.transferToAccountId);
         if (ta) ta.balance += this.#fx.convert(dst, toCcy, ta.currency);
       } else {
-        const tx = {
-          id: IdGenerator.generate('tx'),
+        // New simple/split tx → TransactionService.create (pushes, applies
+        // balances, persists+notifies). recordState/tags/transferPairId defaults
+        // are supplied by the service.
+        this.#transactions.create({
           accountId: data.accountId,
           categoryId: splits ? null : (data.categoryId || null),
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee, note: data.note, date: data.date,
-          paymentType: data.paymentType, recordState: 'cleared', type: data.type,
-          transferPairId: null, tags: [], splits, recurring,
-          createdAt: new Date().toISOString(),
+          paymentType: data.paymentType, type: data.type,
+          splits, recurring,
           addedBy: this.#sync.currentUser?.email || null,
-        };
-        state.transactions.push(tx);
-        this.#applyBalances(tx, state);
+        });
         if (data.payee && !splits && data.categoryId) {
           if (!state.merchantCategories) state.merchantCategories = {};
           state.merchantCategories[data.payee.toLowerCase()] = data.categoryId;
@@ -718,18 +717,10 @@ export class Application {
 
   deleteTx(id) {
     if (!confirm('Delete this transaction?')) return;
-    const state = this.#store.getState();
-    const tx    = state.transactions.find((x) => x.id === id);
-    if (!tx) return;
-    if (tx.type === 'transfer' && tx.transferPairId) {
-      const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-      this.#revertTransferPair(tx, pair, state);
-      if (pair) state.transactions = state.transactions.filter((x) => x.id !== pair.id);
-    } else {
-      this.#revertBalances(tx, state);
-    }
-    state.transactions = state.transactions.filter((x) => x.id !== id);
-    this.#store.persist();
+    if (!this.#transactions.find(id)) return;
+    // TransactionService.delete reverts the leg (and its transfer pair) via the
+    // shared balance engine, removes both rows, and persists+notifies.
+    this.#transactions.delete(id);
     this.closeModal();
     this.#render();
     this.#toast.show('Transaction deleted');
@@ -761,23 +752,13 @@ export class Application {
     const ids  = view?.selectedIds ?? new Set();
     if (!ids.size) return;
     if (!confirm(`Delete ${ids.size} transaction${ids.size === 1 ? '' : 's'}?`)) return;
-    const state = this.#store.getState();
-    ids.forEach((id) => {
-      const tx = state.transactions.find((x) => x.id === id);
-      if (!tx) return;
-      if (tx.type === 'transfer' && tx.transferPairId) {
-        const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-        this.#revertTransferPair(tx, pair, state);
-        if (pair) state.transactions = state.transactions.filter((x) => x.id !== pair.id);
-      } else {
-        this.#revertBalances(tx, state);
-      }
-      state.transactions = state.transactions.filter((x) => x.id !== id);
-    });
+    const count = ids.size;
+    // TransactionService.bulkDelete also reverts any transfer pairs of the
+    // selected legs via the shared balance engine.
+    this.#transactions.bulkDelete([...ids]);
     if (view?.clearMultiSelect) view.clearMultiSelect();
-    this.#store.persist();
     this.#render();
-    this.#toast.show(`${ids.size} transactions deleted`);
+    this.#toast.show(`${count} transactions deleted`);
     this.#sync.schedulePush?.();
   }
 
@@ -1307,7 +1288,9 @@ export class Application {
       const a = state.accounts.find((x) => x.id === id);
       if (!a) return;
       const wasMajor = a.balance;
-      Object.assign(a, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
+      // Delegate the entity update to AccountService (mutates the same object);
+      // the balance-adjustment ledger entry is orchestrated here.
+      this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
       if (newMinor !== wasMajor) {
         const delta    = newMinor - wasMajor;
         const positive = delta > 0;
@@ -1332,11 +1315,11 @@ export class Application {
       return;
     }
 
-    // New account
-    const newId = IdGenerator.generate('acc');
-    state.accounts.push({ id: newId, name: data.name, type: data.type, currency: data.currency, color: data.color, icon: 'wallet', archived: false, balance: 0, groupId });
+    // New account — AccountService owns the entity row; opening-balance ledger
+    // entry is orchestrated here.
+    const a     = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: 'wallet', groupId });
+    const newId = a.id;
     if (newMinor !== 0) {
-      const a       = state.accounts.find((x) => x.id === newId);
       const positive = newMinor > 0;
       const tx = {
         id: IdGenerator.generate('tx'), accountId: newId, categoryId: null,
@@ -1369,8 +1352,7 @@ export class Application {
       return this.#toast.show('Archive instead — account has transactions');
     }
     if (!confirm('Delete this account?')) return;
-    state.accounts = state.accounts.filter((a) => a.id !== id);
-    this.#store.persist();
+    this.#accounts.delete(id);
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
   }
@@ -1541,13 +1523,10 @@ export class Application {
     if (id && parentId && state.categories.some((c) => c.parentId === id)) {
       return this.#toast.show('This category already has sub-categories — cannot itself become a sub-category');
     }
+    // Delegate the actual mutation to CategoryService (single source of truth).
     const payload = { name: data.name, type: data.type, color: data.color, icon: data.icon, parentId };
-    if (id) {
-      Object.assign(state.categories.find((c) => c.id === id), payload);
-    } else {
-      state.categories.push({ id: IdGenerator.generate('cat'), budgetLimit: null, ...payload });
-    }
-    this.#store.persist();
+    if (id) this.#categories.update(id, payload);
+    else    this.#categories.create(payload);
     this.closeModal(); this.#render();
     this.#toast.show(id ? 'Category updated' : 'Category added');
     this.#sync.schedulePush?.();
@@ -1559,8 +1538,7 @@ export class Application {
       return this.#toast.show('Reassign transactions first');
     }
     if (!confirm('Delete this category?')) return;
-    state.categories = state.categories.filter((c) => c.id !== id);
-    this.#store.persist();
+    this.#categories.delete(id);  // also re-parents any orphaned children to root
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
   }
@@ -1600,17 +1578,12 @@ export class Application {
     event.preventDefault();
     const fd    = new FormData(event.target);
     const data  = Object.fromEntries(fd.entries());
-    const state = this.#store.getState();
-    const minor = this.#fx.toMinor(data.amount, data.currency);
-    const period= data.period === 'hijri' ? 'hijri' : 'gregorian';
-    if (id) {
-      Object.assign(state.budgets.find((b) => b.id === id), {
-        categoryId: data.categoryId, amount: minor, currency: data.currency, period, rollover: !!data.rollover,
-      });
-    } else {
-      state.budgets.push({ id: IdGenerator.generate('bg'), period, categoryId: data.categoryId, amount: minor, currency: data.currency, rollover: !!data.rollover });
-    }
-    this.#store.persist();
+    const minor  = this.#fx.toMinor(data.amount, data.currency);
+    const period = data.period === 'hijri' ? 'hijri' : 'gregorian';
+    // Delegate to BudgetService (it also normalizes period on create).
+    const payload = { categoryId: data.categoryId, amount: minor, currency: data.currency, period, rollover: !!data.rollover };
+    if (id) this.#budgets.update(id, payload);
+    else    this.#budgets.create(payload);
     this.closeModal(); this.#render();
     this.#toast.show(id ? 'Budget updated' : 'Budget added');
     this.#sync.schedulePush?.();
@@ -1618,9 +1591,7 @@ export class Application {
 
   deleteBudget(id) {
     if (!confirm('Delete this budget?')) return;
-    const state = this.#store.getState();
-    state.budgets = state.budgets.filter((b) => b.id !== id);
-    this.#store.persist();
+    this.#budgets.delete(id);
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
   }
