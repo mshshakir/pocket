@@ -5,6 +5,7 @@
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
+import { CategoryOptionRenderer } from '../components/CategoryOptionRenderer.js';
 
 export class BudgetModal {
   /** @type {Store} */           #store;
@@ -39,11 +40,9 @@ export class BudgetModal {
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Category</label>
           <select class="select" name="categoryId">
-            ${state.categories
-              .filter((c) => c.type === 'expense')
-              .map((c) => `<option value="${c.id}" ${b.categoryId===c.id?'selected':''}>${this.#esc(c.name)}</option>`)
-              .join('')}
+            ${CategoryOptionRenderer.renderHierarchical(state.categories, b.categoryId, 'expense')}
           </select>
+          <div class="text-xs text-zinc-500 mt-1">Pick a parent to budget the whole group (sub-categories included), or a single sub-category.</div>
         </div>
 
         <div class="mb-3">

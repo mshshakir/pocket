@@ -487,6 +487,27 @@ export class Application {
     this.#store.persist();
   }
 
+  /**
+   * Explicit "Save" for the AI key — persists the current input value and gives
+   * the user clear confirmation that the app has accepted it (the field also
+   * autosaves on input, but the button removes the "did it take?" doubt).
+   */
+  saveGeminiKey() {
+    const inp = document.getElementById('geminiKeyInput');
+    const v   = (inp?.value || '').trim();
+    this.#store.getState().user.geminiApiKey = v;
+    this.#store.persist();
+    this.#modal.refresh?.();
+    lucide?.createIcons?.();
+    if (!v) {
+      this.#toast.show('API key cleared');
+    } else if (!/^AIza[\w-]{10,}$/.test(v)) {
+      this.#toast.show('Saved — but this doesn’t look like a Google AI key');
+    } else {
+      this.#toast.show('✓ API key saved — receipt scanning enabled');
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // Transaction CRUD
   // ──────────────────────────────────────────────────────────────────────────

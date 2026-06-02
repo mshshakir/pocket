@@ -71,6 +71,57 @@ export class CategoryOptionRenderer {
     return grouped + orphans;
   }
 
+  /**
+   * Build a flat, indented option list that mirrors the parent → child
+   * hierarchy while keeping BOTH parents and children selectable.
+   *
+   * Unlike render() (which uses <optgroup>, whose labels are not selectable),
+   * this is used where a parent category itself is a valid choice — e.g. a
+   * budget that should cover a whole category including its sub-categories.
+   *
+   *   Food & Drink            ← selectable parent
+   *      ↳ Coffee             ← selectable, indented child
+   *      ↳ Groceries
+   *   Transport
+   *
+   * @param {object[]}    allCats    Full category list (unfiltered).
+   * @param {string|null} selectedId Currently-selected category ID (or null).
+   * @param {string|null} typeFilter 'expense' | 'income' | 'transfer' | null.
+   * @returns {string} HTML fragment of <option> elements.
+   */
+  static renderHierarchical(allCats, selectedId, typeFilter = null) {
+    const matchType = (c) => !typeFilter || c.type === typeFilter;
+    const esc       = CategoryOptionRenderer.#esc;
+    const sel       = (id) => id === selectedId ? 'selected' : '';
+    const childPrefix = '   ↳ '; // nbsp×3 + ↳ + nbsp
+    const rendered  = new Set();
+
+    const roots = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
+    let html = '';
+    for (const root of roots) {
+      const children = allCats
+        .filter((c) => c.parentId === root.id && matchType(c))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (!matchType(root) && children.length === 0) continue; // wrong type, nothing to show
+      if (matchType(root)) {
+        html += `<option value="${root.id}" ${sel(root.id)}>${esc(root.name)}</option>`;
+      }
+      for (const c of children) {
+        rendered.add(c.id);
+        html += `<option value="${c.id}" ${sel(c.id)}>${childPrefix}${esc(c.name)}</option>`;
+      }
+    }
+
+    // Orphan rescue — subcategories whose parent is missing.
+    const orphans = allCats
+      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && !roots.find((r) => r.id === c.id))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`)
+      .join('');
+
+    return html + orphans;
+  }
+
   // ── Private ─────────────────────────────────────────────────────────────
 
   static #esc(s) {

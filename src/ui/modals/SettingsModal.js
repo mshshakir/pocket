@@ -168,6 +168,16 @@ export class SettingsModal {
             ${sbUser ? `<span class="chip" style="background:#10b98122;color:#10b981"><i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Connected</span>` : ''}
           </div>
 
+          ${sbUser ? `
+            <div class="flex items-center gap-2 mb-3 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200/70 dark:border-emerald-800/40">
+              <div class="w-8 h-8 rounded-full bg-emerald-600 text-white grid place-items-center text-sm font-bold flex-shrink-0">${(sbUser.email?.[0] || '?').toUpperCase()}</div>
+              <div class="flex-1 min-w-0">
+                <div class="text-[11px] uppercase tracking-wide text-zinc-500 leading-none mb-0.5">Signed in as</div>
+                <div class="text-sm font-medium truncate">${this.#esc(sbUser.email || '')}</div>
+              </div>
+              <i data-lucide="badge-check" style="width:18px;height:18px;color:#10b981"></i>
+            </div>` : ''}
+
           ${isSaaS ? `
             <div class="flex gap-2 mb-1">
               ${sbUser
@@ -265,16 +275,26 @@ create trigger family_shares_updated_at
               </div>
             </div>
           </div>
-          <div class="relative">
-            <input id="geminiKeyInput" class="input pr-20" type="password"
-                   placeholder="AIzaSy..."
-                   value="${this.#esc(u.geminiApiKey || '')}"
-                   oninput="window.__app.setGeminiKey(this.value.trim())">
-            <button type="button"
-                    class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-                    onclick="(()=>{ const i=document.getElementById('geminiKeyInput'); i.type=i.type==='password'?'text':'password'; })()">
-              Show/Hide
+          <div class="flex gap-2 items-stretch">
+            <div class="relative flex-1">
+              <input id="geminiKeyInput" class="input pr-16" type="password"
+                     placeholder="AIzaSy..."
+                     value="${this.#esc(u.geminiApiKey || '')}"
+                     oninput="window.__app.setGeminiKey(this.value.trim())">
+              <button type="button"
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                      onclick="(()=>{ const i=document.getElementById('geminiKeyInput'); i.type=i.type==='password'?'text':'password'; })()">
+                Show
+              </button>
+            </div>
+            <button type="button" class="btn btn-primary shrink-0" onclick="window.__app.saveGeminiKey()">
+              <i data-lucide="save"></i> Save
             </button>
+          </div>
+          <div class="text-xs mt-1 ${u.geminiApiKey ? 'text-emerald-600' : 'text-zinc-500'}">
+            ${u.geminiApiKey
+              ? '<i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Key saved — receipt scanning is enabled.'
+              : 'No key saved yet. Paste a key and press Save.'}
           </div>
           <div class="text-xs text-zinc-500 mt-1">Key is stored only in your browser (localStorage). Only sent to <code>generativelanguage.googleapis.com</code>.</div>
         </div>
