@@ -8,6 +8,7 @@
  */
 import { BaseView }          from './BaseView.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
+import { DateService }          from '../../domain/services/DateService.js';
 
 export class CalendarView extends BaseView {
   /** @type {HijriCalendarService} */  #hijri;
@@ -308,7 +309,9 @@ export class CalendarView extends BaseView {
 
   #calMode()  { return this.state.user.calendarMode || 'both'; }
   #ensureFocus() { if (!this.#focus) this.#focus = this.#isoDate(new Date()); }
-  #isoDate(d) { return d instanceof Date ? d.toISOString().slice(0, 10) : d; }
+  // Local-component ISO (B1): toISOString() is UTC and shifted the calendar grid
+  // by a day in non-UTC timezones, mismatching stored local 'YYYY-MM-DD' dates.
+  #isoDate(d) { return DateService.toIso(d); }
 
   #logsForDate(iso, state) {
     return (state.transactions || []).filter((t) => t.regularItemId && t.date === iso);

@@ -7,6 +7,7 @@ import { Store }           from '../../core/Store.js';
 import { CurrencyService } from './CurrencyService.js';
 import { TransactionService } from './TransactionService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
+import { DateService }         from './DateService.js';
 
 export class ReportService {
   /** @type {Store} */               #store;
@@ -81,7 +82,7 @@ export class ReportService {
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      keys.push(d.toISOString().slice(0, 10));
+      keys.push(DateService.toIso(d));
     }
 
     const totals = Object.fromEntries(keys.map((k) => [k, 0]));
@@ -130,7 +131,7 @@ export class ReportService {
       );
 
     if (!state.transactions.length) {
-      return [{ date: new Date().toISOString().slice(0, 10), netWorth: totalNW() }];
+      return [{ date: DateService.todayIso(), netWorth: totalNW() }];
     }
 
     // Snapshot current balances so we can restore them afterwards
@@ -159,7 +160,7 @@ export class ReportService {
       }
       if (curDate) series.push({ date: curDate, netWorth: totalNW() });
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = DateService.todayIso();
       if (series[series.length - 1].date !== today) {
         series.push({ date: today, netWorth: totalNW() });
       }

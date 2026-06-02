@@ -8,11 +8,13 @@
 import { BaseView }               from './BaseView.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 import { TransactionService }     from '../../domain/services/TransactionService.js';
+import { CategoryService }        from '../../domain/services/CategoryService.js';
 import { TX_SORT_OPTIONS }        from '../../data/constants.js';
 
 export class TransactionsView extends BaseView {
   /** @type {TransactionRowRenderer} */ #rowRenderer;
   /** @type {TransactionService} */     #txService;
+  /** @type {CategoryService} */        #categories;
 
   // ── Filter state (persists across re-renders while view is mounted) ──
   #filter = {
@@ -37,6 +39,22 @@ export class TransactionsView extends BaseView {
     super();
     this.#rowRenderer = new TransactionRowRenderer();
     this.#txService   = new TransactionService();
+    this.#categories  = new CategoryService();
+  }
+
+  /**
+   * Category filter that also matches sub-categories of a selected parent and
+   * the category of any split leg — the old `includes(t.categoryId)` missed
+   * both (B4).
+   * @param {object} t
+   * @param {Set<string>} wanted  expanded set of acceptable category IDs
+   * @returns {boolean}
+   */
+  #matchesCategory(t, wanted) {
+    const ids = (Array.isArray(t.splits) && t.splits.length)
+      ? t.splits.map((s) => s.categoryId)
+      : [t.categoryId];
+    return ids.some((id) => wanted.has(id));
   }
 
   // ── Public state ─────────────────────────────────────────────────────
@@ -85,6 +103,10 @@ export class TransactionsView extends BaseView {
     const fSearch  = f.search.toLowerCase();
     const fAmtMin  = f.amountMin !== '' ? this.toMinor(parseFloat(f.amountMin), home) : null;
     const fAmtMax  = f.amountMax !== '' ? this.toMinor(parseFloat(f.amountMax), home) : null;
+    // Expand selected categories to include their sub-categories once per render (B4).
+    const wantedCats = f.categoryIds.length
+      ? new Set(f.categoryIds.flatMap((id) => this.#categories.descendants(id)))
+      : null;
 
     const filtered = this.#txService.sort(
       state.transactions.filter((t) => {
@@ -92,7 +114,7 @@ export class TransactionsView extends BaseView {
         if (f.dateTo   && t.date > f.dateTo)   return false;
         if (!f.dateFrom && !f.dateTo && !this.#withinRange(t.date, f.range)) return false;
         if (f.accountIds.length   && !f.accountIds.includes(t.accountId))   return false;
-        if (f.categoryIds.length  && !f.categoryIds.includes(t.categoryId)) return false;
+        if (wantedCats && !this.#matchesCategory(t, wantedCats)) return false;
         if (f.types.length        && !f.types.includes(t.type))             return false;
         if (f.paymentTypes.length && !f.paymentTypes.includes(t.paymentType)) return false;
         if (fSearch && !(

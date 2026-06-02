@@ -14,8 +14,10 @@ export class Repository {
   save(state) {
     try {
       localStorage.setItem(Repository.#STORAGE_KEY, JSON.stringify(state));
+      return true;
     } catch (err) {
       console.error('[Repository] Failed to save state:', err);
+      return false;
     }
   }
 

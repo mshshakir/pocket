@@ -214,4 +214,16 @@ export class AccountService {
       else if (tx.type === 'income') acc.balance -= converted;
     }
   }
+
+  /**
+   * Revert both legs of a transfer pair, honoring each leg's direction.
+   * Single source of truth for the delete / bulk-delete / edit paths so callers
+   * never hardcode which leg is 'out' vs 'in'.
+   * @param {object}  tx    One leg of the transfer (either direction)
+   * @param {object?} pair  The opposite leg (may be undefined)
+   */
+  revertTransferPair(tx, pair) {
+    this.revertBalances(tx);
+    if (pair) this.revertBalances(pair);
+  }
 }

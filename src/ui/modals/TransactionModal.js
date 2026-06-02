@@ -14,6 +14,7 @@ import { CurrencyService }          from '../../domain/services/CurrencyService.
 import { HijriCalendarService }     from '../../domain/services/HijriCalendarService.js';
 import { CategoryOptionRenderer }   from '../components/CategoryOptionRenderer.js';
 import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
+import { DateService }              from '../../domain/services/DateService.js';
 
 /** Payment methods available by default. */
 const DEFAULT_PAYMENT_TYPES = ['card', 'cash', 'bank-transfer', 'cheque', 'crypto', 'other'];
@@ -120,7 +121,7 @@ export class TransactionModal {
             categoryId:         '',
             payee:              '',
             note:               '',
-            date:               new Date().toISOString().slice(0, 10),
+            date:               DateService.todayIso(),
             paymentType:        'card',
             transferToAccountId:'',
           });

@@ -6,6 +6,7 @@
  */
 import { DEFAULT_CATEGORIES } from './constants.js';
 import { IdGenerator } from '../domain/services/IdGenerator.js';
+import { DateService } from '../domain/services/DateService.js';
 
 export class SeedFactory {
   /**
@@ -34,7 +35,7 @@ export class SeedFactory {
     const daysAgo = (n) => {
       const d = new Date(today);
       d.setDate(d.getDate() - n);
-      return d.toISOString().slice(0, 10);
+      return DateService.toIso(d);
     };
 
     const expenseSamples = [

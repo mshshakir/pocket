@@ -11,6 +11,7 @@ import { TransactionService }     from '../../domain/services/TransactionService
 import { AccountService }         from '../../domain/services/AccountService.js';
 import { ReportService }          from '../../domain/services/ReportService.js';
 import { TX_SORT_OPTIONS }        from '../../data/constants.js';
+import { DateService }            from '../../domain/services/DateService.js';
 
 export class AccountDetailView extends BaseView {
   /** @type {TransactionRowRenderer} */ #rowRenderer;
@@ -139,7 +140,7 @@ export class AccountDetailView extends BaseView {
     // ── New-tx prefill ─────────────────────────────────────────────────
     const newTxPrefill = JSON.stringify({
       type: 'expense', accountId: a.id, currency: a.currency,
-      date: new Date().toISOString().slice(0, 10), paymentType: 'card',
+      date: DateService.todayIso(), paymentType: 'card',
     }).replace(/'/g, '&#39;');
 
     // "New transaction" button removed from header — use the FAB (bottom-right ＋) instead

@@ -26,6 +26,9 @@ export class Store {
   /** @type {EventBus} */
   #bus;
 
+  /** Guards against repeating the storage-failure toast on every save. */
+  #saveWarned = false;
+
   constructor() {
     if (Store.#instance) {
       throw new Error('Store is a singleton — use Store.getInstance()');
@@ -84,7 +87,7 @@ export class Store {
         : updaterOrPartial;
 
     Object.assign(this.#state, patch);
-    this.#repository.save(this.#state);
+    this.#persistState();
 
     if (!silent) {
       this.#bus.emit('state:changed', this.#state);
@@ -97,7 +100,7 @@ export class Store {
    */
   replaceState(newState) {
     this.#state = newState;
-    this.#repository.save(this.#state);
+    this.#persistState();
     this.#bus.emit('state:changed', this.#state);
   }
 
@@ -106,14 +109,14 @@ export class Store {
    * mutations to nested arrays without going through setState).
    */
   persist() {
-    this.#repository.save(this.#state);
+    this.#persistState();
   }
 
   /**
    * Persist + notify (useful after bulk in-place mutations like CSV import).
    */
   flush() {
-    this.#repository.save(this.#state);
+    this.#persistState();
     this.#bus.emit('state:changed', this.#state);
   }
 
@@ -126,7 +129,24 @@ export class Store {
     this.#repository.clear();
     this.#state = seedFactory();
     migrateDefaults(this.#state);
-    this.#repository.save(this.#state);
+    this.#persistState();
     this.#bus.emit('state:changed', this.#state);
+  }
+
+  /**
+   * Persist via the Repository and surface a one-time warning if the write
+   * fails (e.g. localStorage quota exceeded), so a silent save failure can't go
+   * unnoticed and let a later cloud push overwrite good data with stale state (I6).
+   * @returns {boolean} success
+   */
+  #persistState() {
+    const ok = this.#repository.save(this.#state);
+    if (!ok && !this.#saveWarned) {
+      this.#saveWarned = true;
+      this.#bus.emit('toast', { message: 'Could not save locally — device storage may be full' });
+    } else if (ok) {
+      this.#saveWarned = false;
+    }
+    return ok;
   }
 }

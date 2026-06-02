@@ -30,6 +30,7 @@ import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
 import { PaymentTypeService }  from './domain/services/PaymentTypeService.js';
+import { DateService }         from './domain/services/DateService.js';
 
 // ── UI components ────────────────────────────────────────────────────────────
 import { Toast }      from './ui/components/Toast.js';
@@ -1112,7 +1113,7 @@ export class Application {
         el.innerHTML = `<i data-lucide="sparkles" style="width:12px;height:12px;display:inline"></i>
           Suggested: <button type="button" class="underline"
             onclick="window.__app.applySuggestedCategory('${cat.id}')">
-            ${cat.name}
+            ${this.#esc(cat.name)}
           </button> <span class="text-zinc-500">(learned)</span>`;
         lucide?.createIcons?.();
         return;
@@ -1137,7 +1138,7 @@ export class Application {
           el.innerHTML = `<i data-lucide="sparkles" style="width:12px;height:12px;display:inline"></i>
             Suggested: <button type="button" class="underline"
               onclick="window.__app.applySuggestedCategory('${cat.id}')">
-              ${cat.name}
+              ${this.#esc(cat.name)}
             </button> <span class="text-zinc-500">(AI · 0.86 conf)</span>`;
           lucide?.createIcons?.();
           return;
@@ -1295,7 +1296,7 @@ export class Application {
     const data    = Object.fromEntries(fd.entries());
     const state   = this.#store.getState();
     const newMinor= this.#fx.toMinor(data.balance || 0, data.currency);
-    const today   = new Date().toISOString().slice(0, 10);
+    const today   = DateService.todayIso();
 
     // Resolve group
     const groupRes = this.#resolveAccountGroupId(data, state);
@@ -1440,11 +1441,11 @@ export class Application {
     const earliest = state.transactions
       .filter((t) => t.accountId === a.id && t.date)
       .sort((x, y) => x.date.localeCompare(y.date))[0];
-    let dateIso = new Date().toISOString().slice(0, 10);
+    let dateIso = DateService.todayIso();
     if (earliest) {
       const d = new Date(earliest.date + 'T12:00:00');
       d.setDate(d.getDate() - 1);
-      dateIso = d.toISOString().slice(0, 10);
+      dateIso = DateService.toIso(d);
     }
 
     const absResidual = Math.abs(residual);
@@ -2237,7 +2238,7 @@ export class Application {
   }
 
   downloadImportTemplate() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = DateService.todayIso();
     const lines = [
       'Date,Type,Account,ToAccount,ToAmount,ToCurrency,Category,Subcategory,Payee,Note,Amount,Currency,PaymentType,Tags,DueDate,DebtRef,SplitOf',
       `${today},expense,Main Checking,,,,Food & Drink,Groceries,Whole Foods,Weekly groceries,87.45,USD,card,,,,`,
@@ -2571,67 +2572,26 @@ export class Application {
   // Private: balance helpers
   // ──────────────────────────────────────────────────────────────────────────
 
-  #applyBalances(tx, state) {
-    if (Array.isArray(tx.splits) && tx.splits.length) {
-      for (const s of tx.splits) {
-        const acc = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
-        if (!acc) continue;
-        const m = this.#fx.convert(s.amount, tx.currency, acc.currency);
-        if (tx.type === 'expense') acc.balance -= m;
-        else if (tx.type === 'income') acc.balance += m;
-      }
-      return;
-    }
-    const a = state.accounts.find((x) => x.id === tx.accountId);
-    if (!a) return;
-    const m = this.#fx.convert(tx.amount, tx.currency, a.currency);
-    if (tx.type === 'expense') a.balance -= m;
-    else if (tx.type === 'income') a.balance += m;
+  // Balance mutations delegate to AccountService — the single source of truth
+  // (I1). AccountService operates on the same Store state instance, so the
+  // `state` argument is accepted for call-site compatibility but unused here.
+  // It handles splits, transfers (direction-aware), and FX conversion.
+  /** Minimal HTML-escape for user-supplied strings interpolated into innerHTML (B6). */
+  #esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (m) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
   }
 
-  #revertBalances(tx, state) {
-    // Reverting a transfer leg must honor its direction: an 'out' leg was
-    // debited on apply (revert => credit), an 'in' leg was credited (revert
-    // => debit). Treating every leg as 'out' corrupts balances (#6/#19).
-    const transferSign = (leg) => (leg.transferDir === 'in' ? -1 : 1);
-    if (Array.isArray(tx.splits) && tx.splits.length) {
-      for (const s of tx.splits) {
-        const acc = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
-        if (!acc) continue;
-        const m = this.#fx.convert(s.amount, tx.currency, acc.currency);
-        if (tx.type === 'expense') acc.balance += m;
-        else if (tx.type === 'income') acc.balance -= m;
-        else if (tx.type === 'transfer' && tx.transferPairId) acc.balance += transferSign(tx) * m;
-      }
-      return;
-    }
-    const a = state.accounts.find((x) => x.id === tx.accountId);
-    if (!a) return;
-    const m = this.#fx.convert(tx.amount, tx.currency, a.currency);
-    if (tx.type === 'expense') a.balance += m;
-    else if (tx.type === 'income') a.balance -= m;
-    else if (tx.type === 'transfer' && tx.transferPairId) a.balance += transferSign(tx) * m;
+  #applyBalances(tx, _state) {
+    this.#accounts.applyBalances(tx);
   }
 
-  /**
-   * Revert both legs of a transfer pair to account balances, honoring each
-   * leg's direction.  Single source of truth used by delete/bulk-delete/edit
-   * paths so they no longer hardcode the deleted tx as the 'out' leg (#7/#22).
-   * @param {object}  tx    One leg of the transfer (may be 'in' or 'out')
-   * @param {object?} pair  The opposite leg (may be undefined)
-   * @param {object}  state
-   */
-  #revertTransferPair(tx, pair, state) {
-    const revertLeg = (leg) => {
-      if (!leg) return;
-      const acc = state.accounts.find((a) => a.id === leg.accountId);
-      if (!acc) return;
-      const m = this.#fx.convert(leg.amount, leg.currency, acc.currency);
-      // 'out' leg was debited on apply => add back; 'in' leg was credited => subtract.
-      acc.balance += (leg.transferDir === 'in' ? -m : m);
-    };
-    revertLeg(tx);
-    revertLeg(pair);
+  #revertBalances(tx, _state) {
+    this.#accounts.revertBalances(tx);
+  }
+
+  #revertTransferPair(tx, pair, _state) {
+    this.#accounts.revertTransferPair(tx, pair);
   }
 
   // ──────────────────────────────────────────────────────────────────────────

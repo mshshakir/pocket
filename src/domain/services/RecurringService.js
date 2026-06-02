@@ -29,20 +29,39 @@ export class RecurringService {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
+  /** Days in a given local month. @param {number} year @param {number} monthIdx @returns {number} */
+  #daysInMonth(year, monthIdx) {
+    return new Date(year, monthIdx + 1, 0).getDate();
+  }
+
   /**
    * Advance an ISO date string by one recurrence step.
+   *
+   * For monthly/yearly rules, the day is anchored to `anchorDay` (the template's
+   * original day-of-month) and clamped to the target month's length. Without
+   * this, `setMonth` overflows (Jan 31 → Mar 3) and a recurrence that lands on a
+   * short month would permanently drift earlier (I4).
    * @param {string} iso
    * @param {'daily'|'weekly'|'monthly'|'yearly'} rule
    * @param {number} [interval=1]
+   * @param {number|null} [anchorDay=null]  preferred day-of-month (defaults to iso's day)
    * @returns {string}
    */
-  stepDate(iso, rule, interval = 1) {
-    const d        = new Date(iso + 'T12:00:00');
-    const n        = Math.max(1, Number(interval) || 1);
+  stepDate(iso, rule, interval = 1, anchorDay = null) {
+    const d   = new Date(iso + 'T12:00:00');
+    const n   = Math.max(1, Number(interval) || 1);
+    const day = anchorDay ?? d.getDate();
     if (rule === 'daily')        d.setDate(d.getDate() + n);
     else if (rule === 'weekly')  d.setDate(d.getDate() + 7 * n);
-    else if (rule === 'monthly') d.setMonth(d.getMonth() + n);
-    else if (rule === 'yearly')  d.setFullYear(d.getFullYear() + n);
+    else if (rule === 'monthly') {
+      d.setDate(1);
+      d.setMonth(d.getMonth() + n);
+      d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
+    } else if (rule === 'yearly') {
+      d.setDate(1);
+      d.setFullYear(d.getFullYear() + n);
+      d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
+    }
     return this.#isoDate(d);
   }
 
@@ -61,10 +80,19 @@ export class RecurringService {
     let generated = 0;
 
     for (const template of templates) {
+      // Transfers are two paired legs; this generator only clones a single tx,
+      // which would orphan a leg with a duplicated transferPairId. The UI blocks
+      // recurring transfers, so skip defensively rather than corrupt data (B5).
+      if (template.type === 'transfer') continue;
+
+      const { rule, interval } = template.recurring;
+      // Anchor monthly/yearly stepping to the template's original day-of-month so
+      // it never drifts earlier after a short month (I4).
+      const anchorDay = Number(template.date.slice(8, 10)) || 1;
       const instances = txs.filter((t) => t.recurringSourceId === template.id);
       const dates     = [template.date, ...instances.map((i) => i.date)].sort();
       let   latest    = dates[dates.length - 1];
-      let   next      = this.stepDate(latest, template.recurring.rule, template.recurring.interval);
+      let   next      = this.stepDate(latest, rule, interval, anchorDay);
       let   safety    = 0;
 
       while (
@@ -85,7 +113,7 @@ export class RecurringService {
         txs.push(clone);
         this.#accounts.applyBalances(clone);
         generated++;
-        next = this.stepDate(next, template.recurring.rule, template.recurring.interval);
+        next = this.stepDate(next, rule, interval, anchorDay);
       }
     }
 

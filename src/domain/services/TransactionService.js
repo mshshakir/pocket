@@ -58,13 +58,13 @@ export class TransactionService {
    */
   impactOnAccount(tx, account) {
     if (tx.type === 'transfer') {
-      if (tx.transferDir === 'out') {
-        return { dir: '-', minorInAcc: this.#fx.convert(tx.amount, tx.currency, account.currency) };
-      }
-      if (tx.transferDir === 'in') {
-        return { dir: '+', minorInAcc: tx.amount };
-      }
-      return { dir: '', minorInAcc: tx.amount };
+      // Convert to the account's currency for every leg (B3) — the in-leg used
+      // raw tx.amount, which only happened to be correct when its currency
+      // matched the account's.
+      const m = this.#fx.convert(tx.amount, tx.currency, account.currency);
+      if (tx.transferDir === 'out') return { dir: '-', minorInAcc: m };
+      if (tx.transferDir === 'in')  return { dir: '+', minorInAcc: m };
+      return { dir: '', minorInAcc: m };
     }
     const converted = this.#fx.convert(tx.amount, tx.currency, account.currency);
     return {

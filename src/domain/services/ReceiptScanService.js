@@ -22,6 +22,7 @@
  */
 import { Store }          from '../../core/Store.js';
 import { CurrencyService } from './CurrencyService.js';
+import { DateService }     from './DateService.js';
 
 const GEMINI_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
@@ -68,7 +69,7 @@ export class ReceiptScanService {
     const fallback      = cats.find((c) => c.type === 'expense' && !c.parentId) || cats[0];
     const fallbackId    = fallback?.id   || '';
     const fallbackName  = fallback?.name || 'General';
-    const today         = new Date().toISOString().slice(0, 10);
+    const today         = DateService.todayIso();
     const defaultCcy    = state.user.defaultCurrency || state.user.homeCurrency || 'USD';
     const prompt        = this.#buildPrompt(defaultCcy, catLines, fallbackId, fallbackName, today);
 

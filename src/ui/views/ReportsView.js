@@ -8,6 +8,7 @@
 import { BaseView }          from './BaseView.js';
 import { ReportService }     from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
+import { DateService }          from '../../domain/services/DateService.js';
 
 export class ReportsView extends BaseView {
   /** @type {ReportService} */         #reports;
@@ -109,7 +110,7 @@ export class ReportsView extends BaseView {
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      const k = d.toISOString().slice(0, 10);
+      const k = DateService.toIso(d);
       dayKeys.push(k);
       labels.push(d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
     }

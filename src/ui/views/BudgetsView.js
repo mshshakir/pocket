@@ -5,6 +5,7 @@
 import { BaseView }          from './BaseView.js';
 import { BudgetService }     from '../../domain/services/BudgetService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
+import { DateService }          from '../../domain/services/DateService.js';
 
 export class BudgetsView extends BaseView {
   /** @type {BudgetService} */         #budgets;
@@ -18,7 +19,7 @@ export class BudgetsView extends BaseView {
 
   render() {
     const state    = this.state;
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = DateService.todayIso();
     const todayH   = this.#hijri.toHijri(todayIso);
     const now      = new Date();
     const eom      = new Date(now.getFullYear(), now.getMonth() + 1, 0);

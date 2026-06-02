@@ -5,6 +5,7 @@
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
+import { DateService }     from '../../domain/services/DateService.js';
 
 export class DebtModal {
   /** @type {Store} */           #store;
@@ -34,7 +35,7 @@ export class DebtModal {
       principal:    0,
       currency:     state.user.defaultCurrency || state.user.homeCurrency,
       accountId:    state.accounts[0]?.id,
-      dateTaken:    new Date().toISOString().slice(0, 10),
+      dateTaken:    DateService.todayIso(),
       dueDate:      '',
       note:         '',
       status:       'active',
@@ -197,7 +198,7 @@ export class DebtModal {
           <div>
             <label class="text-xs text-zinc-500">Date</label>
             <input class="input" type="date" name="date"
-                   value="${new Date().toISOString().slice(0, 10)}">
+                   value="${DateService.todayIso()}">
           </div>
         </div>
 

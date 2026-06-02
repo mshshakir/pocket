@@ -6,6 +6,7 @@ import { BaseView }         from './BaseView.js';
 import { ReportService }    from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
+import { DateService }            from '../../domain/services/DateService.js';
 
 export class DashboardView extends BaseView {
   /** @type {ReportService} */          #reports;
@@ -33,7 +34,7 @@ export class DashboardView extends BaseView {
       .reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
     const recent     = [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
 
-    const todayIso    = new Date().toISOString().slice(0, 10);
+    const todayIso    = DateService.todayIso();
     const todayH      = this.#hijri.toHijri(todayIso);
     const todayMiq    = this.#hijri.miqaatsFor(todayH);
 
