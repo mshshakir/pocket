@@ -82,7 +82,7 @@ export class Navigation {
   }
 
   // Sub-routes that should light up a parent nav item
-  static #ALIAS = { accountDetail: 'accounts' };
+  static #ALIAS = { accountDetail: 'accounts', budgetDetail: 'budgets' };
 
   #renderSidebar(current) {
     const active = Navigation.#ALIAS[current] ?? current;

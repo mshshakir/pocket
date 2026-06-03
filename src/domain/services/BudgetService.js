@@ -22,39 +22,98 @@ export class BudgetService {
     this.#hijri = new HijriCalendarService();
   }
 
+  // ── Targeting ───────────────────────────────────────────────────────
+
+  /**
+   * The category IDs a budget targets. Backward-compatible: a legacy budget
+   * carrying a single `categoryId` is treated as a one-element list.
+   * @param {object} budget
+   * @returns {string[]}
+   */
+  targetCategoryIds(budget) {
+    if (Array.isArray(budget.categoryIds) && budget.categoryIds.length) return budget.categoryIds;
+    return budget.categoryId ? [budget.categoryId] : [];
+  }
+
+  /** Every category that counts toward the budget = each target + its descendants. */
+  #expandedIds(budget) {
+    const set = new Set();
+    for (const id of this.targetCategoryIds(budget)) {
+      for (const d of this.#cats.descendants(id)) set.add(d);
+    }
+    return set;
+  }
+
+  /** True if an expense tx falls within the budget's current period. */
+  #inCurrentPeriod(budget, t) {
+    if (t.type !== 'expense') return false;
+    if (budget.period === 'hijri') {
+      const todayH = this.#hijri.toHijri(new Date());
+      const h      = this.#hijri.toHijri(t.date);
+      return h.year === todayH.year && h.month === todayH.month;
+    }
+    const now = new Date();
+    const d   = new Date(t.date + 'T12:00:00');
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  }
+
   // ── Queries ─────────────────────────────────────────────────────────
 
   /**
-   * Current period spend for a budget (in the budget's currency).
+   * Total current-period spend for a budget across all its target categories
+   * (and their descendants), in the budget's currency.
    * @param {object} budget
    * @returns {number} minor units
    */
   currentSpend(budget) {
-    const state      = this.#store.getState();
-    const targetIds  = new Set(this.#cats.descendants(budget.categoryId));
-    const todayH     = this.#hijri.toHijri(new Date());
-    const now        = new Date();
-
-    const matches = (t) => {
-      if (t.type !== 'expense') return false;
-      if (budget.period === 'hijri') {
-        const h = this.#hijri.toHijri(t.date);
-        return h.year === todayH.year && h.month === todayH.month;
-      }
-      const d = new Date(t.date + 'T12:00:00');
-      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-    };
-
+    const state = this.#store.getState();
+    const ids   = this.#expandedIds(budget);
     let spend = 0;
     for (const t of state.transactions) {
-      if (!matches(t)) continue;
+      if (!this.#inCurrentPeriod(budget, t)) continue;
       for (const slice of this.#categoryAmounts(t)) {
-        if (targetIds.has(slice.categoryId)) {
-          spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
-        }
+        if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
       }
     }
     return spend;
+  }
+
+  /**
+   * Per-target-category spend for the current period (budget currency). Each
+   * entry covers that target category plus its descendants — powering the small
+   * split shown under a budget's progress bar.
+   * @param {object} budget
+   * @returns {{ categoryId: string, name: string, color: string, icon: string, spend: number }[]}
+   */
+  spendByCategory(budget) {
+    const state = this.#store.getState();
+    return this.targetCategoryIds(budget).map((cid) => {
+      const ids = new Set(this.#cats.descendants(cid));
+      let spend = 0;
+      for (const t of state.transactions) {
+        if (!this.#inCurrentPeriod(budget, t)) continue;
+        for (const slice of this.#categoryAmounts(t)) {
+          if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
+        }
+      }
+      const cat = this.#cats.find(cid);
+      return { categoryId: cid, name: cat?.name || 'Category', color: cat?.color || '#a1a1aa', icon: cat?.icon || 'circle', spend };
+    });
+  }
+
+  /**
+   * All expense transactions counting toward the budget this period, newest
+   * first — used by the budget detail view.
+   * @param {object} budget
+   * @returns {object[]}
+   */
+  periodTransactions(budget) {
+    const state = this.#store.getState();
+    const ids   = this.#expandedIds(budget);
+    return state.transactions
+      .filter((t) => this.#inCurrentPeriod(budget, t) &&
+                     this.#categoryAmounts(t).some((s) => ids.has(s.categoryId)))
+      .sort((a, b) => b.date.localeCompare(a.date));
   }
 
   /**
@@ -67,7 +126,7 @@ export class BudgetService {
 
     const state     = this.#store.getState();
     const todayH    = this.#hijri.toHijri(new Date());
-    const targetIds = new Set(this.#cats.descendants(budget.categoryId));
+    const ids       = this.#expandedIds(budget);
     const now       = new Date();
 
     const prevMatches = (t) => {
@@ -88,7 +147,7 @@ export class BudgetService {
     for (const t of state.transactions) {
       if (!prevMatches(t)) continue;
       for (const slice of this.#categoryAmounts(t)) {
-        if (targetIds.has(slice.categoryId)) {
+        if (ids.has(slice.categoryId)) {
           prevSpent += this.#fx.convert(slice.amount, slice.currency, budget.currency);
         }
       }
@@ -119,13 +178,17 @@ export class BudgetService {
    * @returns {object}
    */
   create(data) {
+    const ids = Array.isArray(data.categoryIds) && data.categoryIds.length
+      ? data.categoryIds
+      : (data.categoryId ? [data.categoryId] : []);
     const budget = {
-      id:         IdGenerator.generate('bg'),
-      categoryId: data.categoryId,
-      amount:     data.amount,
-      currency:   data.currency,
-      period:     data.period === 'hijri' ? 'hijri' : 'gregorian',
-      rollover:   data.rollover || false,
+      id:          IdGenerator.generate('bg'),
+      categoryIds: ids,
+      categoryId:  ids[0] ?? null,   // kept in sync for backward compatibility
+      amount:      data.amount,
+      currency:    data.currency,
+      period:      data.period === 'hijri' ? 'hijri' : 'gregorian',
+      rollover:    data.rollover || false,
     };
     this.#store.getState().budgets.push(budget);
     this.#store.flush();

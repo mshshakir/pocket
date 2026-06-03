@@ -21,7 +21,7 @@ export class BudgetModal {
     const state   = this.#store.getState();
     const editing = id ? state.budgets.find((b) => b.id === id) : null;
     const b       = editing || {
-      categoryId: state.categories.find((c) => c.type === 'expense')?.id,
+      categoryIds: [],
       amount:     0,
       currency:   state.user.defaultCurrency || state.user.homeCurrency,
       period:     'gregorian',
@@ -29,6 +29,10 @@ export class BudgetModal {
     };
     const amount  = editing ? this.#fx.fromMinor(b.amount, b.currency) : 0;
     const isHijri = b.period === 'hijri';
+    // Backward-compatible: a legacy budget may carry a single categoryId.
+    const selectedIds = Array.isArray(b.categoryIds) && b.categoryIds.length
+      ? b.categoryIds
+      : (b.categoryId ? [b.categoryId] : []);
 
     return `
       <form onsubmit="window.__app.submitBudget(event,'${editing?.id || ''}')" class="p-5">
@@ -38,11 +42,11 @@ export class BudgetModal {
         </div>
 
         <div class="mb-3">
-          <label class="text-xs text-zinc-500">Category</label>
-          <select class="select" name="categoryId">
-            ${CategoryOptionRenderer.renderHierarchical(state.categories, b.categoryId, 'expense')}
-          </select>
-          <div class="text-xs text-zinc-500 mt-1">Pick a parent to budget the whole group (sub-categories included), or a single sub-category.</div>
+          <label class="text-xs text-zinc-500 mb-1 block">Categories</label>
+          <div class="card-muted p-2 max-h-52 overflow-y-auto">
+            ${CategoryOptionRenderer.renderCheckboxTree(state.categories, selectedIds, 'expense', 'categoryIds')}
+          </div>
+          <div class="text-xs text-zinc-500 mt-1">Tick a parent to budget the whole group (sub-categories included), or tick specific sub-categories — e.g. just two of them.</div>
         </div>
 
         <div class="mb-3">

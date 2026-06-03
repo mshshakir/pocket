@@ -122,6 +122,47 @@ export class CategoryOptionRenderer {
     return html + orphans;
   }
 
+  /**
+   * Build an indented checkbox tree for selecting MULTIPLE categories (e.g. a
+   * budget that spans several sub-categories). Parents and children both get a
+   * checkbox; children are indented under their parent.
+   *
+   * @param {object[]}        allCats     Full category list (unfiltered).
+   * @param {string[]|Set}    selectedIds Currently-checked category IDs.
+   * @param {string|null}     typeFilter  'expense' | 'income' | 'transfer' | null.
+   * @param {string}          name        Checkbox group name (FormData key).
+   * @returns {string} HTML fragment of <label><input type="checkbox"> rows.
+   */
+  static renderCheckboxTree(allCats, selectedIds = [], typeFilter = null, name = 'categoryIds') {
+    const set       = selectedIds instanceof Set ? selectedIds : new Set(selectedIds);
+    const matchType = (c) => !typeFilter || c.type === typeFilter;
+    const esc       = CategoryOptionRenderer.#esc;
+    const row = (c, indent) => `
+      <label class="flex items-center gap-2 py-1.5 px-2 rounded-lg cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800/60 ${indent ? 'pl-7' : ''}">
+        <input type="checkbox" name="${name}" value="${c.id}" ${set.has(c.id) ? 'checked' : ''} class="accent-zinc-900 dark:accent-white">
+        <span class="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${c.color || '#a1a1aa'}"></span>
+        <span class="text-sm ${indent ? 'text-zinc-600 dark:text-zinc-300' : 'font-medium'}">${indent ? '↳ ' : ''}${esc(c.name)}</span>
+      </label>`;
+
+    const roots    = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
+    const rendered = new Set();
+    let html = '';
+    for (const root of roots) {
+      const children = allCats
+        .filter((c) => c.parentId === root.id && matchType(c))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (!matchType(root) && children.length === 0) continue;
+      if (matchType(root)) html += row(root, false);
+      for (const c of children) { rendered.add(c.id); html += row(c, true); }
+    }
+    const orphans = allCats
+      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && !roots.find((r) => r.id === c.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const c of orphans) html += row(c, false);
+
+    return html || '<div class="text-xs text-zinc-500 py-2 px-2">No matching categories yet.</div>';
+  }
+
   // ── Private ─────────────────────────────────────────────────────────────
 
   static #esc(s) {

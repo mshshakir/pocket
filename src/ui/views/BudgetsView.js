@@ -46,7 +46,9 @@ export class BudgetsView extends BaseView {
   // ── Private ───────────────────────────────────────────────────────────
 
   #budgetCard(b, todayH, now, eom) {
-    const cat      = this.state.categories.find((c) => c.id === b.categoryId);
+    const targetIds = this.#budgets.targetCategoryIds(b);
+    const cats      = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
+    const firstCat  = cats[0];
     const isHijri  = b.period === 'hijri';
     const spent    = this.#budgets.currentSpend(b);
     const eff      = this.#budgets.effectiveLimit(b);
@@ -56,24 +58,29 @@ export class BudgetsView extends BaseView {
     const daysLeft = isHijri
       ? (this.#hijri.daysInMonth(todayH.year, todayH.month) - todayH.day)
       : (eom.getDate() - now.getDate());
-    const hasSubs  = this.state.categories.some((c) => c.parentId === b.categoryId);
+    const multi    = targetIds.length > 1;
+    const hasSubs  = !multi && this.state.categories.some((c) => c.parentId === firstCat?.id);
+    const title    = cats.length ? cats.map((c) => this.escapeHtml(c.name)).join(', ') : 'Category';
+    const split    = multi ? this.#budgets.spendByCategory(b) : [];
     const periodLabel = isHijri
       ? `<span class="inline-flex items-center gap-1"><i data-lucide="moon-star" style="width:11px;height:11px"></i> ${this.#hijri.monthsShort[todayH.month]} ${todayH.year} H</span>`
       : `<span class="inline-flex items-center gap-1"><i data-lucide="calendar" style="width:11px;height:11px"></i> ${now.toLocaleDateString(undefined, {month:'long'})}</span>`;
 
     return `
-      <div class="card p-5">
+      <div class="card p-5 cursor-pointer hover:shadow-md transition-shadow" onclick="window.__app.openBudgetDetail('${b.id}')">
         <div class="flex items-start gap-3">
-          <div class="icon-pill" style="background:${cat?.color}22;color:${cat?.color}">
-            <i data-lucide="${cat?.icon || 'circle'}"></i>
+          <div class="icon-pill" style="background:${(firstCat?.color) || '#10b981'}22;color:${(firstCat?.color) || '#10b981'}">
+            <i data-lucide="${firstCat?.icon || (multi ? 'layers' : 'circle')}"></i>
           </div>
-          <div class="flex-1">
-            <div class="flex items-center justify-between">
-              <div class="font-semibold flex items-center gap-2">
-                ${this.escapeHtml(cat?.name || 'Category')}
-                ${hasSubs ? '<span class="chip" style="font-size:.65rem">incl. sub-categories</span>' : ''}
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2">
+              <div class="font-semibold flex items-center gap-2 min-w-0">
+                <span class="truncate">${title}</span>
+                ${multi
+                  ? `<span class="chip flex-shrink-0" style="font-size:.65rem">${cats.length} categories</span>`
+                  : (hasSubs ? '<span class="chip flex-shrink-0" style="font-size:.65rem">incl. sub-categories</span>' : '')}
               </div>
-              <button class="btn btn-ghost" onclick="window.__app.openModal('budget',{id:'${b.id}'})">
+              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.openModal('budget',{id:'${b.id}'})" title="Edit budget">
                 <i data-lucide="pencil"></i>
               </button>
             </div>
@@ -94,6 +101,17 @@ export class BudgetsView extends BaseView {
                 : `${this.formatMoney(limit - spent, b.currency)} left`}
             </span>
           </div>
+          ${multi ? `
+            <div class="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-1">
+              ${split.map((s) => `
+                <div class="flex items-center justify-between text-xs">
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:${s.color}"></span>
+                    <span class="truncate">${this.escapeHtml(s.name)}</span>
+                  </span>
+                  <span class="text-zinc-500 flex-shrink-0">${this.formatMoney(s.spend, b.currency)}</span>
+                </div>`).join('')}
+            </div>` : ''}
         </div>
       </div>`;
   }

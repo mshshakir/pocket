@@ -43,6 +43,7 @@ import { TransactionsView }  from './ui/views/TransactionsView.js';
 import { AccountsView }      from './ui/views/AccountsView.js';
 import { AccountDetailView } from './ui/views/AccountDetailView.js';
 import { BudgetsView }       from './ui/views/BudgetsView.js';
+import { BudgetDetailView }  from './ui/views/BudgetDetailView.js';
 import { CategoriesView }    from './ui/views/CategoriesView.js';
 import { ReportsView }       from './ui/views/ReportsView.js';
 import { DebtsView }         from './ui/views/DebtsView.js';
@@ -1599,10 +1600,14 @@ export class Application {
     event.preventDefault();
     const fd    = new FormData(event.target);
     const data  = Object.fromEntries(fd.entries());
+    // Checkbox group → use getAll (fromEntries keeps only the last value).
+    const categoryIds = fd.getAll('categoryIds');
+    if (!categoryIds.length) return this.#toast.show('Pick at least one category');
     const minor  = this.#fx.toMinor(data.amount, data.currency);
     const period = data.period === 'hijri' ? 'hijri' : 'gregorian';
-    // Delegate to BudgetService (it also normalizes period on create).
-    const payload = { categoryId: data.categoryId, amount: minor, currency: data.currency, period, rollover: !!data.rollover };
+    // Delegate to BudgetService (it also normalizes period on create). categoryId
+    // is kept in sync with the first selection for backward compatibility.
+    const payload = { categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency, period, rollover: !!data.rollover };
     if (id) this.#budgets.update(id, payload);
     else    this.#budgets.create(payload);
     this.closeModal(); this.#render();
@@ -1615,6 +1620,14 @@ export class Application {
     this.#budgets.delete(id);
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
+  }
+
+  /** Open the drill-in detail view for a single budget (its transactions). */
+  openBudgetDetail(id) {
+    const v = this.#getOrCreateView('budgetDetail');
+    v.setBudget(id);
+    this.#router.navigate('budgetDetail');
+    this.#render();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2446,6 +2459,7 @@ export class Application {
       case 'accounts':     view = new AccountsView();     break;
       case 'accountDetail':view = new AccountDetailView();break;
       case 'budgets':      view = new BudgetsView();      break;
+      case 'budgetDetail': view = new BudgetDetailView(); break;
       case 'categories':   view = new CategoriesView();   break;
       case 'reports':      view = new ReportsView();      break;
       case 'debts':        view = new DebtsView();        break;
@@ -2540,6 +2554,8 @@ export class Application {
     if (Array.isArray(state.budgets)) {
       state.budgets.forEach((b) => {
         if (b && b.period !== 'hijri') b.period = 'gregorian';
+        // Multi-category budgets: backfill categoryIds from the legacy single id.
+        if (b && !Array.isArray(b.categoryIds)) b.categoryIds = b.categoryId ? [b.categoryId] : [];
       });
     }
 
