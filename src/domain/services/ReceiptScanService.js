@@ -24,8 +24,11 @@ import { Store }          from '../../core/Store.js';
 import { CurrencyService } from './CurrencyService.js';
 import { DateService }     from './DateService.js';
 
+// gemini-2.0-flash and 2.0-flash-lite were deprecated and shut down (June 2026).
+// gemini-2.5-flash-lite is the lowest-cost current model with image (vision) input.
+const GEMINI_MODEL = 'gemini-2.5-flash-lite';
 const GEMINI_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 export class ReceiptScanService {
   /** @type {Store} */           #store;

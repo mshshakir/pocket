@@ -110,86 +110,75 @@ export class SyncService {
   }
 
   async restoreSession() {
-    if (!this.#sb) return;
+    if (!this.#sb) return {};
 
-    // Use onAuthStateChange as the single source of truth.
-    // In Supabase v2 it fires 'INITIAL_SESSION' on every page load
-    // (including OAuth redirects) before any getSession() call returns.
-    return new Promise((resolve) => {
-      let settled = false;
-
-      const settle = async (user) => {
-        if (settled) return;
-        settled = true;
-        if (user && !this.#user) {
-          this.#user = user;
-          this.#emitUser(user);
-          this.#emitStatus('syncing');
-          this.#bus.emit('auth:changed', { user });
-          if (window.location.hash.includes('access_token')) {
-            history.replaceState(null, '', window.location.pathname);
-          }
-          const isFirst = await this.pull();
-          this.#subscribe();
-          resolve({ isFirstSignIn: isFirst });
-        } else {
-          // No valid session — reset store so cached finances are not exposed
-          this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
-          this.#emitUser(null);
-          this.#emitStatus('local');
-          this.#bus.emit('auth:changed', { user: null });
-          // Signal the app to open the sign-in modal
-          resolve({ isFirstSignIn: false, needsSignIn: true });
-        }
-      };
-
-      this.#sb.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN') {
-          await settle(session?.user ?? null);
-        }
-
-        if (event === 'INITIAL_SESSION') {
-          if (session?.user) {
-            await settle(session.user);
-          }
-          // session is null → token may still be refreshing; wait for SIGNED_IN or timeout
-        }
-
-        // SIGNED_OUT fires on explicit sign-out, on backend session invalidation
-        // (expired token, remote sign-out), and on failed token refresh.
-        if (event === 'SIGNED_OUT') {
-          if (this.#user) {
-            // A session was active — clear everything and show sign-in prompt.
-            // (signOut() fire-and-forget may have already cleared #user first;
-            //  if so, this branch is skipped avoiding double-reset.)
-            this.#user = null;
-            this.#sharedData = [];
-            this.#pendingRemovals.clear();
-            this.#pendingAdditions.clear();
-            this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
-            this.#emitStatus('local');
-            this.#emitUser(null);
-            this.#bus.emit('auth:changed', { user: null, showSignIn: true });
-          } else if (!settled) {
-            // SIGNED_OUT during initial session restore = token refresh failed.
-            // Settle immediately as "no session" instead of waiting for the 4s timeout.
-            settle(null);
-          }
-          // If #user is null AND settled, signOut() already handled this — no-op.
-        }
-      });
-
-      // Fallback: if INITIAL_SESSION never fires (slow network), getSession() after 4 s
-      setTimeout(async () => {
-        if (settled) return;
-        try {
-          const { data } = await this.#sb.auth.getSession();
-          await settle(data?.session?.user ?? null);
-        } catch (_) {
-          await settle(null);
-        }
-      }, 4000);
+    // Listener for auth changes AFTER initial load: OAuth sign-in completion and
+    // explicit/remote sign-out (or failed token refresh). The INITIAL restore is
+    // handled by getSession() below — which reliably returns the persisted
+    // session on a plain page refresh (the onAuthStateChange-only approach was
+    // racy and could drop the session on reload). Mirrors the reference impl.
+    this.#sb.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        if (!this.#user) this.#adoptSession(session.user);
+      } else if (event === 'SIGNED_OUT' && this.#user) {
+        this.#resetToGuest(true);
+      }
     });
+
+    // Primary restore — getSession() returns the persisted session on refresh and
+    // after the OAuth redirect hash has been parsed by the client.
+    try {
+      const { data } = await this.#sb.auth.getSession();
+      const user = data?.session?.user ?? null;
+      if (user) {
+        const isFirst = await this.#adoptSession(user);
+        return { isFirstSignIn: isFirst };
+      }
+    } catch (e) {
+      console.warn('[SyncService] getSession failed:', e);
+    }
+
+    // No persisted session → run as local/guest and prompt sign-in.
+    this.#resetToGuest(false);
+    return { isFirstSignIn: false, needsSignIn: true };
+  }
+
+  /**
+   * Adopt a restored / freshly signed-in session: pull cloud data + subscribe.
+   * @param {object} user
+   * @returns {Promise<boolean>} isFirstSignIn
+   */
+  async #adoptSession(user) {
+    if (this.#user) return false;
+    this.#user = user;
+    this.#emitUser(user);
+    this.#emitStatus('syncing');
+    this.#bus.emit('auth:changed', { user });
+    if (window.location.hash.includes('access_token')) {
+      history.replaceState(null, '', window.location.pathname);
+    }
+    const isFirst = await this.pull();
+    this.#subscribe();
+    return isFirst;
+  }
+
+  /**
+   * Drop back to local/guest state, wiping cloud-derived data so the next user
+   * never sees the previous one's records.
+   * @param {boolean} showSignIn  prompt the sign-in modal (true after sign-out)
+   */
+  #resetToGuest(showSignIn) {
+    this.#user = null;
+    this.#channel = null;
+    this.#subscribed = false;
+    this.#cloudVersion = 0;
+    this.#sharedData = [];
+    this.#pendingRemovals.clear();
+    this.#pendingAdditions.clear();
+    this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+    this.#emitStatus('local');
+    this.#emitUser(null);
+    this.#bus.emit('auth:changed', { user: null, showSignIn });
   }
 
   get currentUser() {

@@ -9,7 +9,8 @@
  *
  * No DOM, no state, no side effects — pure computation only.
  */
-import { FX, CURRENCIES, ZERO_DECIMAL, THREE_DECIMAL } from '../../data/constants.js';
+import { CURRENCIES, ZERO_DECIMAL, THREE_DECIMAL } from '../../data/constants.js';
+import { RATES } from './FxRates.js';
 
 export class CurrencyService {
   // ── Minor-unit helpers ──────────────────────────────────────────────
@@ -59,8 +60,8 @@ export class CurrencyService {
    */
   convert(minor, from, to) {
     if (from === to) return minor;
-    const fromRate = FX[from];
-    const toRate   = FX[to];
+    const fromRate = RATES[from];
+    const toRate   = RATES[to];
     if (!fromRate || !toRate) {
       console.warn(`[CurrencyService] Unknown currency: ${from} or ${to}`);
       return minor;
@@ -79,7 +80,7 @@ export class CurrencyService {
    */
   autoRate(from, to) {
     if (from === to) return 1;
-    return (FX[to] ?? 1) / (FX[from] ?? 1);
+    return (RATES[to] ?? 1) / (RATES[from] ?? 1);
   }
 
   // ── Formatting ──────────────────────────────────────────────────────

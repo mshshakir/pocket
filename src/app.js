@@ -14,8 +14,9 @@ import { Router }     from './core/Router.js';
 // ── Data ─────────────────────────────────────────────────────────────────────
 import { SeedFactory } from './data/seed.js';
 import {
-  FX, MEMBER_COLORS, ACCOUNT_TYPE_ICONS,
+  MEMBER_COLORS, ACCOUNT_TYPE_ICONS,
 } from './data/constants.js';
+import { RATES }               from './domain/services/FxRates.js';
 
 // ── Domain services ──────────────────────────────────────────────────────────
 import { IdGenerator }         from './domain/services/IdGenerator.js';
@@ -31,6 +32,7 @@ import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
 import { PaymentTypeService }  from './domain/services/PaymentTypeService.js';
 import { DateService }         from './domain/services/DateService.js';
+import { ExchangeRateService } from './domain/services/ExchangeRateService.js';
 
 // ── UI components ────────────────────────────────────────────────────────────
 import { Toast }      from './ui/components/Toast.js';
@@ -121,6 +123,7 @@ export class Application {
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
+  /** @type {ExchangeRateService}  */ #fxRates;
 
   // ── UI components ──────────────────────────────────────────────────────────
   /** @type {Toast}      */ #toast;
@@ -168,6 +171,7 @@ export class Application {
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
     this.#paymentTypeService = new PaymentTypeService(this.#store);
+    this.#fxRates            = new ExchangeRateService();
     this.#toast       = new Toast();
     this.#modal       = new Modal();
     this.#nav         = new Navigation();
@@ -182,6 +186,12 @@ export class Application {
     // 1. Load or seed state
     this.#store.init(() => SeedFactory.create());
     this.#ensureUserDefaults();
+
+    // 1b. Seed FX from last-saved live rates (offline-friendly), then refresh in
+    // the background — stale hardcoded rates (e.g. USD→INR 83) get corrected to
+    // the live value and the UI re-renders via state:changed when it lands.
+    this.#fxRates.seedFromState();
+    this.#fxRates.refresh().catch(() => {});
 
     // 2. Process any missed recurring items
     this.#recurring.process();
@@ -548,7 +558,7 @@ export class Application {
         categoryId:  data.categoryId || null,
         amount:      minor,
         currency,
-        exchangeRate: (FX[currency] || 1) / (FX[ownerHome] || 1),
+        exchangeRate: (RATES[currency] || 1) / (RATES[ownerHome] || 1),
         refAmount:   this.#fx.convert(minor, currency, ownerHome),
         payee:       data.payee || '',
         note:        data.note || '',
@@ -576,7 +586,7 @@ export class Application {
 
     const currency = data.currency;
     const minor    = this.#fx.toMinor(data.amount, currency);
-    const exchRate = (FX[currency] || 1) / (FX[state.user.homeCurrency] || 1);
+    const exchRate = (RATES[currency] || 1) / (RATES[state.user.homeCurrency] || 1);
     const refAmt   = this.#fx.convert(minor, currency, state.user.homeCurrency);
 
     // Cross-currency transfer rate
@@ -589,7 +599,7 @@ export class Application {
       if (!toAcc) return this.#toast.show('Pick a destination account');
       const toCcy  = toAcc.currency;
       let rate = Number(data.transferRate);
-      if (!isFinite(rate) || rate <= 0) rate = (FX[toCcy] || 1) / (FX[currency] || 1);
+      if (!isFinite(rate) || rate <= 0) rate = (RATES[toCcy] || 1) / (RATES[currency] || 1);
       const dstMinor = currency === toCcy ? minor
         : this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * rate, toCcy);
       xfer = { rate, toCcy, dstMinor };
@@ -653,7 +663,7 @@ export class Application {
             accountId: data.transferToAccountId, categoryId: null,
             amount: xfer ? xfer.dstMinor : minor,
             currency: xfer ? xfer.toCcy : currency,
-            exchangeRate: ((FX[xfer?.toCcy || currency] || 1)) / ((FX[state.user.homeCurrency] || 1)),
+            exchangeRate: ((RATES[xfer?.toCcy || currency] || 1)) / ((RATES[state.user.homeCurrency] || 1)),
             refAmount: this.#fx.convert(xfer ? xfer.dstMinor : minor, xfer ? xfer.toCcy : currency, state.user.homeCurrency),
             payee: data.payee || 'Transfer', note: data.note, date: data.date,
             paymentType: 'transfer', type: 'transfer', splits: null,
@@ -697,7 +707,7 @@ export class Application {
         const txTo = {
           id: toId, accountId: data.transferToAccountId, categoryId: null,
           amount: dst, currency: toCcy,
-          exchangeRate: ((FX[toCcy] || 1)) / ((FX[state.user.homeCurrency] || 1)),
+          exchangeRate: ((RATES[toCcy] || 1)) / ((RATES[state.user.homeCurrency] || 1)),
           refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
           paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
@@ -1193,7 +1203,7 @@ export class Application {
     panel.style.display = '';
     const fromCcy  = fromAcc.currency;
     const toCcy    = toAcc.currency;
-    const autoRate = (FX[toCcy] || 1) / (FX[fromCcy] || 1);
+    const autoRate = (RATES[toCcy] || 1) / (RATES[fromCcy] || 1);
 
     const rateInp = document.getElementById('fxRate');
     if (!userChangedRate || !(parseFloat(rateInp?.value) > 0)) {
@@ -1224,7 +1234,7 @@ export class Application {
     if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) return;
     const rateInp = document.getElementById('fxRate');
     if (rateInp) {
-      rateInp.value = ((FX[toAcc.currency] || 1) / (FX[fromAcc.currency] || 1)).toFixed(6);
+      rateInp.value = ((RATES[toAcc.currency] || 1) / (RATES[fromAcc.currency] || 1)).toFixed(6);
     }
     this.updateTransferFxPanel(false);
   }
@@ -1319,7 +1329,7 @@ export class Application {
         const tx = {
           id: IdGenerator.generate('tx'), accountId: a.id, categoryId: null,
           amount: Math.abs(delta), currency: a.currency,
-          exchangeRate: (FX[a.currency] || 1) / (FX[state.user.homeCurrency] || 1),
+          exchangeRate: (RATES[a.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
           refAmount: this.#fx.convert(Math.abs(delta), a.currency, state.user.homeCurrency),
           payee: 'Balance adjustment',
           note: `Manual balance set: ${this.#fx.formatMoney(wasMajor, a.currency)} → ${this.#fx.formatMoney(newMinor, a.currency)}`,
@@ -1346,7 +1356,7 @@ export class Application {
       const tx = {
         id: IdGenerator.generate('tx'), accountId: newId, categoryId: null,
         amount: Math.abs(newMinor), currency: a.currency,
-        exchangeRate: (FX[a.currency] || 1) / (FX[state.user.homeCurrency] || 1),
+        exchangeRate: (RATES[a.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
         refAmount: this.#fx.convert(Math.abs(newMinor), a.currency, state.user.homeCurrency),
         payee: 'Opening balance', note: '',
         date: today, paymentType: 'cash', recordState: 'cleared',
@@ -1459,7 +1469,7 @@ export class Application {
       categoryId:  null,
       amount:      absResidual,
       currency:    a.currency,
-      exchangeRate: (FX[a.currency] || 1) / (FX[state.user.homeCurrency] || 1),
+      exchangeRate: (RATES[a.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
       refAmount:   this.#fx.convert(absResidual, a.currency, state.user.homeCurrency),
       payee:       'Opening balance',
       note:        'Reconciled from existing account balance',
@@ -1662,7 +1672,7 @@ export class Application {
 
     const debtId  = IdGenerator.generate('dbt');
     const txId    = IdGenerator.generate('tx');
-    const exRate  = (FX[currency] || 1) / (FX[state.user.homeCurrency] || 1);
+    const exRate  = (RATES[currency] || 1) / (RATES[state.user.homeCurrency] || 1);
     const refAmt  = this.#fx.convert(principal, currency, state.user.homeCurrency);
     const isBorrowed = data.type === 'borrowed';
 
@@ -1706,7 +1716,7 @@ export class Application {
     const tx = {
       id: IdGenerator.generate('tx'), accountId: data.accountId, categoryId: null,
       amount, currency: debt.currency,
-      exchangeRate: (FX[debt.currency] || 1) / (FX[state.user.homeCurrency] || 1),
+      exchangeRate: (RATES[debt.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
       refAmount: this.#fx.convert(amount, debt.currency, state.user.homeCurrency),
       payee: debt.counterparty,
       note: (isBorrowed ? 'Payment to ' : 'Repayment from ') + debt.counterparty + (data.note ? ' — ' + data.note : ''),
@@ -2347,7 +2357,7 @@ export class Application {
       const acc = state.accounts.find((a) => a.id === accId);
       if (!acc) return;
       const minor   = draft.amount;
-      const exRate  = (FX[draft.currency] || 1) / (FX[state.user.homeCurrency] || 1);
+      const exRate  = (RATES[draft.currency] || 1) / (RATES[state.user.homeCurrency] || 1);
       const refAmt  = this.#fx.convert(minor, draft.currency, state.user.homeCurrency);
 
       if (draft.type === 'transfer') {
@@ -2360,7 +2370,7 @@ export class Application {
         const dstMinor = draft.toAmountMinor ?? minor;
         const toCcy    = draft.toCurrency ?? draft.currency;
         const txF = { id: fromId, accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: toId, transferDir: 'out', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
-        const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (FX[toCcy] || 1) / (FX[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: fromId, transferDir: 'in', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
+        const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: fromId, transferDir: 'in', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(txF, txT);
         acc.balance    -= this.#fx.convert(minor, draft.currency, acc.currency);
         toAcc.balance  += this.#fx.convert(dstMinor, toCcy, toAcc.currency);
@@ -2696,7 +2706,7 @@ export class Application {
       const acctName = (r.account || '').trim();
       if (!acctName) return;
       const currency = ((r.currency || state.user.homeCurrency).toUpperCase());
-      if (!FX[currency]) return;
+      if (!RATES[currency]) return;
       const rawAmt = String(r.amount || '0').replace(/[^0-9.\-]/g, '');
       const amount = this.#fx.toMinor(Math.abs(Number(rawAmt)), currency);
       if (!isFinite(amount) || amount === 0) return;
@@ -2751,7 +2761,7 @@ export class Application {
         if (!toName) return;
         const rawToAmt = (r.toamount || '').trim();
         const rawToCcy = (r.tocurrency || '').trim().toUpperCase();
-        const toCcy    = (rawToCcy && FX[rawToCcy]) ? rawToCcy : currency;
+        const toCcy    = (rawToCcy && RATES[rawToCcy]) ? rawToCcy : currency;
         const toAmountMinor = rawToAmt ? this.#fx.toMinor(Number(rawToAmt.replace(/[^0-9.\-]/g, '')), toCcy) : null;
         if (!accByName(toName) && !newAccs[norm(toName)]) {
           const t3 = this.#guessAccountType(toName);
