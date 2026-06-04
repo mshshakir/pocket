@@ -294,6 +294,13 @@ export class Application {
         }
       });
     }
+
+    // 10. Sign-in hand-off from the marketing site: a "Sign in" link there points
+    // to index.html#signin, which we detect here and open the auth modal.
+    if (window.location.hash === '#signin') {
+      history.replaceState(null, '', window.location.pathname);
+      setTimeout(() => { if (!this.#sync.currentUser) this.openModal('auth'); }, 500);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────

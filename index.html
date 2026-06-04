@@ -1,211 +1,446 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en" class="scroll-smooth">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>Pocket — Personal Finance</title>
+<title>Pocket — Personal finance that respects your money & your privacy</title>
+<meta name="description" content="Pocket is a privacy-first personal finance app: multi-currency accounts, AI receipt scanning, smart budgets, the Hijri calendar, debts, reports, and real-time family sync." />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
   tailwind.config = {
-    darkMode: 'class',
-    theme: {
-      extend: {
-        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
-        colors: {
-          bg:     { DEFAULT: '#ffffff', dark: '#09090b' },
-          card:   { DEFAULT: '#ffffff', dark: '#0c0c0f' },
-          muted:  { DEFAULT: '#f4f4f5', dark: '#18181b' },
-          border: { DEFAULT: '#e4e4e7', dark: '#27272a' },
-          fg:     { DEFAULT: '#09090b', dark: '#fafafa' },
-          subtle: { DEFAULT: '#71717a', dark: '#a1a1aa' },
-        }
-      }
-    }
+    theme: { extend: {
+      fontFamily: { sans: ['Inter','ui-sans-serif','system-ui'] },
+    }}
   }
 </script>
 <style>
-  html, body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
-  body { background: #fafafa; color: #09090b; }
-  html.dark body { background: #09090b; color: #fafafa; }
-
-  /* ── Cards ── */
-  .card       { background:#ffffff; border:1px solid #e4e4e7; border-radius:14px; }
-  .card-muted { background:#fafafa; border:1px solid #e4e4e7; border-radius:14px; }
-  html.dark .card       { background:#0c0c0f; border-color:#1f1f23; }
-  html.dark .card-muted { background:#0a0a0d; border-color:#1f1f23; }
-
-  /* ── Buttons ── */
-  .btn { display:inline-flex; align-items:center; gap:.5rem; padding:.55rem .9rem; border-radius:10px; font-weight:500; font-size:.875rem; transition:all .15s ease; border:1px solid transparent; cursor:pointer; }
-  .btn-primary { background:#09090b; color:#fafafa; }
-  .btn-primary:hover { background:#27272a; }
-  html.dark .btn-primary { background:#fafafa; color:#09090b; }
-  html.dark .btn-primary:hover { background:#e4e4e7; }
-  .btn-ghost { background:transparent; color:inherit; }
-  .btn-ghost:hover { background:#f4f4f5; }
-  html.dark .btn-ghost:hover { background:#18181b; }
-  .btn-outline { background:transparent; border-color:#e4e4e7; color:inherit; }
-  .btn-outline:hover { background:#f4f4f5; }
-  html.dark .btn-outline { border-color:#27272a; }
-  html.dark .btn-outline:hover { background:#18181b; }
-
-  /* ── Inputs ── */
-  .input, .select, .textarea { width:100%; background:#ffffff; border:1px solid #e4e4e7; border-radius:10px; padding:.55rem .75rem; font-size:.875rem; color:inherit; outline:none; transition:border-color .15s; }
-  html.dark .input, html.dark .select, html.dark .textarea { background:#0c0c0f; border-color:#27272a; }
-  .input:focus, .select:focus, .textarea:focus { border-color:#a1a1aa; }
-
-  /* ── Chips / badges ── */
-  .chip { display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .55rem; border-radius:9999px; font-size:.72rem; font-weight:500; background:#f4f4f5; color:#3f3f46; }
-  html.dark .chip { background:#18181b; color:#d4d4d8; }
-
-  /* ── Navigation ── */
-  .nav-item { display:flex; align-items:center; gap:.7rem; padding:.55rem .75rem; border-radius:10px; color:#52525b; font-size:.9rem; font-weight:500; cursor:pointer; transition:background .15s, color .15s; }
-  .nav-item:hover { background:#f4f4f5; color:#09090b; }
-  .nav-item.active { background:#f4f4f5; color:#09090b; }
-  html.dark .nav-item { color:#a1a1aa; }
-  html.dark .nav-item:hover, html.dark .nav-item.active { background:#18181b; color:#fafafa; }
-
-  .tab-item { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; flex:1; padding:.4rem 0; color:#71717a; font-size:.65rem; font-weight:500; }
-  .tab-item.active { color:#09090b; }
-  html.dark .tab-item { color:#a1a1aa; }
-  html.dark .tab-item.active { color:#fafafa; }
-
-  /* ── Skeleton loader ── */
-  .skeleton { background:linear-gradient(90deg,#f4f4f5 25%,#e4e4e7 50%,#f4f4f5 75%); background-size:200% 100%; animation:shimmer 1.5s infinite; border-radius:8px; }
-  html.dark .skeleton { background:linear-gradient(90deg,#18181b 25%,#27272a 50%,#18181b 75%); background-size:200% 100%; }
-  @keyframes shimmer { 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ── Modal ── */
-  .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); backdrop-filter:blur(2px); z-index:50; display:none; }
-  .modal-backdrop.open { display:flex; align-items:flex-end; justify-content:center; }
-  @media (min-width:640px) { .modal-backdrop.open { align-items:center; } }
-  .modal { background:#fff; width:100%; max-width:520px; border-radius:18px 18px 0 0; max-height:92vh; overflow:auto; }
-  @media (min-width:640px) { .modal { border-radius:18px; } }
-  html.dark .modal { background:#0c0c0f; border:1px solid #27272a; }
-
-  /* ── Toast ── */
-  .toast { position:fixed; bottom:5.5rem; left:50%; transform:translateX(-50%); background:#09090b; color:#fafafa; padding:.6rem 1rem; border-radius:12px; font-size:.85rem; box-shadow:0 10px 30px rgba(0,0,0,.2); z-index:60; opacity:0; transition:opacity .2s, transform .2s; pointer-events:none; }
-  html.dark .toast { background:#fafafa; color:#09090b; }
-  .toast.show { opacity:1; transform:translate(-50%,-8px); }
-  @media (min-width:768px) { .toast { bottom:1.5rem; } }
-
-  /* ── Progress bar ── */
-  .progress { height:6px; background:#f4f4f5; border-radius:9999px; overflow:hidden; }
-  html.dark .progress { background:#18181b; }
-  .progress > div { height:100%; border-radius:9999px; transition:width .4s ease; }
-
-  /* ── Misc ── */
-  .no-scrollbar::-webkit-scrollbar { display:none; }
-  .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
-  .icon-pill { width:36px; height:36px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
-  .fab { position:fixed; right:1rem; bottom:5.25rem; width:54px; height:54px; border-radius:9999px; background:#09090b; color:#fafafa; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 24px rgba(0,0,0,.18); z-index:30; }
-  html.dark .fab { background:#fafafa; color:#09090b; }
-  @media (min-width:768px) { .fab { display:none; } }
-  [data-lucide] { width:18px; height:18px; stroke-width:1.75; }
-
-  /* ── Swipe-to-delete ── */
-  .tx-swipe-wrapper { touch-action:pan-y; position:relative; overflow:hidden; }
-  .tx-row-content { background:#ffffff; transition:transform .18s ease; will-change:transform; }
-  html.dark .tx-row-content { background:#0c0c0f; }
-  .tx-delete-bg { position:absolute; right:0; top:0; bottom:0; width:80px; background:#ef4444; display:flex; align-items:center; justify-content:center; }
-
-  /* ── Month divider ── */
-  .month-divider { display:flex; align-items:center; gap:.6rem; padding:.25rem; margin:.75rem 0 .5rem; }
-  .month-divider-line { flex:1; border-top:1px solid #e4e4e7; }
-  html.dark .month-divider-line { border-color:#27272a; }
-
-  /* ── Print ── */
-  @media print {
-    body { background:#fff !important; color:#09090b !important; }
-    header, aside, nav, .fab, .modal-backdrop, .toast { display:none !important; }
-    main { padding:0 !important; margin:0 !important; }
-    .max-w-5xl { max-width:none !important; }
-    .card, .card-muted { border-color:#e4e4e7 !important; background:#fff !important; page-break-inside:avoid; }
-    .btn { display:none !important; }
-    button[onclick] { display: none !important; }
-    main { padding-left: 0 !important; }
-    a, button { color: inherit !important; }
-    canvas { max-height:240px; }
-  }
+  html,body{font-family:'Inter',ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;background:#fafafa;color:#09090b;}
+  .blob{position:absolute;border-radius:9999px;filter:blur(70px);opacity:.55;z-index:0;pointer-events:none;}
+  .reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease;}
+  .reveal.in{opacity:1;transform:none;}
+  [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
+  .grad-text{background:linear-gradient(90deg,#10b981,#0ea5e9 55%,#6366f1);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .card-soft{background:#fff;border:1px solid #ececef;border-radius:20px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  .ring-dot{box-shadow:0 0 0 4px #fff;}
 </style>
 </head>
-<body class="min-h-full">
+<body class="overflow-x-hidden">
 
-<!-- ── Mobile top bar ── -->
-<header class="md:hidden sticky top-0 z-20 bg-white/80 dark:bg-[#0a0a0d]/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
-  <div class="flex items-center justify-between px-4 h-14">
+<!-- ── Nav ─────────────────────────────────────────────────────────────── -->
+<header class="sticky top-0 z-40 backdrop-blur bg-white/75 border-b border-zinc-200/70">
+  <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+    <a href="#top" class="flex items-center gap-2">
+      <div class="w-9 h-9 rounded-xl bg-zinc-900 text-white grid place-items-center font-bold">P</div>
+      <span class="font-semibold tracking-tight text-lg">Pocket</span>
+    </a>
+    <nav class="hidden md:flex items-center gap-7 text-sm text-zinc-600">
+      <a href="#features" class="hover:text-zinc-900 transition">Features</a>
+      <a href="#how" class="hover:text-zinc-900 transition">How it works</a>
+      <a href="#pricing" class="hover:text-zinc-900 transition">Pricing</a>
+      <a href="#privacy" class="hover:text-zinc-900 transition">Privacy</a>
+      <a href="privacy.html" class="hover:text-zinc-900 transition">Policy</a>
+    </nav>
     <div class="flex items-center gap-2">
-      <div class="w-8 h-8 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center font-semibold text-sm">P</div>
-      <span class="font-semibold tracking-tight">Pocket</span>
+      <a href="app.html#signin"
+         class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition">
+        <i data-lucide="log-in"></i> Sign in
+      </a>
+      <a href="app.html"
+         class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition shadow-sm">
+        Go to app <i data-lucide="arrow-right"></i>
+      </a>
     </div>
-    <button class="btn btn-ghost" onclick="window.__app.toggleTheme()" title="Theme"><i data-lucide="sun-moon"></i></button>
   </div>
 </header>
 
-<!-- ── Layout shell ── -->
-<div class="md:flex md:min-h-screen">
+<!-- ── Hero ────────────────────────────────────────────────────────────── -->
+<section id="top" class="relative overflow-hidden">
+  <div class="blob" style="width:380px;height:380px;background:#a7f3d0;top:-80px;left:-60px"></div>
+  <div class="blob" style="width:420px;height:420px;background:#bfdbfe;top:-40px;right:-80px"></div>
+  <div class="blob" style="width:360px;height:360px;background:#ddd6fe;top:240px;left:40%"></div>
 
-  <!-- Sidebar (desktop) -->
-  <aside class="hidden md:flex md:flex-col md:w-64 md:fixed md:inset-y-0 md:border-r md:border-zinc-200 dark:md:border-zinc-800 md:bg-white dark:md:bg-[#0a0a0d] p-5 gap-1">
-    <div class="flex items-center gap-2 mb-6">
-      <div class="w-9 h-9 rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center font-semibold">P</div>
-      <div>
-        <div class="font-semibold tracking-tight">Pocket</div>
-        <div class="text-xs text-zinc-500">Personal finance</div>
+  <div class="relative max-w-6xl mx-auto px-5 pt-16 md:pt-24 pb-10 text-center">
+    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-zinc-200 text-xs font-medium text-zinc-600 shadow-sm">
+      <span class="w-2 h-2 rounded-full bg-emerald-500"></span> Private by design · No ads · Your data stays yours
+    </span>
+    <h1 class="mt-6 text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.05]">
+      Money, finally<br class="hidden md:block"> <span class="grad-text">in your Pocket</span>.
+    </h1>
+    <p class="mt-5 max-w-2xl mx-auto text-lg text-zinc-600">
+      A beautiful personal-finance app with multi-currency accounts, AI receipt scanning, smart budgets,
+      the Hijri calendar, debts, rich reports, and real-time family sync — all in your browser.
+    </p>
+    <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+      <a href="app.html#signin"
+         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition shadow-lg shadow-zinc-900/10">
+        <i data-lucide="log-in"></i> Sign in
+      </a>
+      <a href="app.html"
+         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 transition shadow-sm">
+        Go to app <i data-lucide="arrow-right"></i>
+      </a>
+    </div>
+    <p class="mt-4 text-xs text-zinc-500">Sign in with Google · Free · Works on mobile & desktop</p>
+
+    <!-- App preview mock -->
+    <div class="reveal mt-14 max-w-4xl mx-auto">
+      <div class="card-soft p-3 md:p-4">
+        <div class="rounded-2xl bg-gradient-to-b from-zinc-50 to-white border border-zinc-100 p-4 md:p-6 text-left">
+          <!-- top row -->
+          <div class="flex items-center justify-between mb-5">
+            <div>
+              <div class="text-xs uppercase tracking-wider text-zinc-400">Overview</div>
+              <div class="text-xl font-bold tracking-tight">Dashboard</div>
+            </div>
+            <span class="inline-flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full"><i data-lucide="cloud-check" style="width:14px;height:14px"></i> Synced</span>
+          </div>
+          <!-- stat cards -->
+          <div class="grid grid-cols-3 gap-3 mb-5">
+            <div class="rounded-xl bg-white border border-zinc-100 p-4">
+              <div class="text-[11px] text-zinc-400">Total balance</div>
+              <div class="text-lg md:text-2xl font-bold tracking-tight mt-1">$14,250</div>
+              <div class="text-[11px] text-zinc-400 mt-1">4 accounts · USD</div>
+            </div>
+            <div class="rounded-xl bg-white border border-zinc-100 p-4">
+              <div class="text-[11px] text-zinc-400 flex items-center gap-1"><i data-lucide="arrow-down-left" style="width:12px;height:12px;color:#10b981"></i> Income</div>
+              <div class="text-lg md:text-2xl font-bold text-emerald-500 mt-1">$5,800</div>
+            </div>
+            <div class="rounded-xl bg-white border border-zinc-100 p-4">
+              <div class="text-[11px] text-zinc-400 flex items-center gap-1"><i data-lucide="arrow-up-right" style="width:12px;height:12px;color:#f43f5e"></i> Expenses</div>
+              <div class="text-lg md:text-2xl font-bold text-rose-500 mt-1">$2,340</div>
+            </div>
+          </div>
+          <!-- chart + list -->
+          <div class="grid md:grid-cols-3 gap-3">
+            <div class="rounded-xl bg-white border border-zinc-100 p-4 flex flex-col items-center justify-center">
+              <div class="text-xs text-zinc-400 self-start mb-2">Top spending</div>
+              <!-- donut -->
+              <svg viewBox="0 0 36 36" class="w-28 h-28">
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f4f4f5" stroke-width="4"></circle>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f97316" stroke-width="4" stroke-dasharray="38 100" stroke-dashoffset="0" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#3b82f6" stroke-width="4" stroke-dasharray="26 100" stroke-dashoffset="-38" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#8b5cf6" stroke-width="4" stroke-dasharray="18 100" stroke-dashoffset="-64" transform="rotate(-90 18 18)"></circle>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" stroke-width="4" stroke-dasharray="18 100" stroke-dashoffset="-82" transform="rotate(-90 18 18)"></circle>
+              </svg>
+            </div>
+            <div class="md:col-span-2 rounded-xl bg-white border border-zinc-100 p-4">
+              <div class="text-xs text-zinc-400 mb-3">Recent transactions</div>
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#f9731622;color:#f97316"><i data-lucide="utensils" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Whole Foods</div><div class="text-[11px] text-zinc-400">Food & Drink · Main Checking</div></div></div>
+                  <div class="text-sm font-semibold text-rose-500">-$87.45</div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#22c55e22;color:#22c55e"><i data-lucide="banknote" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Acme Corp</div><div class="text-[11px] text-zinc-400">Salary · Main Checking</div></div></div>
+                  <div class="text-sm font-semibold text-emerald-500">+$5,800</div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#3b82f622;color:#3b82f6"><i data-lucide="arrow-right-left" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Transfer → High-Yield Save</div><div class="text-[11px] text-zinc-400">€500 · cross-currency</div></div></div>
+                  <div class="text-sm font-semibold text-zinc-500">$540</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Trust strip ─────────────────────────────────────────────────────── -->
+<section class="max-w-6xl mx-auto px-5 py-8">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">100+</div><div class="text-xs text-zinc-500 mt-1">currencies, live rates</div></div>
+    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">AI</div><div class="text-xs text-zinc-500 mt-1">receipt scanning</div></div>
+    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">Real-time</div><div class="text-xs text-zinc-500 mt-1">family sync</div></div>
+    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">0 ads</div><div class="text-xs text-zinc-500 mt-1">your data stays yours</div></div>
+  </div>
+</section>
+
+<!-- ── Features (bento) ────────────────────────────────────────────────── -->
+<section id="features" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="text-center mb-12 reveal">
+    <span class="text-xs font-semibold uppercase tracking-widest text-emerald-600">Everything you need</span>
+    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">One app for the whole money picture</h2>
+    <p class="mt-3 text-zinc-600 max-w-2xl mx-auto">From a quick coffee log to multi-currency net worth — Pocket handles it without spreadsheets.</p>
+  </div>
+
+  <div class="grid md:grid-cols-3 gap-4">
+    <!-- big feature -->
+    <div class="reveal card-soft p-6 md:row-span-2 md:col-span-1 flex flex-col">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#4285f422;color:#4285f4"><i data-lucide="scan-line"></i></span>
+      <h3 class="mt-4 text-xl font-bold tracking-tight">AI receipt scanning</h3>
+      <p class="mt-2 text-sm text-zinc-600">Snap a photo and Gemini reads the line items, maps them to your categories, and pre-fills a split transaction. Just review and save.</p>
+      <div class="mt-5 rounded-xl bg-zinc-50 border border-zinc-100 p-4 text-sm">
+        <div class="flex items-center justify-between"><span class="text-zinc-500">Latte</span><span class="font-medium">$4.50</span></div>
+        <div class="flex items-center justify-between mt-2"><span class="text-zinc-500">Croissant</span><span class="font-medium">$3.20</span></div>
+        <div class="mt-3 pt-3 border-t border-zinc-200 flex items-center gap-1.5 text-emerald-600 text-xs"><i data-lucide="sparkles" style="width:13px;height:13px"></i> Auto-categorised · Food & Drink</div>
       </div>
     </div>
 
-    <!-- Navigation items injected by Navigation component -->
-    <nav id="sidebarNav" class="flex flex-col gap-1"></nav>
-
-    <div class="mt-auto pt-4 border-t border-zinc-200 dark:border-zinc-800 flex flex-col gap-1">
-      <!-- Auth pill injected by Navigation component -->
-      <div id="authPill"></div>
-      <button class="nav-item w-full" onclick="window.__app.toggleTheme()"><i data-lucide="sun-moon"></i> Toggle theme</button>
-      <button class="nav-item w-full"
-              onclick="window.__app.openModal('settings',{})">
-        <i data-lucide="settings"></i> Settings
-      </button>
+    <!-- standard features -->
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#0ea5e922;color:#0ea5e9"><i data-lucide="globe"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Multi-currency, live rates</h3>
+      <p class="mt-2 text-sm text-zinc-600">100+ currencies with rates refreshed automatically. Per-account currencies and cross-currency transfers, all converted to your home currency.</p>
     </div>
-  </aside>
 
-  <!-- Main content area -->
-  <main class="md:pl-64 w-full">
-    <div class="max-w-5xl mx-auto px-4 md:px-8 py-5 md:py-8 pb-28 md:pb-12">
-      <!-- Active view renders here -->
-      <div id="viewContent"></div>
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#10b98122;color:#10b981"><i data-lucide="target"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Smart budgets</h3>
+      <p class="mt-2 text-sm text-zinc-600">Budget a category, several sub-categories, or a whole group. Gregorian or Hijri months, optional rollover, and a per-category breakdown.</p>
     </div>
-  </main>
-</div>
 
-<!-- ── Mobile bottom tab bar ── -->
-<nav class="md:hidden fixed bottom-0 inset-x-0 z-20 bg-white/95 dark:bg-[#0a0a0d]/95 backdrop-blur border-t border-zinc-200 dark:border-zinc-800">
-  <div id="bottomNav" class="flex">
-    <!-- Tab items injected by Navigation component -->
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#6366f122;color:#6366f1"><i data-lucide="moon-star"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Hijri calendar & miqaats</h3>
+      <p class="mt-2 text-sm text-zinc-600">See Hijri dates alongside Gregorian throughout the app, with miqaats from the Mumineen calendar and Hijri-month budgeting.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#a855f722;color:#a855f7"><i data-lucide="pie-chart"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Reports & insights</h3>
+      <p class="mt-2 text-sm text-zinc-600">Net-worth over time, spending by category, daily trends and your biggest transactions — clear charts, no setup.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#14b8a622;color:#14b8a6"><i data-lucide="wallet"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Accounts & transfers</h3>
+      <p class="mt-2 text-sm text-zinc-600">Bank, cash, card, savings & investments — grouped, reconcilable, with splits, tags and one-tap transfers.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#f59e0b22;color:#f59e0b"><i data-lucide="hand-coins"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Debts & loans</h3>
+      <p class="mt-2 text-sm text-zinc-600">Track money you've borrowed or lent, log repayments, and let Pocket mark a debt paid automatically.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#ec489922;color:#ec4899"><i data-lucide="calendar-days"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Regular purchases</h3>
+      <p class="mt-2 text-sm text-zinc-600">A calendar for recurring everyday items — your morning coffee, a bus pass — with monthly summaries that flow into your ledger.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#0891b222;color:#0891b2"><i data-lucide="users"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Family sharing & sync</h3>
+      <p class="mt-2 text-sm text-zinc-600">Share chosen accounts with family — view-only or with edit access — and stay in sync across all your devices in real time.</p>
+    </div>
+
+    <div class="reveal card-soft p-6">
+      <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#64748b22;color:#64748b"><i data-lucide="file-down"></i></span>
+      <h3 class="mt-4 font-bold tracking-tight">Import & export</h3>
+      <p class="mt-2 text-sm text-zinc-600">Migrate from any app with a CSV — accounts, categories, transfers and splits auto-created. Export to JSON or CSV anytime.</p>
+    </div>
   </div>
-</nav>
+</section>
 
-<!-- ── Mobile floating add button ── -->
-<button class="fab"
-        onclick="window.__app.openModal('transaction',{})"
-        aria-label="Add transaction">
-  <i data-lucide="plus" style="width:22px;height:22px"></i>
-</button>
+<!-- ── How it works ────────────────────────────────────────────────────── -->
+<section id="how" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="text-center mb-12 reveal">
+    <span class="text-xs font-semibold uppercase tracking-widest text-indigo-600">Up and running in a minute</span>
+    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">How it works</h2>
+  </div>
+  <div class="grid md:grid-cols-3 gap-6">
+    <div class="reveal text-center">
+      <div class="mx-auto w-12 h-12 rounded-2xl bg-zinc-900 text-white grid place-items-center font-bold text-lg">1</div>
+      <h3 class="mt-4 font-bold">Sign in</h3>
+      <p class="mt-2 text-sm text-zinc-600">One click with Google. Your data syncs securely and privately across devices.</p>
+    </div>
+    <div class="reveal text-center">
+      <div class="mx-auto w-12 h-12 rounded-2xl bg-zinc-900 text-white grid place-items-center font-bold text-lg">2</div>
+      <h3 class="mt-4 font-bold">Add your money</h3>
+      <p class="mt-2 text-sm text-zinc-600">Create accounts, scan a receipt, or import a CSV. Pick your home currency and you're set.</p>
+    </div>
+    <div class="reveal text-center">
+      <div class="mx-auto w-12 h-12 rounded-2xl bg-zinc-900 text-white grid place-items-center font-bold text-lg">3</div>
+      <h3 class="mt-4 font-bold">See the full picture</h3>
+      <p class="mt-2 text-sm text-zinc-600">Budgets, net worth, debts and reports update instantly — for you and your family.</p>
+    </div>
+  </div>
+</section>
 
-<!--
-  Modal backdrop + card are programmatically created by Modal.mount().
-  Toast is programmatically created by Toast.mount().
-  Both are appended to #app.
--->
-<div id="app"></div>
 
-<!-- ── Application entry point ── -->
-<script type="module" src="src/app.js"></script>
+<!-- ── Pricing ────────────────────────────────────────────────────────── -->
+<section id="pricing" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="text-center mb-12 reveal">
+    <span class="text-xs font-semibold uppercase tracking-widest text-violet-600">Simple, honest pricing</span>
+    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Pay only for what you need</h2>
+    <p class="mt-3 text-zinc-600 max-w-xl mx-auto">Everything that makes Pocket useful is free. Pay only if you want unlimited transactions, cloud sync, or family sharing.</p>
+  </div>
+
+  <div class="grid md:grid-cols-4 gap-4 items-start">
+
+    <!-- Free -->
+    <div class="reveal card-soft p-6 flex flex-col">
+      <div class="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-3">Free</div>
+      <div class="text-3xl font-extrabold tracking-tight">₹0</div>
+      <div class="text-xs text-zinc-400 mt-1 mb-5">forever</div>
+      <ul class="space-y-2.5 text-sm text-zinc-600 flex-1">
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>100 transactions</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Unlimited accounts &amp; budgets</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Full reports &amp; analytics</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Debt tracker</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>CSV import &amp; export</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>AI receipt scanning</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Recurring transactions</li>
+        <li class="flex items-start gap-2"><i data-lucide="minus" style="width:15px;height:15px;color:#d4d4d8;flex-shrink:0;margin-top:1px"></i><span class="text-zinc-400">No cloud sync</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="minus" style="width:15px;height:15px;color:#d4d4d8;flex-shrink:0;margin-top:1px"></i><span class="text-zinc-400">No family sharing</span></li>
+      </ul>
+      <a href="app.html" class="mt-6 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-zinc-200 text-zinc-700 hover:bg-zinc-50 transition">
+        Get started free
+      </a>
+    </div>
+
+    <!-- Basic -->
+    <div class="reveal card-soft p-6 flex flex-col">
+      <div class="text-xs font-semibold uppercase tracking-widest text-blue-500 mb-3">Basic</div>
+      <div class="flex items-end gap-1">
+        <div class="text-3xl font-extrabold tracking-tight">₹100</div>
+        <div class="text-sm text-zinc-400 mb-1">/year</div>
+      </div>
+      <div class="text-xs text-zinc-400 mt-1 mb-5">Less than ₹9 a month</div>
+      <ul class="space-y-2.5 text-sm text-zinc-600 flex-1">
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i><span class="font-medium text-zinc-900">Unlimited transactions</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Everything in Free</li>
+        <li class="flex items-start gap-2"><i data-lucide="minus" style="width:15px;height:15px;color:#d4d4d8;flex-shrink:0;margin-top:1px"></i><span class="text-zinc-400">No cloud sync</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="minus" style="width:15px;height:15px;color:#d4d4d8;flex-shrink:0;margin-top:1px"></i><span class="text-zinc-400">No family sharing</span></li>
+      </ul>
+      <a href="app.html" class="mt-6 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-blue-200 text-blue-700 hover:bg-blue-50 transition">
+        Get Basic
+      </a>
+    </div>
+
+    <!-- Sync — highlighted -->
+    <div class="reveal flex flex-col rounded-[20px] p-[2px] bg-gradient-to-b from-violet-400 to-indigo-500 shadow-xl shadow-indigo-200">
+      <div class="bg-white rounded-[18px] p-6 flex flex-col flex-1">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs font-semibold uppercase tracking-widest text-violet-600">Sync</div>
+          <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">Most popular</span>
+        </div>
+        <div class="flex items-end gap-1">
+          <div class="text-3xl font-extrabold tracking-tight">₹500</div>
+          <div class="text-sm text-zinc-400 mb-1">/year</div>
+        </div>
+        <div class="text-xs text-zinc-400 mt-1 mb-5">₹42 a month</div>
+        <ul class="space-y-2.5 text-sm text-zinc-600 flex-1">
+          <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Unlimited transactions</li>
+          <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Everything in Basic</li>
+          <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#6366f1;flex-shrink:0;margin-top:1px"></i><span class="font-medium text-zinc-900">Cloud sync across devices</span></li>
+          <li class="flex items-start gap-2"><i data-lucide="minus" style="width:15px;height:15px;color:#d4d4d8;flex-shrink:0;margin-top:1px"></i><span class="text-zinc-400">No family sharing</span></li>
+        </ul>
+        <a href="app.html" class="mt-6 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition">
+          Get Sync
+        </a>
+      </div>
+    </div>
+
+    <!-- Family -->
+    <div class="reveal card-soft p-6 flex flex-col">
+      <div class="text-xs font-semibold uppercase tracking-widest text-emerald-600 mb-3">Family</div>
+      <div class="flex items-end gap-1">
+        <div class="text-3xl font-extrabold tracking-tight">₹700</div>
+        <div class="text-sm text-zinc-400 mb-1">/year</div>
+      </div>
+      <div class="text-xs text-zinc-400 mt-1 mb-5">₹58 a month</div>
+      <ul class="space-y-2.5 text-sm text-zinc-600 flex-1">
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Unlimited transactions</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Everything in Sync</li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i><span class="font-medium text-zinc-900">Family sharing</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="check" style="width:15px;height:15px;color:#10b981;flex-shrink:0;margin-top:1px"></i>Shared accounts &amp; permissions</li>
+      </ul>
+      <a href="app.html" class="mt-6 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-emerald-200 text-emerald-700 hover:bg-emerald-50 transition">
+        Get Family
+      </a>
+    </div>
+
+  </div>
+
+  <!-- FAQ row -->
+  <div class="mt-10 grid md:grid-cols-3 gap-6 text-sm">
+    <div class="reveal">
+      <div class="font-semibold mb-1">What counts as a transaction?</div>
+      <div class="text-zinc-500">Every expense, income entry, or transfer you log. The 100-transaction free limit is generous enough to try Pocket properly for 2–3 months.</div>
+    </div>
+    <div class="reveal">
+      <div class="font-semibold mb-1">What happens when the year ends?</div>
+      <div class="text-zinc-500">You drop back to the Free tier. Your data is never deleted — you just won't be able to add new transactions beyond 100 until you renew.</div>
+    </div>
+    <div class="reveal">
+      <div class="font-semibold mb-1">Can I upgrade later?</div>
+      <div class="text-zinc-500">Yes, anytime from Settings inside the app. Payments are processed securely via Razorpay. No auto-renewal without your confirmation.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Privacy ─────────────────────────────────────────────────────────── -->
+<section id="privacy" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="card-soft p-8 md:p-12 relative overflow-hidden">
+    <div class="blob" style="width:300px;height:300px;background:#bbf7d0;bottom:-120px;right:-80px;opacity:.4"></div>
+    <div class="relative md:flex items-center gap-10">
+      <div class="md:flex-1">
+        <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium"><i data-lucide="shield-check" style="width:14px;height:14px"></i> Privacy-first</span>
+        <h2 class="mt-4 text-3xl font-extrabold tracking-tight">Your finances are nobody else's business</h2>
+        <p class="mt-3 text-zinc-600">Pocket stores your data in your own browser and your own cloud account. No ads, no data selling, no tracking. Your AI key and receipt images are only ever sent to Google's API when you choose to scan — never to us.</p>
+        <a href="privacy.html" class="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-zinc-900 hover:gap-3 transition-all">Read the privacy policy <i data-lucide="arrow-right"></i></a>
+      </div>
+      <ul class="md:flex-1 mt-6 md:mt-0 space-y-3 text-sm">
+        <li class="flex items-start gap-3"><i data-lucide="check-circle-2" style="color:#10b981"></i> Data kept locally + in your private cloud sync</li>
+        <li class="flex items-start gap-3"><i data-lucide="check-circle-2" style="color:#10b981"></i> Export or delete everything, anytime</li>
+        <li class="flex items-start gap-3"><i data-lucide="check-circle-2" style="color:#10b981"></i> No advertising and no selling of your data</li>
+        <li class="flex items-start gap-3"><i data-lucide="check-circle-2" style="color:#10b981"></i> You control family sharing, per account</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA band ────────────────────────────────────────────────────────── -->
+<section class="max-w-6xl mx-auto px-5 pb-20">
+  <div class="rounded-3xl bg-zinc-900 text-white p-10 md:p-16 text-center relative overflow-hidden">
+    <div class="blob" style="width:320px;height:320px;background:#10b981;top:-100px;left:-60px;opacity:.25"></div>
+    <div class="blob" style="width:320px;height:320px;background:#6366f1;bottom:-120px;right:-60px;opacity:.25"></div>
+    <div class="relative">
+      <h2 class="text-3xl md:text-4xl font-extrabold tracking-tight">Take control of your money today</h2>
+      <p class="mt-3 text-zinc-300 max-w-xl mx-auto">Free, private, and ready on every device. Sign in and Pocket does the rest.</p>
+      <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <a href="app.html#signin" class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white text-zinc-900 hover:bg-zinc-200 transition"><i data-lucide="log-in"></i> Sign in</a>
+        <a href="app.html" class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold border border-white/25 text-white hover:bg-white/10 transition">Go to app <i data-lucide="arrow-right"></i></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────── -->
+<footer class="border-t border-zinc-200">
+  <div class="max-w-6xl mx-auto px-5 py-10 flex flex-col md:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-lg bg-zinc-900 text-white grid place-items-center font-bold text-sm">P</div>
+      <span class="font-semibold">Pocket</span>
+      <span class="text-zinc-400 text-sm">· Personal finance</span>
+    </div>
+    <div class="flex items-center gap-6 text-sm text-zinc-500">
+      <a href="#features" class="hover:text-zinc-900">Features</a>
+      <a href="privacy.html" class="hover:text-zinc-900">Privacy</a>
+      <a href="app.html#signin" class="hover:text-zinc-900">Sign in</a>
+      <a href="app.html" class="hover:text-zinc-900">Open app</a>
+    </div>
+    <div class="text-xs text-zinc-400">© <span id="yr"></span> Pocket. All rights reserved.</div>
+  </div>
+</footer>
+
+<script>
+  lucide.createIcons();
+  document.getElementById('yr').textContent = new Date().getFullYear();
+  // Reveal-on-scroll
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+</script>
 </body>
 </html>
+                        

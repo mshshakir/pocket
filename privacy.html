@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Privacy Policy — Pocket</title>
+<meta name="description" content="How Pocket handles your data: stored in your browser and your own cloud, never sold, no ads." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html,body{font-family:'Inter',ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;background:#fafafa;color:#18181b;}
+  [data-lucide]{width:18px;height:18px;stroke-width:1.75;}
+  .prose-pocket h2{font-size:1.25rem;font-weight:700;letter-spacing:-.01em;margin-top:2.25rem;margin-bottom:.6rem;scroll-margin-top:5rem;}
+  .prose-pocket h3{font-size:1rem;font-weight:600;margin-top:1.25rem;margin-bottom:.35rem;}
+  .prose-pocket p{color:#3f3f46;line-height:1.7;margin-bottom:.8rem;}
+  .prose-pocket ul{list-style:disc;padding-left:1.25rem;margin-bottom:.9rem;color:#3f3f46;}
+  .prose-pocket li{margin-bottom:.4rem;line-height:1.6;}
+  .prose-pocket a{color:#0e7490;text-decoration:underline;}
+  .prose-pocket strong{color:#18181b;}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<header class="sticky top-0 z-40 backdrop-blur bg-white/80 border-b border-zinc-200/70">
+  <div class="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2">
+      <div class="w-9 h-9 rounded-xl bg-zinc-900 text-white grid place-items-center font-bold">P</div>
+      <span class="font-semibold tracking-tight text-lg">Pocket</span>
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="index.html" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition"><i data-lucide="arrow-left"></i> Back</a>
+      <a href="app.html" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition">Go to app <i data-lucide="arrow-right"></i></a>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-3xl mx-auto px-5 py-12">
+  <div class="mb-8">
+    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium"><i data-lucide="shield-check" style="width:14px;height:14px"></i> Privacy-first</span>
+    <h1 class="mt-4 text-3xl md:text-4xl font-extrabold tracking-tight">Privacy Policy</h1>
+    <p class="mt-2 text-sm text-zinc-500">Last updated: June 2026</p>
+  </div>
+
+  <!-- TL;DR -->
+  <div class="rounded-2xl bg-white border border-zinc-200 p-5 mb-8">
+    <div class="font-semibold mb-2 flex items-center gap-2"><i data-lucide="sparkles" style="width:16px;height:16px;color:#10b981"></i> The short version</div>
+    <ul class="text-sm text-zinc-600 space-y-1.5 list-disc pl-5">
+      <li>Pocket keeps your data <strong>in your browser</strong> and, if you sign in, in <strong>your own cloud account</strong>.</li>
+      <li>We <strong>don't sell your data, show ads, or track you</strong> across the web.</li>
+      <li>Receipt images and your AI key are sent <strong>only to Google's API, only when you scan</strong> — never to us.</li>
+      <li>You can <strong>export or delete everything</strong> at any time.</li>
+    </ul>
+  </div>
+
+  <div class="prose-pocket">
+    <p>This Privacy Policy explains what information the Pocket personal-finance application ("Pocket", "the app", "we") processes, how, and why. By using Pocket you agree to the practices described here. If you do not agree, please do not use the app.</p>
+
+    <h2 id="data">1. What data Pocket processes</h2>
+    <p>Pocket is designed so that <strong>you</strong> hold your data. Depending on how you use it, the app processes:</p>
+    <ul>
+      <li><strong>Financial data you enter:</strong> accounts, balances, transactions, transfers, categories, budgets, debts, recurring and regular items, tags, notes and payees.</li>
+      <li><strong>Account information:</strong> if you sign in, your email address and a user identifier provided by the sign-in provider.</li>
+      <li><strong>Preferences:</strong> home/default currency, date format, theme, calendar settings and similar app settings.</li>
+      <li><strong>Optional API key:</strong> a Google AI (Gemini) key you choose to add for receipt scanning.</li>
+    </ul>
+
+    <h2 id="storage">2. Where your data is stored</h2>
+    <ul>
+      <li><strong>On your device:</strong> by default all data is stored locally in your browser's <code>localStorage</code>. It never leaves your device unless you turn on cloud sync.</li>
+      <li><strong>In your cloud (optional):</strong> if you sign in, your data is synced to a database in a <a href="https://supabase.com" target="_blank" rel="noopener">Supabase</a> project so it is available across your devices and to family members you explicitly share with. This data is associated with your account and protected by row-level security so only you (and people you share with) can read it.</li>
+    </ul>
+
+    <h2 id="auth">3. Sign-in &amp; authentication</h2>
+    <p>Signing in is optional and is used to sync your data across devices. Authentication is handled by Supabase Auth using Google sign-in. We receive your email address and an account identifier so we can store and retrieve <em>your</em> data. We do not receive your Google password. Your use of Google sign-in is also subject to Google's own privacy policy.</p>
+
+    <h2 id="ai">4. AI receipt scanning</h2>
+    <p>Receipt scanning is an optional feature. When you scan a receipt:</p>
+    <ul>
+      <li>The receipt image is sent directly from your browser to Google's Generative Language API (<code>generativelanguage.googleapis.com</code>) using the API key you provide.</li>
+      <li>Your API key is stored only in your browser and is sent only to Google. It is never transmitted to Pocket's developers.</li>
+      <li>The image is processed to extract amounts, merchants and line items. Google's handling of that request is governed by Google's API terms and privacy policy.</li>
+    </ul>
+    <p>If you never add a key or never scan a receipt, no images or keys are sent anywhere.</p>
+
+    <h2 id="rates">5. Exchange rates</h2>
+    <p>To convert between currencies, Pocket fetches public, aggregate exchange-rate data from a third-party rates provider (open.er-api.com). These requests contain no personal or financial information — only a request for the latest USD-based rate table, which is cached on your device.</p>
+
+    <h2 id="family">6. Family sharing</h2>
+    <p>If you invite a family member and grant them access to specific accounts, a snapshot of <strong>only those accounts</strong> and their related transactions is shared with the email address you specify, at the access level you choose (view-only, edit, or full). You control which accounts are shared and can revoke access by removing the member. Members can contribute transactions to accounts you've shared with edit access.</p>
+
+    <h2 id="not">7. What we do not do</h2>
+    <ul>
+      <li>We do <strong>not</strong> sell, rent or trade your personal or financial data.</li>
+      <li>We do <strong>not</strong> show advertising in the app.</li>
+      <li>We do <strong>not</strong> use third-party advertising or cross-site tracking cookies.</li>
+      <li>We do <strong>not</strong> access your financial data for marketing.</li>
+    </ul>
+
+    <h2 id="cookies">8. Cookies &amp; local storage</h2>
+    <p>Pocket uses your browser's local storage to save your data and preferences on your device, and authentication tokens (set by the sign-in provider) to keep you signed in. These are essential to the app's core functionality, not for advertising or tracking.</p>
+
+    <h2 id="retention">9. Data retention &amp; your controls</h2>
+    <p>You stay in control of your data:</p>
+    <ul>
+      <li><strong>Export:</strong> download all your data as JSON or CSV from Settings at any time.</li>
+      <li><strong>Delete / reset:</strong> reset all local data from Settings, which clears it from your device.</li>
+      <li><strong>Sign out:</strong> signing out clears the locally cached copy on that device.</li>
+      <li><strong>Cloud deletion:</strong> to remove your synced data, reset your data while signed in or request deletion of your cloud record.</li>
+    </ul>
+    <p>Locally stored data persists until you clear it or clear your browser storage. Cloud-synced data persists until you delete it.</p>
+
+    <h2 id="security">10. Security</h2>
+    <p>Cloud data is protected by your provider's authentication and row-level security so that only your account (and members you share with) can access it. Transfers to Supabase and Google are made over encrypted HTTPS connections. No method of storage or transmission is 100% secure, but we rely on industry-standard protections and a design that minimises the data exposed to anyone but you.</p>
+
+    <h2 id="children">11. Children</h2>
+    <p>Pocket is not directed to children under 13 (or the minimum age required in your jurisdiction). We do not knowingly collect personal information from children. If you believe a child has provided us information, please contact us so it can be removed.</p>
+
+    <h2 id="changes">12. Changes to this policy</h2>
+    <p>We may update this Privacy Policy from time to time. Material changes will be reflected by updating the "Last updated" date above. Continued use of the app after changes take effect constitutes acceptance of the revised policy.</p>
+
+    <h2 id="contact">13. Contact</h2>
+    <p>Questions about this policy or your data? Contact us at <a href="mailto:privacy@example.com">privacy@example.com</a>. <em>(Replace this with your real contact address before publishing.)</em></p>
+  </div>
+
+  <div class="mt-12 pt-6 border-t border-zinc-200 flex items-center justify-between text-sm">
+    <a href="index.html" class="inline-flex items-center gap-2 text-zinc-600 hover:text-zinc-900"><i data-lucide="arrow-left"></i> Back to site</a>
+    <a href="app.html#signin" class="inline-flex items-center gap-2 font-semibold text-zinc-900">Sign in <i data-lucide="arrow-right"></i></a>
+  </div>
+</main>
+
+<footer class="border-t border-zinc-200">
+  <div class="max-w-3xl mx-auto px-5 py-8 flex items-center justify-between text-xs text-zinc-400">
+    <span>© <span id="yr"></span> Pocket. All rights reserved.</span>
+    <a href="privacy.html" class="hover:text-zinc-700">Privacy</a>
+  </div>
+</footer>
+
+<script>
+  lucide.createIcons();
+  document.getElementById('yr').textContent = new Date().getFullYear();
+</script>
+</body>
+</html>
