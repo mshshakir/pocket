@@ -493,6 +493,34 @@ export class Application {
     this.closeModal(); this.#render();
   }
 
+  /**
+   * Adjust the Hijri date offset by delta days (−1 or +1 from the stepper).
+   * Clamps to the range −7 … +7.
+   * Immediately re-renders so the preview updates live.
+   * @param {number} delta
+   */
+  adjustHijriOffset(delta) {
+    const s = this.#store.getState();
+    const current = s.user.hijriOffset ?? 0;
+    s.user.hijriOffset = Math.max(-7, Math.min(7, current + delta));
+    this.#store.persist();
+    // Re-render the open modal so the preview date updates live
+    this.#modal.refresh();
+  }
+
+  /**
+   * Explicitly set the Hijri offset (called from the stepper input).
+   * @param {number} value
+   */
+  setHijriOffset(value) {
+    const n = parseInt(value, 10);
+    if (isNaN(n)) return;
+    const s = this.#store.getState();
+    s.user.hijriOffset = Math.max(-7, Math.min(7, n));
+    this.#store.persist();
+    this.#modal.refresh();
+  }
+
   setCalendarMode(v) {
     this.#store.getState().user.calendarMode = v;
     this.#store.persist();
@@ -707,6 +735,7 @@ export class Application {
           id: fromId, accountId: data.accountId, categoryId: null,
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
+          hijriDate: this.#hijri.toHijri(data.date),
           paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
           transferPairId: toId, transferRate: xfer?.rate ?? null, transferDir: 'out', tags: [],
           createdAt: now, addedBy: this.#sync.currentUser?.email || null,
@@ -717,6 +746,7 @@ export class Application {
           exchangeRate: ((RATES[toCcy] || 1)) / ((RATES[state.user.homeCurrency] || 1)),
           refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
+          hijriDate: this.#hijri.toHijri(data.date),
           paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
           transferPairId: fromId, transferRate: xfer?.rate ?? null, transferDir: 'in', tags: [],
           createdAt: now, addedBy: this.#sync.currentUser?.email || null,
@@ -1984,12 +2014,26 @@ export class Application {
     if (el) el.value = (qty * unit).toFixed(2);
   }
 
-  saveCurrencySetup() {
+  /**
+   * Step 1 → Step 2: save selected currency then advance to the
+   * Hijri calibration step by calling advanceToStep2() on the modal
+   * and refreshing in-place (no close/reopen flash).
+   */
+  currencySetupNext() {
     const sel = document.getElementById('setupCurrency');
     if (sel) this.#store.getState().user.homeCurrency = sel.value;
     this.#store.persist();
+    this.#currencySetupModal.advanceToStep2();
+    this.#modal.refresh();
+  }
+
+  /**
+   * Step 2 done: close the onboarding modal and enter the app.
+   */
+  saveCurrencySetup() {
+    this.#store.persist();
     this.closeModal();
-    this.#toast.show(`Home currency set to ${sel?.value || ''}`);
+    this.#toast.show('All set — welcome to Pocket!');
     this.#render();
   }
 
@@ -2507,6 +2551,7 @@ export class Application {
       theme: 'system', showHijri: true, calendarMode: 'both',
       dateFormat: 'auto', geminiApiKey: '',
       supabaseUrl: '', supabaseKey: '',
+      hijriOffset: 0,
     }, state.user);
     if (!state.user.defaultCurrency) state.user.defaultCurrency = state.user.homeCurrency;
     if (!state.user.calendarMode) state.user.calendarMode = state.user.showHijri ? 'both' : 'gregorian';
@@ -2516,6 +2561,9 @@ export class Application {
     if (!Array.isArray(state.family))             state.family             = [];
     if (!Array.isArray(state.user.collapsedAccountGroups)) state.user.collapsedAccountGroups = [];
     if (!state.merchantCategories) state.merchantCategories = {};
+
+    // hijriOffset back-fill
+    if (typeof state.user.hijriOffset !== 'number') state.user.hijriOffset = 0;
 
     // customPaymentTypes back-fill
     if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
@@ -2573,6 +2621,18 @@ export class Application {
         if (b && b.period !== 'hijri') b.period = 'gregorian';
         // Multi-category budgets: backfill categoryIds from the legacy single id.
         if (b && !Array.isArray(b.categoryIds)) b.categoryIds = b.categoryId ? [b.categoryId] : [];
+      });
+    }
+
+    // Back-fill hijriDate on transactions that predate the snapshot system.
+    // Use toHijriRaw() (offset=0) since these were created before the offset
+    // feature existed — the offset was implicitly 0 at that time.
+    const needsHijriBackfill = (state.transactions || []).some((t) => !t.hijriDate);
+    if (needsHijriBackfill) {
+      (state.transactions || []).forEach((t) => {
+        if (!t.hijriDate && t.date) {
+          t.hijriDate = this.#hijri.toHijriRaw(t.date);
+        }
       });
     }
 
@@ -2917,6 +2977,9 @@ function _showError(err) {
 
 // ── Window globals for HTML onclick= wrappers ──────────────────────────────
 window.toggleTheme           = ()      => window.__app.toggleTheme();
+window.adjustHijriOffset     = (d)     => window.__app.adjustHijriOffset(d);
+window.currencySetupNext     = ()      => window.__app.currencySetupNext();
+window.setHijriOffset        = (v)     => window.__app.setHijriOffset(v);
 window.setTheme              = (m)     => window.__app.setTheme(m);
 window.addCustomPaymentType  = (s)     => window.__app.addCustomPaymentType(s);
 window.submitRegularLog      = (e, d)  => window.__app.submitRegularLog(e, d);

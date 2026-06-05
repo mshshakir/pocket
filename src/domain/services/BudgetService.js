@@ -44,12 +44,23 @@ export class BudgetService {
     return set;
   }
 
-  /** True if an expense tx falls within the budget's current period. */
+  /**
+   * True if an expense tx falls within the budget's current period.
+   *
+   * For Hijri periods, use t.hijriDate (the immutable snapshot written at
+   * creation time) rather than re-computing toHijri(t.date) with the current
+   * offset.  This means future offset adjustments never reclassify past
+   * transactions into a different budget month.
+   * Falls back to live computation only for legacy transactions that pre-date
+   * the hijriDate field (they were created when offset was 0, so toHijriRaw
+   * is the correct fallback).
+   */
   #inCurrentPeriod(budget, t) {
     if (t.type !== 'expense') return false;
     if (budget.period === 'hijri') {
       const todayH = this.#hijri.toHijri(new Date());
-      const h      = this.#hijri.toHijri(t.date);
+      // Use snapshot if available; fall back to raw (offset=0) computation
+      const h = t.hijriDate ?? this.#hijri.toHijriRaw(t.date);
       return h.year === todayH.year && h.month === todayH.month;
     }
     const now = new Date();
@@ -134,7 +145,8 @@ export class BudgetService {
       if (budget.period === 'hijri') {
         let pm = todayH.month - 1, py = todayH.year;
         if (pm < 0) { pm = 11; py -= 1; }
-        const h = this.#hijri.toHijri(t.date);
+        // Use snapshot if available; fall back to raw (offset=0) computation
+        const h = t.hijriDate ?? this.#hijri.toHijriRaw(t.date);
         return h.year === py && h.month === pm;
       }
       const d  = new Date(t.date + 'T12:00:00');

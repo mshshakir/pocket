@@ -14,8 +14,30 @@ import {
   HIJRI_DAYS_IN_30,
   MIQAATS,
 } from '../../data/constants.js';
+import { Store } from '../../core/Store.js';
 
 export class HijriCalendarService {
+  /** @type {Store} */
+  #store;
+
+  constructor() {
+    // Use the singleton Store to read user's hijriOffset preference.
+    // HijriCalendarService is a pure computation service; the offset
+    // is the only stateful value it reads, and it reads it lazily on
+    // each toHijri() call so changes take effect immediately.
+    this.#store = Store.getInstance();
+  }
+
+  /**
+   * The user-configured day offset (−7 … +7).
+   * Positive = add days to the calculated date.
+   * Negative = subtract days.
+   * @returns {number}
+   */
+  get offset() {
+    return this.#store.getState().user?.hijriOffset ?? 0;
+  }
+
   // ── Julian / Gregorian helpers ──────────────────────────────────────
 
   /** @param {Date} d @returns {boolean} */
@@ -129,6 +151,27 @@ export class HijriCalendarService {
    * @returns {{ year: number, month: number, day: number }}
    */
   toHijri(input) {
+    const d = typeof input === 'string'
+      ? new Date(input + 'T12:00:00')
+      : input;
+    const offset = this.offset;
+    // Apply user's day offset by shifting the date before conversion.
+    // Multiply by 86_400_000 ms (one day) and create a new Date so the
+    // original value is never mutated.
+    const shifted = offset !== 0
+      ? new Date(d.getTime() + offset * 86_400_000)
+      : d;
+    return this.#ajdToHijri(this.#gregorianToAJD(shifted));
+  }
+
+  /**
+   * Convert a Gregorian date to Hijri WITHOUT applying the user's offset.
+   * Used exclusively for back-filling hijriDate on transactions that were
+   * created before the offset system existed, where offset was implicitly 0.
+   * @param {Date|string} input
+   * @returns {{ year: number, month: number, day: number }}
+   */
+  toHijriRaw(input) {
     const d = typeof input === 'string'
       ? new Date(input + 'T12:00:00')
       : input;

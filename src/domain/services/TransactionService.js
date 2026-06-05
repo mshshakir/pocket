@@ -8,16 +8,19 @@ import { Store }          from '../../core/Store.js';
 import { IdGenerator }    from './IdGenerator.js';
 import { AccountService } from './AccountService.js';
 import { CurrencyService } from './CurrencyService.js';
+import { HijriCalendarService } from './HijriCalendarService.js';
 
 export class TransactionService {
-  /** @type {Store} */           #store;
-  /** @type {AccountService} */  #accounts;
-  /** @type {CurrencyService} */ #fx;
+  /** @type {Store} */                 #store;
+  /** @type {AccountService} */        #accounts;
+  /** @type {CurrencyService} */       #fx;
+  /** @type {HijriCalendarService} */ #hijri;
 
   constructor() {
     this.#store    = Store.getInstance();
     this.#accounts = new AccountService();
     this.#fx       = new CurrencyService();
+    this.#hijri    = new HijriCalendarService();
   }
 
   // ── Queries ─────────────────────────────────────────────────────────
@@ -117,6 +120,10 @@ export class TransactionService {
       payee:          data.payee          || '',
       note:           data.note           || '',
       date:           data.date,
+      // Snapshot the Hijri date at creation time using the user's current offset.
+      // This value is immutable after save — BudgetService reads it instead of
+      // recomputing, so future offset changes never affect past-transaction budgets.
+      hijriDate:      this.#hijri.toHijri(data.date),
       paymentType:    data.paymentType    || 'card',
       recordState:    data.recordState    || 'cleared',
       type:           data.type,

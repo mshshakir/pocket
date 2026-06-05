@@ -8,14 +8,17 @@
 import { Store }           from '../../core/Store.js';
 import { IdGenerator }     from './IdGenerator.js';
 import { AccountService }  from './AccountService.js';
+import { HijriCalendarService } from './HijriCalendarService.js';
 
 export class RecurringService {
-  /** @type {Store} */          #store;
-  /** @type {AccountService} */ #accounts;
+  /** @type {Store} */                 #store;
+  /** @type {AccountService} */        #accounts;
+  /** @type {HijriCalendarService} */ #hijri;
 
   constructor() {
     this.#store    = Store.getInstance();
     this.#accounts = new AccountService();
+    this.#hijri    = new HijriCalendarService();
   }
 
   // ── Date helpers ─────────────────────────────────────────────────────
@@ -104,6 +107,10 @@ export class RecurringService {
           ...template,
           id:                IdGenerator.generate('tx'),
           date:              next,
+          // Snapshot Hijri date at the moment the instance is generated.
+          // Uses current offset — this is intentional: the instance is "new"
+          // today, so it should reflect the user's current calendar setting.
+          hijriDate:         this.#hijri.toHijri(next),
           recurringSourceId: template.id,
           recurring:         null,
           tags:              (template.tags || []).slice(),

@@ -80,18 +80,58 @@ export class SettingsModal {
               <div class="font-medium text-sm">Hijri calendar</div>
               <div class="text-xs text-zinc-500">Show Hijri dates and miqaats from the Mumineen Calendar</div>
             </div>
-            <button class="btn ${u.showHijri ? 'btn-primary' : 'btn-outline'}"
-                    onclick="window.__app.toggleHijri()">${u.showHijri ? 'On' : 'Off'}</button>
+            <button class="btn \${u.showHijri ? 'btn-primary' : 'btn-outline'}"
+                    onclick="window.__app.toggleHijri()">\${u.showHijri ? 'On' : 'Off'}</button>
           </div>
-          ${u.showHijri ? `<div class="text-xs text-zinc-500 mt-2 pl-12">Today is ${this.#hijri.format(new Date(), { long: true })}</div>` : ''}
-          ${u.showHijri ? `
+
+          \${u.showHijri ? `
             <div class="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
-              <label class="text-xs text-zinc-500 mb-1 block">Calendar view default</label>
-              <div class="grid grid-cols-3 gap-2">
-                ${[['gregorian', 'Gregorian'], ['both', 'Both dates'], ['hijri', 'Hijri']].map(([k, l]) => `
-                  <button class="btn ${(u.calendarMode || 'both') === k ? 'btn-primary' : 'btn-outline'} justify-center"
-                          onclick="window.__app.setCalendarMode('${k}')">${l}</button>
-                `).join('')}
+
+              <!-- Calculated vs corrected date display -->
+              <div class="rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 p-3 mb-3">
+                <div class="text-xs text-zinc-500 mb-2">Today's Hijri date (after your correction)</div>
+                <div class="text-base font-semibold">\${this.#hijri.format(new Date(), { long: true })}</div>
+                \${(u.hijriOffset ?? 0) !== 0
+                  ? \`<div class="text-xs mt-1 \${(u.hijriOffset > 0) ? 'text-amber-600' : 'text-blue-600'}">
+                      Offset applied: \${u.hijriOffset > 0 ? '+' : ''}\${u.hijriOffset} day\${Math.abs(u.hijriOffset) !== 1 ? 's' : ''}
+                      <button class="ml-2 underline text-zinc-500" onclick="window.__app.setHijriOffset(0)">reset</button>
+                    </div>\`
+                  : '<div class="text-xs text-zinc-400 mt-1">No offset applied — using calculated date</div>'}
+              </div>
+
+              <!-- Day offset stepper -->
+              <div class="mb-3">
+                <label class="text-xs text-zinc-500 mb-2 block">
+                  Adjust if your local moon sighting differs from the calculated date
+                </label>
+                <div class="flex items-center gap-3">
+                  <button class="btn btn-outline px-4 text-lg font-bold"
+                          onclick="window.__app.adjustHijriOffset(-1)"
+                          \${(u.hijriOffset ?? 0) <= -7 ? 'disabled' : ''}>−</button>
+                  <div class="flex-1 text-center">
+                    <div class="text-2xl font-bold tracking-tight">
+                      \${(u.hijriOffset ?? 0) > 0 ? '+' : ''}\${u.hijriOffset ?? 0}
+                    </div>
+                    <div class="text-xs text-zinc-500">days</div>
+                  </div>
+                  <button class="btn btn-outline px-4 text-lg font-bold"
+                          onclick="window.__app.adjustHijriOffset(+1)"
+                          \${(u.hijriOffset ?? 0) >= 7 ? 'disabled' : ''}>+</button>
+                </div>
+                <div class="text-xs text-zinc-400 text-center mt-2">
+                  Range: −7 to +7 days · Changes apply everywhere instantly
+                </div>
+              </div>
+
+              <!-- Calendar view default -->
+              <div>
+                <label class="text-xs text-zinc-500 mb-1 block">Calendar view default</label>
+                <div class="grid grid-cols-3 gap-2">
+                  \${[['gregorian', 'Gregorian'], ['both', 'Both dates'], ['hijri', 'Hijri']].map(([k, l]) => \`
+                    <button class="btn \${(u.calendarMode || 'both') === k ? 'btn-primary' : 'btn-outline'} justify-center"
+                            onclick="window.__app.setCalendarMode('\${k}')">\${l}</button>
+                  \`).join('')}
+                </div>
               </div>
             </div>` : ''}
         </div>
