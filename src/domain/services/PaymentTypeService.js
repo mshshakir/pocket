@@ -21,7 +21,7 @@ export class PaymentTypeService {
     const list = state.user.customPaymentTypes;
     if (!list.includes(n)) {
       list.push(n);
-      this.#store.persist();
+      this.#store.flush(); // flush() emits state:changed so subscribers stay in sync
     }
     return n;
   }

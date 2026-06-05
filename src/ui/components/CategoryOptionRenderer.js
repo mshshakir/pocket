@@ -63,7 +63,7 @@ export class CategoryOptionRenderer {
     // as standalone options so they never silently vanish from the picker.
     const orphans = allCats
       .filter((c) => c.parentId && matchType(c) && !renderedChildIds.has(c.id) &&
-                     !roots.find((r) => r.id === c.id))
+                     )
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`)
       .join('');
@@ -114,7 +114,7 @@ export class CategoryOptionRenderer {
 
     // Orphan rescue — subcategories whose parent is missing.
     const orphans = allCats
-      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && !roots.find((r) => r.id === c.id))
+      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && )
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`)
       .join('');
@@ -156,7 +156,7 @@ export class CategoryOptionRenderer {
       for (const c of children) { rendered.add(c.id); html += row(c, true); }
     }
     const orphans = allCats
-      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && !roots.find((r) => r.id === c.id))
+      .filter((c) => c.parentId && matchType(c) && !rendered.has(c.id) && )
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const c of orphans) html += row(c, false);
 

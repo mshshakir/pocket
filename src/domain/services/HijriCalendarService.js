@@ -35,7 +35,9 @@ export class HijriCalendarService {
    * @returns {number}
    */
   get offset() {
-    return this.#store.getState().user?.hijriOffset ?? 0;
+    // Optional chain on getState() result: if called before store.init(),
+    // getState() returns undefined and .user would throw without ?. (Bug 23).
+    return this.#store.getState()?.user?.hijriOffset ?? 0;
   }
 
   // ── Julian / Gregorian helpers ──────────────────────────────────────

@@ -57,6 +57,7 @@ export class BudgetService {
    */
   #inCurrentPeriod(budget, t) {
     if (t.type !== 'expense') return false;
+    if (!t.date) return false; // guard against malformed transactions with missing date
     if (budget.period === 'hijri') {
       const todayH = this.#hijri.toHijri(new Date());
       // Use snapshot if available; fall back to raw (offset=0) computation
@@ -142,6 +143,7 @@ export class BudgetService {
 
     const prevMatches = (t) => {
       if (t.type !== 'expense') return false;
+      if (!t.date) return false; // guard against missing date
       if (budget.period === 'hijri') {
         let pm = todayH.month - 1, py = todayH.year;
         if (pm < 0) { pm = 11; py -= 1; }

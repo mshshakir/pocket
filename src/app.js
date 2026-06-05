@@ -598,6 +598,7 @@ export class Application {
         payee:       data.payee || '',
         note:        data.note || '',
         date:        data.date,
+        hijriDate:   this.#hijri.toHijri(data.date),
         type:        data.type || 'expense',
         paymentType: data.paymentType || 'card',
         recordState: 'cleared',
@@ -719,6 +720,7 @@ export class Application {
           categoryId: splits ? null : (data.categoryId || null),
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee, note: data.note, date: data.date,
+          hijriDate: this.#hijri.toHijri(data.date), // refresh snapshot when date changes
           paymentType: data.paymentType, type: data.type,
           splits, recurring,
         });
@@ -777,7 +779,7 @@ export class Application {
     }
 
     if (recurring) this.#recurring.process();
-    this.#store.persist();
+    this.#store.flush();  // flush() = persist + emit state:changed (persist() was silent)
     this.closeModal();
     this.#render();
     this.#toast.show(id ? 'Transaction updated' : 'Transaction added');
@@ -855,7 +857,7 @@ export class Application {
     const share = sharedData?.[shareIndex];
     if (!share?._ownerId) return this.#toast.show('Shared account not found');
     try {
-      await this.#sync.submitContribution(share._ownerId, { _delete: true, targetId: txId, id: txId });
+      await this.#sync.deleteContribution(share._ownerId, txId);
       this.closeModal();
       this.#toast.show('Delete request submitted to owner');
     } catch (e) {
@@ -935,17 +937,14 @@ export class Application {
     const ids = v.selectedIds ?? new Set();
     if (!ids.size) return;
     if (!confirm(`Delete ${ids.size} transaction${ids.size === 1 ? '' : 's'}?`)) return;
-    const state = this.#store.getState();
-    ids.forEach((id) => {
-      const tx = state.transactions.find((x) => x.id === id);
-      if (!tx) return;
-      this.#revertBalances(tx, state);
-      state.transactions = state.transactions.filter((x) => x.id !== id);
-    });
+    const count = ids.size;
+    // Delegate to TransactionService so transfer-pair legs are also reverted
+    // and removed — previously this loop only deleted one leg and left
+    // dangling transferPairId references on the partner (Bug 13).
+    this.#transactions.bulkDelete([...ids]);
     v.clearMultiSelect?.();
-    this.#store.persist();
     this.#render();
-    this.#toast.show(`${ids.size} transactions deleted`);
+    this.#toast.show(`${count} transactions deleted`);
     this.#sync.schedulePush?.();
   }
 
@@ -1210,7 +1209,7 @@ export class Application {
     try {
       const state = this.#store.getState();
       if (!state.user.showHijri) { el.textContent = ''; return; }
-      const h = this.#hijri.toHijri(new Date(iso));
+      const h = this.#hijri.toHijri(iso); // pass ISO string directly — toHijri anchors to noon avoiding UTC± day-shift
       el.textContent = `${h.day} ${this.#hijri.monthsLong[h.month]} ${h.year}`;
     } catch { el.textContent = ''; }
   }
@@ -1370,7 +1369,8 @@ export class Application {
           refAmount: this.#fx.convert(Math.abs(delta), a.currency, state.user.homeCurrency),
           payee: 'Balance adjustment',
           note: `Manual balance set: ${this.#fx.formatMoney(wasMajor, a.currency)} → ${this.#fx.formatMoney(newMinor, a.currency)}`,
-          date: today, paymentType: 'cash', recordState: 'cleared',
+          date: today, hijriDate: this.#hijri.toHijri(today),
+          paymentType: 'cash', recordState: 'cleared',
           type: positive ? 'income' : 'expense',
           transferPairId: null, splits: null, tags: ['balance-adjustment'],
         };
@@ -1396,7 +1396,8 @@ export class Application {
         exchangeRate: (RATES[a.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
         refAmount: this.#fx.convert(Math.abs(newMinor), a.currency, state.user.homeCurrency),
         payee: 'Opening balance', note: '',
-        date: today, paymentType: 'cash', recordState: 'cleared',
+        date: today, hijriDate: this.#hijri.toHijri(today),
+        paymentType: 'cash', recordState: 'cleared',
         type: positive ? 'income' : 'expense',
         transferPairId: null, splits: null, tags: ['opening-balance'],
       };
@@ -1511,6 +1512,7 @@ export class Application {
       payee:       'Opening balance',
       note:        'Reconciled from existing account balance',
       date:        dateIso,
+      hijriDate:   this.#hijri.toHijri(dateIso),
       paymentType: 'cash',
       recordState: 'cleared',
       type:        residual > 0 ? 'income' : 'expense',
@@ -1718,7 +1720,8 @@ export class Application {
       amount: principal, currency, exchangeRate: exRate, refAmount: refAmt,
       payee: data.counterparty,
       note: (isBorrowed ? 'Borrowed from ' : 'Lent to ') + data.counterparty + (data.note ? ' — ' + data.note : ''),
-      date: data.dateTaken, paymentType: 'transfer', recordState: 'cleared',
+      date: data.dateTaken, hijriDate: this.#hijri.toHijri(data.dateTaken),
+      paymentType: 'transfer', recordState: 'cleared',
       type: isBorrowed ? 'income' : 'expense',
       transferPairId: null, tags: ['debt'], splits: null,
       debtId, debtRole: 'initial',
@@ -1757,7 +1760,8 @@ export class Application {
       refAmount: this.#fx.convert(amount, debt.currency, state.user.homeCurrency),
       payee: debt.counterparty,
       note: (isBorrowed ? 'Payment to ' : 'Repayment from ') + debt.counterparty + (data.note ? ' — ' + data.note : ''),
-      date: data.date, paymentType: 'transfer', recordState: 'cleared',
+      date: data.date, hijriDate: this.#hijri.toHijri(data.date),
+      paymentType: 'transfer', recordState: 'cleared',
       type: isBorrowed ? 'expense' : 'income',
       transferPairId: null, tags: ['debt-payment'], splits: null,
       debtId, debtRole: 'payment',
@@ -1955,29 +1959,33 @@ export class Application {
     const unitMinor = this.#fx.toMinor(unitPrice, currency);
     const totalMinor = Math.round(unitMinor * qty);
     const accountId = item.accountId || s.accounts[0]?.id;
+    const exRate3  = (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1);
     const tx = {
       id: IdGenerator.generate('tx'),
       regularItemId: itemId,
       accountId,
       date,
-      amount: totalMinor,
-      unitAmount: unitMinor,
+      hijriDate:    this.#hijri.toHijri(date),
+      amount:       totalMinor,
+      unitAmount:   unitMinor,
       qty,
       currency,
-      description: item.name,
-      payee: item.name,
-      note: '',
-      type: 'expense',
-      categoryId: item.categoryId || null,
-      splits: [],
-      paymentType: 'cash',
-      recurring: false,
-      recordState: 'cleared',
-      createdAt: new Date().toISOString(),
+      exchangeRate: exRate3,
+      refAmount:    this.#fx.convert(totalMinor, currency, s.user.homeCurrency),
+      description:  item.name,
+      payee:        item.name,
+      note:         '',
+      type:         'expense',
+      categoryId:   item.categoryId || null,
+      splits:       null,
+      paymentType:  'cash',
+      recurring:    null,
+      recordState:  'cleared',
+      createdAt:    new Date().toISOString(),
     };
     this.#applyBalances(tx, s);
     s.transactions.push(tx);
-    this.#store.persist();
+    this.#store.flush();
     this.#sync.schedulePush?.();
     this.openModal('dayLogs', { date });
   }
@@ -1988,7 +1996,7 @@ export class Application {
     if (tx) {
       this.#revertBalances(tx, s);
       s.transactions = s.transactions.filter(t => t.id !== logId);
-      this.#store.persist();
+      this.#store.flush();  // flush() so other views reflect the reverted balance
       this.#sync.schedulePush?.();
     }
     this.openModal('dayLogs', { date });
@@ -2420,8 +2428,8 @@ export class Application {
         const toId   = IdGenerator.generate('tx');
         const dstMinor = draft.toAmountMinor ?? minor;
         const toCcy    = draft.toCurrency ?? draft.currency;
-        const txF = { id: fromId, accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: toId, transferDir: 'out', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
-        const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: fromId, transferDir: 'in', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
+        const txF = { id: fromId, accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: toId, transferDir: 'out', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
+        const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: fromId, transferDir: 'in', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(txF, txT);
         acc.balance    -= this.#fx.convert(minor, draft.currency, acc.currency);
         toAcc.balance  += this.#fx.convert(dstMinor, toCcy, toAcc.currency);
@@ -2432,7 +2440,7 @@ export class Application {
           accountId: accMap[norm(s.accountName || draft.accountName)] || accId,
           amount: s.amount,
         }));
-        const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
+        const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(tx);
         this.#applyBalances(tx, state);
         txCount++;
@@ -2443,7 +2451,7 @@ export class Application {
             : (norm(draft.catName) + '|' + draft.type + '|root'))
           : null;
         const catId = catKey ? (catMap[catKey] || null) : null;
-        const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: catId, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits: null, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
+        const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: catId, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits: null, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(tx);
         this.#applyBalances(tx, state);
         txCount++;

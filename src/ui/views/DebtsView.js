@@ -117,9 +117,10 @@ export class DebtsView extends BaseView {
 
   /** Remaining balance = principal − sum of payment transactions (cross-currency aware) */
   #remaining(d, state) {
+    // Filter matches DebtModal.#debtRemaining — use only initialTxId exclusion,
+    // not a broad type filter that could double-count non-payment txs (Bug 14).
     const payments = state.transactions.filter(
-      t => t.debtId === d.id && t.id !== d.initialTxId &&
-           (t.debtRole === 'payment' || t.type === 'expense' || t.type === 'income'),
+      t => t.debtId === d.id && t.id !== d.initialTxId,
     );
     const paid = payments.reduce((sum, t) => {
       const fromCcy = t.currency || d.currency;

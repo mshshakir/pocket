@@ -209,8 +209,11 @@ export class ReportService {
     if (!acc) return;
     const conv = (amt, from) => this.#fx.convert(amt, from, acc.currency);
     if (tx.type === 'transfer') {
-      if (tx.transferDir === 'out') acc.balance -= tx.amount;
-      else if (tx.transferDir === 'in') acc.balance += tx.amount;
+      // Convert to the account's currency — raw tx.amount is in tx.currency
+      // which differs from acc.currency on cross-currency transfers (Bug 8).
+      const converted = conv(tx.amount, tx.currency);
+      if (tx.transferDir === 'out') acc.balance -= converted;
+      else if (tx.transferDir === 'in') acc.balance += converted;
     } else if (Array.isArray(tx.splits) && tx.splits.length) {
       for (const s of tx.splits) {
         const sa = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
@@ -231,8 +234,10 @@ export class ReportService {
     const acc = state.accounts.find((a) => a.id === tx.accountId);
     if (!acc) return;
     if (tx.type === 'transfer') {
-      if (tx.transferDir === 'out') acc.balance += tx.amount;
-      else if (tx.transferDir === 'in') acc.balance -= tx.amount;
+      // Mirror of #apply — must use the same conversion to keep series consistent.
+      const converted = this.#fx.convert(tx.amount, tx.currency, acc.currency);
+      if (tx.transferDir === 'out') acc.balance += converted;
+      else if (tx.transferDir === 'in') acc.balance -= converted;
     } else if (Array.isArray(tx.splits) && tx.splits.length) {
       for (const s of tx.splits) {
         const sa = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
