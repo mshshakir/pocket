@@ -172,6 +172,16 @@ export class TransactionModal {
     const hijriLabel  = this.#hijri.format(data.date, { long: true });
     const hijriPreview= `${hijriLabel}${miqaat ? ` · <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ''}`;
 
+    // Pre-compute payment type options to avoid triple-nested template literals
+    // which cause a parse error in some V8/Node versions (Bug #Bug).
+    const paymentTypeOptions = (
+      window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES
+    ).map((p) => {
+      const sel = (data.paymentType || 'card') === p ? 'selected' : '';
+      const label = p.charAt(0).toUpperCase() + p.slice(1);
+      return '<option value="' + p + '" ' + sel + '>' + label + '</option>';
+    }).join('');
+
     return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ''}')" class="p-5">
         <div class="flex items-center justify-between mb-4">
@@ -222,7 +232,7 @@ export class TransactionModal {
             <select class="select" name="paymentType"
               onchange="window.__app?.addCustomPaymentType?.(this)"
               data-prev="${data.paymentType || 'card'}">
-              ${(window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES).map((p) => `<option value="${p}" ${(data.paymentType||'card')===p?'selected':''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`).join('')}
+              ${paymentTypeOptions}
               <option value="__add_payment__">＋ Add custom…</option>
             </select>
           </div>
