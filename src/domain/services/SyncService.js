@@ -433,11 +433,23 @@ export class SyncService {
       return;
     }
 
-    // Optimistic: hide the tx and re-derive the affected share's balances.
-    this.#pendingRemovals.add(txId);
+    // Resolve the target tx and its account BEFORE optimistically hiding it, so
+    // the delete marker can carry a non-null account_id. The family_contributions
+    // table's account_id column is NOT NULL — sending null here is what made
+    // member-side deletes fail with a constraint violation (the marker never
+    // reached the owner, so the owner kept the transaction).
     const share = this.#sharedData.find((s) =>
       (s.transactions || []).some((t) => t.id === txId),
     );
+    const target = share?.transactions?.find((t) => t.id === txId) || null;
+    const accountId =
+      target?.accountId ??
+      target?.splits?.[0]?.accountId ??
+      share?.accounts?.[0]?.id ??
+      (share?.permission ? Object.keys(share.permission)[0] : null);
+
+    // Optimistic: hide the tx and re-derive the affected share's balances.
+    this.#pendingRemovals.add(txId);
     if (share) {
       share.transactions = (share.transactions || []).filter((t) => t.id !== txId);
       this.#deriveShareBalances(share);
@@ -448,7 +460,7 @@ export class SyncService {
     const { error } = await this.#sb.from('family_contributions').upsert({
       owner_id:     ownerId,
       member_email: this.#user.email.toLowerCase(),
-      account_id:   null,
+      account_id:   accountId,
       tx_data:      { _delete: true, id: `del_${txId}`, targetId: txId },
       synced:       false,
     }, { onConflict: 'id', ignoreDuplicates: true });

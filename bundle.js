@@ -2856,10 +2856,12 @@ RULES:
         this.#bus.emit("state:changed", this.#store.getState());
         return;
       }
-      this.#pendingRemovals.add(txId);
       const share = this.#sharedData.find(
         (s) => (s.transactions || []).some((t) => t.id === txId)
       );
+      const target = share?.transactions?.find((t) => t.id === txId) || null;
+      const accountId = target?.accountId ?? target?.splits?.[0]?.accountId ?? share?.accounts?.[0]?.id ?? (share?.permission ? Object.keys(share.permission)[0] : null);
+      this.#pendingRemovals.add(txId);
       if (share) {
         share.transactions = (share.transactions || []).filter((t) => t.id !== txId);
         this.#deriveShareBalances(share);
@@ -2868,7 +2870,7 @@ RULES:
       const { error } = await this.#sb.from("family_contributions").upsert({
         owner_id: ownerId,
         member_email: this.#user.email.toLowerCase(),
-        account_id: null,
+        account_id: accountId,
         tx_data: { _delete: true, id: `del_${txId}`, targetId: txId },
         synced: false
       }, { onConflict: "id", ignoreDuplicates: true });
