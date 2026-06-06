@@ -32,25 +32,4 @@ export class Repository {
   load() {
     this.lastLoadCorrupted = false;
     const raw = localStorage.getItem(Repository.#STORAGE_KEY);
-    if (raw == null) return null; // genuinely empty → seeding fresh is correct
-
-    try {
-      return JSON.parse(raw);
-    } catch (err) {
-      // Corrupt payload: DON'T silently discard. Preserve the raw value under a
-      // backup key for manual recovery and flag the corruption so the caller can
-      // warn the user instead of overwriting good cloud data with seed state.
-      console.error('[Repository] Corrupt persisted state — backed up to', Repository.#BACKUP_KEY, err);
-      try { localStorage.setItem(Repository.#BACKUP_KEY, raw); } catch (_) {}
-      this.lastLoadCorrupted = true;
-      return null;
-    }
-  }
-
-  /**
-   * Wipe all persisted data (logout / reset).
-   */
-  clear() {
-    localStorage.removeItem(Repository.#STORAGE_KEY);
-  }
-}
+    if (raw == null) return null; // 

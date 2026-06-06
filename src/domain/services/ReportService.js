@@ -8,6 +8,7 @@ import { CurrencyService } from './CurrencyService.js';
 import { TransactionService } from './TransactionService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
 import { DateService }         from './DateService.js';
+import { LedgerMath }          from './LedgerMath.js';
 
 export class ReportService {
   /** @type {Store} */               #store;
@@ -123,56 +124,56 @@ export class ReportService {
   netWorthSeries() {
     const state = this.#store.getState();
     const home  = state.user.homeCurrency;
+    const accounts = state.accounts;
 
-    const totalNW = () =>
-      state.accounts.reduce(
-        (s, a) => s + this.#fx.convert(a.balance, a.currency, home),
-        0,
-      );
+    // Net worth at a point = Σ openingBalance + Σ (ledger impact so far),
+    // all converted to home. Computed WITHOUT mutating any real balances — the
+    // ledger is the source of truth, so we just accumulate forward.
+    const openingTotal = accounts.reduce(
+      (s, a) => s + this.#fx.convert(Number(a.openingBalance ?? 0) || 0, a.currency, home),
+      0,
+    );
 
     if (!state.transactions.length) {
-      return [{ date: DateService.todayIso(), netWorth: totalNW() }];
+      return [{ date: DateService.todayIso(), netWorth: Math.round(openingTotal) }];
     }
-
-    // Snapshot current balances so we can restore them afterwards
-    const snap = state.accounts.map((a) => ({ id: a.id, bal: a.balance }));
 
     const txsAsc = state.transactions
       .slice()
-      .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+      .sort((a, b) => (a.date || '').localeCompare(b.date || '') || a.id.localeCompare(b.id));
 
-    // The walk below temporarily mutates account balances. Wrap it in try/finally
-    // so an exception mid-walk never leaves balances permanently corrupted (#28).
-    try {
-      // Roll back every tx to get to the state before any transaction
-      const accountSvc = { revertBalances: (t) => this.#revert(t, state) };
-      for (let i = txsAsc.length - 1; i >= 0; i--) accountSvc.revertBalances(txsAsc[i]);
-
-      const series  = [{ date: txsAsc[0].date, netWorth: totalNW() }];
-      let curDate   = null;
-
-      for (const t of txsAsc) {
-        if (curDate !== null && curDate !== t.date) {
-          series.push({ date: curDate, netWorth: totalNW() });
-        }
-        curDate = t.date;
-        this.#apply(t, state);
+    const byId = new Map(accounts.map((a) => [a.id, a]));
+    // Home-currency delta of one transaction across all the accounts it touches.
+    const homeDelta = (t) => {
+      let d = 0;
+      for (const c of LedgerMath.contributions(t)) {
+        const acc = byId.get(c.accountId);
+        if (!acc) continue;
+        const m = Number.isFinite(c.minor) ? c.minor : 0;
+        d += this.#fx.convert(m, c.currency, home);
       }
-      if (curDate) series.push({ date: curDate, netWorth: totalNW() });
+      return d;
+    };
 
-      const today = DateService.todayIso();
-      if (series[series.length - 1].date !== today) {
-        series.push({ date: today, netWorth: totalNW() });
+    const series  = [];
+    let running   = openingTotal;
+    let curDate   = null;
+
+    for (const t of txsAsc) {
+      if (curDate !== null && curDate !== t.date) {
+        series.push({ date: curDate, netWorth: Math.round(running) });
       }
-
-      return series;
-    } finally {
-      // Restore balances no matter what
-      snap.forEach(({ id, bal }) => {
-        const a = state.accounts.find((x) => x.id === id);
-        if (a) a.balance = bal;
-      });
+      curDate  = t.date;
+      running += homeDelta(t);
     }
+    if (curDate) series.push({ date: curDate, netWorth: Math.round(running) });
+
+    const today = DateService.todayIso();
+    if (!series.length || series[series.length - 1].date !== today) {
+      series.push({ date: today, netWorth: Math.round(running) });
+    }
+
+    return series;
   }
 
   /**
@@ -199,57 +200,5 @@ export class ReportService {
         return { year: y, month: m, amount: v };
       })
       .sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month));
-  }
-
-  // ── Private balance helpers ──────────────────────────────────────────
-
-  /** Apply transaction to account balances (in-place). */
-  #apply(tx, state) {
-    const acc = state.accounts.find((a) => a.id === tx.accountId);
-    if (!acc) return;
-    const conv = (amt, from) => this.#fx.convert(amt, from, acc.currency);
-    if (tx.type === 'transfer') {
-      // Convert to the account's currency — raw tx.amount is in tx.currency
-      // which differs from acc.currency on cross-currency transfers (Bug 8).
-      const converted = conv(tx.amount, tx.currency);
-      if (tx.transferDir === 'out') acc.balance -= converted;
-      else if (tx.transferDir === 'in') acc.balance += converted;
-    } else if (Array.isArray(tx.splits) && tx.splits.length) {
-      for (const s of tx.splits) {
-        const sa = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
-        if (!sa) continue;
-        const c = this.#fx.convert(s.amount, tx.currency, sa.currency);
-        if (tx.type === 'expense') sa.balance -= c;
-        else if (tx.type === 'income') sa.balance += c;
-      }
-    } else {
-      const c = conv(tx.amount, tx.currency);
-      if (tx.type === 'expense') acc.balance -= c;
-      else if (tx.type === 'income') acc.balance += c;
-    }
-  }
-
-  /** Revert transaction from account balances (in-place). */
-  #revert(tx, state) {
-    const acc = state.accounts.find((a) => a.id === tx.accountId);
-    if (!acc) return;
-    if (tx.type === 'transfer') {
-      // Mirror of #apply — must use the same conversion to keep series consistent.
-      const converted = this.#fx.convert(tx.amount, tx.currency, acc.currency);
-      if (tx.transferDir === 'out') acc.balance += converted;
-      else if (tx.transferDir === 'in') acc.balance -= converted;
-    } else if (Array.isArray(tx.splits) && tx.splits.length) {
-      for (const s of tx.splits) {
-        const sa = state.accounts.find((a) => a.id === (s.accountId || tx.accountId));
-        if (!sa) continue;
-        const c = this.#fx.convert(s.amount, tx.currency, sa.currency);
-        if (tx.type === 'expense') sa.balance += c;
-        else if (tx.type === 'income') sa.balance -= c;
-      }
-    } else {
-      const c = this.#fx.convert(tx.amount, tx.currency, acc.currency);
-      if (tx.type === 'expense') acc.balance += c;
-      else if (tx.type === 'income') acc.balance -= c;
-    }
   }
 }

@@ -147,44 +147,4 @@ export class Store {
   }
 
   /**
-   * Persist + notify (useful after bulk in-place mutations like CSV import).
-   */
-  flush() {
-    this.#persistState();
-    this.#bus.emit('state:changed', this.#state);
-  }
-
-  /**
-   * Reset to seed data (hard reset / sign-out wipe).
-   * @param {Function} seedFactory
-   * @param {Function} migrateDefaults
-   */
-  reset(seedFactory, migrateDefaults) {
-    this.#repository.clear();
-    this.#state = seedFactory();
-    migrateDefaults(this.#state);
-    this.#persistState();
-    this.#bus.emit('state:changed', this.#state);
-  }
-
-  /**
-   * Persist via the Repository and surface a one-time warning if the write
-   * fails (e.g. localStorage quota exceeded), so a silent save failure can't go
-   * unnoticed and let a later cloud push overwrite good data with stale state (I6).
-   * @returns {boolean} success
-   */
-  #persistState() {
-    // Recompute derived data (balances) so the saved + emitted state is always
-    // consistent with the ledger, regardless of how callers mutated it.
-    try { this.#derive?.(); } catch (e) { console.error('[Store] derive hook failed:', e); }
-    this.#revision++;
-    const ok = this.#repository.save(this.#state);
-    if (!ok && !this.#saveWarned) {
-      this.#saveWarned = true;
-      this.#bus.emit('toast', { message: 'Could not save locally — device storage may be full' });
-    } else if (ok) {
-      this.#saveWarned = false;
-    }
-    return ok;
-  }
-}
+   * Persist + notify (

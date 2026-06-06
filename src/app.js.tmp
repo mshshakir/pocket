@@ -3002,29 +3002,3 @@ function _showError(err) {
 window.toggleTheme           = ()      => window.__app.toggleTheme();
 window.adjustHijriOffset     = (d)     => window.__app.adjustHijriOffset(d);
 window.currencySetupNext     = ()      => window.__app.currencySetupNext();
-window.setHijriOffset        = (v)     => window.__app.setHijriOffset(v);
-window.setTheme              = (m)     => window.__app.setTheme(m);
-window.addCustomPaymentType  = (s)     => window.__app.addCustomPaymentType(s);
-window.submitRegularLog      = (e, d)  => window.__app.submitRegularLog(e, d);
-window.deleteRegularLog      = (id, d) => window.__app.deleteRegularLog(id, d);
-window.prefillRegularLog     = (s)     => window.__app.prefillRegularLog(s);
-window.updateRegularLogTotal = ()      => window.__app.updateRegularLogTotal();
-window.saveCurrencySetup     = ()      => window.__app.saveCurrencySetup();
-
-function _boot() {
-  let app;
-  try {
-    app = Application.getInstance();
-  } catch (err) {
-    _showError(err);
-    return;
-  }
-  app.init().catch(_showError);
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _boot);
-} else {
-  // Already past DOMContentLoaded (module was defer-loaded)
-  _boot();
-}

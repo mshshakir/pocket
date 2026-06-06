@@ -1,7 +1,7 @@
 /**
  * RecurringService — Generates missing recurring transaction instances.
  *
- * Called once at boot (after the store is initialised) to backfill any
+ * Called once at boot (after store is initialised) to backfill any
  * recurring transactions that should have been created while the app
  * was offline.
  */
@@ -120,13 +120,4 @@ export class RecurringService {
         };
 
         txs.push(clone);
-        // Balances are derived; the persist below triggers the recompute hook.
-        generated++;
-        next = this.stepDate(next, rule, interval, anchorDay);
-      }
-    }
-
-    if (generated > 0) this.#store.persist();
-    return generated;
-  }
-}
+        // Balances are derived; the persist below trigger

@@ -206,9 +206,10 @@ export class SyncService {
   schedulePush() {
     if (!this.#sb || !this.#user) return;
     clearTimeout(this.#saveTimer);
-    // push() already serialises through #syncing, so a push never overlaps an
-    // in-flight push/pull.
-    this.#saveTimer = setTimeout(() => this.push(), 1000);
+    // Chain onto #syncing so a push never overlaps an in-flight push/pull.
+    this.#saveTimer = setTimeout(() => {
+      this.#syncing = this.#syncing.then(() => this.push()).catch(() => {});
+    }, 1000);
   }
 
   /** Public push — serialised through the sync queue. */
@@ -595,31 +596,3 @@ export class SyncService {
           const ids = data.map((r) => r.id);
           await this.#sb.from('family_contributions').update({ synced: true }).in('id', ids);
           await this.#pushFamilyShares();
-          this.#bus.emit('state:changed', state);
-          const n = newRows.length + deleteRows.length;
-          if (n > 0) this.#toast(`${n} family change${n > 1 ? 's' : ''} synced`);
-        }
-      }
-    } catch (e) { console.warn('[SyncService] pullMemberContributions error:', e); }
-  }
-
-  // ── Private helpers ──────────────────────────────────────────────────
-
-  #emitStatus(status) {
-    this.#bus.emit('sync:status', { status });
-  }
-
-  #emitUser(user) {
-    this.#bus.emit('sync:user', { user });
-  }
-
-  #toast(msg) {
-    this.#bus.emit('toast', { message: msg });
-  }
-
-  #migrateDefaults(state) {
-    // Single migration authority (also back-fills openingBalance for derived
-    // balances) so local load and cloud pull stay in lockstep.
-    StateMigrator.migrate(state, this.#fx);
-  }
-}

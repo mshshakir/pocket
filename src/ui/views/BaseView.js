@@ -12,6 +12,7 @@
  * rather than accessing global singletons directly — this keeps views testable.
  */
 import { Store }               from '../../core/Store.js';
+import { Html }                from '../../core/Html.js';
 import { CurrencyService }     from '../../domain/services/CurrencyService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 
@@ -128,10 +129,7 @@ export class BaseView {
    * @returns {string}
    */
   escapeHtml(s) {
-    return (s || '').toString().replace(
-      /[&<>"']/g,
-      (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]),
-    );
+    return Html.escape(s);
   }
 
   /**

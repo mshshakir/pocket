@@ -12,6 +12,7 @@
  */
 import { EventBus }  from '../../core/EventBus.js';
 import { Router }    from '../../core/Router.js';
+import { Html }      from '../../core/Html.js';
 import { NAV_ITEMS, MOBILE_TABS } from '../../data/constants.js';
 
 export class Navigation {
@@ -169,8 +170,6 @@ export class Navigation {
   // ── Helpers ──────────────────────────────────────────────────────────
 
   #esc(s) {
-    return (s || '').replace(/[&<>"']/g, (m) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]),
-    );
+    return Html.escape(s);
   }
 }
