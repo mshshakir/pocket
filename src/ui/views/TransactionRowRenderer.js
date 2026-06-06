@@ -250,17 +250,4 @@ export class TransactionRowRenderer {
     if (!state.user?.showHijri) return '';
     const top = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(iso));
     if (!top) return '';
-    const color = top.p === 1 ? '#f59e0b' : top.p === 2 ? '#a855f7' : '#94a3b8';
-    return `<span title="${this.#esc(top.t)}" class="inline-flex items-center" style="color:${color}">
-      <i data-lucide="moon-star" style="width:13px;height:13px"></i>
-    </span>`;
-  }
-
-  #getAccount(id) {
-    return this.#store.getState().accounts.find((a) => a.id === id) || null;
-  }
-
-  #esc(s) {
-    return Html.escape(s);
-  }
-}
+    const color = top.p === 1 ? '#f59e0b' : top.p === 2 ? '#a855f7' 

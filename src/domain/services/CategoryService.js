@@ -123,29 +123,4 @@ export class CategoryService {
   /**
    * Update an existing category.
    * @param {string} id
-   * @param {object} changes
-   * @returns {object|null}
-   */
-  update(id, changes) {
-    const cat = this.find(id);
-    if (!cat) return null;
-    Object.assign(cat, changes);
-    this.#store.flush();
-    return cat;
-  }
-
-  /**
-   * Delete a category (and unlink its children).
-   * @param {string} id
-   */
-  delete(id) {
-    const state = this.#store.getState();
-    // Orphan children rather than cascade-delete them
-    state.categories.forEach((c) => { if (c.parentId === id) c.parentId = null; });
-    state.categories = state.categories.filter((c) => c.id !== id);
-    state.transactions.forEach((t) => {
-      if (t.categoryId === id) t.categoryId = null;
-    });
-    this.#store.flush();
-  }
-}
+   * @param

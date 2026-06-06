@@ -160,13 +160,4 @@ export class AccountService {
         t.accountId !== id ||
         (Array.isArray(t.splits) && t.splits.some((s) => (s.accountId || t.accountId) !== id)),
       )
-      // Strip any split legs that pointed at the deleted account.
-      .map((t) =>
-        Array.isArray(t.splits)
-          ? { ...t, splits: t.splits.filter((s) => (s.accountId || t.accountId) !== id) }
-          : t,
-      );
-    state.accounts = state.accounts.filter((a) => a.id !== id);
-    this.#store.flush();
-  }
-}
+      // Strip any split legs that pointe

@@ -120,13 +120,4 @@ export class RecurringService {
         };
 
         txs.push(clone);
-        // Balances are derived; the persist below triggers the recompute hook.
-        generated++;
-        next = this.stepDate(next, rule, interval, anchorDay);
-      }
-    }
-
-    if (generated > 0) this.#store.persist();
-    return generated;
-  }
-}
+        // Balances are derived; the persist below tri

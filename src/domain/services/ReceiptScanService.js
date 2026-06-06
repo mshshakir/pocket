@@ -265,12 +265,4 @@ RULES:
         // Splits expect minor units; convert from the major-unit amount Gemini returns
         amount: this.#fx.toMinor(Number(item.amount) || 0, currency),
       }));
-      prefill.categoryId = '';
-    } else {
-      // Single category → populate categoryId on the main form
-      prefill.categoryId = items[0]?.categoryId || '';
-    }
-
-    return prefill;
-  }
-}
+      prefill.ca
