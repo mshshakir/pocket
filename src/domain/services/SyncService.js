@@ -27,6 +27,10 @@ export class SyncService {
   #sb = null;
   #user = null;
   #cloudVersion = 0;
+  // The version THIS device last wrote. Realtime UPDATE events carrying this
+  // version are our own echo and are ignored, so a local push no longer triggers
+  // a redundant self-pull (replaceState + re-render + recurring re-scan).
+  #lastSelfVersion = 0;
   #saveTimer = null;
   #channel = null;
   #sharesChannel  = null;
@@ -217,39 +221,54 @@ export class SyncService {
     return this.#syncing;
   }
 
+  /**
+   * The SINGLE choke point for writing local state to the cloud. Performs an
+   * ATOMIC compare-and-swap: the write only succeeds when the row's version
+   * still equals the one we last saw. If another device advanced it, zero rows
+   * come back and this returns false so the caller can pull+merge instead of
+   * blindly clobbering newer data. Every cloud write — the normal push AND the
+   * family-contribution writeback — must go through here; a blind upsert
+   * anywhere else reintroduces the lost-update race.
+   * @param {object} state  the state snapshot to persist
+   * @returns {Promise<boolean>} true on success, false if a newer version won
+   */
+  async #commitState(state) {
+    const expected = this.#cloudVersion;
+    if (expected > 0) {
+      const { data: rows, error } = await this.#sb
+        .from('user_data')
+        .update({ data: state, version: expected + 1, updated_at: new Date().toISOString() })
+        .eq('id', this.#user.id)
+        .eq('version', expected)
+        .select('version');
+      if (error) throw error;
+      if (!rows || !rows.length) return false; // another device advanced it
+      this.#cloudVersion = expected + 1;
+      this.#lastSelfVersion = this.#cloudVersion; // mark our own write to ignore its echo
+      return true;
+    }
+    // First write for this user (no row yet) — insert via upsert.
+    const { error } = await this.#sb.from('user_data').upsert({
+      id:         this.#user.id,
+      data:       state,
+      version:    1,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+    if (error) throw error;
+    this.#cloudVersion = 1;
+    this.#lastSelfVersion = this.#cloudVersion;
+    return true;
+  }
+
   async #doPush() {
     if (!this.#sb || !this.#user) return;
     this.#emitStatus('syncing');
     try {
-      // Optimistic concurrency via an ATOMIC compare-and-swap: the write only
-      // succeeds when the row's version still equals the one we last saw. If it
-      // doesn't (another device advanced it), zero rows come back → pull+merge.
-      // This closes the read-then-write race the previous peek-then-upsert had.
-      const expected = this.#cloudVersion;
-      if (expected > 0) {
-        const { data: rows, error } = await this.#sb
-          .from('user_data')
-          .update({ data: this.#store.getState(), version: expected + 1, updated_at: new Date().toISOString() })
-          .eq('id', this.#user.id)
-          .eq('version', expected)
-          .select('version');
-        if (error) throw error;
-        if (!rows || !rows.length) {
-          this.#toast('Another device saved first — merging…');
-          await this.#doPull();
-          return;
-        }
-        this.#cloudVersion = expected + 1;
-      } else {
-        // First write for this user (no row yet) — insert via upsert.
-        const { error } = await this.#sb.from('user_data').upsert({
-          id:         this.#user.id,
-          data:       this.#store.getState(),
-          version:    1,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'id' });
-        if (error) throw error;
-        this.#cloudVersion = 1;
+      const ok = await this.#commitState(this.#store.getState());
+      if (!ok) {
+        this.#toast('Another device saved first — merging…');
+        await this.#doPull();
+        return;
       }
       this.#emitStatus('synced');
       await this.#pushFamilyShares();
@@ -324,7 +343,13 @@ export class SyncService {
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public', table: 'user_data',
         filter: `id=eq.${this.#user.id}`,
-      }, () => this.pull())
+      }, (payload) => {
+        // Ignore the echo of our own write; only pull when ANOTHER device advanced
+        // the row. (If the payload omits the version, fall back to always pulling.)
+        const v = payload?.new?.version;
+        if (v != null && v === this.#lastSelfVersion) return;
+        this.pull();
+      })
       .subscribe();
 
     // Family shares channel (member side)
@@ -584,20 +609,20 @@ export class SyncService {
 
       if (newRows.length || deleteRows.length) {
         this.#store.persist();
-        const { error: saveErr } = await this.#sb.from('user_data').upsert({
-          id:         this.#user.id,
-          data:       state,
-          version:    this.#cloudVersion + 1,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'id' });
-        if (!saveErr) {
-          this.#cloudVersion += 1;
+        // Version-guarded write (NOT a blind upsert) so a concurrent device's
+        // newer snapshot is never clobbered. On a lost race we pull the winner;
+        // the contributions stay synced=false and are re-applied next pull.
+        const committed = await this.#commitState(state);
+        if (committed) {
           const ids = data.map((r) => r.id);
           await this.#sb.from('family_contributions').update({ synced: true }).in('id', ids);
           await this.#pushFamilyShares();
           this.#bus.emit('state:changed', state);
           const n = newRows.length + deleteRows.length;
           if (n > 0) this.#toast(`${n} family change${n > 1 ? 's' : ''} synced`);
+        } else {
+          this.#toast('Another device saved first — merging…');
+          await this.#doPull();
         }
       }
     } catch (e) { console.warn('[SyncService] pullMemberContributions error:', e); }

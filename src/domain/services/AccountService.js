@@ -75,6 +75,9 @@ export class AccountService {
   recompute() {
     const state = this.#store.getState();
     if (!Array.isArray(state.accounts) || !Array.isArray(state.transactions)) return;
+    // Freeze each row's account-currency impact at the current rate (once), so
+    // derived balances stay stable when the live FX table is later refreshed.
+    LedgerMath.stampAccountAmounts(state.transactions, state.accounts, this.#fx);
     const balances = LedgerMath.balances(state.accounts, state.transactions, this.#fx);
     for (const a of state.accounts) a.balance = balances.get(a.id) ?? 0;
   }
@@ -120,7 +123,19 @@ export class AccountService {
   update(id, changes) {
     const account = this.find(id);
     if (!account) return null;
+    const currencyChanged = 'currency' in changes && changes.currency !== account.currency;
     Object.assign(account, changes);
+    if (currencyChanged) {
+      // Frozen per-row impacts were captured in the OLD account currency; clear
+      // them for every row touching this account so recompute() re-freezes them
+      // in the new currency on the persist below.
+      for (const t of this.#store.getState().transactions) {
+        if (t.accountId === id) delete t.acctMinor;
+        if (Array.isArray(t.splits)) {
+          for (const sp of t.splits) if ((sp.accountId || t.accountId) === id) delete sp.acctMinor;
+        }
+      }
+    }
     this.#store.flush();
     return account;
   }
@@ -154,15 +169,4 @@ export class AccountService {
     state.accounts = state.accounts.filter((a) => a.id !== id);
     this.#store.flush();
   }
-
-  // ── Deprecated balance shims ─────────────────────────────────────────
-  // Balances are derived and recomputed centrally on persist. These remain as
-  // no-ops so existing call sites keep working without manual posting logic.
-
-  /** @deprecated balances are derived — no-op. */
-  applyBalances(_tx) {}
-  /** @deprecated balances are derived — no-op. */
-  revertBalances(_tx) {}
-  /** @deprecated balances are derived — no-op. */
-  revertTransferPair(_tx, _pair) {}
 }

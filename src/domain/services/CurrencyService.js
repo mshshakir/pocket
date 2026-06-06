@@ -13,6 +13,14 @@ import { CURRENCIES, ZERO_DECIMAL, THREE_DECIMAL } from '../../data/constants.js
 import { RATES } from './FxRates.js';
 
 export class CurrencyService {
+  /**
+   * Process-wide label cache. Static (not per-instance) because the app creates
+   * many CurrencyService instances; a per-instance `_labelMap` rebuilt the same
+   * Intl.DisplayNames table for each one and was never shared.
+   * @type {Record<string, string>|null}
+   */
+  static #labelMap = null;
+
   // ── Minor-unit helpers ──────────────────────────────────────────────
 
   /** @param {string} currency @returns {number} */
@@ -52,23 +60,46 @@ export class CurrencyService {
   // ── FX conversion ───────────────────────────────────────────────────
 
   /**
-   * Convert a minor-unit amount from one currency to another.
-   * @param {number} minor   - amount in minor units of `from`
+   * Strict conversion: throws when either currency has no FX rate. Use this on
+   * the ledger/balance path, where the caller MUST be able to tell an
+   * unconvertible row apart from a genuine zero (e.g. to skip freezing it and
+   * retry later) rather than silently folding a wrong number into a balance.
+   * @param {number} minor
    * @param {string} from
    * @param {string} to
    * @returns {number} amount in minor units of `to`
+   * @throws {Error} when `from` or `to` is not in the rate table
    */
-  convert(minor, from, to) {
+  convertStrict(minor, from, to) {
     if (from === to) return minor;
     const fromRate = RATES[from];
     const toRate   = RATES[to];
     if (!fromRate || !toRate) {
-      console.warn(`[CurrencyService] Unknown currency: ${from} or ${to}`);
-      return minor;
+      throw new Error(`No FX rate for ${from}→${to}`);
     }
     const majorUSD = this.fromMinor(minor, from) / fromRate;
     const majorTo  = majorUSD * toRate;
     return this.toMinor(majorTo, to);
+  }
+
+  /**
+   * Resilient conversion for display/aggregation. Delegates to convertStrict but
+   * NEVER throws: an unknown currency yields 0 (with a warning) instead of the
+   * old, dangerous 1:1 passthrough, so a single corrupt/exotic currency can no
+   * longer silently inflate a home-currency total by treating, say, 1000 JPY as
+   * 1000 USD.
+   * @param {number} minor   - amount in minor units of `from`
+   * @param {string} from
+   * @param {string} to
+   * @returns {number} amount in minor units of `to` (0 if unconvertible)
+   */
+  convert(minor, from, to) {
+    try {
+      return this.convertStrict(minor, from, to);
+    } catch (e) {
+      console.warn(`[CurrencyService] ${e.message}; counting as 0 to avoid a wrong total`);
+      return 0;
+    }
   }
 
   /**
@@ -129,7 +160,7 @@ export class CurrencyService {
    * @returns {Record<string, string>}
    */
   get labelMap() {
-    if (!this._labelMap) {
+    if (!CurrencyService.#labelMap) {
       const map = {};
       try {
         const dn = new Intl.DisplayNames(['en'], { type: 'currency' });
@@ -137,9 +168,9 @@ export class CurrencyService {
       } catch {
         CURRENCIES.forEach((c) => { map[c] = c; });
       }
-      this._labelMap = map;
+      CurrencyService.#labelMap = map;
     }
-    return this._labelMap;
+    return CurrencyService.#labelMap;
   }
 
   /** All supported currency codes, sorted. @returns {string[]} */

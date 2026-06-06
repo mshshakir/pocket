@@ -77,12 +77,14 @@ export class ReceiptScanService {
     const prompt        = this.#buildPrompt(defaultCcy, catLines, fallbackId, fallbackName, today);
 
     // ── Step 3: call Gemini ──────────────────────────────────────────
-    const url = `${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
+    // Pass the key via the request header, NOT the URL query string: URLs leak
+    // into proxy/browser history and Referer headers far more readily than
+    // headers do, and this is the user's personal API key.
     let res;
     try {
-      res = await fetch(url, {
+      res = await fetch(GEMINI_ENDPOINT, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body:    JSON.stringify({
           contents: [{
             parts: [

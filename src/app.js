@@ -694,15 +694,16 @@ export class Application {
       if (!tx) return;
       if (data.type === 'transfer' && tx.type === 'transfer' && tx.transferPairId) {
         const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-        // Revert both legs honoring their direction (works whether the edited
-        // leg is 'out' or 'in') before re-normalizing tx='out' / pair='in'.
-        this.#revertTransferPair(tx, pair, state);
+        // Re-normalize tx='out' / pair='in'. Balances are derived, so the
+        // flush() below recomputes both accounts from the ledger — no manual revert.
         Object.assign(tx, {
           accountId: data.accountId, categoryId: null,
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
           paymentType: 'transfer', type: 'transfer', splits: null,
           transferRate: xfer?.rate ?? null, transferDir: 'out',
+          // Amount/currency changed → drop the frozen impact so it re-freezes.
+          acctMinor: undefined,
         });
         if (pair) {
           Object.assign(pair, {
@@ -714,13 +715,8 @@ export class Application {
             payee: data.payee || 'Transfer', note: data.note, date: data.date,
             paymentType: 'transfer', type: 'transfer', splits: null,
             transferRate: xfer?.rate ?? null, transferDir: 'in',
+            acctMinor: undefined,
           });
-        }
-        const fa1 = state.accounts.find((a) => a.id === tx.accountId);
-        if (fa1) fa1.balance -= this.#fx.convert(tx.amount, tx.currency, fa1.currency);
-        if (pair) {
-          const ta1 = state.accounts.find((a) => a.id === pair.accountId);
-          if (ta1) ta1.balance += this.#fx.convert(pair.amount, pair.currency, ta1.currency);
         }
       } else {
         // Non-transfer edit → TransactionService.update reverts old balances,
@@ -764,10 +760,7 @@ export class Application {
           createdAt: now, addedBy: this.#sync.currentUser?.email || null,
         };
         state.transactions.push(txFrom, txTo);
-        const fa = state.accounts.find((a) => a.id === data.accountId);
-        if (fa) fa.balance -= this.#fx.convert(minor, currency, fa.currency);
-        const ta = state.accounts.find((a) => a.id === data.transferToAccountId);
-        if (ta) ta.balance += this.#fx.convert(dst, toCcy, ta.currency);
+        // Balances are derived; the flush() below recomputes both accounts.
       } else {
         // New simple/split tx → TransactionService.create (pushes, applies
         // balances, persists+notifies). recordState/tags/transferPairId defaults
@@ -1385,7 +1378,6 @@ export class Application {
           transferPairId: null, splits: null, tags: ['balance-adjustment'],
         };
         state.transactions.push(tx);
-        this.#applyBalances(tx, state);
       }
       this.#store.persist();
       this.closeModal(); this.#render();
@@ -1412,7 +1404,6 @@ export class Application {
         transferPairId: null, splits: null, tags: ['opening-balance'],
       };
       state.transactions.push(tx);
-      this.#applyBalances(tx, state);
     }
     this.#store.persist();
     this.closeModal(); this.#render();
@@ -1742,7 +1733,6 @@ export class Application {
       debtId, debtRole: 'initial',
     };
     state.transactions.push(tx);
-    this.#applyBalances(tx, state);
 
     state.debts.push({
       id: debtId, type: data.type, counterparty: data.counterparty,
@@ -1782,7 +1772,6 @@ export class Application {
       debtId, debtRole: 'payment',
     };
     state.transactions.push(tx);
-    this.#applyBalances(tx, state);
 
     // Check if fully repaid
     const payments = state.transactions.filter((t) => t.debtId === debtId && t.id !== debt.initialTxId);
@@ -1811,11 +1800,9 @@ export class Application {
     if (!confirm(msg)) return;
     const initial = state.transactions.find((t) => t.id === debt.initialTxId);
     if (initial) {
-      this.#revertBalances(initial, state);
       state.transactions = state.transactions.filter((t) => t.id !== debt.initialTxId);
     }
     if (destroyPayments) {
-      payments.forEach((p) => this.#revertBalances(p, state));
       state.transactions = state.transactions.filter((t) => t.debtId !== id);
     } else {
       state.transactions.forEach((t) => { if (t.debtId === id) { t.debtId = null; t.debtRole = null; } });
@@ -1946,9 +1933,6 @@ export class Application {
   deleteRegularItem(id) {
     if (!confirm('Delete this regular item?')) return;
     const s = this.#store.getState();
-    // Revert balances for all transactions linked to this regular item
-    const linked = (s.transactions || []).filter(t => t.regularItemId === id);
-    linked.forEach(t => this.#revertBalances(t, s));
     s.transactions = (s.transactions || []).filter(t => t.regularItemId !== id);
     s.regularItems = (s.regularItems || []).filter(i => i.id !== id);
     this.#store.persist();
@@ -1998,7 +1982,6 @@ export class Application {
       recordState:  'cleared',
       createdAt:    new Date().toISOString(),
     };
-    this.#applyBalances(tx, s);
     s.transactions.push(tx);
     this.#store.flush();
     this.#sync.schedulePush?.();
@@ -2009,7 +1992,6 @@ export class Application {
     const s = this.#store.getState();
     const tx = s.transactions.find(t => t.id === logId);
     if (tx) {
-      this.#revertBalances(tx, s);
       s.transactions = s.transactions.filter(t => t.id !== logId);
       this.#store.flush();  // flush() so other views reflect the reverted balance
       this.#sync.schedulePush?.();
@@ -2446,8 +2428,7 @@ export class Application {
         const txF = { id: fromId, accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: toId, transferDir: 'out', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: 'transfer', transferPairId: fromId, transferDir: 'in', tags: draft.tags || [], createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(txF, txT);
-        acc.balance    -= this.#fx.convert(minor, draft.currency, acc.currency);
-        toAcc.balance  += this.#fx.convert(dstMinor, toCcy, toAcc.currency);
+        // Balances are derived; the persist() after the loop recomputes accounts.
         txCount++;
       } else if (Array.isArray(draft.splits)) {
         const splits = draft.splits.map((s) => ({
@@ -2457,7 +2438,6 @@ export class Application {
         }));
         const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(tx);
-        this.#applyBalances(tx, state);
         txCount++;
       } else {
         const catKey = draft.catName
@@ -2468,7 +2448,6 @@ export class Application {
         const catId = catKey ? (catMap[catKey] || null) : null;
         const tx = { id: IdGenerator.generate('tx'), accountId: accId, categoryId: catId, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: 'cleared', type: draft.type, transferPairId: null, tags: draft.tags || [], splits: null, createdAt: draft.createdAt || new Date().toISOString(), addedBy: draft.addedBy || null };
         state.transactions.push(tx);
-        this.#applyBalances(tx, state);
         txCount++;
       }
     });
@@ -2688,18 +2667,6 @@ export class Application {
   #esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (m) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
-  }
-
-  #applyBalances(tx, _state) {
-    this.#accounts.applyBalances(tx);
-  }
-
-  #revertBalances(tx, _state) {
-    this.#accounts.revertBalances(tx);
-  }
-
-  #revertTransferPair(tx, pair, _state) {
-    this.#accounts.revertTransferPair(tx, pair);
   }
 
   // ──────────────────────────────────────────────────────────────────────────

@@ -48,16 +48,31 @@ export class CategoryService {
   }
 
   /**
-   * Return an array of [parentId, ...childIds] for a given parent.
+   * Return `catId` plus its FULL subtree (children, grandchildren, …). Callers
+   * such as BudgetService rely on this being the transitive closure so spend in
+   * a deeply-nested category still rolls up to an ancestor budget; the previous
+   * one-level version silently dropped grandchildren. Guarded against a
+   * parentId cycle so a malformed tree can't loop forever.
    * @param {string} catId
    * @returns {string[]}
    */
   descendants(catId) {
-    const ids = [catId];
-    this.#store.getState().categories.forEach((c) => {
-      if (c.parentId === catId) ids.push(c.id);
-    });
-    return ids;
+    const cats = this.#store.getState().categories;
+    const childrenOf = new Map();
+    for (const c of cats) {
+      if (!childrenOf.has(c.parentId)) childrenOf.set(c.parentId, []);
+      childrenOf.get(c.parentId).push(c.id);
+    }
+
+    const out = [], seen = new Set(), stack = [catId];
+    while (stack.length) {
+      const id = stack.pop();
+      if (seen.has(id)) continue; // cycle guard
+      seen.add(id);
+      out.push(id);
+      for (const childId of (childrenOf.get(id) || [])) stack.push(childId);
+    }
+    return out;
   }
 
   /**

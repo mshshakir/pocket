@@ -43,7 +43,13 @@ export class LedgerMath {
 
     if (tx.type === 'transfer') {
       const s = tx.transferDir === 'out' ? -1 : tx.transferDir === 'in' ? 1 : 0;
-      return [{ accountId: tx.accountId, currency: tx.currency, minor: s * Number(tx.amount || 0) }];
+      return [{
+        accountId: tx.accountId,
+        currency:  tx.currency,
+        minor:     s * Number(tx.amount || 0),
+        // Rate-frozen impact in the account's currency (see stampAccountAmounts).
+        acctMinor: Number.isFinite(tx.acctMinor) ? s * Number(tx.acctMinor) : undefined,
+      }];
     }
 
     const sign = LedgerMath.#sign(tx.type);
@@ -54,10 +60,88 @@ export class LedgerMath {
         accountId: sp.accountId || tx.accountId,
         currency:  tx.currency,
         minor:     sign * Number(sp.amount || 0),
+        acctMinor: Number.isFinite(sp.acctMinor) ? sign * Number(sp.acctMinor) : undefined,
       }));
     }
 
-    return [{ accountId: tx.accountId, currency: tx.currency, minor: sign * Number(tx.amount || 0) }];
+    return [{
+      accountId: tx.accountId,
+      currency:  tx.currency,
+      minor:     sign * Number(tx.amount || 0),
+      acctMinor: Number.isFinite(tx.acctMinor) ? sign * Number(tx.acctMinor) : undefined,
+    }];
+  }
+
+  /**
+   * The amount a single contribution posts to an account, expressed in the
+   * account's currency. Prefers the rate-frozen `acctMinor` captured at posting
+   * time; only falls back to a LIVE FX conversion for legacy rows that never
+   * froze one. If that live conversion is impossible (unknown currency), the
+   * contribution is dropped with a warning rather than silently corrupting the
+   * running total with an unconverted 1:1 figure.
+   * @param {{currency:string, minor:number, acctMinor?:number}} c
+   * @param {string} accountCurrency
+   * @param {import('./CurrencyService.js').CurrencyService} fx
+   * @returns {number} signed minor units in the account's currency
+   */
+  static #postedAmount(c, accountCurrency, fx) {
+    if (Number.isFinite(c.acctMinor)) return c.acctMinor;
+    const m = Number.isFinite(c.minor) ? c.minor : 0;
+    try {
+      return fx.convertStrict(m, c.currency, accountCurrency);
+    } catch (e) {
+      console.warn(`[LedgerMath] dropping unconvertible contribution ${c.currency}→${accountCurrency}:`, e?.message || e);
+      return 0;
+    }
+  }
+
+  /**
+   * Freeze each transaction's effect on its target account(s) into that
+   * account's currency at the CURRENT rate — but only for rows not already
+   * frozen. Once stamped, a row's contribution to a balance no longer drifts
+   * when the live FX table refreshes; a transaction's historical impact is
+   * immutable, exactly like a real bank ledger.
+   *
+   * Invoked from AccountService.recompute() (the single persist-time derive
+   * choke point), so a freshly-created row freezes at creation time and a
+   * legacy row freezes once on first load.
+   *
+   * @param {object[]} transactions
+   * @param {object[]} accounts
+   * @param {import('./CurrencyService.js').CurrencyService} fx
+   */
+  static stampAccountAmounts(transactions, accounts, fx) {
+    if (!Array.isArray(transactions) || !Array.isArray(accounts)) return;
+    const byId = new Map(accounts.map((a) => [a.id, a]));
+    const freeze = (rawMinor, fromCcy, acc) => {
+      try { return fx.convertStrict(Number(rawMinor || 0), fromCcy, acc.currency); }
+      catch { return undefined; } // unknown currency → leave unfrozen, retried next pass
+    };
+
+    for (const tx of transactions) {
+      if (!tx) continue;
+
+      if (tx.type === 'transfer') {
+        if (!Number.isFinite(tx.acctMinor)) {
+          const acc = byId.get(tx.accountId);
+          if (acc) { const v = freeze(tx.amount, tx.currency, acc); if (v !== undefined) tx.acctMinor = v; }
+        }
+        continue;
+      }
+
+      if (LedgerMath.#sign(tx.type) === 0) continue; // not income/expense
+
+      if (Array.isArray(tx.splits) && tx.splits.length) {
+        for (const sp of tx.splits) {
+          if (Number.isFinite(sp.acctMinor)) continue;
+          const acc = byId.get(sp.accountId || tx.accountId);
+          if (acc) { const v = freeze(sp.amount, tx.currency, acc); if (v !== undefined) sp.acctMinor = v; }
+        }
+      } else if (!Number.isFinite(tx.acctMinor)) {
+        const acc = byId.get(tx.accountId);
+        if (acc) { const v = freeze(tx.amount, tx.currency, acc); if (v !== undefined) tx.acctMinor = v; }
+      }
+    }
   }
 
   /**
@@ -74,8 +158,7 @@ export class LedgerMath {
     let delta = 0;
     for (const c of LedgerMath.contributions(tx)) {
       if (c.accountId !== account.id) continue;
-      const m = Number.isFinite(c.minor) ? c.minor : 0;
-      delta += fx.convert(m, c.currency, account.currency);
+      delta += LedgerMath.#postedAmount(c, account.currency, fx);
     }
     return delta;
   }
@@ -113,8 +196,7 @@ export class LedgerMath {
       for (const c of LedgerMath.contributions(t)) {
         const acc = byId.get(c.accountId);
         if (!acc) continue; // contribution to a deleted account is dropped
-        const m = Number.isFinite(c.minor) ? c.minor : 0;
-        totals.set(acc.id, totals.get(acc.id) + fx.convert(m, c.currency, acc.currency));
+        totals.set(acc.id, totals.get(acc.id) + LedgerMath.#postedAmount(c, acc.currency, fx));
       }
     }
 

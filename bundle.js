@@ -80,13 +80,15 @@ var _PocketApp = (() => {
      * @param {*} [data]
      */
     emit(event, data) {
-      this.#handlers.get(event)?.forEach((fn) => {
+      const handlers = this.#handlers.get(event);
+      if (!handlers) return;
+      for (const fn of [...handlers]) {
         try {
           fn(data);
         } catch (err) {
           console.error(`[EventBus] Error in handler for "${event}":`, err);
         }
-      });
+      }
     }
     /** Remove all handlers (useful for testing). */
     clear() {
@@ -233,16 +235,25 @@ var _PocketApp = (() => {
       }
     }
     /**
-     * Replace the entire state object (used by cloud sync after a remote pull).
+     * Replace the entire state (used by cloud sync after a remote pull).
      * Runs the supplied migration FIRST so a cloud snapshot from an older schema
      * is brought current before any view or service touches it.
+     *
+     * The replacement is applied IN PLACE (keys cleared, then copied) so the state
+     * object's identity is preserved. Async callers that captured a getState()
+     * reference before an await (e.g. SyncService.#pullMemberContributions) keep
+     * pointing at the live object, instead of silently mutating an orphaned
+     * snapshot whose writes never persist.
      * @param {object} newState
      * @param {(state: object) => void} [migrate]  schema back-fill
      */
     replaceState(newState, migrate = () => {
     }) {
       migrate(newState);
-      this.#state = newState;
+      for (const k of Object.keys(this.#state)) {
+        if (!(k in newState)) delete this.#state[k];
+      }
+      Object.assign(this.#state, newState);
       this.#persistState();
       this.#bus.emit("state:changed", this.#state);
     }
@@ -978,7 +989,13 @@ var _PocketApp = (() => {
       if (!tx) return [];
       if (tx.type === "transfer") {
         const s = tx.transferDir === "out" ? -1 : tx.transferDir === "in" ? 1 : 0;
-        return [{ accountId: tx.accountId, currency: tx.currency, minor: s * Number(tx.amount || 0) }];
+        return [{
+          accountId: tx.accountId,
+          currency: tx.currency,
+          minor: s * Number(tx.amount || 0),
+          // Rate-frozen impact in the account's currency (see stampAccountAmounts).
+          acctMinor: Number.isFinite(tx.acctMinor) ? s * Number(tx.acctMinor) : void 0
+        }];
       }
       const sign = _LedgerMath.#sign(tx.type);
       if (sign === 0) return [];
@@ -986,10 +1003,94 @@ var _PocketApp = (() => {
         return tx.splits.map((sp) => ({
           accountId: sp.accountId || tx.accountId,
           currency: tx.currency,
-          minor: sign * Number(sp.amount || 0)
+          minor: sign * Number(sp.amount || 0),
+          acctMinor: Number.isFinite(sp.acctMinor) ? sign * Number(sp.acctMinor) : void 0
         }));
       }
-      return [{ accountId: tx.accountId, currency: tx.currency, minor: sign * Number(tx.amount || 0) }];
+      return [{
+        accountId: tx.accountId,
+        currency: tx.currency,
+        minor: sign * Number(tx.amount || 0),
+        acctMinor: Number.isFinite(tx.acctMinor) ? sign * Number(tx.acctMinor) : void 0
+      }];
+    }
+    /**
+     * The amount a single contribution posts to an account, expressed in the
+     * account's currency. Prefers the rate-frozen `acctMinor` captured at posting
+     * time; only falls back to a LIVE FX conversion for legacy rows that never
+     * froze one. If that live conversion is impossible (unknown currency), the
+     * contribution is dropped with a warning rather than silently corrupting the
+     * running total with an unconverted 1:1 figure.
+     * @param {{currency:string, minor:number, acctMinor?:number}} c
+     * @param {string} accountCurrency
+     * @param {import('./CurrencyService.js').CurrencyService} fx
+     * @returns {number} signed minor units in the account's currency
+     */
+    static #postedAmount(c, accountCurrency, fx) {
+      if (Number.isFinite(c.acctMinor)) return c.acctMinor;
+      const m = Number.isFinite(c.minor) ? c.minor : 0;
+      try {
+        return fx.convertStrict(m, c.currency, accountCurrency);
+      } catch (e) {
+        console.warn(`[LedgerMath] dropping unconvertible contribution ${c.currency}\u2192${accountCurrency}:`, e?.message || e);
+        return 0;
+      }
+    }
+    /**
+     * Freeze each transaction's effect on its target account(s) into that
+     * account's currency at the CURRENT rate — but only for rows not already
+     * frozen. Once stamped, a row's contribution to a balance no longer drifts
+     * when the live FX table refreshes; a transaction's historical impact is
+     * immutable, exactly like a real bank ledger.
+     *
+     * Invoked from AccountService.recompute() (the single persist-time derive
+     * choke point), so a freshly-created row freezes at creation time and a
+     * legacy row freezes once on first load.
+     *
+     * @param {object[]} transactions
+     * @param {object[]} accounts
+     * @param {import('./CurrencyService.js').CurrencyService} fx
+     */
+    static stampAccountAmounts(transactions, accounts, fx) {
+      if (!Array.isArray(transactions) || !Array.isArray(accounts)) return;
+      const byId = new Map(accounts.map((a) => [a.id, a]));
+      const freeze = (rawMinor, fromCcy, acc) => {
+        try {
+          return fx.convertStrict(Number(rawMinor || 0), fromCcy, acc.currency);
+        } catch {
+          return void 0;
+        }
+      };
+      for (const tx of transactions) {
+        if (!tx) continue;
+        if (tx.type === "transfer") {
+          if (!Number.isFinite(tx.acctMinor)) {
+            const acc = byId.get(tx.accountId);
+            if (acc) {
+              const v = freeze(tx.amount, tx.currency, acc);
+              if (v !== void 0) tx.acctMinor = v;
+            }
+          }
+          continue;
+        }
+        if (_LedgerMath.#sign(tx.type) === 0) continue;
+        if (Array.isArray(tx.splits) && tx.splits.length) {
+          for (const sp of tx.splits) {
+            if (Number.isFinite(sp.acctMinor)) continue;
+            const acc = byId.get(sp.accountId || tx.accountId);
+            if (acc) {
+              const v = freeze(sp.amount, tx.currency, acc);
+              if (v !== void 0) sp.acctMinor = v;
+            }
+          }
+        } else if (!Number.isFinite(tx.acctMinor)) {
+          const acc = byId.get(tx.accountId);
+          if (acc) {
+            const v = freeze(tx.amount, tx.currency, acc);
+            if (v !== void 0) tx.acctMinor = v;
+          }
+        }
+      }
     }
     /**
      * The signed delta a single transaction applies to one specific account,
@@ -1005,8 +1106,7 @@ var _PocketApp = (() => {
       let delta = 0;
       for (const c of _LedgerMath.contributions(tx)) {
         if (c.accountId !== account.id) continue;
-        const m = Number.isFinite(c.minor) ? c.minor : 0;
-        delta += fx.convert(m, c.currency, account.currency);
+        delta += _LedgerMath.#postedAmount(c, account.currency, fx);
       }
       return delta;
     }
@@ -1041,8 +1141,7 @@ var _PocketApp = (() => {
         for (const c of _LedgerMath.contributions(t)) {
           const acc = byId.get(c.accountId);
           if (!acc) continue;
-          const m = Number.isFinite(c.minor) ? c.minor : 0;
-          totals.set(acc.id, totals.get(acc.id) + fx.convert(m, c.currency, acc.currency));
+          totals.set(acc.id, totals.get(acc.id) + _LedgerMath.#postedAmount(c, acc.currency, fx));
         }
       }
       const out = /* @__PURE__ */ new Map();
@@ -1058,7 +1157,14 @@ var _PocketApp = (() => {
   var RATES = { ...FX };
 
   // src/domain/services/CurrencyService.js
-  var CurrencyService = class {
+  var CurrencyService = class _CurrencyService {
+    /**
+     * Process-wide label cache. Static (not per-instance) because the app creates
+     * many CurrencyService instances; a per-instance `_labelMap` rebuilt the same
+     * Intl.DisplayNames table for each one and was never shared.
+     * @type {Record<string, string>|null}
+     */
+    static #labelMap = null;
     // ── Minor-unit helpers ──────────────────────────────────────────────
     /** @param {string} currency @returns {number} */
     minorFactor(currency) {
@@ -1092,23 +1198,45 @@ var _PocketApp = (() => {
     }
     // ── FX conversion ───────────────────────────────────────────────────
     /**
-     * Convert a minor-unit amount from one currency to another.
-     * @param {number} minor   - amount in minor units of `from`
+     * Strict conversion: throws when either currency has no FX rate. Use this on
+     * the ledger/balance path, where the caller MUST be able to tell an
+     * unconvertible row apart from a genuine zero (e.g. to skip freezing it and
+     * retry later) rather than silently folding a wrong number into a balance.
+     * @param {number} minor
      * @param {string} from
      * @param {string} to
      * @returns {number} amount in minor units of `to`
+     * @throws {Error} when `from` or `to` is not in the rate table
      */
-    convert(minor, from, to) {
+    convertStrict(minor, from, to) {
       if (from === to) return minor;
       const fromRate = RATES[from];
       const toRate = RATES[to];
       if (!fromRate || !toRate) {
-        console.warn(`[CurrencyService] Unknown currency: ${from} or ${to}`);
-        return minor;
+        throw new Error(`No FX rate for ${from}\u2192${to}`);
       }
       const majorUSD = this.fromMinor(minor, from) / fromRate;
       const majorTo = majorUSD * toRate;
       return this.toMinor(majorTo, to);
+    }
+    /**
+     * Resilient conversion for display/aggregation. Delegates to convertStrict but
+     * NEVER throws: an unknown currency yields 0 (with a warning) instead of the
+     * old, dangerous 1:1 passthrough, so a single corrupt/exotic currency can no
+     * longer silently inflate a home-currency total by treating, say, 1000 JPY as
+     * 1000 USD.
+     * @param {number} minor   - amount in minor units of `from`
+     * @param {string} from
+     * @param {string} to
+     * @returns {number} amount in minor units of `to` (0 if unconvertible)
+     */
+    convert(minor, from, to) {
+      try {
+        return this.convertStrict(minor, from, to);
+      } catch (e) {
+        console.warn(`[CurrencyService] ${e.message}; counting as 0 to avoid a wrong total`);
+        return 0;
+      }
     }
     /**
      * Return the auto-computed FX rate between two currencies.
@@ -1164,7 +1292,7 @@ var _PocketApp = (() => {
      * @returns {Record<string, string>}
      */
     get labelMap() {
-      if (!this._labelMap) {
+      if (!_CurrencyService.#labelMap) {
         const map = {};
         try {
           const dn = new Intl.DisplayNames(["en"], { type: "currency" });
@@ -1176,9 +1304,9 @@ var _PocketApp = (() => {
             map[c] = c;
           });
         }
-        this._labelMap = map;
+        _CurrencyService.#labelMap = map;
       }
-      return this._labelMap;
+      return _CurrencyService.#labelMap;
     }
     /** All supported currency codes, sorted. @returns {string[]} */
     get allCodes() {
@@ -1468,6 +1596,7 @@ var _PocketApp = (() => {
     recompute() {
       const state = this.#store.getState();
       if (!Array.isArray(state.accounts) || !Array.isArray(state.transactions)) return;
+      LedgerMath.stampAccountAmounts(state.transactions, state.accounts, this.#fx);
       const balances = LedgerMath.balances(state.accounts, state.transactions, this.#fx);
       for (const a of state.accounts) a.balance = balances.get(a.id) ?? 0;
     }
@@ -1509,7 +1638,16 @@ var _PocketApp = (() => {
     update(id, changes) {
       const account = this.find(id);
       if (!account) return null;
+      const currencyChanged = "currency" in changes && changes.currency !== account.currency;
       Object.assign(account, changes);
+      if (currencyChanged) {
+        for (const t of this.#store.getState().transactions) {
+          if (t.accountId === id) delete t.acctMinor;
+          if (Array.isArray(t.splits)) {
+            for (const sp of t.splits) if ((sp.accountId || t.accountId) === id) delete sp.acctMinor;
+          }
+        }
+      }
       this.#store.flush();
       return account;
     }
@@ -1533,18 +1671,6 @@ var _PocketApp = (() => {
       );
       state.accounts = state.accounts.filter((a) => a.id !== id);
       this.#store.flush();
-    }
-    // ── Deprecated balance shims ─────────────────────────────────────────
-    // Balances are derived and recomputed centrally on persist. These remain as
-    // no-ops so existing call sites keep working without manual posting logic.
-    /** @deprecated balances are derived — no-op. */
-    applyBalances(_tx) {
-    }
-    /** @deprecated balances are derived — no-op. */
-    revertBalances(_tx) {
-    }
-    /** @deprecated balances are derived — no-op. */
-    revertTransferPair(_tx, _pair) {
     }
   };
 
@@ -1585,16 +1711,30 @@ var _PocketApp = (() => {
       return c.name;
     }
     /**
-     * Return an array of [parentId, ...childIds] for a given parent.
+     * Return `catId` plus its FULL subtree (children, grandchildren, …). Callers
+     * such as BudgetService rely on this being the transitive closure so spend in
+     * a deeply-nested category still rolls up to an ancestor budget; the previous
+     * one-level version silently dropped grandchildren. Guarded against a
+     * parentId cycle so a malformed tree can't loop forever.
      * @param {string} catId
      * @returns {string[]}
      */
     descendants(catId) {
-      const ids = [catId];
-      this.#store.getState().categories.forEach((c) => {
-        if (c.parentId === catId) ids.push(c.id);
-      });
-      return ids;
+      const cats = this.#store.getState().categories;
+      const childrenOf = /* @__PURE__ */ new Map();
+      for (const c of cats) {
+        if (!childrenOf.has(c.parentId)) childrenOf.set(c.parentId, []);
+        childrenOf.get(c.parentId).push(c.id);
+      }
+      const out = [], seen = /* @__PURE__ */ new Set(), stack = [catId];
+      while (stack.length) {
+        const id = stack.pop();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+        for (const childId of childrenOf.get(id) || []) stack.push(childId);
+      }
+      return out;
     }
     /**
      * Root categories (no parent) filtered by type.
@@ -1722,16 +1862,11 @@ var _PocketApp = (() => {
      * @returns {{ dir: '+'|'-'|'', minorInAcc: number }}
      */
     impactOnAccount(tx, account) {
-      if (tx.type === "transfer") {
-        const m = this.#fx.convert(tx.amount, tx.currency, account.currency);
-        if (tx.transferDir === "out") return { dir: "-", minorInAcc: m };
-        if (tx.transferDir === "in") return { dir: "+", minorInAcc: m };
-        return { dir: "", minorInAcc: m };
-      }
-      const converted = this.#fx.convert(tx.amount, tx.currency, account.currency);
+      if (!account) return { dir: "", minorInAcc: 0 };
+      const delta = LedgerMath.accountDelta(tx, account, this.#fx);
       return {
-        dir: tx.type === "expense" ? "-" : tx.type === "income" ? "+" : "",
-        minorInAcc: converted
+        dir: delta < 0 ? "-" : delta > 0 ? "+" : "",
+        minorInAcc: Math.abs(delta)
       };
     }
     // ── Sorting ──────────────────────────────────────────────────────────
@@ -1817,6 +1952,10 @@ var _PocketApp = (() => {
       const tx = this.find(id);
       if (!tx) return null;
       Object.assign(tx, changes);
+      if (["amount", "currency", "accountId", "splits"].some((k) => k in changes)) {
+        delete tx.acctMinor;
+        if (Array.isArray(tx.splits)) for (const sp of tx.splits) delete sp.acctMinor;
+      }
       if (tx.type === "transfer" && tx.transferPairId) {
         const pair = this.find(tx.transferPairId);
         if (pair) {
@@ -1825,6 +1964,7 @@ var _PocketApp = (() => {
             if (k in changes) mirror[k] = changes[k];
           }
           Object.assign(pair, mirror);
+          if ("amount" in changes || "currency" in changes) delete pair.acctMinor;
         }
       }
       this.#store.flush();
@@ -2210,12 +2350,11 @@ var _PocketApp = (() => {
       const today = DateService.todayIso();
       const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || "USD";
       const prompt2 = this.#buildPrompt(defaultCcy, catLines, fallbackId, fallbackName, today);
-      const url = `${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
       let res;
       try {
-        res = await fetch(url, {
+        res = await fetch(GEMINI_ENDPOINT, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify({
             contents: [{
               parts: [
@@ -2387,6 +2526,10 @@ RULES:
     #sb = null;
     #user = null;
     #cloudVersion = 0;
+    // The version THIS device last wrote. Realtime UPDATE events carrying this
+    // version are our own echo and are ignored, so a local push no longer triggers
+    // a redundant self-pull (replaceState + re-render + recurring re-scan).
+    #lastSelfVersion = 0;
     #saveTimer = null;
     #channel = null;
     #sharesChannel = null;
@@ -2545,29 +2688,47 @@ RULES:
       });
       return this.#syncing;
     }
+    /**
+     * The SINGLE choke point for writing local state to the cloud. Performs an
+     * ATOMIC compare-and-swap: the write only succeeds when the row's version
+     * still equals the one we last saw. If another device advanced it, zero rows
+     * come back and this returns false so the caller can pull+merge instead of
+     * blindly clobbering newer data. Every cloud write — the normal push AND the
+     * family-contribution writeback — must go through here; a blind upsert
+     * anywhere else reintroduces the lost-update race.
+     * @param {object} state  the state snapshot to persist
+     * @returns {Promise<boolean>} true on success, false if a newer version won
+     */
+    async #commitState(state) {
+      const expected = this.#cloudVersion;
+      if (expected > 0) {
+        const { data: rows, error: error2 } = await this.#sb.from("user_data").update({ data: state, version: expected + 1, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", this.#user.id).eq("version", expected).select("version");
+        if (error2) throw error2;
+        if (!rows || !rows.length) return false;
+        this.#cloudVersion = expected + 1;
+        this.#lastSelfVersion = this.#cloudVersion;
+        return true;
+      }
+      const { error } = await this.#sb.from("user_data").upsert({
+        id: this.#user.id,
+        data: state,
+        version: 1,
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      }, { onConflict: "id" });
+      if (error) throw error;
+      this.#cloudVersion = 1;
+      this.#lastSelfVersion = this.#cloudVersion;
+      return true;
+    }
     async #doPush() {
       if (!this.#sb || !this.#user) return;
       this.#emitStatus("syncing");
       try {
-        const expected = this.#cloudVersion;
-        if (expected > 0) {
-          const { data: rows, error } = await this.#sb.from("user_data").update({ data: this.#store.getState(), version: expected + 1, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", this.#user.id).eq("version", expected).select("version");
-          if (error) throw error;
-          if (!rows || !rows.length) {
-            this.#toast("Another device saved first \u2014 merging\u2026");
-            await this.#doPull();
-            return;
-          }
-          this.#cloudVersion = expected + 1;
-        } else {
-          const { error } = await this.#sb.from("user_data").upsert({
-            id: this.#user.id,
-            data: this.#store.getState(),
-            version: 1,
-            updated_at: (/* @__PURE__ */ new Date()).toISOString()
-          }, { onConflict: "id" });
-          if (error) throw error;
-          this.#cloudVersion = 1;
+        const ok = await this.#commitState(this.#store.getState());
+        if (!ok) {
+          this.#toast("Another device saved first \u2014 merging\u2026");
+          await this.#doPull();
+          return;
         }
         this.#emitStatus("synced");
         await this.#pushFamilyShares();
@@ -2626,7 +2787,11 @@ RULES:
         schema: "public",
         table: "user_data",
         filter: `id=eq.${this.#user.id}`
-      }, () => this.pull()).subscribe();
+      }, (payload) => {
+        const v = payload?.new?.version;
+        if (v != null && v === this.#lastSelfVersion) return;
+        this.pull();
+      }).subscribe();
       const email = this.#user.email?.toLowerCase().replace(/[^a-z0-9]/g, "_") || "";
       const sharesChannel = this.#sb.channel("pocket_family_" + email).on("broadcast", { event: "share_updated" }, async () => {
         await this.#pullFamilyShares();
@@ -2848,20 +3013,17 @@ RULES:
         });
         if (newRows.length || deleteRows.length) {
           this.#store.persist();
-          const { error: saveErr } = await this.#sb.from("user_data").upsert({
-            id: this.#user.id,
-            data: state,
-            version: this.#cloudVersion + 1,
-            updated_at: (/* @__PURE__ */ new Date()).toISOString()
-          }, { onConflict: "id" });
-          if (!saveErr) {
-            this.#cloudVersion += 1;
+          const committed = await this.#commitState(state);
+          if (committed) {
             const ids = data.map((r) => r.id);
             await this.#sb.from("family_contributions").update({ synced: true }).in("id", ids);
             await this.#pushFamilyShares();
             this.#bus.emit("state:changed", state);
             const n = newRows.length + deleteRows.length;
             if (n > 0) this.#toast(`${n} family change${n > 1 ? "s" : ""} synced`);
+          } else {
+            this.#toast("Another device saved first \u2014 merging\u2026");
+            await this.#doPull();
           }
         }
       } catch (e) {
@@ -8861,7 +9023,6 @@ create trigger family_shares_updated_at
         if (!tx) return;
         if (data.type === "transfer" && tx.type === "transfer" && tx.transferPairId) {
           const pair = state.transactions.find((x) => x.id === tx.transferPairId);
-          this.#revertTransferPair(tx, pair, state);
           Object.assign(tx, {
             accountId: data.accountId,
             categoryId: null,
@@ -8876,7 +9037,9 @@ create trigger family_shares_updated_at
             type: "transfer",
             splits: null,
             transferRate: xfer?.rate ?? null,
-            transferDir: "out"
+            transferDir: "out",
+            // Amount/currency changed → drop the frozen impact so it re-freezes.
+            acctMinor: void 0
           });
           if (pair) {
             Object.assign(pair, {
@@ -8893,14 +9056,9 @@ create trigger family_shares_updated_at
               type: "transfer",
               splits: null,
               transferRate: xfer?.rate ?? null,
-              transferDir: "in"
+              transferDir: "in",
+              acctMinor: void 0
             });
-          }
-          const fa1 = state.accounts.find((a) => a.id === tx.accountId);
-          if (fa1) fa1.balance -= this.#fx.convert(tx.amount, tx.currency, fa1.currency);
-          if (pair) {
-            const ta1 = state.accounts.find((a) => a.id === pair.accountId);
-            if (ta1) ta1.balance += this.#fx.convert(pair.amount, pair.currency, ta1.currency);
           }
         } else {
           this.#transactions.update(id, {
@@ -8973,10 +9131,6 @@ create trigger family_shares_updated_at
             addedBy: this.#sync.currentUser?.email || null
           };
           state.transactions.push(txFrom, txTo);
-          const fa = state.accounts.find((a) => a.id === data.accountId);
-          if (fa) fa.balance -= this.#fx.convert(minor, currency, fa.currency);
-          const ta = state.accounts.find((a) => a.id === data.transferToAccountId);
-          if (ta) ta.balance += this.#fx.convert(dst, toCcy, ta.currency);
         } else {
           this.#transactions.create({
             accountId: data.accountId,
@@ -9538,7 +9692,6 @@ create trigger family_shares_updated_at
             tags: ["balance-adjustment"]
           };
           state.transactions.push(tx);
-          this.#applyBalances(tx, state);
         }
         this.#store.persist();
         this.closeModal();
@@ -9571,7 +9724,6 @@ create trigger family_shares_updated_at
           tags: ["opening-balance"]
         };
         state.transactions.push(tx);
-        this.#applyBalances(tx, state);
       }
       this.#store.persist();
       this.closeModal();
@@ -9882,7 +10034,6 @@ create trigger family_shares_updated_at
         debtRole: "initial"
       };
       state.transactions.push(tx);
-      this.#applyBalances(tx, state);
       state.debts.push({
         id: debtId,
         type: data.type,
@@ -9934,7 +10085,6 @@ create trigger family_shares_updated_at
         debtRole: "payment"
       };
       state.transactions.push(tx);
-      this.#applyBalances(tx, state);
       const payments = state.transactions.filter((t) => t.debtId === debtId && t.id !== debt.initialTxId);
       const paid = payments.reduce((s, t) => s + this.#fx.convert(t.amount, t.currency, debt.currency), 0);
       if (paid >= debt.principal - 1) debt.status = "paid";
@@ -9953,11 +10103,9 @@ create trigger family_shares_updated_at
       if (!confirm(msg)) return;
       const initial = state.transactions.find((t) => t.id === debt.initialTxId);
       if (initial) {
-        this.#revertBalances(initial, state);
         state.transactions = state.transactions.filter((t) => t.id !== debt.initialTxId);
       }
       if (destroyPayments) {
-        payments.forEach((p) => this.#revertBalances(p, state));
         state.transactions = state.transactions.filter((t) => t.debtId !== id);
       } else {
         state.transactions.forEach((t) => {
@@ -10078,8 +10226,6 @@ create trigger family_shares_updated_at
     deleteRegularItem(id) {
       if (!confirm("Delete this regular item?")) return;
       const s = this.#store.getState();
-      const linked = (s.transactions || []).filter((t) => t.regularItemId === id);
-      linked.forEach((t) => this.#revertBalances(t, s));
       s.transactions = (s.transactions || []).filter((t) => t.regularItemId !== id);
       s.regularItems = (s.regularItems || []).filter((i) => i.id !== id);
       this.#store.persist();
@@ -10127,7 +10273,6 @@ create trigger family_shares_updated_at
         recordState: "cleared",
         createdAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      this.#applyBalances(tx, s);
       s.transactions.push(tx);
       this.#store.flush();
       this.#sync.schedulePush?.();
@@ -10137,7 +10282,6 @@ create trigger family_shares_updated_at
       const s = this.#store.getState();
       const tx = s.transactions.find((t) => t.id === logId);
       if (tx) {
-        this.#revertBalances(tx, s);
         s.transactions = s.transactions.filter((t) => t.id !== logId);
         this.#store.flush();
         this.#sync.schedulePush?.();
@@ -10591,8 +10735,6 @@ create trigger family_shares_updated_at
           const txF = { id: fromId, accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: "cleared", type: "transfer", transferPairId: toId, transferDir: "out", tags: draft.tags || [], createdAt: draft.createdAt || (/* @__PURE__ */ new Date()).toISOString(), addedBy: draft.addedBy || null };
           const txT = { id: toId, accountId: toAccId, categoryId: null, amount: dstMinor, currency: toCcy, exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1), refAmount: this.#fx.convert(dstMinor, toCcy, state.user.homeCurrency), payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: "cleared", type: "transfer", transferPairId: fromId, transferDir: "in", tags: draft.tags || [], createdAt: draft.createdAt || (/* @__PURE__ */ new Date()).toISOString(), addedBy: draft.addedBy || null };
           state.transactions.push(txF, txT);
-          acc.balance -= this.#fx.convert(minor, draft.currency, acc.currency);
-          toAcc.balance += this.#fx.convert(dstMinor, toCcy, toAcc.currency);
           txCount++;
         } else if (Array.isArray(draft.splits)) {
           const splits = draft.splits.map((s) => ({
@@ -10602,14 +10744,12 @@ create trigger family_shares_updated_at
           }));
           const tx = { id: IdGenerator.generate("tx"), accountId: accId, categoryId: null, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: "cleared", type: draft.type, transferPairId: null, tags: draft.tags || [], splits, createdAt: draft.createdAt || (/* @__PURE__ */ new Date()).toISOString(), addedBy: draft.addedBy || null };
           state.transactions.push(tx);
-          this.#applyBalances(tx, state);
           txCount++;
         } else {
           const catKey = draft.catName ? draft.subName ? norm(draft.catName) + "|" + norm(draft.subName) + "|" + draft.type + "|sub" : norm(draft.catName) + "|" + draft.type + "|root" : null;
           const catId = catKey ? catMap[catKey] || null : null;
           const tx = { id: IdGenerator.generate("tx"), accountId: accId, categoryId: catId, amount: minor, currency: draft.currency, exchangeRate: exRate, refAmount: refAmt, payee: draft.payee, note: draft.note, date: draft.date, hijriDate: this.#hijri.toHijri(draft.date), paymentType: draft.paymentType, recordState: "cleared", type: draft.type, transferPairId: null, tags: draft.tags || [], splits: null, createdAt: draft.createdAt || (/* @__PURE__ */ new Date()).toISOString(), addedBy: draft.addedBy || null };
           state.transactions.push(tx);
-          this.#applyBalances(tx, state);
           txCount++;
         }
       });
@@ -10825,15 +10965,6 @@ create trigger family_shares_updated_at
     /** Minimal HTML-escape for user-supplied strings interpolated into innerHTML (B6). */
     #esc(s) {
       return String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
-    }
-    #applyBalances(tx, _state) {
-      this.#accounts.applyBalances(tx);
-    }
-    #revertBalances(tx, _state) {
-      this.#accounts.revertBalances(tx);
-    }
-    #revertTransferPair(tx, pair, _state) {
-      this.#accounts.revertTransferPair(tx, pair);
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Private: account group helper

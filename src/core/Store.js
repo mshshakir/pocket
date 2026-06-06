@@ -125,15 +125,24 @@ export class Store {
   }
 
   /**
-   * Replace the entire state object (used by cloud sync after a remote pull).
+   * Replace the entire state (used by cloud sync after a remote pull).
    * Runs the supplied migration FIRST so a cloud snapshot from an older schema
    * is brought current before any view or service touches it.
+   *
+   * The replacement is applied IN PLACE (keys cleared, then copied) so the state
+   * object's identity is preserved. Async callers that captured a getState()
+   * reference before an await (e.g. SyncService.#pullMemberContributions) keep
+   * pointing at the live object, instead of silently mutating an orphaned
+   * snapshot whose writes never persist.
    * @param {object} newState
    * @param {(state: object) => void} [migrate]  schema back-fill
    */
   replaceState(newState, migrate = () => {}) {
     migrate(newState);
-    this.#state = newState;
+    for (const k of Object.keys(this.#state)) {
+      if (!(k in newState)) delete this.#state[k];
+    }
+    Object.assign(this.#state, newState);
     this.#persistState();
     this.#bus.emit('state:changed', this.#state);
   }

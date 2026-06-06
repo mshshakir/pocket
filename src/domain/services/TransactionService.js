@@ -8,6 +8,7 @@ import { Store }          from '../../core/Store.js';
 import { IdGenerator }    from './IdGenerator.js';
 import { AccountService } from './AccountService.js';
 import { CurrencyService } from './CurrencyService.js';
+import { LedgerMath }     from './LedgerMath.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
 
 export class TransactionService {
@@ -65,19 +66,15 @@ export class TransactionService {
    * @returns {{ dir: '+'|'-'|'', minorInAcc: number }}
    */
   impactOnAccount(tx, account) {
-    if (tx.type === 'transfer') {
-      // Convert to the account's currency for every leg (B3) — the in-leg used
-      // raw tx.amount, which only happened to be correct when its currency
-      // matched the account's.
-      const m = this.#fx.convert(tx.amount, tx.currency, account.currency);
-      if (tx.transferDir === 'out') return { dir: '-', minorInAcc: m };
-      if (tx.transferDir === 'in')  return { dir: '+', minorInAcc: m };
-      return { dir: '', minorInAcc: m };
-    }
-    const converted = this.#fx.convert(tx.amount, tx.currency, account.currency);
+    if (!account) return { dir: '', minorInAcc: 0 };
+    // Delegate to the single ledger authority so the per-row figure shown in
+    // account detail uses the SAME rate-frozen amount as the running balance
+    // (previously this re-converted at the live rate and, for split rows, used
+    // the whole tx amount rather than this account's share).
+    const delta = LedgerMath.accountDelta(tx, account, this.#fx);
     return {
-      dir:        tx.type === 'expense' ? '-' : tx.type === 'income' ? '+' : '',
-      minorInAcc: converted,
+      dir:        delta < 0 ? '-' : delta > 0 ? '+' : '',
+      minorInAcc: Math.abs(delta),
     };
   }
 
@@ -170,6 +167,15 @@ export class TransactionService {
 
     Object.assign(tx, changes);
 
+    // Any change to amount/currency/account/splits invalidates the rate-frozen
+    // account-currency impact (acctMinor); clear it so recompute() re-freezes at
+    // the new values. Otherwise the derived balance would keep using the stale,
+    // pre-edit figure.
+    if (['amount', 'currency', 'accountId', 'splits'].some((k) => k in changes)) {
+      delete tx.acctMinor;
+      if (Array.isArray(tx.splits)) for (const sp of tx.splits) delete sp.acctMinor;
+    }
+
     if (tx.type === 'transfer' && tx.transferPairId) {
       const pair = this.find(tx.transferPairId);
       if (pair) {
@@ -180,6 +186,7 @@ export class TransactionService {
           if (k in changes) mirror[k] = changes[k];
         }
         Object.assign(pair, mirror);
+        if ('amount' in changes || 'currency' in changes) delete pair.acctMinor;
       }
     }
 
