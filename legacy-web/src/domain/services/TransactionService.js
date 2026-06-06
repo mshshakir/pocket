@@ -189,4 +189,48 @@ export class TransactionService {
           if (k in changes) mirror[k] = changes[k];
         }
         Object.assign(pair, mirror);
-        if ('amount' in changes || 'c
+        if ('amount' in changes || 'currency' in changes) delete pair.acctMinor;
+      }
+    }
+
+    this.#store.flush();
+    return tx;
+  }
+
+  // ── Delete ───────────────────────────────────────────────────────────
+
+  /**
+   * Delete a transaction (and its transfer pair if applicable).
+   * @param {string} id
+   */
+  delete(id) {
+    const state = this.#store.getState();
+    const tx    = this.find(id);
+    if (!tx) return;
+
+    // Remove the transaction (and its transfer pair). Surviving account balances
+    // are recomputed from the remaining ledger by the Store's derive hook.
+    const removeIds = new Set([id]);
+    if (tx.type === 'transfer' && tx.transferPairId) removeIds.add(tx.transferPairId);
+    state.transactions = state.transactions.filter((t) => !removeIds.has(t.id));
+    this.#store.flush();
+  }
+
+  /**
+   * Bulk-delete transactions by ID array.
+   * @param {string[]} ids
+   */
+  bulkDelete(ids) {
+    const idSet = new Set(ids);
+    const state = this.#store.getState();
+
+    // Expand the set to include any transfer pairs of the selected transactions.
+    state.transactions.forEach((t) => {
+      if (idSet.has(t.id) && t.type === 'transfer' && t.transferPairId) idSet.add(t.transferPairId);
+    });
+
+    state.transactions = state.transactions.filter((t) => !idSet.has(t.id));
+    // Derived balances recomputed by the Store's persist hook.
+    this.#store.flush();
+  }
+}

@@ -507,3 +507,51 @@ export class TransactionModal {
             <i data-lucide="trash-2" style="width:13px;height:13px"></i>
           </button>
         </div>
+        <div class="flex gap-2">
+          <select class="select text-sm flex-1" name="split_acc_${i}"
+                  onchange="window.__app.setSplitField(${i},'accountId',this.value)">
+            ${accounts.map((a) => `<option value="${a.id}" ${accId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
+          </select>
+          <input class="input text-sm w-28 flex-shrink-0" type="number" step="0.01" placeholder="0.00"
+                 name="split_amt_${i}"
+                 value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ''}"
+                 oninput="window.__app.setSplitAmount(${i},this.value,'${currency}');window.__app.updateSplitTotal()">
+        </div>
+      </div>`;
+  }
+
+  #recurringSection(data) {
+    const hasRecurring = !!data.recurring;
+    return `
+      <div class="card-muted p-3 mb-3">
+        <label class="flex items-center gap-2 text-sm cursor-pointer ${hasRecurring ? 'mb-2' : ''}">
+          <input type="checkbox" name="recurringEnabled" ${hasRecurring ? 'checked' : ''}
+                 onchange="window.__app.toggleRecurringFields(this.checked)">
+          <i data-lucide="repeat" style="width:13px;height:13px"></i>
+          <span class="font-medium">Repeat automatically</span>
+        </label>
+        <div id="recurringFields" class="${hasRecurring ? '' : 'hidden'}">
+          <div class="grid grid-cols-3 gap-2 mb-1">
+            <select class="select" name="recurringRule">
+              ${['daily','weekly','monthly','yearly'].map((r) => `<option value="${r}" ${data.recurring?.rule===r?'selected':''}>${r}</option>`).join('')}
+            </select>
+            <input class="input" type="number" name="recurringInterval" min="1" step="1"
+                   value="${data.recurring?.interval || 1}" title="Every N units">
+            <input class="input" type="date" name="recurringUntil"
+                   value="${data.recurring?.until || ''}" title="Until (optional)">
+          </div>
+          <div class="text-xs text-zinc-500">Interval + optional end date. Instances are generated on each app load.</div>
+        </div>
+      </div>`;
+  }
+
+  // Category options are now rendered by CategoryOptionRenderer.render() —
+  // the static class provides optgroup hierarchy and orphan rescue in one place.
+
+  #esc(s) {
+    return (s || '').toString().replace(
+      /[&<>"']/g,
+      (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]),
+    );
+  }
+}

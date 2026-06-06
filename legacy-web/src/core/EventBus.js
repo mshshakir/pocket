@@ -75,4 +75,18 @@ export class EventBus {
     if (!handlers) return;
     // Iterate a SNAPSHOT: a handler that subscribes/unsubscribes during dispatch
     // (common when a view re-wires itself on 'state:changed') must not be visited
-    // mid-loop. Live Set.forEach would include just-a
+    // mid-loop. Live Set.forEach would include just-added handlers and can loop.
+    for (const fn of [...handlers]) {
+      try {
+        fn(data);
+      } catch (err) {
+        console.error(`[EventBus] Error in handler for "${event}":`, err);
+      }
+    }
+  }
+
+  /** Remove all handlers (useful for testing). */
+  clear() {
+    this.#handlers.clear();
+  }
+}
