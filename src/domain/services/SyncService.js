@@ -389,17 +389,27 @@ export class SyncService {
    */
   async submitContribution(ownerId, txData) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
+
+    // Resolve a non-null account_id (the column is NOT NULL): prefer the tx's own
+    // account, then a split account, then the share's account. A null here would
+    // fail the same way the member-side delete did.
+    const share = this.#sharedData.find((s) => s._ownerId === ownerId);
+    const accountId =
+      txData.accountId ??
+      txData.splits?.[0]?.accountId ??
+      share?.accounts?.[0]?.id ??
+      (share?.permission ? Object.keys(share.permission)[0] : null);
+
     const { error } = await this.#sb.from('family_contributions').upsert({
       owner_id:     ownerId,
       member_email: this.#user.email.toLowerCase(),
-      account_id:   txData.accountId ?? null,
+      account_id:   accountId,
       tx_data:      txData,
       synced:       false,
     }, { onConflict: 'id', ignoreDuplicates: true });
     if (error) throw error;
 
     // Optimistic: add tx to the matching share and re-derive its balances.
-    const share = this.#sharedData.find((s) => s._ownerId === ownerId);
     if (share) {
       share.transactions = [txData, ...(share.transactions || [])];
       this.#deriveShareBalances(share);

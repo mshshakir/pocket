@@ -138,6 +138,9 @@ export class TransactionService {
       transferRate:   data.transferRate   || null,
       tags:           data.tags           || [],
       splits:         data.splits         || null,
+      // Optional rate-frozen account-currency amount (foreign-currency tx). When
+      // absent, AccountService.recompute() freezes it at the live rate.
+      acctMinor:      Number.isFinite(data.acctMinor) ? data.acctMinor : undefined,
       recurring:      data.recurring      || null,
       recurringSourceId: data.recurringSourceId || null,
       createdAt:      data.createdAt      || new Date().toISOString(),
@@ -171,7 +174,7 @@ export class TransactionService {
     // account-currency impact (acctMinor); clear it so recompute() re-freezes at
     // the new values. Otherwise the derived balance would keep using the stale,
     // pre-edit figure.
-    if (['amount', 'currency', 'accountId', 'splits'].some((k) => k in changes)) {
+    if (!('acctMinor' in changes) && ['amount', 'currency', 'accountId', 'splits'].some((k) => k in changes)) {
       delete tx.acctMinor;
       if (Array.isArray(tx.splits)) for (const sp of tx.splits) delete sp.acctMinor;
     }

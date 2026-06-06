@@ -688,6 +688,18 @@ export class Application {
       };
     }
 
+    // Foreign-currency single-account tx: freeze the amount actually booked to
+    // the account using the FX-panel rate (manual or auto). For same-currency or
+    // split transactions this stays undefined and the ledger derives it.
+    let txAcctMinor;
+    if (data.type !== 'transfer' && !splits) {
+      const accForFx = state.accounts.find((a) => a.id === data.accountId);
+      const txRate   = parseFloat(data.txFxRate);
+      if (accForFx && accForFx.currency !== currency && isFinite(txRate) && txRate > 0) {
+        txAcctMinor = this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * txRate, accForFx.currency);
+      }
+    }
+
     if (id) {
       // Edit existing
       const tx = state.transactions.find((x) => x.id === id);
@@ -729,6 +741,7 @@ export class Application {
           hijriDate: this.#hijri.toHijri(data.date), // refresh snapshot when date changes
           paymentType: data.paymentType, type: data.type,
           splits, recurring,
+          ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
         });
       }
     } else {
@@ -772,6 +785,7 @@ export class Application {
           payee: data.payee, note: data.note, date: data.date,
           paymentType: data.paymentType, type: data.type,
           splits, recurring,
+          acctMinor: txAcctMinor,
           addedBy: this.#sync.currentUser?.email || null,
         });
         if (data.payee && !splits && data.categoryId) {
@@ -1285,6 +1299,85 @@ export class Application {
       || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
     const curEl = document.querySelector('[name=currency]');
     if (curEl && acc?.currency) curEl.value = acc.currency;
+    // Account changed → currency snapped to it (they now match), so refresh the
+    // single-account FX panel (it will hide itself).
+    this.updateTxFxPanel(false);
+  }
+
+  /**
+   * Combined handler for the amount / currency inputs: refresh whichever FX
+   * panel is in the DOM (transfer or single-account). Each is a no-op when its
+   * panel isn't rendered.
+   */
+  onTxFormChange() {
+    this.updateTransferFxPanel(false);
+    this.updateTxFxPanel(false);
+  }
+
+  /**
+   * Currency changed: the stored/auto rate belonged to the old currency pair, so
+   * clear it and let updateTxFxPanel refill the auto rate for the new pair.
+   */
+  onTxCurrencyChange() {
+    const rateInp = document.getElementById('fxTxRate');
+    if (rateInp) rateInp.value = '';
+    this.updateTransferFxPanel(false);
+    this.updateTxFxPanel(false);
+  }
+
+  /**
+   * Show/refresh the single-account FX panel when a non-transfer transaction's
+   * currency differs from its account's currency. Mirrors updateTransferFxPanel.
+   * @param {boolean} userChangedRate  true when the user typed in the rate field
+   */
+  updateTxFxPanel(userChangedRate = false) {
+    const panel = document.getElementById('fxTxPanel');
+    if (!panel) return;
+
+    const state = this.#store.getState();
+    const accId = document.querySelector('[name=accountId]')?.value;
+    const acc   = state.accounts.find((a) => a.id === accId)
+      || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    const txCcy = document.querySelector('[name=currency]')?.value;
+
+    if (!acc || !txCcy || acc.currency === txCcy) {
+      panel.style.display = 'none';
+      return;
+    }
+
+    panel.style.display = '';
+    const accCcy   = acc.currency;
+    const autoRate = (RATES[accCcy] || 1) / (RATES[txCcy] || 1);
+
+    const rateInp = document.getElementById('fxTxRate');
+    // Keep any existing/stored rate (so opening an edit doesn't re-value the tx);
+    // only auto-fill when the field is empty. Changing currency clears it first.
+    if (rateInp && !(parseFloat(rateInp.value) > 0)) {
+      rateInp.value = autoRate.toFixed(6);
+    }
+
+    const rate    = parseFloat(rateInp?.value) || autoRate;
+    const amt     = parseFloat(document.querySelector('[name=amount]')?.value) || 0;
+    const booked  = amt * rate;
+
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('fxTxFromCcy', txCcy);
+    set('fxTxToCcy',   accCcy);
+    set('fxTxToAmount', this.#fx.formatMoney(this.#fx.toMinor(booked, accCcy), accCcy));
+    set('fxTxRateNote', `Auto: 1 ${txCcy} = ${autoRate.toFixed(4)} ${accCcy}`);
+  }
+
+  resetTxFx() {
+    const state = this.#store.getState();
+    const accId = document.querySelector('[name=accountId]')?.value;
+    const acc   = state.accounts.find((a) => a.id === accId)
+      || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    const txCcy = document.querySelector('[name=currency]')?.value;
+    const rateInp = document.getElementById('fxTxRate');
+    if (acc && txCcy && rateInp) {
+      rateInp.value = ((RATES[acc.currency] || 1) / (RATES[txCcy] || 1)).toFixed(6);
+    }
+    this.updateTxFxPanel(false);
   }
 
   /**

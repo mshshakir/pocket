@@ -140,6 +140,17 @@ export class TransactionModal {
       }
     }
 
+    // Enrich foreign-currency single-account edit: derive the rate that was
+    // actually booked (from the frozen acctMinor) so the FX panel shows it
+    // rather than snapping back to the live auto rate.
+    if (editing && editing.type !== 'transfer' && !data.txFxRate && Number.isFinite(editing.acctMinor) && editing.amount) {
+      const acc = state.accounts.find((a) => a.id === editing.accountId);
+      if (acc && acc.currency !== editing.currency) {
+        data.txFxRate = this.#fx.fromMinor(editing.acctMinor, acc.currency) /
+                        this.#fx.fromMinor(editing.amount, editing.currency);
+      }
+    }
+
     // Seed splits only once per open session; subsequent refreshes keep in-memory state
     if (!this.#splitsSeeded) {
       this.#splits        = editing && Array.isArray(editing.splits)   ? editing.splits.map((s) => ({ ...s }))
@@ -206,11 +217,11 @@ export class TransactionModal {
             <input class="input text-2xl font-semibold border-0 bg-transparent p-0 focus:ring-0"
                    style="border:none" name="amount" type="number" step="0.01" required
                    value="${amountValue || ''}" placeholder="0.00" autofocus
-                   oninput="window.__app.updateTransferFxPanel(false)">
+                   oninput="window.__app.onTxFormChange()">
             ${isSharedMode
               ? `<input type="hidden" name="currency" value="${data.currency}">
                  <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${data.currency}</span>`
-              : `<select class="select w-24" name="currency" onchange="window.__app.updateTransferFxPanel(false)">
+              : `<select class="select w-24" name="currency" onchange="window.__app.onTxCurrencyChange()">
                    ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
                  </select>`}
           </div>
@@ -290,11 +301,14 @@ export class TransactionModal {
     this.#splits        = [];
     this.#splitsEnabled = false;
     this.#splitsSeeded  = false;
-    // Initialize FX panel if transfer
+    // Initialize FX panels after the DOM is in place: the transfer panel for
+    // transfers, and the single-account panel whenever tx currency != account
+    // currency (e.g. editing a USD tx on a KES account).
     const data = opts?.prefill || {};
     if (data.type === 'transfer') {
       setTimeout(() => window.__app?.updateTransferFxPanel?.(false), 0);
     }
+    setTimeout(() => window.__app?.updateTxFxPanel?.(false), 0);
   }
 
   // ── Private render helpers ────────────────────────────────────────────
@@ -383,6 +397,34 @@ export class TransactionModal {
             <option value="">— Uncategorised —</option>
             ${CategoryOptionRenderer.render(cats, data.categoryId, type)}
           </select>
+        </div>
+      </div>
+
+      <!-- FX panel: shown only when the transaction currency differs from the
+           account currency (e.g. a USD expense on a KES account). Mirrors the
+           transfer FX panel. -->
+      <div id="fxTxPanel" class="card-muted p-3 mb-3" style="display:none">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs text-zinc-500 uppercase tracking-wider">Exchange rate</div>
+          <button type="button" class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                  onclick="window.__app.resetTxFx()" title="Reset to auto rate">
+            <i data-lucide="refresh-cw" style="width:11px;height:11px;display:inline"></i> Use auto
+          </button>
+        </div>
+        <div class="flex items-center gap-2 mb-2 text-sm">
+          <span>1 <span id="fxTxFromCcy" class="font-medium"></span> =</span>
+          <input class="input flex-1 max-w-[140px]" type="number" step="any" min="0"
+                 name="txFxRate" id="fxTxRate"
+                 value="${data.txFxRate ? Number(data.txFxRate).toFixed(6) : ''}"
+                 oninput="window.__app.updateTxFxPanel(true)" placeholder="0.00">
+          <span class="font-medium" id="fxTxToCcy"></span>
+        </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs text-zinc-500">Booked to account</div>
+            <div class="text-lg font-semibold" id="fxTxToAmount">—</div>
+          </div>
+          <div class="text-xs text-zinc-400 text-right max-w-[55%]" id="fxTxRateNote"></div>
         </div>
       </div>`;
   }
