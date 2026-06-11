@@ -1,8 +1,23 @@
+# deps & build artifacts
 node_modules/
+*.tmp
+
+# legacy web (ignored assets, now under legacy-web/)
 deploy-to-github.ps1
 check-deploy.ps1
 budgetapp-prompt.md
 mumineen_calendar_js-main/
 graph.html
 index-compare.html
-*.tmp
+
+# Flutter / Dart
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+ios/Pods/
+android/.gradle/
+android/local.properties
+.idea/
+.DS_Store

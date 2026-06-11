@@ -1,0 +1,20 @@
+name: pocket_data
+description: >-
+  Data layer for Pocket Budget — Drift (local SQLite cache) + Supabase
+  repositories implementing the domain's repository ports, plus the offline
+  sync engine (PowerSync). Implementation lands next; see docs/01-backend-schema.md.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  pocket_domain:
+    path: ../domain
+  # Added as the data layer is implemented:
+  #   drift, sqlite3_flutter_libs, supabase_flutter, powersync, http
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0

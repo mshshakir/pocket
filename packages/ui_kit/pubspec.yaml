@@ -1,0 +1,15 @@
+name: pocket_ui_kit
+description: Shared design-system widgets for Pocket Budget (Flutter).
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.4.0
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^4.0.0

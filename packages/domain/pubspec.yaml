@@ -1,0 +1,13 @@
+name: pocket_domain
+description: >-
+  Pure-Dart domain logic (money, ledger, budgets, calendar) for Pocket Budget.
+  No Flutter, no I/O — shared unchanged by iOS, Android and Web.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.4.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0

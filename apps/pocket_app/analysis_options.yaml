@@ -1,0 +1,7 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # Style-only suggestion; noisy on the PowerSync schema/data definitions and
+    # adds no real safety. Off by choice.
+    prefer_const_constructors: false
