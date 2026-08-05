@@ -46,6 +46,7 @@ import { AccountGroupSheet }   from './ui/components/AccountGroupSheet.js';
 import { AccountShareSheet }   from './ui/components/AccountShareSheet.js';
 import { PaymentMethodSheet }  from './ui/components/PaymentMethodSheet.js';
 import { CategoryField }       from './ui/components/CategoryField.js';
+import { VoiceRecorder }       from './ui/components/VoiceRecorder.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -151,6 +152,7 @@ export class Application {
   #swipeIsOwnContrib  = false;
   #swipeWrapper       = null;   // the .tx-swipe-wrapper element, stored on start
   #filterRenderTimer  = null;   // debounce for the transaction search box
+  #voice              = null;   // active VoiceRecorder while a voice entry is in progress
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -1759,6 +1761,87 @@ export class Application {
     } finally {
       input.value = '';
     }
+  }
+
+  /**
+   * Voice entry — a two-tap toggle on the transaction form.
+   *   Tap 1: request the mic and start recording ("Listening…").
+   *   Tap 2: stop, send the clip to Gemini, and open a pre-filled modal.
+   *
+   * Capture (MediaRecorder) is a UI concern handled by VoiceRecorder; the
+   * interpretation is delegated to the shared ReceiptScanService.parseVoice,
+   * so web and mobile produce the same prefill shape.
+   *
+   * @param {HTMLElement} btn  the button the user tapped (label is mutated)
+   */
+  async voiceEntry(btn) {
+    // Mutate a dedicated label span (if present) so the button's icon/layout survive.
+    const label = btn?.querySelector?.('.voice-label-text') || btn;
+    const setLabel = (t) => { if (label) label.textContent = t; };
+
+    // ── No API key → open Settings (mirror scanReceipt) ──
+    if (!this.#store.getState().user.geminiApiKey?.trim()) {
+      this.#toast.show('Add your free Google AI key in Settings first');
+      this.openModal('settings');
+      return;
+    }
+
+    // ── Second tap: stop and transcribe ──
+    if (this.#voice && this.#voice.recording) {
+      const rec = this.#voice;
+      this.#voice = null;
+      setLabel('⏳ Transcribing…');
+      let blob;
+      try {
+        blob = await rec.stop();
+      } catch (_) {
+        this.#toast.show('Recording failed — please try again');
+        this.#resetVoiceBtn(btn);
+        return;
+      }
+      if (!blob || !blob.size) {
+        this.#toast.show('No audio captured — please try again');
+        this.#resetVoiceBtn(btn);
+        return;
+      }
+      try {
+        const scanner = new ReceiptScanService();
+        const prefill = await scanner.parseVoice(blob);
+        this.closeModal();
+        this.openModal('transaction', { prefill });
+        this.#toast.show('Heard it · review and save');
+      } catch (e) {
+        if (e.message === 'NO_API_KEY') {
+          this.#toast.show('Add your free Google AI key in Settings first');
+          this.openModal('settings');
+        } else {
+          this.#toast.show('Voice failed: ' + (e.message || 'Unknown error'));
+        }
+        this.#resetVoiceBtn(btn);
+      }
+      return;
+    }
+
+    // ── First tap: start recording ──
+    try {
+      this.#voice = new VoiceRecorder();
+      await this.#voice.start();
+      setLabel('⏹ Stop & read');
+      if (btn?.dataset) btn.dataset.recording = '1';
+      this.#toast.show('Listening… tap again when you finish speaking');
+    } catch (e) {
+      this.#voice = null;
+      this.#toast.show('Microphone unavailable: ' + (e.message || 'permission denied'));
+      this.#resetVoiceBtn(btn);
+    }
+  }
+
+  /** Restore the voice button to its idle label. */
+  #resetVoiceBtn(btn) {
+    if (!btn) return;
+    const label = btn.querySelector?.('.voice-label-text') || btn;
+    if (label) label.textContent = '🎤 Speak the transaction';
+    if (btn.dataset) delete btn.dataset.recording;
   }
 
   // ──────────────────────────────────────────────────────────────────────────

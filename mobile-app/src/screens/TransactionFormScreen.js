@@ -211,14 +211,22 @@ export default function TransactionFormScreen({ navigation, route }) {
    * Scan a receipt: pick an image (base64), hand it to ReceiptScanService,
    * and pre-fill the form from the result. Needs a Gemini key (Settings).
    */
-  const applyPrefill = (prefill) => {
+  const applyPrefill = (prefill, opts = {}) => {
+    // Type first: voice can return income/transfer; a receipt is always expense.
+    // Never switch a shared contribution to transfer (not allowed in that mode).
+    if (prefill.type && ['expense', 'income', 'transfer'].includes(prefill.type)
+        && !(sharedMode && prefill.type === 'transfer')) {
+      setType(prefill.type);
+      if (prefill.type === 'transfer') setSplits(null);
+    }
     if (prefill.amount != null) setAmount(String(prefill.amount));
     if (prefill.currency) setCurrency(prefill.currency);
     if (prefill.payee) setPayee(prefill.payee);
     if (prefill.note) setNote(prefill.note);
     if (prefill.date) setDate(prefill.date);
+    if (prefill.paymentType) setPaymentType(prefill.paymentType);
     if (prefill.categoryId) setCategoryId(prefill.categoryId);
-    Alert.alert('Receipt scanned', 'Review the pre-filled fields, then save.');
+    Alert.alert(opts.title || 'Receipt scanned', opts.message || 'Review the pre-filled fields, then save.');
   };
 
   const runScan = async (getInput) => {
@@ -275,6 +283,92 @@ export default function TransactionFormScreen({ navigation, route }) {
     ]);
   };
 
+  /**
+   * Voice entry: record a short clip, hand it to ReceiptScanService.parseVoice,
+   * and pre-fill the form. Capture uses expo-av (lazy-required so a build
+   * without it can't fail the bundle); interpretation is the shared service.
+   *
+   * Android records AAC/ADTS (.aac) — a Gemini-supported audio format — rather
+   * than the default .m4a, so the model reads it reliably. The recording runs
+   * while a non-blocking "Listening…" alert is shown; "Done" stops and parses.
+   */
+  const voiceEntry = () => {
+    if (!state.user.geminiApiKey?.trim()) {
+      Alert.alert('No AI key', 'Add a Google AI (Gemini) key in Settings → Receipt scanning first.');
+      return;
+    }
+    let AV, FileSystem;
+    try { AV = require('expo-av'); }
+    catch { Alert.alert('Not available', 'Voice entry needs expo-av. Run:\n\nnpx expo install expo-av\n\nthen rebuild the dev client.'); return; }
+    try { FileSystem = require('expo-file-system'); }
+    catch { Alert.alert('Not available', 'Voice entry needs expo-file-system.'); return; }
+
+    const { Audio, AndroidOutputFormat, AndroidAudioEncoder, IOSOutputFormat, IOSAudioQuality } = AV;
+    // AAC in an ADTS container → mime audio/aac, which Gemini supports directly.
+    const recOptions = {
+      isMeteringEnabled: false,
+      android: {
+        extension: '.aac',
+        outputFormat: AndroidOutputFormat?.AAC_ADTS ?? 6,
+        audioEncoder: AndroidAudioEncoder?.AAC ?? 3,
+        sampleRate: 44100, numberOfChannels: 1, bitRate: 64000,
+      },
+      ios: {
+        extension: '.m4a',
+        outputFormat: IOSOutputFormat?.MPEG4AAC,
+        audioQuality: IOSAudioQuality?.MAX ?? 0x7f,
+        sampleRate: 44100, numberOfChannels: 1, bitRate: 64000,
+        linearPCMBitDepth: 16, linearPCMIsBigEndian: false, linearPCMIsFloat: false,
+      },
+      web: { mimeType: 'audio/webm', bitsPerSecond: 128000 },
+    };
+    const mimeFor = (uri) =>
+      uri.endsWith('.aac') ? 'audio/aac'
+        : uri.endsWith('.m4a') ? 'audio/mp4'
+        : uri.endsWith('.3gp') ? 'audio/3gpp'
+        : 'audio/aac';
+
+    (async () => {
+      try {
+        const perm = await Audio.requestPermissionsAsync();
+        if (!perm.granted) { Alert.alert('Permission needed', 'Allow microphone access to use voice entry.'); return; }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+
+        let recording;
+        try {
+          const r = await Audio.Recording.createAsync(recOptions);
+          recording = r.recording;
+        } catch (e) {
+          Alert.alert('Could not start recording', String(e?.message || e));
+          return;
+        }
+
+        // Non-blocking alert; recording continues until the user chooses.
+        Alert.alert('Listening…', 'Say the transaction (e.g. “spent 40 dirhams on groceries at Carrefour yesterday”), then tap Done.', [
+          { text: 'Cancel', style: 'cancel', onPress: async () => { try { await recording.stopAndUnloadAsync(); } catch (_) {} } },
+          { text: 'Done', onPress: async () => {
+              setBusy(true);
+              try {
+                await recording.stopAndUnloadAsync();
+                const uri = recording.getURI();
+                if (!uri) throw new Error('No audio captured.');
+                const base64 = await FileSystem.readAsStringAsync(uri, {
+                  encoding: FileSystem.EncodingType?.Base64 || 'base64',
+                });
+                const prefill = await receipts.parseVoice({ base64, mimeType: mimeFor(uri) });
+                applyPrefill(prefill, { title: 'Heard it', message: 'Review the pre-filled fields, then save.' });
+              } catch (e) {
+                const m = String(e?.message || e);
+                Alert.alert('Voice failed', m === 'NO_API_KEY' ? 'Add a Gemini key in Settings.' : m);
+              } finally { setBusy(false); }
+            } },
+        ]);
+      } catch (e) {
+        Alert.alert('Voice failed', String(e?.message || e));
+      }
+    })();
+  };
+
   const confirmDelete = () => {
     Alert.alert('Delete transaction?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
@@ -314,8 +408,12 @@ export default function TransactionFormScreen({ navigation, route }) {
       ) : null}
 
       {!sharedMode && !editing ? (
-        <Button title={busy ? 'Scanning…' : '📷 Scan a receipt'} kind="ghost" onPress={scanReceipt}
-          disabled={busy} style={{ marginBottom: 12 }} />
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+          <Button title={busy ? 'Scanning…' : '📷 Scan a receipt'} kind="ghost" onPress={scanReceipt}
+            disabled={busy} style={{ flex: 1 }} />
+          <Button title={busy ? '…' : '🎤 Voice'} kind="ghost" onPress={voiceEntry}
+            disabled={busy} style={{ flex: 1 }} />
+        </View>
       ) : null}
 
       <Segmented

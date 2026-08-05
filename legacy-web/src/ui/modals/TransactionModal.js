@@ -383,6 +383,19 @@ export class TransactionModal {
           </label>
         </div>
 
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500">Voice (optional)</label>
+          <button type="button" onclick="window.__app.voiceEntry(this)"
+                  class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl w-full text-left">
+            <div class="icon-pill" style="background:#10b98122;color:#10b981;flex-shrink:0"><i data-lucide="mic"></i></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium voice-label-text">🎤 Speak the transaction</div>
+              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? 'e.g. “spent 40 dirhams on groceries at Carrefour yesterday”' : 'Add free Google AI key in Settings to enable'}</div>
+            </div>
+            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
+          </button>
+        </div>
+
         ${editing?.createdAt ? `<div class="text-xs text-zinc-400 mb-3">Entered ${new Date(editing.createdAt).toLocaleString()}${editing.addedBy ? ` by ${this.#esc(editing.addedBy)}` : ''}</div>` : ''}
 
         <div class="flex items-center gap-2">

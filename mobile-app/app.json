@@ -22,13 +22,15 @@
       "package": "com.mufaddal.pocket",
       "versionCode": 1,
       "edgeToEdgeEnabled": true,
+      "permissions": ["RECORD_AUDIO"],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#09090b"
       }
     },
     "plugins": [
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      ["expo-av", { "microphonePermission": "Allow Pocket to use the microphone for voice transaction entry." }]
     ],
     "sdkVersion": "54.0.0",
     "extra": {

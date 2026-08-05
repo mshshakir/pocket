@@ -17,13 +17,13 @@ var _PocketApp = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/app.js
+  // src/app.js
   var app_exports = {};
   __export(app_exports, {
     Application: () => Application
   });
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/EventBus.js
+  // src/core/EventBus.js
   var EventBus = class _EventBus {
     /** @type {EventBus|null} */
     static #instance = null;
@@ -96,7 +96,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Repository.js
+  // src/core/Repository.js
   var Repository = class _Repository {
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
@@ -161,7 +161,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Store.js
+  // src/core/Store.js
   var Store = class _Store {
     /** @type {Store|null} */
     static #instance = null;
@@ -367,7 +367,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Router.js
+  // src/core/Router.js
   var Router = class _Router {
     /** @type {Router|null} */
     static #instance = null;
@@ -431,7 +431,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/constants.js
+  // src/data/constants.js
   var FX = Object.freeze({
     // Majors
     USD: 1,
@@ -898,7 +898,7 @@ var _PocketApp = (() => {
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/IdGenerator.js
+  // src/domain/services/IdGenerator.js
   var IdGenerator = class {
     /**
      * Generate a prefixed pseudo-random ID.
@@ -914,7 +914,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/DateService.js
+  // src/domain/services/DateService.js
   var DateService = class {
     /**
      * Format a Date as a local 'YYYY-MM-DD' string. Pass-through for strings.
@@ -937,7 +937,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/seed.js
+  // src/data/seed.js
   var SeedFactory = class {
     /**
      * Build and return a complete initial state object.
@@ -1057,7 +1057,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/LedgerMath.js
+  // src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
      * Sign multiplier for a non-transfer transaction type.
@@ -1244,10 +1244,10 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/FxRates.js
+  // src/domain/services/FxRates.js
   var RATES = { ...FX };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/CurrencyService.js
+  // src/domain/services/CurrencyService.js
   var CurrencyService = class _CurrencyService {
     /**
      * Process-wide label cache. Static (not per-instance) because the app creates
@@ -1429,7 +1429,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/StateMigrator.js
+  // src/data/StateMigrator.js
   var StateMigrator = class {
     /**
      * Mutate `state` in place, back-filling any missing fields. Safe to run
@@ -1486,7 +1486,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/HijriCalendarService.js
+  // src/domain/services/HijriCalendarService.js
   var HijriCalendarService = class {
     /** @type {Store} */
     #store;
@@ -1696,7 +1696,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/AccountService.js
+  // src/domain/services/AccountService.js
   var AccountService = class {
     /** @type {Store} */
     #store;
@@ -1826,7 +1826,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/CategoryService.js
+  // src/domain/services/CategoryService.js
   var CategoryService = class _CategoryService {
     /** @type {Store} */
     #store;
@@ -2087,7 +2087,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/RecurringService.js
+  // src/domain/services/RecurringService.js
   var RecurringService = class {
     /** @type {Store} */
     #store;
@@ -2218,7 +2218,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/TransactionService.js
+  // src/domain/services/TransactionService.js
   var TransactionService = class {
     /** @type {Store} */
     #store;
@@ -2418,7 +2418,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/BudgetService.js
+  // src/domain/services/BudgetService.js
   var BudgetService = class {
     /** @type {Store} */
     #store;
@@ -2653,7 +2653,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ReceiptScanService.js
+  // src/domain/services/ReceiptScanService.js
   var GEMINI_MODEL = "gemini-2.5-flash-lite";
   var GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   var ReceiptScanService = class {
@@ -2741,6 +2741,120 @@ var _PocketApp = (() => {
         throw new Error("Could not parse the AI response as JSON. Please try again.");
       }
       return this.#buildPrefill(receipt, cats, defaultCcy, today, state.accounts[0]?.id);
+    }
+    /**
+     * Parse a spoken transaction from an audio clip with Gemini.
+     * Same endpoint/model/key as receipt scan, but the audio is a person
+     * describing ONE transaction ("spent 40 dirhams on groceries at Carrefour
+     * yesterday"). Returns the same prefill shape as scan(), minus splits.
+     *
+     * @param {File|Blob|{base64:string, mimeType:string}} audio
+     * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
+     * @throws {Error} '.message' human-readable; sentinel 'NO_API_KEY'.
+     */
+    async parseVoice(audio) {
+      const state = this.#store.getState();
+      const apiKey = state.user.geminiApiKey?.trim();
+      if (!apiKey) throw new Error("NO_API_KEY");
+      let base64, mediaType;
+      try {
+        if (audio && typeof audio === "object" && typeof audio.base64 === "string") {
+          base64 = audio.base64;
+          mediaType = audio.mimeType || "audio/webm";
+        } else {
+          base64 = await this.#fileToBase64(audio);
+          mediaType = audio.type || "audio/webm";
+        }
+      } catch (_) {
+        throw new Error("Could not read the recording. Please try again.");
+      }
+      const cats = state.categories;
+      const catLines = this.#buildCategoryLines(cats);
+      const today = DateService.todayIso();
+      const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || "USD";
+      const prompt2 = this.#buildVoicePrompt(defaultCcy, catLines, today);
+      let res;
+      try {
+        res = await fetch(GEMINI_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify({
+            contents: [{ parts: [
+              { inline_data: { mime_type: mediaType, data: base64 } },
+              { text: prompt2 }
+            ] }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+          })
+        });
+      } catch (_) {
+        throw new Error("Network error \u2014 check your connection and try again.");
+      }
+      if (!res.ok) {
+        let msg = `API error ${res.status}`;
+        try {
+          msg = (await res.json()).error?.message || msg;
+        } catch (_) {
+        }
+        throw new Error(msg);
+      }
+      const body = await res.json();
+      const raw = (body.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("Couldn't understand that \u2014 try again, e.g. \u201Cspent 40 on groceries at Carrefour\u201D.");
+      let obj;
+      try {
+        obj = JSON.parse(m[0]);
+      } catch (_) {
+        throw new Error("Could not parse the AI response. Please try again.");
+      }
+      return this.#buildVoicePrefill(obj, cats, defaultCcy, today, state.accounts[0]?.id);
+    }
+    /** Prompt for a single spoken transaction. */
+    #buildVoicePrompt(defaultCurrency, catLines, today) {
+      return `You are a personal-finance voice parser. The attached audio is a person describing ONE transaction out loud. Transcribe it, then return ONLY a single valid JSON object \u2014 no markdown, no code fences, no explanation.
+
+REQUIRED JSON SHAPE:
+{
+  "type": "expense" | "income" | "transfer",
+  "amount": 0.00,
+  "currency": "${defaultCurrency}",
+  "date": "YYYY-MM-DD",
+  "payee": "merchant, person, or source (may be empty)",
+  "note": "short verbatim-ish description of what was said",
+  "categoryId": "EXACT_ID_FROM_LIST or empty string"
+}
+
+CATEGORY ID LIST \u2014 set categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
+${catLines}
+
+RULES:
+1. "type": default to "expense"; "income" for money received (salary, refund, got paid); "transfer" only if clearly moving between own accounts.
+2. "amount": the number spoken, major units, no currency symbol.
+3. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
+4. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
+5. "categoryId": pick the best match for expenses/income; "" if unclear or a transfer.
+6. If you cannot make out an amount, set "amount" to 0.`;
+    }
+    /** Validate a parsed voice transaction into a prefill. */
+    #buildVoicePrefill(obj, cats, defaultCcy, today, defaultAccId) {
+      const validCatIds = new Set(cats.map((c) => c.id));
+      const type = ["expense", "income", "transfer"].includes(obj.type) ? obj.type : "expense";
+      const currency = (obj.currency || defaultCcy).toUpperCase();
+      const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+      const date = obj.date && ISO_DATE.test(obj.date) ? obj.date : today;
+      const categoryId = type !== "transfer" && validCatIds.has(obj.categoryId) ? obj.categoryId : "";
+      return {
+        type,
+        amount: Number(obj.amount) || 0,
+        // major units — modal converts
+        currency,
+        accountId: defaultAccId || "",
+        payee: (obj.payee || "").toString().slice(0, 120),
+        note: (obj.note || "Voice entry").toString().slice(0, 300),
+        date,
+        paymentType: "card",
+        categoryId
+      };
     }
     // ── Private helpers ───────────────────────────────────────────────────
     /**
@@ -2860,7 +2974,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/SyncService.js
+  // src/domain/services/SyncService.js
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -3655,7 +3769,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ThemeService.js
+  // src/domain/services/ThemeService.js
   var ThemeService = class {
     #store;
     constructor(store) {
@@ -3684,7 +3798,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/PaymentTypeService.js
+  // src/domain/services/PaymentTypeService.js
   var BASE_TYPES = ["card", "cash", "transfer", "cheque", "online"];
   var PaymentTypeService = class {
     #store;
@@ -3825,7 +3939,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/AccountGroupService.js
+  // src/domain/services/AccountGroupService.js
   var AccountGroupService = class {
     /** @type {Store} */
     #store;
@@ -4017,7 +4131,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/FamilyShareService.js
+  // src/domain/services/FamilyShareService.js
   var LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
   var FamilyShareService = class {
     /** @type {Store} */
@@ -4116,7 +4230,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ExchangeRateService.js
+  // src/domain/services/ExchangeRateService.js
   var ENDPOINT = "https://open.er-api.com/v6/latest/USD";
   var REFRESH_MS = 6 * 60 * 60 * 1e3;
   var ExchangeRateService = class {
@@ -4176,7 +4290,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Toast.js
+  // src/ui/components/Toast.js
   var Toast = class {
     /** @type {HTMLElement|null} */
     #el = null;
@@ -4221,7 +4335,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Modal.js
+  // src/ui/components/Modal.js
   var Modal = class {
     /** @type {HTMLElement|null} */
     #backdrop = null;
@@ -4338,7 +4452,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Html.js
+  // src/core/Html.js
   var Html = class {
     /**
      * Escape text / double-quoted attribute content.
@@ -4382,7 +4496,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Navigation.js
+  // src/ui/components/Navigation.js
   var Navigation = class _Navigation {
     /** @type {HTMLElement|null} */
     #sidebar = null;
@@ -4526,7 +4640,7 @@ RULES:
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/OverlaySheet.js
+  // src/ui/components/OverlaySheet.js
   var SHEET_CSS = `
 .sheet-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); z-index:70; display:none; }
 .sheet-backdrop.open { display:flex; align-items:flex-end; justify-content:center; }
@@ -4707,7 +4821,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/CategoryPickerSheet.js
+  // src/ui/components/CategoryPickerSheet.js
   var CategoryPickerSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5046,7 +5160,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/AccountGroupSheet.js
+  // src/ui/components/AccountGroupSheet.js
   var AccountGroupSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5375,7 +5489,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/AccountShareSheet.js
+  // src/ui/components/AccountShareSheet.js
   var AccountShareSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5575,7 +5689,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/PaymentMethodSheet.js
+  // src/ui/components/PaymentMethodSheet.js
   var PaymentMethodSheet = class extends OverlaySheet {
     /** @type {import('../../domain/services/PaymentTypeService.js').PaymentTypeService} */
     #service;
@@ -5778,7 +5892,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/CategoryField.js
+  // src/ui/components/CategoryField.js
   var CategoryField = class _CategoryField {
     /**
      * @param {object}   cfg
@@ -5904,7 +6018,92 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BaseView.js
+  // src/ui/components/VoiceRecorder.js
+  var VoiceRecorder = class _VoiceRecorder {
+    /** @type {MediaStream|null} */
+    #stream = null;
+    /** @type {MediaRecorder|null} */
+    #rec = null;
+    /** @type {Blob[]} */
+    #chunks = [];
+    /** True while actively capturing audio. */
+    get recording() {
+      return !!this.#rec && this.#rec.state === "recording";
+    }
+    /** Pick a mime type the browser can actually record. */
+    static #pickMime() {
+      const MR = typeof MediaRecorder !== "undefined" ? MediaRecorder : null;
+      if (!MR || !MR.isTypeSupported) return "";
+      for (const m of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"]) {
+        if (MR.isTypeSupported(m)) return m;
+      }
+      return "";
+    }
+    /**
+     * Request the microphone and begin recording.
+     * @throws {Error} if the API is unavailable or permission is denied.
+     */
+    async start() {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        throw new Error("Voice recording is not supported in this browser.");
+      }
+      this.#stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.#chunks = [];
+      const mimeType = _VoiceRecorder.#pickMime();
+      this.#rec = mimeType ? new MediaRecorder(this.#stream, { mimeType }) : new MediaRecorder(this.#stream);
+      this.#rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) this.#chunks.push(e.data);
+      };
+      this.#rec.start();
+    }
+    /**
+     * Stop recording and resolve with the captured audio as a Blob.
+     * Always releases the microphone.
+     * @returns {Promise<Blob>}
+     */
+    stop() {
+      return new Promise((resolve, reject) => {
+        if (!this.#rec) {
+          this.#cleanup();
+          return reject(new Error("Not recording"));
+        }
+        const rec = this.#rec;
+        rec.onstop = () => {
+          const type = rec.mimeType || "audio/webm";
+          const blob = new Blob(this.#chunks, { type });
+          this.#cleanup();
+          resolve(blob);
+        };
+        try {
+          rec.stop();
+        } catch (e) {
+          this.#cleanup();
+          reject(e);
+        }
+      });
+    }
+    /** Abort recording and release the microphone without producing a Blob. */
+    cancel() {
+      try {
+        if (this.#rec && this.#rec.state !== "inactive") this.#rec.stop();
+      } catch (_) {
+      }
+      this.#cleanup();
+    }
+    /** Stop all media tracks and reset state. */
+    #cleanup() {
+      if (this.#stream) {
+        try {
+          this.#stream.getTracks().forEach((t) => t.stop());
+        } catch (_) {
+        }
+      }
+      this.#stream = null;
+      this.#rec = null;
+    }
+  };
+
+  // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
     #store;
@@ -6088,7 +6287,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ReportService.js
+  // src/domain/services/ReportService.js
   var ReportService = class {
     /** @type {Store} */
     #store;
@@ -6236,7 +6435,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/TransactionRowRenderer.js
+  // src/ui/views/TransactionRowRenderer.js
   var TransactionRowRenderer = class {
     /** @type {Store} */
     #store;
@@ -6439,7 +6638,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/DashboardView.js
+  // src/ui/views/DashboardView.js
   var DashboardView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -6589,7 +6788,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/TransactionsView.js
+  // src/ui/views/TransactionsView.js
   var TransactionsView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -6968,7 +7167,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/AccountsView.js
+  // src/ui/views/AccountsView.js
   var AccountsView = class extends BaseView {
     constructor() {
       super();
@@ -7154,7 +7353,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/AccountDetailView.js
+  // src/ui/views/AccountDetailView.js
   var AccountDetailView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -7567,7 +7766,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BudgetsView.js
+  // src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -7664,7 +7863,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BudgetDetailView.js
+  // src/ui/views/BudgetDetailView.js
   var BudgetDetailView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -7778,7 +7977,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/CategoriesView.js
+  // src/ui/views/CategoriesView.js
   var CategoriesView = class extends BaseView {
     constructor() {
       super();
@@ -7865,7 +8064,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/ReportsView.js
+  // src/ui/views/ReportsView.js
   var ReportsView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -8101,7 +8300,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/DebtsView.js
+  // src/ui/views/DebtsView.js
   var DebtsView = class extends BaseView {
     constructor() {
       super();
@@ -8216,7 +8415,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/CalendarView.js
+  // src/ui/views/CalendarView.js
   var CalendarView = class extends BaseView {
     /** @type {HijriCalendarService} */
     #hijri;
@@ -8535,7 +8734,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/FamilyView.js
+  // src/ui/views/FamilyView.js
   var ACCOUNT_TYPE_ICONS2 = {
     cash: "wallet",
     bank: "landmark",
@@ -8700,7 +8899,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/TransactionModal.js
+  // src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class {
     /** @type {Store} */
@@ -8978,6 +9177,19 @@ This replaces your current grouping.`
             <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
             <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
           </label>
+        </div>
+
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500">Voice (optional)</label>
+          <button type="button" onclick="window.__app.voiceEntry(this)"
+                  class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl w-full text-left">
+            <div class="icon-pill" style="background:#10b98122;color:#10b981;flex-shrink:0"><i data-lucide="mic"></i></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium voice-label-text">\u{1F3A4} Speak the transaction</div>
+              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? "e.g. \u201Cspent 40 dirhams on groceries at Carrefour yesterday\u201D" : "Add free Google AI key in Settings to enable"}</div>
+            </div>
+            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
+          </button>
         </div>
 
         ${editing?.createdAt ? `<div class="text-xs text-zinc-400 mb-3">Entered ${new Date(editing.createdAt).toLocaleString()}${editing.addedBy ? ` by ${this.#esc(editing.addedBy)}` : ""}</div>` : ""}
@@ -9272,7 +9484,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/AccountModal.js
+  // src/ui/modals/AccountModal.js
   var AccountModal = class {
     /** @type {Store} */
     #store;
@@ -9372,7 +9584,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CategoryModal.js
+  // src/ui/modals/CategoryModal.js
   var ICONS = [
     "tag",
     "utensils",
@@ -9467,7 +9679,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/BudgetModal.js
+  // src/ui/modals/BudgetModal.js
   var BudgetModal = class {
     /** @type {Store} */
     #store;
@@ -9568,7 +9780,7 @@ This replaces your current grouping.`
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/SettingsModal.js
+  // src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
     #store;
@@ -9972,7 +10184,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CsvModal.js
+  // src/ui/modals/CsvModal.js
   var CsvModal = class {
     render() {
       return `
@@ -10039,7 +10251,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/DebtModal.js
+  // src/ui/modals/DebtModal.js
   var DebtModal = class {
     /** @type {Store} */
     #store;
@@ -10260,7 +10472,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/FamilyModal.js
+  // src/ui/modals/FamilyModal.js
   var FamilyModal = class {
     /** @type {Store} */
     #store;
@@ -10464,7 +10676,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/ReconcileModal.js
+  // src/ui/modals/ReconcileModal.js
   var ReconcileModal = class {
     /** @type {Store}          */
     #store;
@@ -10595,7 +10807,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/AuthModal.js
+  // src/ui/modals/AuthModal.js
   var AuthModal = class {
     /** @type {Store} */
     #store;
@@ -10646,7 +10858,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/RegularItemModal.js
+  // src/ui/modals/RegularItemModal.js
   var ITEM_ICONS = [
     "coffee",
     "shopping-basket",
@@ -10821,7 +11033,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/DayLogsModal.js
+  // src/ui/modals/DayLogsModal.js
   var DayLogsModal = class {
     #store;
     #hijriService;
@@ -10916,7 +11128,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CurrencySetupModal.js
+  // src/ui/modals/CurrencySetupModal.js
   var CurrencySetupModal = class {
     #store;
     #hijri;
@@ -11038,7 +11250,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/app.js
+  // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
     card: ["credit", "card", "visa", "mastercard", "amex", "american express", "discover", "platinum"],
@@ -11138,6 +11350,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     // the .tx-swipe-wrapper element, stored on start
     #filterRenderTimer = null;
     // debounce for the transaction search box
+    #voice = null;
+    // active VoiceRecorder while a voice entry is in progress
     // ── Private constructor (use getInstance()) ────────────────────────────────
     constructor() {
       if (_Application.#instance) throw new Error("Use Application.getInstance()");
@@ -12545,6 +12759,80 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       } finally {
         input.value = "";
       }
+    }
+    /**
+     * Voice entry — a two-tap toggle on the transaction form.
+     *   Tap 1: request the mic and start recording ("Listening…").
+     *   Tap 2: stop, send the clip to Gemini, and open a pre-filled modal.
+     *
+     * Capture (MediaRecorder) is a UI concern handled by VoiceRecorder; the
+     * interpretation is delegated to the shared ReceiptScanService.parseVoice,
+     * so web and mobile produce the same prefill shape.
+     *
+     * @param {HTMLElement} btn  the button the user tapped (label is mutated)
+     */
+    async voiceEntry(btn) {
+      const label = btn?.querySelector?.(".voice-label-text") || btn;
+      const setLabel = (t) => {
+        if (label) label.textContent = t;
+      };
+      if (!this.#store.getState().user.geminiApiKey?.trim()) {
+        this.#toast.show("Add your free Google AI key in Settings first");
+        this.openModal("settings");
+        return;
+      }
+      if (this.#voice && this.#voice.recording) {
+        const rec = this.#voice;
+        this.#voice = null;
+        setLabel("\u23F3 Transcribing\u2026");
+        let blob;
+        try {
+          blob = await rec.stop();
+        } catch (_) {
+          this.#toast.show("Recording failed \u2014 please try again");
+          this.#resetVoiceBtn(btn);
+          return;
+        }
+        if (!blob || !blob.size) {
+          this.#toast.show("No audio captured \u2014 please try again");
+          this.#resetVoiceBtn(btn);
+          return;
+        }
+        try {
+          const scanner = new ReceiptScanService();
+          const prefill = await scanner.parseVoice(blob);
+          this.closeModal();
+          this.openModal("transaction", { prefill });
+          this.#toast.show("Heard it \xB7 review and save");
+        } catch (e) {
+          if (e.message === "NO_API_KEY") {
+            this.#toast.show("Add your free Google AI key in Settings first");
+            this.openModal("settings");
+          } else {
+            this.#toast.show("Voice failed: " + (e.message || "Unknown error"));
+          }
+          this.#resetVoiceBtn(btn);
+        }
+        return;
+      }
+      try {
+        this.#voice = new VoiceRecorder();
+        await this.#voice.start();
+        setLabel("\u23F9 Stop & read");
+        if (btn?.dataset) btn.dataset.recording = "1";
+        this.#toast.show("Listening\u2026 tap again when you finish speaking");
+      } catch (e) {
+        this.#voice = null;
+        this.#toast.show("Microphone unavailable: " + (e.message || "permission denied"));
+        this.#resetVoiceBtn(btn);
+      }
+    }
+    /** Restore the voice button to its idle label. */
+    #resetVoiceBtn(btn) {
+      if (!btn) return;
+      const label = btn.querySelector?.(".voice-label-text") || btn;
+      if (label) label.textContent = "\u{1F3A4} Speak the transaction";
+      if (btn.dataset) delete btn.dataset.recording;
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Account CRUD

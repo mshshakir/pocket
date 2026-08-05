@@ -135,6 +135,118 @@ export class ReceiptScanService {
     return this.#buildPrefill(receipt, cats, defaultCcy, today, state.accounts[0]?.id);
   }
 
+  /**
+   * Parse a spoken transaction from an audio clip with Gemini.
+   * Same endpoint/model/key as receipt scan, but the audio is a person
+   * describing ONE transaction ("spent 40 dirhams on groceries at Carrefour
+   * yesterday"). Returns the same prefill shape as scan(), minus splits.
+   *
+   * @param {File|Blob|{base64:string, mimeType:string}} audio
+   * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
+   * @throws {Error} '.message' human-readable; sentinel 'NO_API_KEY'.
+   */
+  async parseVoice(audio) {
+    const state  = this.#store.getState();
+    const apiKey = state.user.geminiApiKey?.trim();
+    if (!apiKey) throw new Error('NO_API_KEY');
+
+    let base64, mediaType;
+    try {
+      if (audio && typeof audio === 'object' && typeof audio.base64 === 'string') {
+        base64 = audio.base64; mediaType = audio.mimeType || 'audio/webm';
+      } else {
+        base64 = await this.#fileToBase64(audio); mediaType = audio.type || 'audio/webm';
+      }
+    } catch (_) {
+      throw new Error('Could not read the recording. Please try again.');
+    }
+
+    const cats       = state.categories;
+    const catLines   = this.#buildCategoryLines(cats);
+    const today      = DateService.todayIso();
+    const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || 'USD';
+    const prompt     = this.#buildVoicePrompt(defaultCcy, catLines, today);
+
+    let res;
+    try {
+      res = await fetch(GEMINI_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { inline_data: { mime_type: mediaType, data: base64 } },
+            { text: prompt },
+          ] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 512 },
+        }),
+      });
+    } catch (_) {
+      throw new Error('Network error — check your connection and try again.');
+    }
+    if (!res.ok) {
+      let msg = `API error ${res.status}`;
+      try { msg = (await res.json()).error?.message || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+
+    const body = await res.json();
+    const raw  = (body.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    const m    = raw.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("Couldn't understand that — try again, e.g. “spent 40 on groceries at Carrefour”.");
+    let obj;
+    try { obj = JSON.parse(m[0]); } catch (_) { throw new Error('Could not parse the AI response. Please try again.'); }
+
+    return this.#buildVoicePrefill(obj, cats, defaultCcy, today, state.accounts[0]?.id);
+  }
+
+  /** Prompt for a single spoken transaction. */
+  #buildVoicePrompt(defaultCurrency, catLines, today) {
+    return `You are a personal-finance voice parser. The attached audio is a person describing ONE transaction out loud. Transcribe it, then return ONLY a single valid JSON object — no markdown, no code fences, no explanation.
+
+REQUIRED JSON SHAPE:
+{
+  "type": "expense" | "income" | "transfer",
+  "amount": 0.00,
+  "currency": "${defaultCurrency}",
+  "date": "YYYY-MM-DD",
+  "payee": "merchant, person, or source (may be empty)",
+  "note": "short verbatim-ish description of what was said",
+  "categoryId": "EXACT_ID_FROM_LIST or empty string"
+}
+
+CATEGORY ID LIST — set categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
+${catLines}
+
+RULES:
+1. "type": default to "expense"; "income" for money received (salary, refund, got paid); "transfer" only if clearly moving between own accounts.
+2. "amount": the number spoken, major units, no currency symbol.
+3. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
+4. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
+5. "categoryId": pick the best match for expenses/income; "" if unclear or a transfer.
+6. If you cannot make out an amount, set "amount" to 0.`;
+  }
+
+  /** Validate a parsed voice transaction into a prefill. */
+  #buildVoicePrefill(obj, cats, defaultCcy, today, defaultAccId) {
+    const validCatIds = new Set(cats.map((c) => c.id));
+    const type     = ['expense', 'income', 'transfer'].includes(obj.type) ? obj.type : 'expense';
+    const currency = (obj.currency || defaultCcy).toUpperCase();
+    const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+    const date     = (obj.date && ISO_DATE.test(obj.date)) ? obj.date : today;
+    const categoryId = (type !== 'transfer' && validCatIds.has(obj.categoryId)) ? obj.categoryId : '';
+    return {
+      type,
+      amount:      Number(obj.amount) || 0,   // major units — modal converts
+      currency,
+      accountId:   defaultAccId || '',
+      payee:       (obj.payee || '').toString().slice(0, 120),
+      note:        (obj.note  || 'Voice entry').toString().slice(0, 300),
+      date,
+      paymentType: 'card',
+      categoryId,
+    };
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────
 
   /**
