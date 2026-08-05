@@ -1,19 +1,18 @@
-# Publishes the legacy-web app to GitHub Pages as the SITE ROOT, so the app
-# lives at https://<user>.github.io/<repo>/  (e.g. .../pocket/) instead of
-# .../pocket/legacy-web/app.html.
+# Publishes legacy-web to GitHub Pages as the SITE ROOT, so the site opens at
+# https://<user>.github.io/<repo>/  (e.g. .../pocket/).
 #
 # One-time repo setting: Settings → Pages → Source → "GitHub Actions".
 #
 # Everything in legacy-web/ uses RELATIVE asset paths, so serving that folder
 # at the site root just works:
-#   /pocket/            → legacy-web/index.html   (marketing landing)
+#   /pocket/            → the marketing landing page (index.html)
 #   /pocket/app.html    → the app (hash-routed)
 #   /pocket/privacy.html
 #
 # NOTE: the app's Google OAuth redirect is window.location.origin + pathname,
-# so after this change it becomes https://<user>.github.io/<repo>/app.html —
-# add that (and the site root) to Supabase → Authentication → URL Configuration
-# → Redirect URLs, or Google sign-in will bounce.
+# i.e. https://<user>.github.io/<repo>/app.html — add that (and the site root)
+# to Supabase → Authentication → URL Configuration → Redirect URLs, or Google
+# sign-in will bounce.
 
 name: Deploy web
 
