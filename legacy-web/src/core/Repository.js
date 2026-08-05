@@ -15,9 +15,28 @@ export class Repository {
    * Persist the entire application state snapshot.
    * @param {object} state
    */
+  /**
+   * Keys the app hangs on state at render time but which are NOT the user's
+   * data: `_sharedData` is a full copy of every OTHER user's shared snapshot
+   * (their accounts, matching transactions and ALL their categories). Writing
+   * it here duplicated all of that into localStorage on every persist and
+   * uploaded it on every push — the fastest route to a quota failure, after
+   * which saves fail silently.
+   * @param {object} state
+   * @returns {object} a shallow copy without transient `_`-prefixed keys
+   */
+  static stripTransient(state) {
+    const out = {};
+    for (const k of Object.keys(state)) if (!k.startsWith('_')) out[k] = state[k];
+    return out;
+  }
+
   save(state) {
     try {
-      localStorage.setItem(Repository.#STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(
+        Repository.#STORAGE_KEY,
+        JSON.stringify(Repository.stripTransient(state)),
+      );
       return true;
     } catch (err) {
       console.error('[Repository] Failed to save state:', err);

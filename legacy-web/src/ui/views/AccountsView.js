@@ -41,6 +41,10 @@ export class AccountsView extends BaseView {
             ${anyExpanded  ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ''}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllAccountGroups()" title="Expand all groups"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ''}
           ` : ''}
+          <button class="btn btn-outline text-sm" onclick="window.__app.openAccountGroups()"
+                  title="Create, rename and fill account groups">
+            <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
+          </button>
           <button class="btn btn-primary" onclick="window.__app.openModal('account')">
             <i data-lucide="plus"></i> New account
           </button>
@@ -70,13 +74,19 @@ export class AccountsView extends BaseView {
     ).length;
     const isSharedOut = sharedOutIds.has(a.id);
 
+    // Own accounts, but escaped on the same rules as the shared cards below:
+    // account rows can also originate from a CSV import or a restored snapshot,
+    // and having two different standards in one file is what produced the
+    // unescaped shared-card bug in the first place.
+    const accColor = this.safeColor(a.color, '#818cf8');
+
     return `
       <div class="card p-5 relative overflow-hidden ${a.archived ? 'opacity-60' : ''} hover:shadow-md transition-shadow cursor-pointer"
-           onclick="window.__app.openAccountDetail('${a.id}')">
-        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${a.color}22"></div>
+           onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}')">
+        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${accColor}22"></div>
         <div class="flex items-start gap-3 relative">
-          <div class="icon-pill" style="background:${a.color};color:white">
-            <i data-lucide="${a.icon || 'wallet'}"></i>
+          <div class="icon-pill" style="background:${accColor};color:white">
+            <i data-lucide="${this.safeIcon(a.icon, 'wallet')}"></i>
           </div>
           <div class="flex-1">
             <div class="flex items-center gap-2">
@@ -84,10 +94,15 @@ export class AccountsView extends BaseView {
               ${a.archived ? '<span class="chip">Archived</span>' : ''}
               ${isSharedOut ? `<span title="Shared with family" style="display:inline-flex;align-items:center;gap:2px;font-size:.6rem;background:#818cf822;color:#818cf8;border-radius:6px;padding:1px 5px"><i data-lucide="users" style="width:10px;height:10px"></i> Shared</span>` : ''}
             </div>
-            <div class="text-xs text-zinc-500 capitalize">${a.type} · ${a.currency} · ${txCount} transaction${txCount === 1 ? '' : 's'}</div>
+            <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} · ${this.escapeHtml(a.currency)} · ${txCount} transaction${txCount === 1 ? '' : 's'}</div>
           </div>
           <button class="btn btn-ghost"
-                  onclick="event.stopPropagation();window.__app.openModal('account',{id:'${a.id}'})"
+                  onclick="event.stopPropagation();window.__app.shareAccount('${this.jsArg(a.id)}')"
+                  title="${isSharedOut ? 'Manage who this is shared with' : 'Share with family'}">
+            <i data-lucide="${isSharedOut ? 'users' : 'user-plus'}"></i>
+          </button>
+          <button class="btn btn-ghost"
+                  onclick="event.stopPropagation();window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})"
                   title="Edit account">
             <i data-lucide="pencil"></i>
           </button>
@@ -109,7 +124,7 @@ export class AccountsView extends BaseView {
     return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"
-                onclick="window.__app.toggleAccountGroupCollapse('${sec.id}')"
+                onclick="window.__app.toggleAccountGroupCollapse('${this.jsArg(sec.id)}')"
                 class="text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 -my-1 p-1"
                 title="${isCollapsed ? 'Expand' : 'Collapse'} group">
           <i data-lucide="${isCollapsed ? 'chevron-right' : 'chevron-down'}" style="width:15px;height:15px;display:inline"></i>
@@ -120,8 +135,13 @@ export class AccountsView extends BaseView {
         <div class="flex-1"></div>
         <span class="text-xs text-zinc-500">${this.formatMoney(totalHome, home)}</span>
         ${sec.id !== '__none__' ? `
-          <button class="text-xs text-zinc-400 hover:text-rose-500 ml-1 p-1"
-                  onclick="window.__app.deleteAccountGroup('${sec.id}')"
+          <button class="text-xs text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 ml-1 p-1"
+                  onclick="window.__app.openAccountGroups()"
+                  title="Rename group or change its accounts">
+            <i data-lucide="pencil" style="width:12px;height:12px"></i>
+          </button>
+          <button class="text-xs text-zinc-400 hover:text-rose-500 p-1"
+                  onclick="window.__app.deleteAccountGroup('${this.jsArg(sec.id)}')"
                   title="Delete group">
             <i data-lucide="trash-2" style="width:12px;height:12px"></i>
           </button>` : ''}
@@ -135,21 +155,25 @@ export class AccountsView extends BaseView {
         const perm      = (share.permission || {})[a.id] || 'view';
         const txCount   = (share.transactions || []).filter((t) => t.accountId === a.id).length;
         const permLabel = this.#accessLabel(perm);
+        // Every field here comes from ANOTHER user's shared snapshot, so each
+        // one is escaped for the sink it lands in: jsArg for the click handler,
+        // safeColor/safeIcon for style and icon slots, escapeHtml for text.
+        const accColor  = this.safeColor(a.color, '#818cf8');
         return `
           <div class="card p-5 relative overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
                style="border-color:#818cf822"
-               onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${si}})">
-            <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${a.color || '#818cf8'}22"></div>
+               onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}',{shareIndex:${Number(si) || 0}})">
+            <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${accColor}22"></div>
             <div class="flex items-start gap-3 relative">
-              <div class="icon-pill" style="background:${a.color || '#818cf8'};color:white">
-                <i data-lucide="${a.icon || 'wallet'}"></i>
+              <div class="icon-pill" style="background:${accColor};color:white">
+                <i data-lucide="${this.safeIcon(a.icon, 'wallet')}"></i>
               </div>
               <div class="flex-1">
                 <div class="flex items-center gap-2 flex-wrap">
                   <div class="font-semibold">${this.escapeHtml(a.name)}</div>
                   <span class="chip" style="background:#818cf822;color:#818cf8;font-size:.6rem">${permLabel}</span>
                 </div>
-                <div class="text-xs text-zinc-500 capitalize">${a.type} · ${a.currency} · ${txCount} transaction${txCount === 1 ? '' : 's'}</div>
+                <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} · ${this.escapeHtml(a.currency)} · ${txCount} transaction${txCount === 1 ? '' : 's'}</div>
                 <div class="text-xs text-zinc-400 mt-0.5">Shared by ${this.escapeHtml(share.sharedBy || 'Family')}</div>
               </div>
             </div>

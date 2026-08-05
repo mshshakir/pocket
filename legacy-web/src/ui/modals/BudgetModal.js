@@ -5,7 +5,7 @@
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
-import { CategoryOptionRenderer } from '../components/CategoryOptionRenderer.js';
+import { CategoryField }    from '../components/CategoryField.js';
 
 export class BudgetModal {
   /** @type {Store} */           #store;
@@ -43,10 +43,17 @@ export class BudgetModal {
 
         <div class="mb-3">
           <label class="text-xs text-zinc-500 mb-1 block">Categories</label>
-          <div class="card-muted p-2 max-h-52 overflow-y-auto">
-            ${CategoryOptionRenderer.renderCheckboxTree(state.categories, selectedIds, 'expense', 'categoryIds')}
-          </div>
-          <div class="text-xs text-zinc-500 mt-1">Tick a parent to budget the whole group (sub-categories included), or tick specific sub-categories — e.g. just two of them.</div>
+          ${CategoryField.render({
+            id:          'budgetCategories',
+            name:        'categoryIds',
+            value:       selectedIds,
+            mode:        'multi',
+            type:        'expense',
+            title:       'Budget categories',
+            placeholder: '— Pick categories —',
+            categories:  state.categories,
+          })}
+          <div class="text-xs text-zinc-500 mt-1">Pick "Whole group" on a parent to budget it including all sub-categories, or drill in and tick specific sub-categories — e.g. just two of them.</div>
         </div>
 
         <div class="mb-3">
@@ -70,7 +77,7 @@ export class BudgetModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Limit</label>
-            <input class="input" name="amount" type="number" step="0.01" required value="${amount}">
+            <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(b.currency)}" required value="${amount}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">Currency</label>

@@ -32,6 +32,8 @@ import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
 import { PaymentTypeService }  from './domain/services/PaymentTypeService.js';
+import { AccountGroupService } from './domain/services/AccountGroupService.js';
+import { FamilyShareService }  from './domain/services/FamilyShareService.js';
 import { DateService }         from './domain/services/DateService.js';
 import { ExchangeRateService } from './domain/services/ExchangeRateService.js';
 
@@ -39,6 +41,11 @@ import { ExchangeRateService } from './domain/services/ExchangeRateService.js';
 import { Toast }      from './ui/components/Toast.js';
 import { Modal }      from './ui/components/Modal.js';
 import { Navigation } from './ui/components/Navigation.js';
+import { CategoryPickerSheet } from './ui/components/CategoryPickerSheet.js';
+import { AccountGroupSheet }   from './ui/components/AccountGroupSheet.js';
+import { AccountShareSheet }   from './ui/components/AccountShareSheet.js';
+import { PaymentMethodSheet }  from './ui/components/PaymentMethodSheet.js';
+import { CategoryField }       from './ui/components/CategoryField.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -78,24 +85,6 @@ const ACCOUNT_TYPE_KEYWORDS = {
   invest:  ['invest','ira','roth','401k','brokerage','stocks','crypto'],
   bank:    [],
 };
-const CATEGORY_KEYWORD_DEFAULTS = [
-  { keys:['food','drink','grocery','restaurant','dining','meal','cafe','coffee','snack','pizza','burger'], icon:'utensils', color:'#f97316' },
-  { keys:['transport','transit','uber','lyft','taxi','gas','fuel','car','metro','bus','train','flight','travel'], icon:'car', color:'#3b82f6' },
-  { keys:['shop','clothing','retail','amazon','walmart','store','apparel'], icon:'shopping-bag', color:'#ec4899' },
-  { keys:['health','medical','pharmacy','doctor','dental','hospital','vitamin'], icon:'heart-pulse', color:'#ef4444' },
-  { keys:['housing','rent','mortgage','home','maintenance'], icon:'home', color:'#a16207' },
-  { keys:['entertainment','movies','netflix','spotify','games','disney','concert','music'], icon:'film', color:'#8b5cf6' },
-  { keys:['bills','utility','utilities','electric','internet','wifi','phone','water'], icon:'receipt', color:'#0891b2' },
-  { keys:['education','school','tuition','book','course'], icon:'graduation-cap', color:'#10b981' },
-  { keys:['salary','payroll','wage','income','paycheck'], icon:'banknote', color:'#22c55e' },
-  { keys:['freelance','contract','gig','consulting'], icon:'briefcase', color:'#14b8a6' },
-  { keys:['savings','save','deposit'], icon:'landmark', color:'#06b6d4' },
-  { keys:['transfer'], icon:'arrow-right-left', color:'#737373' },
-  { keys:['gift','present'], icon:'gift', color:'#d946ef' },
-  { keys:['fitness','gym','sport','workout'], icon:'dumbbell', color:'#84cc16' },
-  { keys:['baby','child','kid','daycare'], icon:'baby', color:'#fb7185' },
-  { keys:['pet','dog','cat','vet'], icon:'paw-print', color:'#d97706' },
-];
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -124,12 +113,18 @@ export class Application {
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
+  /** @type {AccountGroupService}  */ #accountGroups;
+  /** @type {FamilyShareService}   */ #familyShares;
   /** @type {ExchangeRateService}  */ #fxRates;
 
   // ── UI components ──────────────────────────────────────────────────────────
   /** @type {Toast}      */ #toast;
   /** @type {Modal}      */ #modal;
   /** @type {Navigation} */ #nav;
+  /** @type {CategoryPickerSheet} */ #catPicker;
+  /** @type {PaymentMethodSheet}  */ #paymentSheet;
+  /** @type {AccountGroupSheet}   */ #accountGroupSheet;
+  /** @type {AccountShareSheet}   */ #accountShareSheet;
 
   // ── Views (lazy-created on first navigate) ─────────────────────────────────
   #views = /** @type {Map<string,object>} */ (new Map());
@@ -155,6 +150,7 @@ export class Application {
   #swipeShareIndex    = -1;
   #swipeIsOwnContrib  = false;
   #swipeWrapper       = null;   // the .tx-swipe-wrapper element, stored on start
+  #filterRenderTimer  = null;   // debounce for the transaction search box
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -172,10 +168,29 @@ export class Application {
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
     this.#paymentTypeService = new PaymentTypeService(this.#store);
+    this.#accountGroups      = new AccountGroupService(this.#store);
+    this.#familyShares       = new FamilyShareService(this.#store);
     this.#fxRates            = new ExchangeRateService();
     this.#toast       = new Toast();
     this.#modal       = new Modal();
     this.#nav         = new Navigation();
+    this.#catPicker   = new CategoryPickerSheet({
+      store:           this.#store,
+      categoryService: this.#categories,
+    });
+    this.#paymentSheet = new PaymentMethodSheet({
+      paymentTypeService: this.#paymentTypeService,
+    });
+    this.#accountGroupSheet = new AccountGroupSheet({
+      store:               this.#store,
+      accountGroupService: this.#accountGroups,
+      currencyService:     this.#fx,
+    });
+    this.#accountShareSheet = new AccountShareSheet({
+      store:              this.#store,
+      familyShareService: this.#familyShares,
+      syncService:        this.#sync,
+    });
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -187,6 +202,13 @@ export class Application {
     // 0. Register the derive hook so the Store recomputes account balances from
     //    the ledger on every persist (balances are derived, not stored).
     this.#store.setDeriveHook(() => this.#accounts.recompute());
+
+    // 0b. Every LOCAL mutation schedules a cloud push from one place. Roughly
+    //     twenty mutations (home currency, Hijri offset, debt edits, reconcile,
+    //     group changes…) previously persisted without calling schedulePush,
+    //     so the next pull silently reverted them. replaceState()/reset() are
+    //     excluded by Store, since those apply remote or seed data.
+    this.#store.setLocalChangeHook(() => this.#sync.schedulePush?.());
 
     // 1. Load or seed state (StateMigrator back-fills schema + openingBalance)
     this.#store.init(() => SeedFactory.create(), (s) => StateMigrator.migrate(s));
@@ -219,6 +241,12 @@ export class Application {
     const container = document.getElementById('app');
     this.#toast.mount(container);
     this.#modal.mount(container);
+    // Mounted after Modal so their overlays stack above any open modal — a
+    // sheet must not tear down the transaction form underneath it.
+    this.#catPicker.mount(container);
+    this.#paymentSheet.mount(container);
+    this.#accountGroupSheet.mount(container);
+    this.#accountShareSheet.mount(container);
     this.#nav.mount({
       onNavigate: (id) => this.navigate(id),
       onAdd:      ()   => this.openModal('transaction', {}),
@@ -381,7 +409,68 @@ export class Application {
   }
 
   closeModal() {
+    if (this.#catPicker?.isOpen)         this.#catPicker.close();
+    if (this.#paymentSheet?.isOpen)      this.#paymentSheet.close();
+    if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
+    if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
     this.#modal.close();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Category picker
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The sheet instance — inline onclick handlers inside the sheet call through
+   * window.__app.catPicker.*, which keeps the Application surface uncluttered.
+   * @returns {CategoryPickerSheet}
+   */
+  get catPicker() { return this.#catPicker; }
+
+  /**
+   * Open the two-step category picker for a CategoryField.
+   *
+   * Everything the picker needs is read from the field's data-* attributes, so
+   * any modal can drop in a field without adding a bespoke handler here. The
+   * result is written straight back into the field's hidden inputs — no modal
+   * refresh, so a half-filled transaction form survives the round trip.
+   *
+   * @param {string} fieldId
+   */
+  openCategoryPicker(fieldId) {
+    const field = document.getElementById(fieldId);
+    if (!field) return;
+
+    const mode   = field.dataset.mode === 'multi' ? 'multi' : 'single';
+    const type   = field.dataset.type || null;
+    const title  = field.dataset.title || '';
+    const onPick = field.dataset.onpick || '';
+
+    this.#catPicker.open({
+      mode,
+      type,
+      title,
+      selected: CategoryField.getValue(field),
+      onSelect: (ids) => {
+        // Re-resolve the element: the sheet may have created a category, which
+        // flushes the store and re-renders the background view.
+        const live = document.getElementById(fieldId) || field;
+        CategoryField.setValue(live, ids, this.#store.getState().categories);
+        lucide?.createIcons?.();
+        if (onPick && typeof this[onPick] === 'function') this[onPick](fieldId, ids);
+      },
+    });
+  }
+
+  /**
+   * onPick hook for split rows — mirrors the chosen category back into the
+   * in-memory split model. The field id encodes the row index (splitCat_<i>).
+   * @param {string} fieldId
+   * @param {string[]} ids
+   */
+  onSplitCategoryPicked(fieldId, ids) {
+    const i = Number(fieldId.split('_')[1]);
+    if (Number.isInteger(i)) this.#txModal?.setSplitField?.(i, 'categoryId', ids[0] || null);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -478,22 +567,77 @@ export class Application {
 
   get paymentTypeService() { return this.#paymentTypeService; }
 
-  addCustomPaymentType(sel) {
-    const val = sel.value;
-    if (val !== '__add_payment__') {
-      sel.dataset.prev = val;
-      return;
-    }
+  /**
+   * The manage sheet — inline handlers inside it dispatch through
+   * window.__app.paymentSheet.*.
+   * @returns {PaymentMethodSheet}
+   */
+  get paymentSheet() { return this.#paymentSheet; }
+
+  /**
+   * Router for the payment <select>. Two of its entries are commands rather
+   * than values: "Add custom…" and "Manage methods…". Both restore the previous
+   * selection first, so cancelling out of either leaves the form untouched.
+   * @param {HTMLSelectElement} sel
+   */
+  /**
+   * Payment-type chip tapped (mobile-style selector). Plain values update the
+   * hidden `paymentType` input + chip styling in place (no re-render); the two
+   * command chips route to add / manage.
+   * @param {string} value
+   */
+  pickPaymentType(value) {
+    if (value === '__add_payment__')    return this.addCustomPaymentType();
+    if (value === '__manage_payment__') return this.openPaymentTypeManager();
+    const hidden = document.getElementById('paymentTypeInput');
+    if (hidden) hidden.value = value;
+    document.querySelectorAll('[data-pay-chip]').forEach((el) => {
+      const on = el.getAttribute('data-pay-chip') === value;
+      el.className = 'px-3 py-1.5 rounded-full border text-sm ' + (on
+        ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900'
+        : 'border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800');
+    });
+  }
+
+  addCustomPaymentType() {
     const name = prompt('Custom payment type name:');
-    if (!name?.trim()) {
-      sel.value = sel.dataset.prev || 'card';
-      return;
-    }
+    if (!name?.trim()) return;
     const added = this.#paymentTypeService.addCustom(name);
-    if (added) {
-      sel.dataset.prev = added;
-      this.#modal.refresh();
+    if (!added) return;
+    if (this.#modal.active === 'transaction') {
+      // Preserve typed fields, then select the new method and re-render so the
+      // chip appears and is active.
+      this.#txModal?.captureForm?.();
+      this.#txModal?.setPaymentType?.(added);
+      this.#refreshModal({ capture: false });
+    } else {
+      this.#render();
     }
+  }
+
+  /**
+   * Open the payment-method manager over the current modal.
+   *
+   * Methods are stored on transactions as plain strings, so a rename inside the
+   * sheet also has to move the form's own selection — the sheet reports what it
+   * renamed and the selection follows. A method deleted while selected falls
+   * back to the first one still available.
+   */
+  openPaymentTypeManager() {
+    const wasTx = this.#modal.active === 'transaction';
+    const before = wasTx ? (document.getElementById('paymentTypeInput')?.value || null) : null;
+    if (wasTx) this.#txModal?.captureForm?.();
+
+    this.#paymentSheet.open({
+      onClose: (renames) => {
+        if (!wasTx) { this.#render(); return; }
+        const available = this.#paymentTypeService.allTypes();
+        let next = renames.get(before) || before;
+        if (!next || !available.includes(next)) next = available[0] || 'card';
+        this.#txModal?.setPaymentType?.(next);
+        this.#refreshModal({ capture: false });
+      },
+    });
   }
 
   toggleHijri() {
@@ -515,7 +659,7 @@ export class Application {
     s.user.hijriOffset = Math.max(-7, Math.min(7, current + delta));
     this.#store.persist();
     // Re-render the open modal so the preview date updates live
-    this.#modal.refresh();
+    this.#refreshModal();
   }
 
   /**
@@ -528,7 +672,7 @@ export class Application {
     const s = this.#store.getState();
     s.user.hijriOffset = Math.max(-7, Math.min(7, n));
     this.#store.persist();
-    this.#modal.refresh();
+    this.#refreshModal();
   }
 
   setCalendarMode(v) {
@@ -588,17 +732,27 @@ export class Application {
     if ((sharedMode || sharedMatch) && !id) {
       const currency  = data.currency;
       const minor     = this.#fx.toMinor(data.amount, currency);
+      // Prefer the owner id captured when the sheet opened; the positional
+      // index is only a fallback for older call sites.
       const sharedAcc = sharedMode
-        ? allShared[sharedMode.shareIndex]
+        ? (this.#sync.shareByOwner?.(sharedMode.ownerId) || allShared[sharedMode.shareIndex])
         : sharedMatch;
       if (!sharedAcc?._ownerId) return this.#toast.show('Shared account not found');
+      if (sharedMode?.ownerId && sharedAcc._ownerId !== sharedMode.ownerId) {
+        return this.#toast.show('Shared account changed — reopen and try again');
+      }
       const accountId = sharedMode ? (sharedMode.accountId || data.accountId) : data.accountId;
       // The tx lives in the OWNER's book, so exchangeRate/refAmount must be
       // relative to the owner's home currency (carried in the share snapshot),
       // not the contributing member's home currency (#21).
       const ownerHome = sharedAcc.homeCurrency || state.user.homeCurrency;
+      // An edit of a previously-contributed row must REPLACE it. The modal
+      // carries the original id in sharedTxMode.editTxId; reusing it (rather
+      // than minting a new one) is what stops the owner ending up with both the
+      // original and the "edited" copy.
+      const editingSharedId = sharedMode?.editTxId || null;
       const tx = {
-        id:          IdGenerator.generate('tx'),
+        id:          editingSharedId || IdGenerator.generate('tx'),
         accountId:   accountId,
         categoryId:  data.categoryId || null,
         amount:      minor,
@@ -616,9 +770,13 @@ export class Application {
         addedBy:     this.#sync.currentUser?.email || null,
       };
       try {
-        await this.#sync.submitContribution(sharedAcc._ownerId, tx);
+        if (editingSharedId) {
+          await this.#sync.updateContribution(sharedAcc._ownerId, editingSharedId, tx);
+        } else {
+          await this.#sync.submitContribution(sharedAcc._ownerId, tx);
+        }
         this.closeModal();
-        this.#toast.show('Transaction submitted');
+        this.#toast.show(editingSharedId ? 'Change submitted' : 'Transaction submitted');
         // Navigate to the shared account detail so the user can see the pending tx
         this.navigateToSharedAccount(sharedMode?.shareIndex ?? 0, accountId);
         // Schedule re-pulls so the member sees the owner's confirmed snapshot quickly
@@ -630,7 +788,17 @@ export class Application {
       return;
     }
 
-    const currency = data.currency;
+    // A transfer moves money OUT of the source account, so the amount can only
+    // be denominated in that account's currency. The FX panel always derived
+    // its rate from source→destination account currencies, while the amount was
+    // read in whatever the currency dropdown held (defaulting to the user's
+    // default currency) — so a 10,000 INR transfer could debit ₹831,200 and
+    // credit AED 441.89, legs ~$9,880 apart. The currency field is now locked
+    // to the source account for transfers; this coercion is the backstop.
+    const srcAcc   = data.type === 'transfer'
+      ? state.accounts.find((a) => a.id === data.accountId)
+      : null;
+    const currency = srcAcc ? srcAcc.currency : data.currency;
     const minor    = this.#fx.toMinor(data.amount, currency);
     const exchRate = (RATES[currency] || 1) / (RATES[state.user.homeCurrency] || 1);
     const refAmt   = this.#fx.convert(minor, currency, state.user.homeCurrency);
@@ -641,11 +809,21 @@ export class Application {
       if (!data.accountId || !data.transferToAccountId || data.accountId === data.transferToAccountId) {
         return this.#toast.show('Pick two different accounts');
       }
+      if (!srcAcc) return this.#toast.show('Pick a source account');
       const toAcc = state.accounts.find((a) => a.id === data.transferToAccountId);
       if (!toAcc) return this.#toast.show('Pick a destination account');
-      const toCcy  = toAcc.currency;
+      const toCcy    = toAcc.currency;
+      const autoRate = (RATES[toCcy] || 1) / (RATES[currency] || 1);
       let rate = Number(data.transferRate);
-      if (!isFinite(rate) || rate <= 0) rate = (RATES[toCcy] || 1) / (RATES[currency] || 1);
+      if (!isFinite(rate) || rate <= 0) {
+        rate = autoRate;
+      } else if (rate === Number(autoRate.toFixed(6))) {
+        // The field still holds the auto rate exactly as displayed, so the user
+        // never overrode it — book the full-precision value instead of the
+        // 6dp rendering. On high-magnitude pairs that truncation was material:
+        // 100,000,000 LBP → USD booked $1,100.00 against an exact $1,117.32.
+        rate = autoRate;
+      }
       const dstMinor = currency === toCcy ? minor
         : this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * rate, toCcy);
       xfer = { rate, toCcy, dstMinor };
@@ -669,7 +847,10 @@ export class Application {
       const missingAcc = cleaned.find((s) => !s.accountId || !state.accounts.find((a) => a.id === s.accountId));
       if (missingAcc) return this.#toast.show('Pick an account for every split');
       const sum = cleaned.reduce((s, x) => s + x.amount, 0);
-      if (Math.abs(sum - minor) > 1) {
+      // Splits must add up EXACTLY. The old ±1-minor slack let the parent's
+      // amount and its split legs disagree, so list totals (which read
+      // tx.amount) drifted from balances (which read the splits).
+      if (sum !== minor) {
         return this.#toast.show(
           `Splits must add up to ${this.#fx.formatMoney(minor, currency)} (currently ${this.#fx.formatMoney(sum, currency)})`,
         );
@@ -694,17 +875,62 @@ export class Application {
     let txAcctMinor;
     if (data.type !== 'transfer' && !splits) {
       const accForFx = state.accounts.find((a) => a.id === data.accountId);
-      const txRate   = parseFloat(data.txFxRate);
+      let   txRate   = parseFloat(data.txFxRate);
       if (accForFx && accForFx.currency !== currency && isFinite(txRate) && txRate > 0) {
+        // Same 6dp-truncation guard as the transfer path: an untouched auto
+        // rate books at full precision rather than at what the field displays.
+        const autoRate = (RATES[accForFx.currency] || 1) / (RATES[currency] || 1);
+        if (txRate === Number(autoRate.toFixed(6))) txRate = autoRate;
         txAcctMinor = this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * txRate, accForFx.currency);
       }
     }
 
     if (id) {
       // Edit existing
-      const tx = state.transactions.find((x) => x.id === id);
+      let tx = state.transactions.find((x) => x.id === id);
       if (!tx) return;
-      if (data.type === 'transfer' && tx.type === 'transfer' && tx.transferPairId) {
+
+      // A transfer is two rows; always operate on the OUT leg. Opening the IN
+      // leg for edit would otherwise flip source↔destination and re-book the
+      // money at the wrong rate (the update below assumes tx is the out leg).
+      if (tx.type === 'transfer' && tx.transferDir === 'in' && tx.transferPairId) {
+        const outLeg = state.transactions.find((x) => x.id === tx.transferPairId);
+        if (outLeg) { id = outLeg.id; tx = outLeg; }
+      }
+
+      // A transfer is two rows; everything else is one. When an edit crosses
+      // that boundary the row structure has to be rebuilt, not patched — the
+      // old code only handled transfer→transfer, so switching a transfer to
+      // Expense left the paired leg alive (money created out of nothing) and
+      // switching an expense to Transfer produced a leg-less row that
+      // LedgerMath scored as zero (money silently vanished).
+      const wasTransfer = tx.type === 'transfer';
+      const nowTransfer = data.type === 'transfer';
+
+      if (nowTransfer && !wasTransfer) {
+        // Became a transfer → drop the single row and create both legs.
+        state.transactions = state.transactions.filter((t) => t.id !== tx.id);
+        state.transactions.push(
+          ...this.#buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state }),
+        );
+      } else if (!nowTransfer && wasTransfer) {
+        // No longer a transfer → delete the counter-leg, then update normally.
+        if (tx.transferPairId) {
+          state.transactions = state.transactions.filter((t) => t.id !== tx.transferPairId);
+        }
+        this.#transactions.update(id, {
+          accountId: data.accountId,
+          categoryId: splits ? null : (data.categoryId || null),
+          amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
+          payee: data.payee, note: data.note, date: data.date,
+          hijriDate: this.#hijri.toHijri(data.date),
+          paymentType: data.paymentType, type: data.type,
+          splits, recurring,
+          // Clear every transfer-only field so no dangling pair reference remains.
+          transferPairId: null, transferDir: null, transferRate: null,
+          ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
+        });
+      } else if (data.type === 'transfer' && tx.type === 'transfer' && tx.transferPairId) {
         const pair = state.transactions.find((x) => x.id === tx.transferPairId);
         // Re-normalize tx='out' / pair='in'. Balances are derived, so the
         // flush() below recomputes both accounts from the ledger — no manual revert.
@@ -712,6 +938,9 @@ export class Application {
           accountId: data.accountId, categoryId: null,
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee || 'Transfer', note: data.note, date: data.date,
+          // Refresh the Hijri snapshot — editing a transfer's date used to
+          // leave both legs showing the old Hijri date.
+          hijriDate: this.#hijri.toHijri(data.date),
           paymentType: 'transfer', type: 'transfer', splits: null,
           transferRate: xfer?.rate ?? null, transferDir: 'out',
           // Amount/currency changed → drop the frozen impact so it re-freezes.
@@ -725,6 +954,7 @@ export class Application {
             exchangeRate: ((RATES[xfer?.toCcy || currency] || 1)) / ((RATES[state.user.homeCurrency] || 1)),
             refAmount: this.#fx.convert(xfer ? xfer.dstMinor : minor, xfer ? xfer.toCcy : currency, state.user.homeCurrency),
             payee: data.payee || 'Transfer', note: data.note, date: data.date,
+            hijriDate: this.#hijri.toHijri(data.date),
             paymentType: 'transfer', type: 'transfer', splits: null,
             transferRate: xfer?.rate ?? null, transferDir: 'in',
             acctMinor: undefined,
@@ -747,33 +977,10 @@ export class Application {
     } else {
       // New transaction
       if (data.type === 'transfer') {
-        const fromId = IdGenerator.generate('tx');
-        const toId   = IdGenerator.generate('tx');
-        const toCcy  = xfer?.toCcy ?? currency;
-        const dst    = xfer?.dstMinor ?? minor;
-        const now    = new Date().toISOString();
-        const txFrom = {
-          id: fromId, accountId: data.accountId, categoryId: null,
-          amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
-          payee: data.payee || 'Transfer', note: data.note, date: data.date,
-          hijriDate: this.#hijri.toHijri(data.date),
-          paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
-          transferPairId: toId, transferRate: xfer?.rate ?? null, transferDir: 'out', tags: [],
-          createdAt: now, addedBy: this.#sync.currentUser?.email || null,
-        };
-        const txTo = {
-          id: toId, accountId: data.transferToAccountId, categoryId: null,
-          amount: dst, currency: toCcy,
-          exchangeRate: ((RATES[toCcy] || 1)) / ((RATES[state.user.homeCurrency] || 1)),
-          refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
-          payee: data.payee || 'Transfer', note: data.note, date: data.date,
-          hijriDate: this.#hijri.toHijri(data.date),
-          paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
-          transferPairId: fromId, transferRate: xfer?.rate ?? null, transferDir: 'in', tags: [],
-          createdAt: now, addedBy: this.#sync.currentUser?.email || null,
-        };
-        state.transactions.push(txFrom, txTo);
         // Balances are derived; the flush() below recomputes both accounts.
+        state.transactions.push(
+          ...this.#buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state }),
+        );
       } else {
         // New simple/split tx → TransactionService.create (pushes, applies
         // balances, persists+notifies). recordState/tags/transferPairId defaults
@@ -801,6 +1008,55 @@ export class Application {
     this.#render();
     this.#toast.show(id ? 'Transaction updated' : 'Transaction added');
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Build the two rows that make up a transfer.
+   *
+   * Shared by "new transfer" and by an edit that converts an expense/income
+   * into a transfer, so both paths always produce a fully-paired structure.
+   *
+   * @param {object} data   form values (accountId, transferToAccountId, …)
+   * @param {object} ctx
+   * @param {number} ctx.minor     source amount in minor units
+   * @param {string} ctx.currency  source currency
+   * @param {number} ctx.exchRate  source→home rate
+   * @param {number} ctx.refAmt    source amount in home currency
+   * @param {{rate:number,toCcy:string,dstMinor:number}|null} ctx.xfer
+   * @param {object} ctx.state
+   * @returns {[object, object]} [outgoing leg, incoming leg]
+   */
+  #buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state }) {
+    const fromId = IdGenerator.generate('tx');
+    const toId   = IdGenerator.generate('tx');
+    const toCcy  = xfer?.toCcy ?? currency;
+    const dst    = xfer?.dstMinor ?? minor;
+    const now    = new Date().toISOString();
+    const shared = {
+      categoryId: null,
+      payee: data.payee || 'Transfer', note: data.note, date: data.date,
+      hijriDate: this.#hijri.toHijri(data.date),
+      paymentType: 'transfer', recordState: 'cleared', type: 'transfer',
+      transferRate: xfer?.rate ?? null, tags: [],
+      createdAt: now, addedBy: this.#sync.currentUser?.email || null,
+    };
+
+    return [
+      {
+        ...shared,
+        id: fromId, accountId: data.accountId,
+        amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
+        transferPairId: toId, transferDir: 'out',
+      },
+      {
+        ...shared,
+        id: toId, accountId: data.transferToAccountId,
+        amount: dst, currency: toCcy,
+        exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1),
+        refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
+        transferPairId: fromId, transferDir: 'in',
+      },
+    ];
   }
 
   deleteTx(id) {
@@ -882,12 +1138,31 @@ export class Application {
     }
   }
 
+  /**
+   * Resolve the stable owner id for a positional shareIndex, captured at the
+   * moment a sheet opens. sharedData is rebuilt on every pull, so carrying the
+   * index alone meant a refresh landing before submit could file the
+   * contribution against a different owner's book entirely.
+   * @param {number} shareIndex
+   * @returns {string|null}
+   */
+  #ownerIdForShare(shareIndex) {
+    return (this.#sync.sharedData || [])[shareIndex]?._ownerId ?? null;
+  }
+
   openSharedTxModal(shareIndex, accountId) {
-    this.openModal('transaction', { sharedTxMode: { shareIndex, accountId } });
+    this.openModal('transaction', {
+      sharedTxMode: { shareIndex, accountId, ownerId: this.#ownerIdForShare(shareIndex) },
+    });
   }
 
   openSharedTxEdit(shareIndex, accountId, txId) {
-    this.openModal('transaction', { sharedTxMode: { shareIndex, accountId, editTxId: txId } });
+    this.openModal('transaction', {
+      sharedTxMode: {
+        shareIndex, accountId, editTxId: txId,
+        ownerId: this.#ownerIdForShare(shareIndex),
+      },
+    });
   }
 
   /**
@@ -1002,6 +1277,21 @@ export class Application {
     this.#render();
   }
 
+  /**
+   * Debounced variant for the search box. Every keystroke used to re-run the
+   * whole filter/sort/group pipeline and re-serialise every transaction row
+   * synchronously — O(all transactions) per character. The value is stored
+   * immediately so nothing is lost; only the re-render waits.
+   * @param {string} key
+   * @param {string} value
+   */
+  txFilterSetDebounced(key, value) {
+    const v = this.#views.get('transactions');
+    v?.setFilter?.(key, value);
+    clearTimeout(this.#filterRenderTimer);
+    this.#filterRenderTimer = setTimeout(() => this.#render(), 150);
+  }
+
   txFilterSetRange(from, to) {
     const v = this.#views.get('transactions');
     v?.setFilter?.('dateFrom', from);
@@ -1040,22 +1330,45 @@ export class Application {
 
   // ── Transaction modal helpers ────────────────────────────────────────────
 
-  toggleSplits() {
-    this.#txModal?.toggleSplits?.();
+  /**
+   * Re-render the open modal without losing what the user has typed.
+   *
+   * Modal.refresh() rebuilds the card from the options it was opened with, so
+   * on the transaction form it used to reset every field to its opening state —
+   * toggling splits silently wiped an amount already entered. Snapshotting the
+   * live form into the modal's draft first makes the refresh non-destructive.
+   * Safe to call for any modal: only the transaction modal captures anything.
+   *
+   * @param {object}  [opts]
+   * @param {boolean} [opts.capture=true]  set false when the caller has already
+   *   captured and then adjusted the draft — re-capturing would read the stale
+   *   DOM back over the adjustment.
+   */
+  #refreshModal({ capture = true } = {}) {
+    if (capture && this.#modal.active === 'transaction') this.#txModal?.captureForm?.();
     this.#modal.refresh();
     lucide?.createIcons?.();
+    if (this.#modal.active === 'transaction') {
+      // The FX panels are DOM-patched, not rendered, so re-run them against the
+      // restored values. Each is a no-op when its panel isn't present.
+      this.updateTransferFxPanel(false);
+      this.updateTxFxPanel(false);
+    }
+  }
+
+  toggleSplits() {
+    this.#txModal?.toggleSplits?.();
+    this.#refreshModal();
   }
 
   addSplit(defaultAccountId = null) {
     this.#txModal?.addSplit?.(defaultAccountId || document.querySelector('[name=accountId]')?.value || null);
-    this.#modal.refresh();
-    lucide?.createIcons?.();
+    this.#refreshModal();
   }
 
   removeSplit(i) {
     this.#txModal?.removeSplit?.(i);
-    this.#modal.refresh();
-    lucide?.createIcons?.();
+    this.#refreshModal();
   }
 
   setSplitAmount(i, val, currency) {
@@ -1107,7 +1420,7 @@ export class Application {
     }
 
     if (diffEl) {
-      if (diffAbs < 1) {
+      if (diffAbs === 0) {
         diffEl.innerHTML = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
       } else {
         const color = diff < 0 ? 'text-rose-500' : 'text-amber-500';
@@ -1125,32 +1438,11 @@ export class Application {
    * note, date, payment, amount, and split state.
    */
   setTxType(type) {
-    const form = document.getElementById('txForm');
-    // Snapshot live form values before the re-render wipes them
-    const snapshot = form ? Object.fromEntries(new FormData(form).entries()) : {};
-    snapshot.type   = type;
-    snapshot.amount = Number(snapshot.amount) || 0;
-
-    // Preserve recurring rule state
-    if (form?.elements?.recurringEnabled?.checked) {
-      snapshot.recurring = {
-        rule:     form.elements.recurringRule?.value     || 'monthly',
-        interval: Number(form.elements.recurringInterval?.value) || 1,
-        until:    form.elements.recurringUntil?.value   || null,
-      };
-    }
-
-    // Re-open with the snapshot as a prefill so nothing is lost
-    const savedSharedMode = this.#txModal?.sharedTxMode;
+    // Snapshot first, then switch: setType() inspects the captured draft to
+    // drop a category that doesn't belong to the new type.
+    this.#txModal?.captureForm?.();
     this.#txModal?.setType?.(type);
-    this.#modal.refresh();
-    lucide?.createIcons?.();
-
-    // Restore the fields that refresh() would otherwise blank (payee, note, date, etc.)
-    if (form && snapshot.payee)       { const el = document.querySelector('[name=payee]');       if (el) el.value = snapshot.payee; }
-    if (form && snapshot.note)        { const el = document.querySelector('[name=note]');        if (el) el.value = snapshot.note; }
-    if (form && snapshot.date)        { const el = document.querySelector('[name=date]');        if (el) el.value = snapshot.date; }
-    if (form && snapshot.paymentType) { const el = document.querySelector('[name=paymentType]'); if (el) el.value = snapshot.paymentType; }
+    this.#refreshModal({ capture: false });
   }
 
   toggleRecurringFields() {
@@ -1214,8 +1506,16 @@ export class Application {
     el.innerHTML = '';
   }
 
-  /** Apply a category suggestion — sets the category select in the open tx modal. */
+  /** Apply a category suggestion — sets the category field in the open tx modal. */
   applySuggestedCategory(id) {
+    const field = document.getElementById('txCategory');
+    if (field) {
+      CategoryField.setValue(field, [id], this.#store.getState().categories);
+      lucide?.createIcons?.();
+      this.#toast.show('Category applied');
+      return;
+    }
+    // Fallback for any remaining plain <select name=categoryId>.
     const sel = document.querySelector('select[name=categoryId]');
     if (sel) { sel.value = id; this.#toast.show('Category applied'); }
   }
@@ -1259,8 +1559,12 @@ export class Application {
     const autoRate = (RATES[toCcy] || 1) / (RATES[fromCcy] || 1);
 
     const rateInp = document.getElementById('fxRate');
-    if (!userChangedRate || !(parseFloat(rateInp?.value) > 0)) {
-      if (rateInp) rateInp.value = autoRate.toFixed(6);
+    // Keep any existing/typed rate; only auto-fill when the field is empty
+    // (mirrors updateTxFxPanel). A pair change clears the field first, so the
+    // new auto rate still fills — but editing the amount no longer wipes a
+    // manually-entered transfer rate and re-books the leg at the auto rate.
+    if (rateInp && !(parseFloat(rateInp.value) > 0)) {
+      rateInp.value = autoRate.toFixed(6);
     }
 
     const rate    = parseFloat(rateInp?.value) || autoRate;
@@ -1288,6 +1592,32 @@ export class Application {
     const rateInp = document.getElementById('fxRate');
     if (rateInp) {
       rateInp.value = ((RATES[toAcc.currency] || 1) / (RATES[fromAcc.currency] || 1)).toFixed(6);
+    }
+    this.updateTransferFxPanel(false);
+  }
+
+  /**
+   * Source account changed on a transfer: re-point the locked currency at it
+   * before refreshing the FX panel, so the amount and the quoted rate always
+   * describe the same currency.
+   * @param {string} accId
+   */
+  onTransferSourceChange(accId) {
+    const state = this.#store.getState();
+    const acc   = state.accounts.find((a) => a.id === accId);
+    if (acc?.currency) {
+      const hidden = document.getElementById('txCurrencyLocked');
+      const label  = document.getElementById('txCurrencyLabel');
+      if (hidden) hidden.value = acc.currency;
+      if (label) {
+        label.innerHTML =
+          `<i data-lucide="lock" style="width:11px;height:11px"></i>${this.#esc(acc.currency)}`;
+        lucide?.createIcons?.();
+      }
+      // The stored rate belonged to the old pair — clear it so the panel
+      // refills the auto rate for the new one.
+      const rateInp = document.getElementById('fxRate');
+      if (rateInp) rateInp.value = '';
     }
     this.updateTransferFxPanel(false);
   }
@@ -1451,12 +1781,27 @@ export class Application {
     if (id) {
       const a = state.accounts.find((x) => x.id === id);
       if (!a) return;
-      const wasMajor = a.balance;
+
+      // Capture the pre-edit balance IN THE NEW CURRENCY. a.balance is in minor
+      // units of the account's CURRENT currency, while newMinor comes from the
+      // form in minor units of the currency being saved. Diffing them directly
+      // meant that merely switching a ¥500,000 account to USD logged a
+      // $495,000 "Balance adjustment" — the two numbers weren't comparable.
+      const currencyChanged = a.currency !== data.currency;
+      const wasMinor = currencyChanged
+        ? this.#fx.convert(a.balance, a.currency, data.currency)
+        : a.balance;
+
       // Delegate the entity update to AccountService (mutates the same object);
       // the balance-adjustment ledger entry is orchestrated here.
       this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
-      if (newMinor !== wasMajor) {
-        const delta    = newMinor - wasMajor;
+
+      // A pure currency switch re-denominates the account; it is not a
+      // real-world balance change, so it must not mint a ledger entry. The
+      // form's prefilled figure is in the OLD currency and is ignored here.
+      if (!currencyChanged && newMinor !== wasMinor) {
+        const wasMajor = wasMinor;
+        const delta    = newMinor - wasMinor;
         const positive = delta > 0;
         const tx = {
           id: IdGenerator.generate('tx'), accountId: a.id, categoryId: null,
@@ -1474,7 +1819,12 @@ export class Application {
       }
       this.#store.persist();
       this.closeModal(); this.#render();
-      this.#toast.show('Account updated' + (newMinor !== wasMajor ? ' · adjustment logged' : ''));
+      const logged = !currencyChanged && newMinor !== wasMinor;
+      this.#toast.show(
+        currencyChanged
+          ? `Account updated · re-denominated to ${data.currency}`
+          : 'Account updated' + (logged ? ' · adjustment logged' : ''),
+      );
       this.#sync.schedulePush?.();
       return;
     }
@@ -1522,13 +1872,56 @@ export class Application {
   }
 
   deleteAccountGroup(id) {
-    const state = this.#store.getState();
     if (!confirm('Delete this group? Accounts will become ungrouped.')) return;
-    state.accounts.forEach((a) => { if (a.groupId === id) a.groupId = null; });
-    state.accountGroups = (state.accountGroups || []).filter((g) => g.id !== id);
-    this.#store.persist();
+    const res = this.#accountGroups.delete(id);
+    if (!res.ok) return this.#toast.show(res.reason);
     this.#render();
   }
+
+  /**
+   * The group manager sheet — inline handlers inside it dispatch through
+   * window.__app.accountGroupSheet.*.
+   * @returns {AccountGroupSheet}
+   */
+  get accountGroupSheet() { return this.#accountGroupSheet; }
+
+  /** Open the group manager (create / rename / delete / bulk-assign). */
+  openAccountGroups() {
+    this.#accountGroupSheet.open({ onClose: () => this.#render() });
+  }
+
+  /**
+   * The account-share sheet — inline handlers dispatch through
+   * window.__app.accountShareSheet.*.
+   * @returns {AccountShareSheet}
+   */
+  get accountShareSheet() { return this.#accountShareSheet; }
+
+  /**
+   * "Who can see this account?" — the account-first counterpart to editing a
+   * family member's permissions. Both write the same storage.
+   * @param {string} accountId
+   */
+  shareAccount(accountId) {
+    if (!this.#sync.currentUser) {
+      return this.#toast.show('Sign in to share accounts with family');
+    }
+    this.#accountShareSheet.open(accountId, {
+      onClose: () => {
+        this.#render();
+        // Republish snapshots so the change reaches their device immediately
+        // rather than at their next cold start.
+        this.#sync.schedulePush?.();
+      },
+    });
+  }
+
+  /**
+   * Toast passthrough so components that aren't views can surface a message
+   * without reaching into the Toast instance directly.
+   * @param {string} message
+   */
+  showToast(message) { this.#toast.show(message); }
 
   onAccGroupChange(sel) {
     const inp = document.getElementById('accNewGroupName');
@@ -1703,9 +2096,12 @@ export class Application {
   }
 
   deleteCategory(id) {
-    const state = this.#store.getState();
-    if (state.transactions.some((t) => t.categoryId === id)) {
-      return this.#toast.show('Reassign transactions first');
+    // Counts split legs as well as whole-transaction references.
+    const used = this.#categories.usageCount(id);
+    if (used > 0) {
+      return this.#toast.show(
+        `${used} transaction${used === 1 ? '' : 's'} still use this — reassign them first`,
+      );
     }
     if (!confirm('Delete this category?')) return;
     this.#categories.delete(id);  // also re-parents any orphaned children to root
@@ -1748,8 +2144,10 @@ export class Application {
     event.preventDefault();
     const fd    = new FormData(event.target);
     const data  = Object.fromEntries(fd.entries());
-    // Checkbox group → use getAll (fromEntries keeps only the last value).
-    const categoryIds = fd.getAll('categoryIds');
+    // Multi-value field → use getAll (fromEntries keeps only the last value).
+    // The CategoryField emits a single empty input when nothing is selected,
+    // so blanks are filtered out before the "pick at least one" check.
+    const categoryIds = fd.getAll('categoryIds').filter(Boolean);
     if (!categoryIds.length) return this.#toast.show('Pick at least one category');
     const minor  = this.#fx.toMinor(data.amount, data.currency);
     const period = data.period === 'hijri' ? 'hijri' : 'gregorian';
@@ -1794,7 +2192,19 @@ export class Application {
       debt.counterparty = data.counterparty || debt.counterparty;
       debt.dueDate      = data.dueDate || null;
       debt.note         = data.note || '';
-      debt.status       = data.markPaid ? 'paid' : 'active';
+
+      const wasPaid   = debt.status === 'paid';
+      const nowPaid   = !!data.markPaid;
+      const remaining = this.#debtOutstanding(debt);
+
+      // Closing a debt that still has a balance used to write nothing at all:
+      // the debt left the "owed" total while the money never moved in the
+      // ledger. Ask what actually happened rather than guessing.
+      if (nowPaid && !wasPaid && remaining > 0) {
+        const settled = this.#settleDebtRemainder(debt, remaining, data.accountId);
+        if (settled === null) return; // user cancelled — leave the debt open
+      }
+      debt.status = nowPaid ? 'paid' : 'active';
       this.#store.persist();
       this.closeModal(); this.#render();
       this.#toast.show('Debt updated');
@@ -1882,28 +2292,111 @@ export class Application {
     this.#sync.schedulePush?.();
   }
 
+  /**
+   * Outstanding balance on a debt, in the debt's own currency.
+   * Payments in other currencies are converted before summing.
+   * @param {object} debt
+   * @returns {number} minor units still owed (never negative)
+   */
+  #debtOutstanding(debt) {
+    const state    = this.#store.getState();
+    const payments = state.transactions.filter(
+      (t) => t.debtId === debt.id && t.id !== debt.initialTxId,
+    );
+    const paid = payments.reduce(
+      (s, t) => s + this.#fx.convert(t.amount, t.currency, debt.currency), 0,
+    );
+    return Math.max(0, debt.principal - paid);
+  }
+
+  /**
+   * Ask how a debt's remaining balance was settled, and record it accordingly.
+   *
+   * Three real-world cases, because "mark as paid" means different things:
+   *  1. Paid now from a tracked account → write a real payment transaction.
+   *  2. Settled outside the app (cash, forgiven, untracked account) → close it
+   *     with no ledger entry, but record that it was settled externally.
+   *  3. Cancel → leave the debt open.
+   *
+   * @param {object} debt
+   * @param {number} remaining  minor units outstanding
+   * @param {string} [accountId] account hinted by the form
+   * @returns {object|null} the created transaction, null when cancelled
+   */
+  #settleDebtRemainder(debt, remaining, accountId) {
+    const state  = this.#store.getState();
+    const amount = this.#fx.formatMoney(remaining, debt.currency);
+    const payNow = window.confirm(
+      `This debt still has ${amount} outstanding.\n\n`
+      + 'OK — I just paid it: log a payment transaction now.\n'
+      + 'Cancel — it was settled outside the app: close it with no transaction.',
+    );
+
+    if (!payNow) {
+      // Case 2: close it honestly, without inventing a ledger movement.
+      debt.settledExternally = true;
+      debt.settledAt         = DateService.todayIso();
+      return { external: true };
+    }
+
+    // Case 1: a real payment. Prefer the account the debt originated on.
+    const initial = state.transactions.find((t) => t.id === debt.initialTxId);
+    const accId   = accountId || initial?.accountId || state.accounts[0]?.id;
+    const acc     = state.accounts.find((a) => a.id === accId);
+    if (!acc) { this.#toast.show('No account to pay from'); return null; }
+
+    const today      = DateService.todayIso();
+    const isBorrowed = debt.kind === 'borrowed' || debt.direction === 'borrowed';
+    const tx = {
+      id: IdGenerator.generate('tx'), accountId: acc.id, categoryId: null,
+      amount: remaining, currency: debt.currency,
+      exchangeRate: (RATES[debt.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
+      refAmount: this.#fx.convert(remaining, debt.currency, state.user.homeCurrency),
+      payee: debt.counterparty || 'Debt settlement',
+      note:  'Final settlement',
+      date: today, hijriDate: this.#hijri.toHijri(today),
+      paymentType: 'transfer', recordState: 'cleared',
+      type: isBorrowed ? 'expense' : 'income',
+      transferPairId: null, tags: ['debt-payment'], splits: null,
+      debtId: debt.id, debtRole: 'payment',
+    };
+    state.transactions.push(tx);
+    return tx;
+  }
+
   deleteDebt(id, destroyPayments = false) {
     const state = this.#store.getState();
     const debt  = state.debts.find((d) => d.id === id);
     if (!debt) return;
     const payments = state.transactions.filter((t) => t.debtId === id && t.id !== debt.initialTxId);
+    const linked   = payments.length + (debt.initialTxId ? 1 : 0);
     const msg = destroyPayments
-      ? `Delete this debt AND destroy ${payments.length} linked payment transaction${payments.length === 1 ? '' : 's'}? Account balances will be restored.`
-      : 'Delete this debt? The initial transaction is reverted; existing payment transactions are kept but unlinked.';
+      ? `Delete this debt AND its ${linked} linked transaction${linked === 1 ? '' : 's'} `
+        + `(the original${payments.length ? ` plus ${payments.length} payment${payments.length === 1 ? '' : 's'}` : ''})?\n\n`
+        + 'Account balances will be restored as if the debt never existed.'
+      : `Delete this debt but KEEP its ${linked} transaction${linked === 1 ? '' : 's'}?\n\n`
+        + 'They stay in your ledger as ordinary transactions and your balances do not change.';
     if (!confirm(msg)) return;
-    const initial = state.transactions.find((t) => t.id === debt.initialTxId);
-    if (initial) {
-      state.transactions = state.transactions.filter((t) => t.id !== debt.initialTxId);
-    }
+
     if (destroyPayments) {
-      state.transactions = state.transactions.filter((t) => t.debtId !== id);
+      // Remove the whole footprint: the original and every repayment.
+      state.transactions = state.transactions.filter(
+        (t) => t.debtId !== id && t.id !== debt.initialTxId,
+      );
     } else {
-      state.transactions.forEach((t) => { if (t.debtId === id) { t.debtId = null; t.debtRole = null; } });
+      // Keep everything, just unlink. Previously the original was deleted while
+      // the repayments were kept, so the account balance dropped by the
+      // borrowed amount for no real-world event.
+      state.transactions.forEach((t) => {
+        if (t.debtId === id || t.id === debt.initialTxId) { t.debtId = null; t.debtRole = null; }
+      });
     }
     state.debts = state.debts.filter((d) => d.id !== id);
     this.#store.persist();
     this.closeModal(); this.#render();
-    this.#toast.show(destroyPayments ? `Debt and ${payments.length} payment(s) destroyed` : 'Debt deleted');
+    this.#toast.show(destroyPayments
+      ? `Debt and ${linked} transaction${linked === 1 ? '' : 's'} removed`
+      : `Debt deleted · ${linked} transaction${linked === 1 ? '' : 's'} kept`);
     this.#sync.schedulePush?.();
   }
 
@@ -1950,9 +2443,14 @@ export class Application {
 
   deleteFamilyMember(id) {
     if (!confirm('Remove this family member?')) return;
-    const state = this.#store.getState();
+    const state  = this.#store.getState();
+    const member = (state.family || []).find((m) => m.id === id);
     state.family = (state.family || []).filter((m) => m.id !== id);
     this.#store.persist();
+    // Dropping them from local state does NOT revoke access — their
+    // family_shares row has to go too, or their client keeps serving the last
+    // snapshot (accounts, transactions and all categories) indefinitely.
+    if (member?.email) this.#sync.revokeMemberShare?.(member.email);
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
   }
@@ -2024,13 +2522,27 @@ export class Application {
   }
 
   deleteRegularItem(id) {
-    if (!confirm('Delete this regular item?')) return;
-    const s = this.#store.getState();
-    s.transactions = (s.transactions || []).filter(t => t.regularItemId !== id);
-    s.regularItems = (s.regularItems || []).filter(i => i.id !== id);
+    const s      = this.#store.getState();
+    const logged = (s.transactions || []).filter((t) => t.regularItemId === id).length;
+
+    // Deleting the template used to destroy every transaction ever logged from
+    // it, while the prompt only said "Delete this regular item?" — real spending
+    // silently disappeared from the ledger and balances moved. The template is
+    // a shortcut for creating transactions; removing it must not unmake them.
+    const msg = logged
+      ? `Delete this regular item?\n\nThe ${logged} transaction${logged === 1 ? '' : 's'} `
+        + 'already logged from it stay in your ledger.'
+      : 'Delete this regular item?';
+    if (!confirm(msg)) return;
+
+    (s.transactions || []).forEach((t) => { if (t.regularItemId === id) t.regularItemId = null; });
+    s.regularItems = (s.regularItems || []).filter((i) => i.id !== id);
     this.#store.persist();
     this.closeModal();
     this.#render();
+    this.#toast.show(logged
+      ? `Item deleted · ${logged} transaction${logged === 1 ? '' : 's'} kept`
+      : 'Item deleted');
     this.#sync.schedulePush?.();
   }
 
@@ -2093,15 +2605,20 @@ export class Application {
   }
 
   prefillRegularLog(sel) {
-    const opt = sel.options[sel.selectedIndex];
+    const opt   = sel.options[sel.selectedIndex];
     const price = parseFloat(opt?.dataset?.price) || 0;
+    // Round to the CURRENCY's precision. A hard-coded toFixed(2) silently
+    // dropped the third decimal, so a KWD item priced 1.234 prefilled 1.23 and
+    // lost 4 fils on every log.
+    const ccy    = opt?.dataset?.currency || this.#store.getState().user.homeCurrency || 'USD';
+    const digits = this.#fx.minorDigits(ccy);
     const unitEl  = document.getElementById('dayLogUnit');
     const qtyEl   = document.getElementById('dayLogQty');
     const totalEl = document.getElementById('dayLogTotal');
-    if (unitEl)  unitEl.value  = price > 0 ? price.toFixed(2) : '';
+    if (unitEl)  unitEl.value  = price > 0 ? price.toFixed(digits) : '';
     if (totalEl && qtyEl) {
       const qty = parseFloat(qtyEl.value) || 1;
-      totalEl.value = price > 0 ? (price * qty).toFixed(2) : '';
+      totalEl.value = price > 0 ? (price * qty).toFixed(digits) : '';
     }
   }
 
@@ -2269,14 +2786,47 @@ export class Application {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(reader.result);
-        if (!parsed.accounts || !parsed.transactions) throw new Error('Invalid structure');
-        this.#store.replaceState(parsed);
+        if (!Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
+          throw new Error('Invalid structure');
+        }
+        // replaceState() deletes every key the incoming object omits, so an
+        // older or partial export used to wipe user settings, categories,
+        // budgets, debts and regular items. Running the migrator back-fills
+        // those (and openingBalance, without which every balance collapses to
+        // the bare ledger sum) before the swap.
+        this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
+        this.#ensureUserDefaults();
+        this.#accounts.recompute();
         this.#store.persist();
         this.closeModal(); this.#render();
         this.#toast.show('Data imported');
       } catch { this.#toast.show('Invalid JSON file'); }
     };
     reader.readAsText(file);
+  }
+
+  /** Conflict-backup recovery (SyncService keeps timestamped copies). */
+  conflictBackups() { return this.#sync.conflictBackups?.() || []; }
+
+  restoreConflictBackup(key) {
+    const parsed = this.#sync.readConflictBackup?.(key);
+    if (!parsed || !Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
+      this.#toast.show('That backup is missing or unreadable');
+      return;
+    }
+    if (!confirm('Restore this saved copy? It replaces the data currently on this device.')) return;
+    this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
+    this.#ensureUserDefaults();
+    this.#accounts.recompute();
+    this.#store.persist();
+    this.#sync.discardConflictBackup?.(key);
+    this.closeModal(); this.#render();
+    this.#toast.show('Backup restored');
+  }
+
+  discardConflictBackup(key) {
+    this.#sync.discardConflictBackup?.(key);
+    this.#render();
   }
 
   exportCsv(range) {
@@ -2459,15 +3009,24 @@ export class Application {
     const accMap = {};
     const norm   = (s) => String(s || '').toLowerCase().trim();
     state.accounts.forEach((a) => { accMap[norm(a.name)] = a.id; });
+    // Only accounts this import actually created may have their currency
+    // inferred below — see the comment on the vote loop.
+    const createdAccountIds = new Set();
     plan.newAccounts.forEach((na) => {
       if (!accMap[norm(na.name)]) {
         const id = IdGenerator.generate('acc');
         state.accounts.push({ id, name: na.name, type: na.type, currency: na.currency, color: na.color, icon: na.icon || 'wallet', archived: false, balance: 0 });
         accMap[norm(na.name)] = id;
+        createdAccountIds.add(id);
       }
     });
 
-    // Override new-account currencies with the most-used currency from their transactions
+    // Infer each NEW account's currency from the most-used currency across its
+    // imported rows. This must never touch a pre-existing account: it used to
+    // iterate every account, so importing a single USD row for a name matching
+    // an existing JPY account silently re-denominated that account (and,
+    // because it assigned a.currency directly instead of going through
+    // AccountService.update, left every frozen acctMinor stale).
     const currencyVotes = {}; // norm(accName) → { currency → count }
     plan.txDrafts.forEach((d) => {
       const key = norm(d.accountName);
@@ -2475,6 +3034,7 @@ export class Application {
       if (d.currency) currencyVotes[key][d.currency] = (currencyVotes[key][d.currency] || 0) + 1;
     });
     state.accounts.forEach((a) => {
+      if (!createdAccountIds.has(a.id)) return; // never re-denominate existing accounts
       const votes = currencyVotes[norm(a.name)];
       if (!votes) return;
       const dominant = Object.entries(votes).sort((x, y) => y[1] - x[1])[0]?.[0];
@@ -2553,7 +3113,11 @@ export class Application {
 
   resetData() {
     if (!confirm('Reset ALL data? This cannot be undone.')) return;
-    this.#store.replaceState(SeedFactory.create());
+    // Migrate the seed too, so a reset lands on the current schema rather than
+    // whatever shape SeedFactory happens to emit.
+    this.#store.replaceState(SeedFactory.create(), (s) => StateMigrator.migrate(s));
+    this.#ensureUserDefaults();
+    this.#accounts.recompute();
     this.#store.persist();
     this.#render();
     this.#toast.show('Data reset');
@@ -2660,8 +3224,9 @@ export class Application {
     // hijriOffset back-fill
     if (typeof state.user.hijriOffset !== 'number') state.user.hijriOffset = 0;
 
-    // customPaymentTypes back-fill
+    // payment-method back-fill (added + deleted/renamed-away built-ins)
     if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
+    if (!Array.isArray(state.user.hiddenPaymentTypes)) state.user.hiddenPaymentTypes = [];
 
     // collapsedCategories back-fill
     if (!Array.isArray(state.user.collapsedCategories)) state.user.collapsedCategories = [];
@@ -2766,19 +3331,19 @@ export class Application {
   // Private: account group helper
   // ──────────────────────────────────────────────────────────────────────────
 
-  #resolveAccountGroupId(data, state) {
-    let { groupId } = data;
+  /**
+   * Resolve the account form's group field. '__new__' means "create the group
+   * named in newGroupName"; AccountGroupService.create() owns the naming rules
+   * (trimmed, case-insensitively unique) so the form and the manage sheet
+   * cannot drift apart.
+   */
+  #resolveAccountGroupId(data, _state) {
+    const { groupId } = data;
     if (!groupId) return { groupId: null };
     if (groupId === '__new__') {
-      const name = (data.newGroupName || '').trim();
-      if (!name) return { error: 'New group name is required' };
-      const norm   = (s) => s.toLowerCase().trim();
-      const exists = (state.accountGroups || []).find((g) => norm(g.name) === norm(name));
-      if (exists) return { groupId: exists.id };
-      const id = IdGenerator.generate('grp');
-      if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
-      state.accountGroups.push({ id, name, color: this.#deterministicColor(name) });
-      return { groupId: id };
+      const res = this.#accountGroups.create(data.newGroupName || '');
+      if (!res.ok) return { error: res.reason };
+      return { groupId: res.group.id };
     }
     return { groupId };
   }
@@ -2892,8 +3457,13 @@ export class Application {
       if (splitOf) {
         if (!splitGroups[splitOf]) {
           splitGroups[splitOf] = {
-            type: 'split-group', date, accountName: acctName, payee: (r.payee || '').trim(),
-            note: (r.note || '').trim(), currency, paymentType, tags, createdAt: r.createdat || '', addedBy: r.addedby || '',
+            // Real ledger type (expense/income) — NOT a phantom 'split-group',
+            // which LedgerMath scores as zero, making the whole split invisible
+            // to account balances. All legs of a group share the parent type.
+            type: (type === 'income' ? 'income' : 'expense'),
+            date, accountName: acctName, payee: (r.payee || '').trim(),
+            note: (r.note || '').trim(), currency, paymentType, tags, isDuplicate: false,
+            createdAt: r.createdat || '', addedBy: r.addedby || '',
             amount: 0, splits: [],
           };
           txDrafts.push(splitGroups[splitOf]);
@@ -2923,6 +3493,27 @@ export class Application {
 
       txDrafts.push({ type, date, accountName: acctName, payee: (r.payee || '').trim(), note: (r.note || '').trim(), amount, currency, paymentType, catName: catName || null, subName: subName || null, tags, isDuplicate: false, createdAt: r.createdat || '', addedBy: r.addedby || '' });
     });
+
+    // Flag probable duplicates so the "Include probable duplicates" toggle
+    // (commitImport) actually does something — previously isDuplicate was never
+    // set true, so re-importing the same file silently doubled every row.
+    // Match on date · account · type · minor amount · currency · payee, against
+    // the existing ledger AND earlier rows within this same file.
+    const dupKey = (accId, d) =>
+      `${d.date}|${accId}|${d.type}|${d.amount}|${d.currency}|${norm(d.payee || '')}`;
+    const seenKeys = new Set(
+      state.transactions
+        .filter((t) => t.type !== 'transfer')
+        .map((t) => `${t.date}|${t.accountId}|${t.type}|${t.amount}|${t.currency}|${norm(t.payee || '')}`),
+    );
+    for (const d of txDrafts) {
+      if (d.type === 'transfer') continue;      // pairs aren't dup-checked
+      const existAcc = accByName(d.accountName);
+      if (!existAcc) continue;                  // brand-new account → nothing to duplicate
+      const key = dupKey(existAcc.id, d);
+      if (seenKeys.has(key)) d.isDuplicate = true;
+      else seenKeys.add(key);
+    }
 
     return {
       txDrafts,
@@ -3023,20 +3614,11 @@ export class Application {
   }
 
   #deterministicColor(name) {
-    const palette = ['#0ea5e9','#22c55e','#a855f7','#f97316','#14b8a6','#ec4899','#ef4444','#0891b2','#8b5cf6','#f59e0b'];
-    let h = 0;
-    for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-    return palette[h % palette.length];
+    return CategoryService.colorForName(name);
   }
 
   #guessCatDefaults(name, type) {
-    const n = name.toLowerCase();
-    for (const def of CATEGORY_KEYWORD_DEFAULTS) {
-      if (def.keys.some((k) => n.includes(k))) return { icon: def.icon, color: def.color };
-    }
-    if (type === 'income')   return { icon: 'banknote',         color: '#22c55e' };
-    if (type === 'transfer') return { icon: 'arrow-right-left', color: '#737373' };
-    return { icon: 'tag', color: this.#deterministicColor(name) };
+    return this.#categories.guessAppearance(name, type);
   }
 
   #defaultAccIcon(type) {
@@ -3064,7 +3646,9 @@ window.adjustHijriOffset     = (d)     => window.__app.adjustHijriOffset(d);
 window.currencySetupNext     = ()      => window.__app.currencySetupNext();
 window.setHijriOffset        = (v)     => window.__app.setHijriOffset(v);
 window.setTheme              = (m)     => window.__app.setTheme(m);
-window.addCustomPaymentType  = (s)     => window.__app.addCustomPaymentType(s);
+window.addCustomPaymentType  = ()     => window.__app.addCustomPaymentType();
+window.pickPaymentType       = (v)     => window.__app.pickPaymentType(v);
+window.onTransferSourceChange= (v)     => window.__app.onTransferSourceChange(v);
 window.submitRegularLog      = (e, d)  => window.__app.submitRegularLog(e, d);
 window.deleteRegularLog      = (id, d) => window.__app.deleteRegularLog(id, d);
 window.prefillRegularLog     = (s)     => window.__app.prefillRegularLog(s);

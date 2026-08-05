@@ -131,6 +131,25 @@ export class SettingsModal {
           </div>
         </div>
 
+        ${(() => {
+          let backups = [];
+          try { backups = JSON.parse(localStorage.getItem('pocket.v1.conflicts') || '[]'); } catch (_) {}
+          if (!backups.length) return '';
+          return `
+        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
+          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
+            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
+          ${backups.map((b) => `
+            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
+              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
+              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
+              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
+            </div>`).join('')}
+        </div>`;
+        })()}
+
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-start gap-3 mb-3">
@@ -194,6 +213,7 @@ export class SettingsModal {
 create table if not exists public.user_data (
   id   uuid references auth.users on delete cascade primary key,
   data jsonb not null default '{}',
+  version integer not null default 0,
   updated_at timestamptz default now()
 );
 alter table public.user_data enable row level security;
@@ -228,7 +248,28 @@ create policy "member_reads_shares"
   using (member_email = lower((auth.jwt()->>'email')));
 create trigger family_shares_updated_at
   before update on public.family_shares
-  for each row execute function public.touch_updated_at();</div>
+  for each row execute function public.touch_updated_at();
+
+-- ── Family contributions inbox (members write; the owner applies) ────
+create table if not exists public.family_contributions (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid references auth.users on delete cascade not null,
+  member_email text not null,
+  account_id   text not null,
+  tx_data      jsonb not null,
+  synced       boolean not null default false,
+  created_at   timestamptz default now()
+);
+alter table public.family_contributions enable row level security;
+create policy "member_manages_own_contributions"
+  on public.family_contributions for all
+  using  (member_email = lower((auth.jwt()->>'email')))
+  with check (member_email = lower((auth.jwt()->>'email')));
+create policy "owner_manages_contributions"
+  on public.family_contributions for all
+  using  (auth.uid() = owner_id)
+  with check (auth.uid() = owner_id);
+alter publication supabase_realtime add table public.family_contributions;</div>
                 <button class="btn btn-outline w-full mt-1 justify-center text-xs"
                         onclick="window.__app.copySql()">
                   <i data-lucide="copy"></i> Copy SQL

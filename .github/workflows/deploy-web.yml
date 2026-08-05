@@ -1,0 +1,67 @@
+# Publishes the legacy-web app to GitHub Pages as the SITE ROOT, so the app
+# lives at https://<user>.github.io/<repo>/  (e.g. .../pocket/) instead of
+# .../pocket/legacy-web/app.html.
+#
+# One-time repo setting: Settings → Pages → Source → "GitHub Actions".
+#
+# Everything in legacy-web/ uses RELATIVE asset paths, so serving that folder
+# at the site root just works:
+#   /pocket/            → legacy-web/index.html   (marketing landing)
+#   /pocket/app.html    → the app (hash-routed)
+#   /pocket/privacy.html
+#
+# NOTE: the app's Google OAuth redirect is window.location.origin + pathname,
+# so after this change it becomes https://<user>.github.io/<repo>/app.html —
+# add that (and the site root) to Supabase → Authentication → URL Configuration
+# → Redirect URLs, or Google sign-in will bounce.
+
+name: Deploy web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'legacy-web/**'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble site (legacy-web as the root)
+        run: |
+          mkdir -p _site
+          cp -r legacy-web/. _site/
+          # Drop dev-only cruft from the published site.
+          rm -rf _site/node_modules _site/src/__smoke__ \
+                 _site/package.json _site/package-lock.json \
+                 _site/build.bat _site/t.mjs _site/AUDIT-2026-07.md 2>/dev/null || true
+          # Bypass Jekyll and give a friendly SPA-style fallback.
+          touch _site/.nojekyll
+          cp _site/index.html _site/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

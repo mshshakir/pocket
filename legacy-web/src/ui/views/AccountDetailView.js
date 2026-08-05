@@ -158,10 +158,11 @@ export class AccountDetailView extends BaseView {
         </button>
         <div class="flex-1"></div>
         ${isShared ? `<span class="chip" style="background:#818cf822;color:#818cf8">${permLabel} · Shared by ${this.escapeHtml(share?.sharedBy || '')}</span>` : ''}
-        ${canManage && Math.abs(residual) >= 1 ? `<button class="btn btn-outline text-amber-600" onclick="window.__app.reconcileAccount('${a.id}')" title="Balance out of sync"><i data-lucide="scale"></i><span class="hidden md:inline ml-1">Reconcile</span></button>` : ''}
-        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(${shareIndex})" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ''}
+        ${canManage && Math.abs(residual) >= 1 ? `<button class="btn btn-outline text-amber-600" onclick="window.__app.reconcileAccount('${this.jsArg(a.id)}')" title="Balance out of sync"><i data-lucide="scale"></i><span class="hidden md:inline ml-1">Reconcile</span></button>` : ''}
+        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(${Number(shareIndex) || 0})" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ''}
         ${(canManage || canDelete) ? `<button class="btn ${this.#multiSelect ? 'btn-primary' : 'btn-outline'}" onclick="window.__app.toggleAccountMultiSelect()" title="Select multiple"><i data-lucide="check-square"></i></button>` : ''}
-        ${canManage ? `<button class="btn btn-outline" onclick="window.__app.openModal('account',{id:'${a.id}'})"><i data-lucide="pencil"></i><span class="hidden md:inline ml-1">Edit</span></button>` : ''}
+        ${!isShared && canManage ? `<button class="btn btn-outline" onclick="window.__app.shareAccount('${this.jsArg(a.id)}')" title="Share with family"><i data-lucide="user-plus"></i><span class="hidden md:inline ml-1">Share</span></button>` : ''}
+        ${canManage ? `<button class="btn btn-outline" onclick="window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})"><i data-lucide="pencil"></i><span class="hidden md:inline ml-1">Edit</span></button>` : ''}
         ${newTxBtn}
       </div>
 
@@ -178,17 +179,17 @@ export class AccountDetailView extends BaseView {
         </div>` : ''}
 
       <div class="card p-5 mb-4 relative overflow-hidden ${a.archived ? 'opacity-70' : ''}">
-        <div class="absolute -right-10 -top-10 w-40 h-40 rounded-full" style="background:${a.color || '#818cf8'}22"></div>
+        <div class="absolute -right-10 -top-10 w-40 h-40 rounded-full" style="background:${this.safeColor(a.color, '#818cf8')}22"></div>
         <div class="flex items-start gap-3 relative">
-          <div class="icon-pill" style="background:${a.color || '#818cf8'};color:white;width:44px;height:44px">
-            <i data-lucide="${a.icon || 'wallet'}" style="width:22px;height:22px"></i>
+          <div class="icon-pill" style="background:${this.safeColor(a.color, '#818cf8')};color:white;width:44px;height:44px">
+            <i data-lucide="${this.safeIcon(a.icon, 'wallet')}" style="width:22px;height:22px"></i>
           </div>
           <div class="flex-1">
             <div class="flex items-center gap-2">
               <div class="text-xl font-semibold">${this.escapeHtml(a.name)}</div>
               ${a.archived ? '<span class="chip">Archived</span>' : ''}
             </div>
-            <div class="text-xs text-zinc-500 capitalize">${a.type || ''} · ${a.currency}</div>
+            <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type || '')} · ${this.escapeHtml(a.currency)}</div>
           </div>
           <div class="text-right">
             <div class="text-xs text-zinc-500">Balance</div>

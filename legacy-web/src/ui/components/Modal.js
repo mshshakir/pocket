@@ -105,8 +105,19 @@ export class Modal {
     if (!this.#active || this.#active === '_raw') return;
     const view = this.#registry.get(this.#active);
     if (!view || !this.#card) return;
+
+    // The card is the scroll container (max-height:92vh; overflow:auto), so
+    // replacing its innerHTML sends the user back to the top. Clicking
+    // "Add split" at the bottom of a long transaction form threw them up to
+    // the Date field; each Hijri-offset nudge jumped Settings to the top.
+    const scrollTop = this.#card.scrollTop;
+
     this.#card.innerHTML = view.render(this.#currentOpts ?? {});
     if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    // Restore after layout so the new content has a scrollHeight to clamp to.
+    this.#card.scrollTop = scrollTop;
+    requestAnimationFrame(() => { if (this.#card) this.#card.scrollTop = scrollTop; });
   }
 
   /** Close the active modal. */

@@ -12,9 +12,10 @@
 import { Store }                    from '../../core/Store.js';
 import { CurrencyService }          from '../../domain/services/CurrencyService.js';
 import { HijriCalendarService }     from '../../domain/services/HijriCalendarService.js';
-import { CategoryOptionRenderer }   from '../components/CategoryOptionRenderer.js';
+import { CategoryField }            from '../components/CategoryField.js';
 import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
 import { DateService }              from '../../domain/services/DateService.js';
+import { Html }                     from '../../core/Html.js';
 
 /** Payment methods available by default. */
 const DEFAULT_PAYMENT_TYPES = ['card', 'cash', 'bank-transfer', 'cheque', 'crypto', 'other'];
@@ -38,6 +39,16 @@ export class TransactionModal {
   #currentType   = null; // overrides data.type when user switches tabs
   #splitsSeeded  = false; // true after initial seed; prevents re-seed on refresh
 
+  /**
+   * Live form values captured immediately before a re-render, merged over the
+   * modal's source data by render(). Anything that re-renders the modal
+   * mid-edit (toggling splits, switching type, adding a payment method,
+   * nudging the Hijri offset) would otherwise reset the form to its opening
+   * state and silently discard whatever the user had typed.
+   * @type {object}
+   */
+  #draft = {};
+
   constructor() {
     this.#store = Store.getInstance();
     this.#fx    = new CurrencyService();
@@ -51,10 +62,80 @@ export class TransactionModal {
   /** @returns {boolean} */
   get splitsEnabled() { return this.#splitsEnabled; }
 
-  setType(type) { this.#currentType = type; }
+  setType(type) {
+    this.#currentType = type;
+    // A category belongs to exactly one type, so a leftover expense category
+    // must not survive a switch to income (and vice versa).
+    const cat = this.#draft.categoryId
+      ? this.#store.getState().categories.find((c) => c.id === this.#draft.categoryId)
+      : null;
+    if (cat && cat.type !== type) this.#draft.categoryId = '';
+  }
 
   /** @returns {{shareIndex:number, accountId:string, editTxId?:string}|null} */
   get sharedTxMode() { return this.#sharedTxMode; }
+
+  /**
+   * Snapshot the live #txForm into the draft. Call this immediately before any
+   * re-render of the modal; render() then merges the draft back over the
+   * underlying transaction so the user's in-progress edits survive.
+   *
+   * Split rows are NOT captured here — their category, account and amount are
+   * already pushed into #splits by their own change handlers.
+   */
+  captureForm() {
+    const form = document.getElementById('txForm');
+    if (!form) return;
+
+    const fd  = new FormData(form);
+    const has = (k) => fd.get(k) !== null;
+    const str = (k) => (fd.get(k) ?? '').toString();
+
+    const currency = has('currency') ? str('currency') : this.#draft.currency;
+    if (currency) this.#draft.currency = currency;
+
+    // The form holds major units; the model holds minor units.
+    if (has('amount')) {
+      const raw = str('amount').trim();
+      this.#draft.amount = raw === '' ? 0 : this.#fx.toMinor(Number(raw) || 0, currency || 'USD');
+      this.#draft.amountRaw = raw; // preserves a half-typed "12." exactly as shown
+    }
+
+    for (const key of ['accountId', 'categoryId', 'payee', 'note', 'date',
+                       'paymentType', 'transferToAccountId']) {
+      if (has(key)) this.#draft[key] = str(key);
+    }
+
+    // FX rates are only meaningful when the user actually entered one.
+    for (const key of ['transferRate', 'txFxRate']) {
+      if (has(key)) {
+        const n = parseFloat(str(key));
+        if (n > 0) this.#draft[key] = n;
+        else delete this.#draft[key];
+      }
+    }
+
+    this.#draft.recurring = form.elements?.recurringEnabled?.checked
+      ? {
+          rule:     form.elements.recurringRule?.value            || 'monthly',
+          interval: Number(form.elements.recurringInterval?.value) || 1,
+          until:    form.elements.recurringUntil?.value           || null,
+        }
+      : null;
+  }
+
+  /** Discard the captured draft (used when the modal opens fresh). */
+  clearDraft() { this.#draft = {}; }
+
+  /**
+   * Force the payment method in the draft — used after the manage sheet renames
+   * or deletes the method the form had selected, so the next render shows the
+   * surviving name instead of falling back to the default.
+   * @param {string} name
+   */
+  setPaymentType(name) {
+    if (name) this.#draft.paymentType = name;
+  }
 
   toggleSplits() {
     this.#splitsEnabled = !this.#splitsEnabled;
@@ -107,13 +188,21 @@ export class TransactionModal {
           .find((t) => t.id === sharedTxMode.editTxId)
       : null;
 
-    const editing = id ? state.transactions.find((t) => t.id === id) : null;
+    let editing = id ? state.transactions.find((t) => t.id === id) : null;
+
+    // A transfer is two legs; always edit from the OUT leg so the From/To
+    // accounts and rate map correctly and saving can't reverse the flow.
+    // Opening the IN leg would otherwise show source/destination swapped.
+    if (editing && editing.type === 'transfer' && editing.transferDir === 'in' && editing.transferPairId) {
+      const outLeg = state.transactions.find((t) => t.id === editing.transferPairId);
+      if (outLeg) editing = outLeg;
+    }
 
     const data    = editing
       ? { ...editing }
       : sharedEditTx
         ? { ...sharedEditTx }
-        : (prefill || {
+        : (prefill ? { ...prefill } : {
             type:               'expense',
             amount:             0,
             currency:           state.user.defaultCurrency || state.user.homeCurrency,
@@ -151,6 +240,11 @@ export class TransactionModal {
       }
     }
 
+    // Merge the in-progress edits captured before the last re-render. This runs
+    // AFTER the transfer/FX enrichment above so a rate the user actually typed
+    // beats the one derived from the stored transaction.
+    Object.assign(data, this.#draft);
+
     // Seed splits only once per open session; subsequent refreshes keep in-memory state
     if (!this.#splitsSeeded) {
       this.#splits        = editing && Array.isArray(editing.splits)   ? editing.splits.map((s) => ({ ...s }))
@@ -160,10 +254,14 @@ export class TransactionModal {
       this.#splitsSeeded  = true;
     }
 
-    const type        = this.#currentType || data.type || 'expense';
-    const amountValue = (editing || sharedEditTx)
-      ? this.#fx.fromMinor(data.amount, data.currency)
-      : (data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0);
+    const type = this.#currentType || data.type || 'expense';
+    // A captured draft wins and is echoed back verbatim, so a half-typed
+    // "12." or "0.5" reappears exactly as the user left it.
+    const amountValue = this.#draft.amountRaw !== undefined
+      ? this.#draft.amountRaw
+      : (editing || sharedEditTx)
+        ? this.#fx.fromMinor(data.amount, data.currency)
+        : (data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0);
     const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
 
@@ -185,12 +283,23 @@ export class TransactionModal {
 
     // Pre-compute payment type options to avoid triple-nested template literals
     // which cause a parse error in some V8/Node versions (Bug #Bug).
-    const paymentTypeOptions = (
-      window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES
-    ).map((p) => {
-      const sel = (data.paymentType || 'card') === p ? 'selected' : '';
+    const current      = data.paymentType || 'card';
+    const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
+    // A transaction may carry a method that is no longer offered — imported from
+    // CSV, or deleted since. Keep it in the list so simply opening the record
+    // doesn't silently re-assign it to something else.
+    const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
+    // Mobile-style tappable chips (replaces the native <select>). A hidden input
+    // named "paymentType" carries the value into FormData; captureForm() reads it
+    // so a selection survives modal re-renders. Add/Manage reuse the sheet flow.
+    const payChipCls = (on) => 'px-3 py-1.5 rounded-full border text-sm ' + (on
+      ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900'
+      : 'border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800');
+    const paymentChips = paymentTypes.map((p) => {
       const label = p.charAt(0).toUpperCase() + p.slice(1);
-      return '<option value="' + p + '" ' + sel + '>' + label + '</option>';
+      return `<button type="button" data-pay-chip="${this.#esc(p)}"`
+        + ` onclick="window.__app.pickPaymentType('${Html.js(p)}')"`
+        + ` class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
     }).join('');
 
     return `
@@ -215,15 +324,10 @@ export class TransactionModal {
           <div class="text-xs text-zinc-500 mb-1">Amount</div>
           <div class="flex gap-2 items-center">
             <input class="input text-2xl font-semibold border-0 bg-transparent p-0 focus:ring-0"
-                   style="border:none" name="amount" type="number" step="0.01" required
+                   style="border:none" name="amount" type="number" step="${CurrencyService.stepFor(data.currency)}" required
                    value="${amountValue || ''}" placeholder="0.00" autofocus
                    oninput="window.__app.onTxFormChange()">
-            ${isSharedMode
-              ? `<input type="hidden" name="currency" value="${data.currency}">
-                 <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${data.currency}</span>`
-              : `<select class="select w-24" name="currency" onchange="window.__app.onTxCurrencyChange()">
-                   ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency===c?'selected':''}>${this.#fx.label(c).split('—')[0].trim()}</option>`).join('')}
-                 </select>`}
+            ${this.#currencyControl(data, state, type, isSharedMode)}
           </div>
         </div>
 
@@ -240,12 +344,14 @@ export class TransactionModal {
           </div>
           <div>
             <label class="text-xs text-zinc-500">Payment</label>
-            <select class="select" name="paymentType"
-              onchange="window.__app?.addCustomPaymentType?.(this)"
-              data-prev="${data.paymentType || 'card'}">
-              ${paymentTypeOptions}
-              <option value="__add_payment__">＋ Add custom…</option>
-            </select>
+            <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
+            <div class="flex flex-wrap gap-2 mt-1">
+              ${paymentChips}
+              <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
+                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">＋ Add</button>
+              <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
+                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">⚙ Manage</button>
+            </div>
           </div>
         </div>
 
@@ -284,7 +390,7 @@ export class TransactionModal {
             ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>`
             : canDeleteShared
               ? `<button type="button" class="btn btn-outline text-rose-500"
-                         onclick="window.__app.deleteSharedTxContrib(${this.#sharedTxMode.shareIndex},'${sharedEditTx.id}')">
+                         onclick="window.__app.deleteSharedTxContrib(${Number(this.#sharedTxMode.shareIndex) || 0},'${Html.js(sharedEditTx.id)}')">
                    <i data-lucide="trash-2"></i> Delete
                  </button>`
               : ''}
@@ -301,6 +407,8 @@ export class TransactionModal {
     this.#splits        = [];
     this.#splitsEnabled = false;
     this.#splitsSeeded  = false;
+    // A fresh open must not inherit the previous transaction's half-typed form.
+    this.#draft         = {};
     // Initialize FX panels after the DOM is in place: the transfer panel for
     // transfers, and the single-account panel whenever tx currency != account
     // currency (e.g. editing a USD tx on a KES account).
@@ -313,19 +421,57 @@ export class TransactionModal {
 
   // ── Private render helpers ────────────────────────────────────────────
 
+  /**
+   * The currency control beside the amount.
+   *
+   * For a TRANSFER it is locked to the source account's currency: money leaves
+   * that account, so the amount can only be denominated in it. Letting the two
+   * disagree is what made the FX panel quote a source→destination rate while
+   * the amount was read in the user's default currency, booking legs that were
+   * thousands apart. Shared mode is locked for the same reason — the row lives
+   * in the owner's book.
+   *
+   * @param {object}  data
+   * @param {object}  state
+   * @param {string}  type
+   * @param {boolean} isSharedMode
+   * @returns {string} HTML
+   */
+  #currencyControl(data, state, type, isSharedMode) {
+    if (isSharedMode) {
+      return `<input type="hidden" name="currency" value="${this.#esc(data.currency)}">
+              <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${this.#esc(data.currency)}</span>`;
+    }
+
+    if (type === 'transfer') {
+      const src = state.accounts.find((a) => a.id === data.accountId) || state.accounts[0];
+      const ccy = src?.currency || data.currency;
+      return `<input type="hidden" name="currency" id="txCurrencyLocked" value="${this.#esc(ccy)}">
+              <span id="txCurrencyLabel"
+                    class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2 flex items-center gap-1"
+                    title="A transfer is always in the source account's currency">
+                <i data-lucide="lock" style="width:11px;height:11px"></i>${this.#esc(ccy)}
+              </span>`;
+    }
+
+    return `<select class="select w-24" name="currency" onchange="window.__app.onTxCurrencyChange()">
+              ${CURRENCIES.map((c) => `<option value="${this.#esc(c)}" ${data.currency === c ? 'selected' : ''}>${this.#esc(this.#fx.label(c).split('—')[0].trim())}</option>`).join('')}
+            </select>`;
+  }
+
   #transferFields(data, state) {
     return `
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div>
           <label class="text-xs text-zinc-500">Account</label>
-          <select class="select" name="accountId" onchange="window.__app.updateTransferFxPanel(false)">
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} · ${a.currency}</option>`).join('')}
+          <select class="select" name="accountId" onchange="window.__app.onTransferSourceChange(this.value)">
+            ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
           </select>
         </div>
         <div>
           <label class="text-xs text-zinc-500">To account</label>
-          <select class="select" name="transferToAccountId" onchange="window.__app.updateTransferFxPanel(false)">
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.transferToAccountId===a.id?'selected':''}>${this.#esc(a.name)} · ${a.currency}</option>`).join('')}
+          <select class="select" name="transferToAccountId" onchange="window.__app.resetTransferFx()">
+            ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.transferToAccountId===a.id?'selected':''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -359,7 +505,7 @@ export class TransactionModal {
     const sharedOpts = (state._sharedData || []).flatMap((share) =>
       (share.accounts || [])
         .filter((a) => (share.permission || {})[a.id] !== 'view')
-        .map((a) => `<option value="${a.id}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} (shared)</option>`),
+        .map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} (shared)</option>`),
     ).join('');
 
     const sharedAccName = isSharedMode
@@ -368,19 +514,17 @@ export class TransactionModal {
       : null;
 
     const accountSelect = isSharedMode
-      ? `<input type="hidden" name="accountId" value="${this.#sharedTxMode.accountId}">
+      ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
          <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
            <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
            <span class="truncate">${this.#esc(sharedAccName)}</span>
          </div>`
       : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
            <optgroup label="My accounts">
-             ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
+             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
            </optgroup>
            ${sharedOpts ? `<optgroup label="Shared with me">${sharedOpts}</optgroup>` : ''}
          </select>`;
-
-    const filteredCats = cats.filter((c) => c.type === type);
 
     return `
       <div class="grid grid-cols-2 gap-3 mb-3">
@@ -393,10 +537,14 @@ export class TransactionModal {
               <i data-lucide="split" style="width:11px;height:11px;display:inline"></i> Split
             </button>
           </div>
-          <select class="select" name="categoryId">
-            <option value="">— Uncategorised —</option>
-            ${CategoryOptionRenderer.render(cats, data.categoryId, type)}
-          </select>
+          ${CategoryField.render({
+            id:         'txCategory',
+            name:       'categoryId',
+            value:      data.categoryId,
+            type,
+            title:      'Choose category',
+            categories: cats,
+          })}
         </div>
       </div>
 
@@ -430,17 +578,20 @@ export class TransactionModal {
   }
 
   #splitsArea(data, cats, type, accounts = [], totalMajor = 0) {
-    const filteredCats = cats.filter((c) => c.type === type);
-    const currency     = data.currency || 'USD';
+    const currency = data.currency || 'USD';
 
-    // Compute running sum of splits in major units
-    const splitSum = this.#splits.reduce((s, sp) => s + this.#fx.fromMinor(sp.amount || 0, currency), 0);
-    const diff     = totalMajor - splitSum;
-    const diffAbs  = Math.abs(diff);
-    const diffFmt  = this.#fx.formatMoney(this.#fx.toMinor(diffAbs, currency), currency);
+    // Compare in MINOR units — the same rule submitTx enforces. Comparing
+    // majors against a fixed 0.005 said "Splits match total" for a 3-fils KWD
+    // mismatch that submit then rejected.
+    const totalMinor = this.#fx.toMinor(totalMajor, currency);
+    const sumMinor   = this.#splits.reduce((s, sp) => s + (sp.amount || 0), 0);
+    const diffMinor  = totalMinor - sumMinor;
+    const splitSum   = this.#fx.fromMinor(sumMinor, currency);
+    const diff       = diffMinor;
+    const diffFmt    = this.#fx.formatMoney(Math.abs(diffMinor), currency);
 
     let diffHtml = '';
-    if (Math.abs(diff) >= 0.005) {
+    if (diffMinor !== 0) {
       const over  = diff < 0;
       const color = over ? 'text-rose-500' : 'text-amber-500';
       const label = over
@@ -451,8 +602,8 @@ export class TransactionModal {
       diffHtml = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
     }
 
-    const sumFmt   = this.#fx.formatMoney(this.#fx.toMinor(splitSum, currency), currency);
-    const totalFmt = this.#fx.formatMoney(this.#fx.toMinor(totalMajor, currency), currency);
+    const sumFmt   = this.#fx.formatMoney(sumMinor, currency);
+    const totalFmt = this.#fx.formatMoney(totalMinor, currency);
 
     return `
       <input type="hidden" name="accountId" value="${data.accountId || ''}">
@@ -477,9 +628,9 @@ export class TransactionModal {
         <div id="splitDiffLine">${diffHtml}</div>
 
         <div id="splitsContainer" class="space-y-2 mt-2">
-          ${this.#splits.map((s, i) => this.#splitRow(s, i, filteredCats, currency, accounts, data.accountId)).join('')}
+          ${this.#splits.map((s, i) => this.#splitRow(s, i, cats, type, currency, accounts, data.accountId)).join('')}
         </div>
-        <button type="button" onclick="window.__app.addSplit('${this.#esc(data.accountId || '')}')"
+        <button type="button" onclick="window.__app.addSplit('${Html.js(data.accountId || '')}')"
                 class="btn btn-ghost text-xs mt-2 w-full border border-dashed border-zinc-300 dark:border-zinc-700">
           <i data-lucide="plus" style="width:13px;height:13px"></i> Add split
         </button>
@@ -488,20 +639,28 @@ export class TransactionModal {
 
   /**
    * Render one split row.
-   * Uses CategoryOptionRenderer for proper optgroup hierarchy + orphan rescue.
+   * The category control is a CategoryField, so each row opens the same
+   * two-step picker instead of a long dropdown; onPick mirrors the choice back
+   * into the in-memory split model via onSplitCategoryPicked().
    * The oninput on the amount field calls updateSplitTotal() — a lightweight
    * DOM patch — instead of a full modal refresh, so focus is never lost.
    */
-  #splitRow(s, i, cats, currency, accounts = [], defaultAccountId = null) {
+  #splitRow(s, i, cats, type, currency, accounts = [], defaultAccountId = null) {
     const accId = s.accountId || defaultAccountId || '';
     return `
       <div class="card-muted rounded-xl p-2 space-y-1.5">
         <div class="flex gap-2">
-          <select class="select text-sm flex-1" name="split_cat_${i}"
-                  onchange="window.__app.setSplitField(${i},'categoryId',this.value)">
-            <option value="">— Uncategorised —</option>
-            ${CategoryOptionRenderer.render(cats, s.categoryId, null)}
-          </select>
+          <div class="flex-1 min-w-0">
+            ${CategoryField.render({
+              id:         `splitCat_${i}`,
+              name:       `split_cat_${i}`,
+              value:      s.categoryId,
+              type,
+              title:      `Split ${i + 1} category`,
+              onPick:     'onSplitCategoryPicked',
+              categories: cats,
+            })}
+          </div>
           <button type="button" onclick="window.__app.removeSplit(${i})"
                   class="btn btn-ghost text-rose-500 flex-shrink-0 px-2">
             <i data-lucide="trash-2" style="width:13px;height:13px"></i>
@@ -510,9 +669,9 @@ export class TransactionModal {
         <div class="flex gap-2">
           <select class="select text-sm flex-1" name="split_acc_${i}"
                   onchange="window.__app.setSplitField(${i},'accountId',this.value)">
-            ${accounts.map((a) => `<option value="${a.id}" ${accId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
+            ${accounts.map((a) => `<option value="${this.#esc(a.id)}" ${accId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}
           </select>
-          <input class="input text-sm w-28 flex-shrink-0" type="number" step="0.01" placeholder="0.00"
+          <input class="input text-sm w-28 flex-shrink-0" type="number" step="${CurrencyService.stepFor(currency)}" placeholder="0.00"
                  name="split_amt_${i}"
                  value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ''}"
                  oninput="window.__app.setSplitAmount(${i},this.value,'${currency}');window.__app.updateSplitTotal()">
@@ -545,8 +704,8 @@ export class TransactionModal {
       </div>`;
   }
 
-  // Category options are now rendered by CategoryOptionRenderer.render() —
-  // the static class provides optgroup hierarchy and orphan rescue in one place.
+  // Category selection is handled by CategoryField + CategoryPickerSheet:
+  // a two-step parent → subcategory sheet rather than one long dropdown.
 
   #esc(s) {
     return (s || '').toString().replace(

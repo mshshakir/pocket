@@ -223,7 +223,7 @@ export class CalendarView extends BaseView {
       if (!it) return;
       byItem[t.regularItemId] = byItem[t.regularItemId] || { item: it, count: 0, qty: 0, total: 0 };
       byItem[t.regularItemId].count += 1;
-      byItem[t.regularItemId].qty   += Number(t.quantity || 1);
+      byItem[t.regularItemId].qty   += Number(t.qty || 1); // field is `qty` (see submitRegularLog)
       byItem[t.regularItemId].total += this.convert(t.amount, t.currency, home);
     });
     const rows       = Object.values(byItem).sort((a, b) => b.total - a.total);

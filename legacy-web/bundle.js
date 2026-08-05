@@ -17,13 +17,13 @@ var _PocketApp = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // src/app.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/app.js
   var app_exports = {};
   __export(app_exports, {
     Application: () => Application
   });
 
-  // src/core/EventBus.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/EventBus.js
   var EventBus = class _EventBus {
     /** @type {EventBus|null} */
     static #instance = null;
@@ -96,7 +96,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/core/Repository.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Repository.js
   var Repository = class _Repository {
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
@@ -106,9 +106,27 @@ var _PocketApp = (() => {
      * Persist the entire application state snapshot.
      * @param {object} state
      */
+    /**
+     * Keys the app hangs on state at render time but which are NOT the user's
+     * data: `_sharedData` is a full copy of every OTHER user's shared snapshot
+     * (their accounts, matching transactions and ALL their categories). Writing
+     * it here duplicated all of that into localStorage on every persist and
+     * uploaded it on every push — the fastest route to a quota failure, after
+     * which saves fail silently.
+     * @param {object} state
+     * @returns {object} a shallow copy without transient `_`-prefixed keys
+     */
+    static stripTransient(state) {
+      const out = {};
+      for (const k of Object.keys(state)) if (!k.startsWith("_")) out[k] = state[k];
+      return out;
+    }
     save(state) {
       try {
-        localStorage.setItem(_Repository.#STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(
+          _Repository.#STORAGE_KEY,
+          JSON.stringify(_Repository.stripTransient(state))
+        );
         return true;
       } catch (err) {
         console.error("[Repository] Failed to save state:", err);
@@ -143,7 +161,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/core/Store.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Store.js
   var Store = class _Store {
     /** @type {Store|null} */
     static #instance = null;
@@ -165,6 +183,19 @@ var _PocketApp = (() => {
     #derive = null;
     /** Monotonic revision counter, bumped on every persist (cache-key friendly). */
     #revision = 0;
+    /**
+     * Called after any LOCAL mutation is persisted, so the app can schedule a
+     * cloud push from one place instead of ~30 hand-written call sites (several
+     * of which were missing, letting the next pull silently revert the change).
+     *
+     * Deliberately NOT fired by replaceState()/reset(), which apply remote or
+     * seed data — pushing there would echo the cloud's own state straight back
+     * and ping-pong versions between devices.
+     * @type {(() => void)|null}
+     */
+    #onLocalChange = null;
+    /** Depth counter for withoutLocalChange(). */
+    #suppressLocalChange = 0;
     constructor() {
       if (_Store.#instance) {
         throw new Error("Store is a singleton \u2014 use Store.getInstance()");
@@ -178,6 +209,28 @@ var _PocketApp = (() => {
      */
     setDeriveHook(fn) {
       this.#derive = fn;
+    }
+    /**
+     * Register the local-change hook (e.g. () => syncService.schedulePush()).
+     * @param {() => void} fn
+     */
+    setLocalChangeHook(fn) {
+      this.#onLocalChange = fn;
+    }
+    /**
+     * Run `fn` without firing the local-change hook — for code that persists
+     * state it has just applied FROM the cloud, where a push would be redundant.
+     * @template T
+     * @param {() => T} fn
+     * @returns {T}
+     */
+    withoutLocalChange(fn) {
+      this.#suppressLocalChange++;
+      try {
+        return fn();
+      } finally {
+        this.#suppressLocalChange--;
+      }
     }
     /** @returns {number} current state revision */
     get revision() {
@@ -254,7 +307,7 @@ var _PocketApp = (() => {
         if (!(k in newState)) delete this.#state[k];
       }
       Object.assign(this.#state, newState);
-      this.#persistState();
+      this.#persistState({ local: false });
       this.#bus.emit("state:changed", this.#state);
     }
     /**
@@ -280,7 +333,7 @@ var _PocketApp = (() => {
       this.#repository.clear();
       this.#state = seedFactory();
       migrateDefaults(this.#state);
-      this.#persistState();
+      this.#persistState({ local: false });
       this.#bus.emit("state:changed", this.#state);
     }
     /**
@@ -289,7 +342,7 @@ var _PocketApp = (() => {
      * unnoticed and let a later cloud push overwrite good data with stale state (I6).
      * @returns {boolean} success
      */
-    #persistState() {
+    #persistState({ local = true } = {}) {
       try {
         this.#derive?.();
       } catch (e) {
@@ -303,11 +356,18 @@ var _PocketApp = (() => {
       } else if (ok) {
         this.#saveWarned = false;
       }
+      if (local && ok && !this.#suppressLocalChange) {
+        try {
+          this.#onLocalChange?.();
+        } catch (e) {
+          console.error("[Store] local-change hook failed:", e);
+        }
+      }
       return ok;
     }
   };
 
-  // src/core/Router.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Router.js
   var Router = class _Router {
     /** @type {Router|null} */
     static #instance = null;
@@ -371,7 +431,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/constants.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/constants.js
   var FX = Object.freeze({
     // Majors
     USD: 1,
@@ -756,6 +816,36 @@ var _PocketApp = (() => {
     { name: "Savings", icon: "landmark", color: "#06b6d4", type: "income" },
     { name: "Transfer", icon: "arrow-right-left", color: "#737373", type: "transfer" }
   ]);
+  var CATEGORY_APPEARANCE_DEFAULTS = Object.freeze([
+    { keys: ["food", "drink", "grocery", "restaurant", "dining", "meal", "cafe", "coffee", "snack", "pizza", "burger"], icon: "utensils", color: "#f97316" },
+    { keys: ["transport", "transit", "uber", "lyft", "taxi", "gas", "fuel", "car", "metro", "bus", "train", "flight", "travel"], icon: "car", color: "#3b82f6" },
+    { keys: ["shop", "clothing", "retail", "amazon", "walmart", "store", "apparel"], icon: "shopping-bag", color: "#ec4899" },
+    { keys: ["health", "medical", "pharmacy", "doctor", "dental", "hospital", "vitamin"], icon: "heart-pulse", color: "#ef4444" },
+    { keys: ["housing", "rent", "mortgage", "home", "maintenance"], icon: "home", color: "#a16207" },
+    { keys: ["entertainment", "movies", "netflix", "spotify", "games", "disney", "concert", "music"], icon: "film", color: "#8b5cf6" },
+    { keys: ["bills", "utility", "utilities", "electric", "internet", "wifi", "phone", "water"], icon: "receipt", color: "#0891b2" },
+    { keys: ["education", "school", "tuition", "book", "course"], icon: "graduation-cap", color: "#10b981" },
+    { keys: ["salary", "payroll", "wage", "income", "paycheck"], icon: "banknote", color: "#22c55e" },
+    { keys: ["freelance", "contract", "gig", "consulting"], icon: "briefcase", color: "#14b8a6" },
+    { keys: ["savings", "save", "deposit"], icon: "landmark", color: "#06b6d4" },
+    { keys: ["transfer"], icon: "arrow-right-left", color: "#737373" },
+    { keys: ["gift", "present"], icon: "gift", color: "#d946ef" },
+    { keys: ["fitness", "gym", "sport", "workout"], icon: "dumbbell", color: "#84cc16" },
+    { keys: ["baby", "child", "kid", "daycare"], icon: "baby", color: "#fb7185" },
+    { keys: ["pet", "dog", "cat", "vet"], icon: "paw-print", color: "#d97706" }
+  ]);
+  var NAME_COLOR_PALETTE = Object.freeze([
+    "#0ea5e9",
+    "#22c55e",
+    "#a855f7",
+    "#f97316",
+    "#14b8a6",
+    "#ec4899",
+    "#ef4444",
+    "#0891b2",
+    "#8b5cf6",
+    "#f59e0b"
+  ]);
   var NAV_ITEMS = Object.freeze([
     { id: "dashboard", label: "Dashboard", icon: "layout-dashboard" },
     { id: "transactions", label: "Transactions", icon: "arrow-left-right" },
@@ -808,7 +898,7 @@ var _PocketApp = (() => {
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
 
-  // src/domain/services/IdGenerator.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/IdGenerator.js
   var IdGenerator = class {
     /**
      * Generate a prefixed pseudo-random ID.
@@ -824,7 +914,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/DateService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/DateService.js
   var DateService = class {
     /**
      * Format a Date as a local 'YYYY-MM-DD' string. Pass-through for strings.
@@ -847,7 +937,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/seed.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/seed.js
   var SeedFactory = class {
     /**
      * Build and return a complete initial state object.
@@ -950,6 +1040,7 @@ var _PocketApp = (() => {
           supabaseUrl: "",
           supabaseKey: "",
           customPaymentTypes: [],
+          hiddenPaymentTypes: [],
           collapsedAccountGroups: [],
           collapsedCategories: []
         },
@@ -966,7 +1057,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/LedgerMath.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
      * Sign multiplier for a non-transfer transaction type.
@@ -1153,10 +1244,10 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/FxRates.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/FxRates.js
   var RATES = { ...FX };
 
-  // src/domain/services/CurrencyService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/CurrencyService.js
   var CurrencyService = class _CurrencyService {
     /**
      * Process-wide label cache. Static (not per-instance) because the app creates
@@ -1270,8 +1361,32 @@ var _PocketApp = (() => {
         }).format(value);
       } catch {
         const sign = value < 0 ? "-" : "";
-        return `${sign}${currency} ${Math.abs(value).toFixed(digits)}`;
+        const safe = _CurrencyService.isIsoCode(currency) ? currency : "?";
+        return `${sign}${safe} ${Math.abs(value).toFixed(digits)}`;
       }
+    }
+    /**
+     * True when `code` looks like an ISO-4217 alphabetic currency code.
+     * @param {*} code
+     * @returns {boolean}
+     */
+    static isIsoCode(code) {
+      return /^[A-Za-z]{3}$/.test(code || "");
+    }
+    /**
+     * The `step` attribute for a money <input type="number"> in this currency.
+     *
+     * A hard-coded "0.01" makes the third decimal unreachable in KWD, BHD, OMR,
+     * TND, JOD, IQD and LYD: the browser reports a step mismatch and blocks
+     * submit, so 1.234 simply cannot be entered. It also lets you type fractions
+     * of a yen, which don't exist.
+     *
+     * @param {string} currency
+     * @returns {string} '1' | '0.01' | '0.001'
+     */
+    static stepFor(currency) {
+      const digits = ZERO_DECIMAL.has(currency) ? 0 : THREE_DECIMAL.has(currency) ? 3 : 2;
+      return digits === 0 ? "1" : `0.${"0".repeat(digits - 1)}1`;
     }
     /**
      * Human-readable currency label.
@@ -1314,7 +1429,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/StateMigrator.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/data/StateMigrator.js
   var StateMigrator = class {
     /**
      * Mutate `state` in place, back-filling any missing fields. Safe to run
@@ -1337,6 +1452,7 @@ var _PocketApp = (() => {
         supabaseKey: "",
         hijriOffset: 0,
         customPaymentTypes: [],
+        hiddenPaymentTypes: [],
         collapsedAccountGroups: [],
         collapsedCategories: []
       }, state.user || {});
@@ -1360,11 +1476,17 @@ var _PocketApp = (() => {
           acc.openingBalance = Number.isFinite(stored) ? Math.round(stored - ledger) : 0;
         }
       }
+      const currentOffset = Number(state.user?.hijriOffset) || 0;
+      for (const t of state.transactions) {
+        if (t.hijriDate && typeof t.hijriDate === "object" && t.hijriDate.offset === void 0) {
+          t.hijriDate.offset = currentOffset;
+        }
+      }
       return state;
     }
   };
 
-  // src/domain/services/HijriCalendarService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/HijriCalendarService.js
   var HijriCalendarService = class {
     /** @type {Store} */
     #store;
@@ -1464,12 +1586,42 @@ var _PocketApp = (() => {
     // ── Public API ──────────────────────────────────────────────────────
     /**
      * Convert a Gregorian date to Hijri.
+     *
+     * The result carries the `offset` it was produced with. Snapshots stored on
+     * transactions (`tx.hijriDate`) are frozen at creation, so anything later
+     * asking "is this in the current Hijri month?" needs to know which epoch the
+     * snapshot belongs to in order to evaluate "today" the same way. Without it,
+     * a frozen snapshot was compared against a today computed with the CURRENT
+     * offset, and changing the offset dropped that day's transactions out of
+     * their budget.
+     *
      * @param {Date|string} input  JS Date or ISO 'YYYY-MM-DD' string
-     * @returns {{ year: number, month: number, day: number }}
+     * @returns {{ year: number, month: number, day: number, offset: number }}
      */
     toHijri(input) {
       const d = typeof input === "string" ? /* @__PURE__ */ new Date(input + "T12:00:00") : input;
       const offset = this.offset;
+      const shifted = offset !== 0 ? new Date(d.getTime() + offset * 864e5) : d;
+      return { ...this.#ajdToHijri(this.#gregorianToAJD(shifted)), offset };
+    }
+    /**
+     * Convert a Gregorian date to Hijri using an EXPLICIT offset instead of the
+     * user's current one.
+     *
+     * Needed because a transaction's stored `hijriDate` was computed with
+     * whatever offset was in force when it was entered. To ask "is this
+     * transaction in the current Hijri month?" without reclassifying it, the
+     * other side of the comparison — today — has to be evaluated in that same
+     * epoch. Comparing a frozen snapshot against a today computed with the
+     * CURRENT offset is what made a day's transactions drop out of their budget
+     * the moment the offset changed.
+     *
+     * @param {Date|string} input
+     * @param {number} offset  day offset to apply
+     * @returns {{ year: number, month: number, day: number }}
+     */
+    toHijriWithOffset(input, offset = 0) {
+      const d = typeof input === "string" ? /* @__PURE__ */ new Date(input + "T12:00:00") : input;
       const shifted = offset !== 0 ? new Date(d.getTime() + offset * 864e5) : d;
       return this.#ajdToHijri(this.#gregorianToAJD(shifted));
     }
@@ -1482,7 +1634,7 @@ var _PocketApp = (() => {
      */
     toHijriRaw(input) {
       const d = typeof input === "string" ? /* @__PURE__ */ new Date(input + "T12:00:00") : input;
-      return this.#ajdToHijri(this.#gregorianToAJD(d));
+      return { ...this.#ajdToHijri(this.#gregorianToAJD(d)), offset: 0 };
     }
     /**
      * Convert a Hijri date to Gregorian.
@@ -1544,7 +1696,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/AccountService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/AccountService.js
   var AccountService = class {
     /** @type {Store} */
     #store;
@@ -1674,8 +1826,8 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/CategoryService.js
-  var CategoryService = class {
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/CategoryService.js
+  var CategoryService = class _CategoryService {
     /** @type {Store} */
     #store;
     constructor() {
@@ -1757,6 +1909,98 @@ var _PocketApp = (() => {
         (c) => c.parentId === parentId
       );
     }
+    /**
+     * Root categories that are relevant for a given type — i.e. the root itself
+     * matches the type, OR it owns at least one matching child. Mirrors the
+     * visibility rule used by CategoryOptionRenderer so the picker and the old
+     * dropdowns agree on what is reachable.
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]} sorted by name
+     */
+    visibleRoots(type = null) {
+      const cats = this.#store.getState().categories;
+      const match = (c) => !type || c.type === type;
+      return cats.filter((c) => !c.parentId).filter((root) => match(root) || cats.some((c) => c.parentId === root.id && match(c))).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /**
+     * Children of a parent, filtered by type and sorted by name.
+     * @param {string} parentId
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]}
+     */
+    visibleChildren(parentId, type = null) {
+      const match = (c) => !type || c.type === type;
+      return this.children(parentId).filter(match).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /**
+     * Subcategories whose parent no longer exists — these would otherwise be
+     * unreachable from a parent-first picker, so callers surface them under an
+     * "Ungrouped" bucket.
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]}
+     */
+    orphans(type = null) {
+      const cats = this.#store.getState().categories;
+      const ids = new Set(cats.map((c) => c.id));
+      const match = (c) => !type || c.type === type;
+      return cats.filter((c) => c.parentId && !ids.has(c.parentId) && match(c)).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /**
+     * Flat search across the whole tree — matches on the category's own name and
+     * on its "Parent / Child" full name, so typing a parent name surfaces all of
+     * its children.
+     * @param {string} query
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @param {number} [limit=60]
+     * @returns {object[]}
+     */
+    search(query, type = null, limit = 60) {
+      const q = (query || "").trim().toLowerCase();
+      if (!q) return [];
+      const cats = this.#store.getState().categories;
+      const match = (c) => !type || c.type === type;
+      return cats.filter(match).filter((c) => this.fullName(c.id, cats).toLowerCase().includes(q)).sort((a, b) => {
+        const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return ap - bp || this.fullName(a.id, cats).localeCompare(this.fullName(b.id, cats));
+      }).slice(0, limit);
+    }
+    /**
+     * True when a category has at least one type-matching child, meaning it acts
+     * as a group header rather than a directly-assignable category.
+     * @param {string} id
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {boolean}
+     */
+    hasChildren(id, type = null) {
+      return this.visibleChildren(id, type).length > 0;
+    }
+    /**
+     * Derive an icon + colour for a category from its name, so quick-add flows
+     * (picker, CSV import) produce something better than a grey generic tag.
+     * @param {string} name
+     * @param {'expense'|'income'|'transfer'} [type='expense']
+     * @returns {{icon:string, color:string}}
+     */
+    guessAppearance(name, type = "expense") {
+      const n = (name || "").toLowerCase();
+      for (const def of CATEGORY_APPEARANCE_DEFAULTS) {
+        if (def.keys.some((k) => n.includes(k))) return { icon: def.icon, color: def.color };
+      }
+      if (type === "income") return { icon: "banknote", color: "#22c55e" };
+      if (type === "transfer") return { icon: "arrow-right-left", color: "#737373" };
+      return { icon: "tag", color: _CategoryService.colorForName(name) };
+    }
+    /**
+     * Stable, deterministic colour for a name (same name → same colour).
+     * @param {string} name
+     * @returns {string} hex colour
+     */
+    static colorForName(name) {
+      let h = 0;
+      for (const c of name || "") h = h * 31 + c.charCodeAt(0) >>> 0;
+      return NAME_COLOR_PALETTE[h % NAME_COLOR_PALETTE.length];
+    }
     // ── Mutations ────────────────────────────────────────────────────────
     /**
      * Create a new category.
@@ -1776,6 +2020,27 @@ var _PocketApp = (() => {
       this.#store.getState().categories.push(cat);
       this.#store.flush();
       return cat;
+    }
+    /**
+     * Create a category from just a name — icon and colour are derived from the
+     * name. Used by the inline "add" rows in CategoryPickerSheet.
+     *
+     * @param {string} name
+     * @param {object} [opts]
+     * @param {string|null} [opts.parentId=null]
+     * @param {'expense'|'income'|'transfer'} [opts.type='expense']
+     * @returns {{ok:true, category:object}|{ok:false, reason:string}}
+     */
+    quickCreate(name, { parentId = null, type = "expense" } = {}) {
+      const clean = (name || "").trim();
+      if (!clean) return { ok: false, reason: "Enter a name" };
+      const siblings = this.#store.getState().categories.filter(
+        (c) => (c.parentId || null) === (parentId || null)
+      );
+      const dupe = siblings.find((c) => c.name.toLowerCase() === clean.toLowerCase());
+      if (dupe) return { ok: false, reason: `"${dupe.name}" already exists here` };
+      const look = this.guessAppearance(clean, type);
+      return { ok: true, category: this.create({ name: clean, parentId, type, ...look }) };
     }
     /**
      * Update an existing category.
@@ -1802,12 +2067,158 @@ var _PocketApp = (() => {
       state.categories = state.categories.filter((c) => c.id !== id);
       state.transactions.forEach((t) => {
         if (t.categoryId === id) t.categoryId = null;
+        if (Array.isArray(t.splits)) {
+          for (const sp of t.splits) if (sp.categoryId === id) sp.categoryId = null;
+        }
       });
       this.#store.flush();
     }
+    /**
+     * How many transactions reference a category, counting split legs.
+     * The delete guard used to check only `t.categoryId`, so a category used
+     * exclusively inside splits deleted "cleanly" and silently broke those rows.
+     * @param {string} id
+     * @returns {number}
+     */
+    usageCount(id) {
+      return this.#store.getState().transactions.filter(
+        (t) => t.categoryId === id || Array.isArray(t.splits) && t.splits.some((s) => s.categoryId === id)
+      ).length;
+    }
   };
 
-  // src/domain/services/TransactionService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/RecurringService.js
+  var RecurringService = class {
+    /** @type {Store} */
+    #store;
+    /** @type {AccountService} */
+    #accounts;
+    /** @type {HijriCalendarService} */
+    #hijri;
+    constructor() {
+      this.#store = Store.getInstance();
+      this.#accounts = new AccountService();
+      this.#hijri = new HijriCalendarService();
+    }
+    // ── Date helpers ─────────────────────────────────────────────────────
+    /**
+     * ISO date string for a given JS Date.
+     * @param {Date} d
+     * @returns {string}
+     */
+    #isoDate(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+    /** Days in a given local month. @param {number} year @param {number} monthIdx @returns {number} */
+    #daysInMonth(year, monthIdx) {
+      return new Date(year, monthIdx + 1, 0).getDate();
+    }
+    /**
+     * Advance an ISO date string by one recurrence step.
+     *
+     * For monthly/yearly rules, the day is anchored to `anchorDay` (the template's
+     * original day-of-month) and clamped to the target month's length. Without
+     * this, `setMonth` overflows (Jan 31 → Mar 3) and a recurrence that lands on a
+     * short month would permanently drift earlier (I4).
+     * @param {string} iso
+     * @param {'daily'|'weekly'|'monthly'|'yearly'} rule
+     * @param {number} [interval=1]
+     * @param {number|null} [anchorDay=null]  preferred day-of-month (defaults to iso's day)
+     * @returns {string}
+     */
+    stepDate(iso, rule, interval = 1, anchorDay = null) {
+      const d = /* @__PURE__ */ new Date(iso + "T12:00:00");
+      const n = Math.max(1, Number(interval) || 1);
+      const day = anchorDay ?? d.getDate();
+      if (rule === "daily") d.setDate(d.getDate() + n);
+      else if (rule === "weekly") d.setDate(d.getDate() + 7 * n);
+      else if (rule === "monthly") {
+        d.setDate(1);
+        d.setMonth(d.getMonth() + n);
+        d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
+      } else if (rule === "yearly") {
+        d.setDate(1);
+        d.setFullYear(d.getFullYear() + n);
+        d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
+      }
+      return this.#isoDate(d);
+    }
+    // ── Main entry ───────────────────────────────────────────────────────
+    /**
+     * Scan all recurring templates and generate any missing instances up to today.
+     * @returns {number} number of transactions generated
+     */
+    process() {
+      const state = this.#store.getState();
+      const today = this.#isoDate(/* @__PURE__ */ new Date());
+      const txs = state.transactions;
+      const templates = txs.filter((t) => t.recurring && !t.recurringSourceId);
+      let generated = 0;
+      for (const template of templates) {
+        if (template.type === "transfer") continue;
+        const { rule, interval } = template.recurring;
+        const anchorDay = Number(template.date.slice(8, 10)) || 1;
+        const existingIds = new Set(txs.map((t) => t.id));
+        const skipped = new Set(template.recurring.skipped || []);
+        let next = this.stepDate(template.date, rule, interval, anchorDay);
+        let safety = 0;
+        while (next <= today && (!template.recurring.until || next <= template.recurring.until) && safety++ < 500) {
+          const cloneId = `${template.id}__${next}`;
+          if (existingIds.has(cloneId) || skipped.has(next)) {
+            next = this.stepDate(next, rule, interval, anchorDay);
+            continue;
+          }
+          const clone = {
+            ...template,
+            // Deterministic id per (template, date) occurrence so two devices that
+            // both backfill the same recurrence collide instead of duplicating.
+            id: cloneId,
+            date: next,
+            // Snapshot Hijri date at the moment the instance is generated.
+            // Uses current offset — this is intentional: the instance is "new"
+            // today, so it should reflect the user's current calendar setting.
+            hijriDate: this.#hijri.toHijri(next),
+            recurringSourceId: template.id,
+            recurring: null,
+            tags: (template.tags || []).slice(),
+            splits: template.splits ? template.splits.map((s) => ({ ...s })) : null
+          };
+          txs.push(clone);
+          existingIds.add(cloneId);
+          generated++;
+          next = this.stepDate(next, rule, interval, anchorDay);
+        }
+      }
+      if (generated > 0) this.#store.persist();
+      return generated;
+    }
+    /**
+     * Record that a generated occurrence was deliberately deleted, so process()
+     * never re-creates it.
+     *
+     * Without this the generator is purely derivative: deleting an instance just
+     * leaves a gap it fills again on the next app load, which made the newest
+     * occurrence impossible to delete.
+     *
+     * @param {object} tx  the instance being deleted
+     * @returns {boolean}  true when a skip was recorded
+     */
+    recordSkip(tx) {
+      if (!tx?.recurringSourceId) return false;
+      const template = this.#store.getState().transactions.find((t) => t.id === tx.recurringSourceId);
+      if (!template?.recurring) return false;
+      if (!Array.isArray(template.recurring.skipped)) template.recurring.skipped = [];
+      const m = /__(\d{4}-\d{2}-\d{2})$/.exec(tx.id || "");
+      const occ = m ? m[1] : tx.date;
+      if (occ && !template.recurring.skipped.includes(occ)) {
+        template.recurring.skipped.push(occ);
+        return true;
+      }
+      return false;
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/TransactionService.js
   var TransactionService = class {
     /** @type {Store} */
     #store;
@@ -1982,6 +2393,7 @@ var _PocketApp = (() => {
       const state = this.#store.getState();
       const tx = this.find(id);
       if (!tx) return;
+      new RecurringService().recordSkip(tx);
       const removeIds = /* @__PURE__ */ new Set([id]);
       if (tx.type === "transfer" && tx.transferPairId) removeIds.add(tx.transferPairId);
       state.transactions = state.transactions.filter((t) => !removeIds.has(t.id));
@@ -1994,6 +2406,10 @@ var _PocketApp = (() => {
     bulkDelete(ids) {
       const idSet = new Set(ids);
       const state = this.#store.getState();
+      const recurring = new RecurringService();
+      state.transactions.forEach((t) => {
+        if (idSet.has(t.id)) recurring.recordSkip(t);
+      });
       state.transactions.forEach((t) => {
         if (idSet.has(t.id) && t.type === "transfer" && t.transferPairId) idSet.add(t.transferPairId);
       });
@@ -2002,7 +2418,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/BudgetService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/BudgetService.js
   var BudgetService = class {
     /** @type {Store} */
     #store;
@@ -2040,20 +2456,49 @@ var _PocketApp = (() => {
     /**
      * True if an expense tx falls within the budget's current period.
      *
-     * For Hijri periods, use t.hijriDate (the immutable snapshot written at
-     * creation time) rather than re-computing toHijri(t.date) with the current
-     * offset.  This means future offset adjustments never reclassify past
+     * For Hijri periods, t.hijriDate (the immutable snapshot written at creation
+     * time) stays authoritative, so adjusting the offset never reclassifies past
      * transactions into a different budget month.
-     * Falls back to live computation only for legacy transactions that pre-date
-     * the hijriDate field (they were created when offset was 0, so toHijriRaw
-     * is the correct fallback).
+     *
+     * The catch is that BOTH sides of the comparison must live in the same epoch.
+     * "Today" used to be computed with the CURRENT offset while each snapshot
+     * carried the offset in force when it was written, so nudging the offset near
+     * a month boundary moved today into the next Hijri month while that same
+     * day's transactions stayed in the previous one — and they silently dropped
+     * out of the budget. #todayInEpochOf() evaluates today with the transaction's
+     * own offset instead.
      */
+    /**
+     * The frozen Hijri date for a transaction.
+     * Legacy rows with no snapshot pre-date the offset system, so offset 0.
+     * @param {object} t
+     * @returns {{year:number, month:number, day:number, offset:number}}
+     */
+    #hijriOf(t) {
+      return t.hijriDate ?? this.#hijri.toHijriRaw(t.date);
+    }
+    /**
+     * Today, evaluated in the SAME calendar epoch the transaction's snapshot was
+     * written in — see the note on #inCurrentPeriod().
+     *
+     * A snapshot from before offsets were recorded has no `offset` field. Those
+     * are treated as belonging to the user's current epoch, which reproduces the
+     * previous behaviour for the overwhelmingly common case of an offset that
+     * never changed, rather than silently re-bucketing old data.
+     * @param {object} t
+     * @returns {{year:number, month:number, day:number, offset:number}}
+     */
+    #todayInEpochOf(t) {
+      const snap = t.hijriDate;
+      const epoch = snap && Number.isFinite(snap.offset) ? snap.offset : snap ? this.#hijri.offset : 0;
+      return this.#hijri.toHijriWithOffset(/* @__PURE__ */ new Date(), epoch);
+    }
     #inCurrentPeriod(budget, t) {
       if (t.type !== "expense") return false;
       if (!t.date) return false;
       if (budget.period === "hijri") {
-        const todayH = this.#hijri.toHijri(/* @__PURE__ */ new Date());
-        const h = t.hijriDate ?? this.#hijri.toHijriRaw(t.date);
+        const h = this.#hijriOf(t);
+        const todayH = this.#todayInEpochOf(t);
         return h.year === todayH.year && h.month === todayH.month;
       }
       const now = /* @__PURE__ */ new Date();
@@ -2120,19 +2565,19 @@ var _PocketApp = (() => {
     effectiveLimit(budget) {
       if (!budget.rollover) return { limit: budget.amount, rollover: 0 };
       const state = this.#store.getState();
-      const todayH = this.#hijri.toHijri(/* @__PURE__ */ new Date());
       const ids = this.#expandedIds(budget);
       const now = /* @__PURE__ */ new Date();
       const prevMatches = (t) => {
         if (t.type !== "expense") return false;
         if (!t.date) return false;
         if (budget.period === "hijri") {
-          let pm2 = todayH.month - 1, py2 = todayH.year;
+          const ref = this.#todayInEpochOf(t);
+          let pm2 = ref.month - 1, py2 = ref.year;
           if (pm2 < 0) {
             pm2 = 11;
             py2 -= 1;
           }
-          const h = t.hijriDate ?? this.#hijri.toHijriRaw(t.date);
+          const h = this.#hijriOf(t);
           return h.year === py2 && h.month === pm2;
         }
         const d = /* @__PURE__ */ new Date(t.date + "T12:00:00");
@@ -2208,109 +2653,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/RecurringService.js
-  var RecurringService = class {
-    /** @type {Store} */
-    #store;
-    /** @type {AccountService} */
-    #accounts;
-    /** @type {HijriCalendarService} */
-    #hijri;
-    constructor() {
-      this.#store = Store.getInstance();
-      this.#accounts = new AccountService();
-      this.#hijri = new HijriCalendarService();
-    }
-    // ── Date helpers ─────────────────────────────────────────────────────
-    /**
-     * ISO date string for a given JS Date.
-     * @param {Date} d
-     * @returns {string}
-     */
-    #isoDate(d) {
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    }
-    /** Days in a given local month. @param {number} year @param {number} monthIdx @returns {number} */
-    #daysInMonth(year, monthIdx) {
-      return new Date(year, monthIdx + 1, 0).getDate();
-    }
-    /**
-     * Advance an ISO date string by one recurrence step.
-     *
-     * For monthly/yearly rules, the day is anchored to `anchorDay` (the template's
-     * original day-of-month) and clamped to the target month's length. Without
-     * this, `setMonth` overflows (Jan 31 → Mar 3) and a recurrence that lands on a
-     * short month would permanently drift earlier (I4).
-     * @param {string} iso
-     * @param {'daily'|'weekly'|'monthly'|'yearly'} rule
-     * @param {number} [interval=1]
-     * @param {number|null} [anchorDay=null]  preferred day-of-month (defaults to iso's day)
-     * @returns {string}
-     */
-    stepDate(iso, rule, interval = 1, anchorDay = null) {
-      const d = /* @__PURE__ */ new Date(iso + "T12:00:00");
-      const n = Math.max(1, Number(interval) || 1);
-      const day = anchorDay ?? d.getDate();
-      if (rule === "daily") d.setDate(d.getDate() + n);
-      else if (rule === "weekly") d.setDate(d.getDate() + 7 * n);
-      else if (rule === "monthly") {
-        d.setDate(1);
-        d.setMonth(d.getMonth() + n);
-        d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
-      } else if (rule === "yearly") {
-        d.setDate(1);
-        d.setFullYear(d.getFullYear() + n);
-        d.setDate(Math.min(day, this.#daysInMonth(d.getFullYear(), d.getMonth())));
-      }
-      return this.#isoDate(d);
-    }
-    // ── Main entry ───────────────────────────────────────────────────────
-    /**
-     * Scan all recurring templates and generate any missing instances up to today.
-     * @returns {number} number of transactions generated
-     */
-    process() {
-      const state = this.#store.getState();
-      const today = this.#isoDate(/* @__PURE__ */ new Date());
-      const txs = state.transactions;
-      const templates = txs.filter((t) => t.recurring && !t.recurringSourceId);
-      let generated = 0;
-      for (const template of templates) {
-        if (template.type === "transfer") continue;
-        const { rule, interval } = template.recurring;
-        const anchorDay = Number(template.date.slice(8, 10)) || 1;
-        const instances = txs.filter((t) => t.recurringSourceId === template.id);
-        const dates = [template.date, ...instances.map((i) => i.date)].sort();
-        let latest = dates[dates.length - 1];
-        let next = this.stepDate(latest, rule, interval, anchorDay);
-        let safety = 0;
-        while (next <= today && (!template.recurring.until || next <= template.recurring.until) && safety++ < 500) {
-          const clone = {
-            ...template,
-            // Deterministic id per (template, date) occurrence so two devices that
-            // both backfill the same recurrence collide instead of duplicating.
-            id: `${template.id}__${next}`,
-            date: next,
-            // Snapshot Hijri date at the moment the instance is generated.
-            // Uses current offset — this is intentional: the instance is "new"
-            // today, so it should reflect the user's current calendar setting.
-            hijriDate: this.#hijri.toHijri(next),
-            recurringSourceId: template.id,
-            recurring: null,
-            tags: (template.tags || []).slice(),
-            splits: template.splits ? template.splits.map((s) => ({ ...s })) : null
-          };
-          txs.push(clone);
-          generated++;
-          next = this.stepDate(next, rule, interval, anchorDay);
-        }
-      }
-      if (generated > 0) this.#store.persist();
-      return generated;
-    }
-  };
-
-  // src/domain/services/ReceiptScanService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ReceiptScanService.js
   var GEMINI_MODEL = "gemini-2.5-flash-lite";
   var GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   var ReceiptScanService = class {
@@ -2517,7 +2860,7 @@ RULES:
     }
   };
 
-  // src/domain/services/SyncService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/SyncService.js
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -2528,7 +2871,18 @@ RULES:
     // Supabase SDK client (null until sbInit() succeeds)
     #sb = null;
     #user = null;
-    #cloudVersion = 0;
+    /**
+     * Version of the cloud row this device last saw.
+     *   null → UNKNOWN: no pull has succeeded this session.
+     *   0    → confirmed no row exists yet (genuine first sign-in).
+     *   >0   → the row's version.
+     * The null/0 distinction is load-bearing: #commitState treats 0 as "insert
+     * the first row" and upserts without a CAS guard, so conflating "we never
+     * managed to read the cloud" with "the cloud is empty" let a device that
+     * failed its pull overwrite the entire remote history — with seed data, if
+     * localStorage happened to be empty too.
+     */
+    #cloudVersion = null;
     // The version THIS device last wrote. Realtime UPDATE events carrying this
     // version are our own echo and are ignored, so a local push no longer triggers
     // a redundant self-pull (replaceState + re-render + recurring re-scan).
@@ -2545,6 +2899,12 @@ RULES:
     #pendingRemovals = /* @__PURE__ */ new Set();
     #pendingAdditions = /* @__PURE__ */ new Map();
     #sharedData = [];
+    /** True when local edits have not yet been committed to the cloud. */
+    #dirty = false;
+    /** Re-entrancy guard for the flush-before-pull path. */
+    #flushing = false;
+    /** True only for a user-initiated sign-out (not a failed token refresh). */
+    #explicitSignOut = false;
     constructor() {
       this.#store = Store.getInstance();
       this.#bus = EventBus.getInstance();
@@ -2589,9 +2949,10 @@ RULES:
     }
     async signOut() {
       if (!this.#sb) return;
+      this.#explicitSignOut = true;
       this.#sb.auth.signOut().catch(() => {
       });
-      if (this.#user) this.#resetToGuest(true);
+      if (this.#user) this.#resetToGuest(true, { wipeLocal: true });
     }
     /** Remove all realtime channels so they don't leak across sessions/users. */
     #teardownChannels() {
@@ -2612,7 +2973,7 @@ RULES:
         if (event === "SIGNED_IN" && session?.user) {
           if (!this.#user) this.#adoptSession(session.user);
         } else if (event === "SIGNED_OUT" && this.#user) {
-          this.#resetToGuest(true);
+          this.#resetToGuest(true, { wipeLocal: this.#explicitSignOut });
         }
       });
       try {
@@ -2647,18 +3008,35 @@ RULES:
       return isFirst;
     }
     /**
-     * Drop back to local/guest state, wiping cloud-derived data so the next user
-     * never sees the previous one's records.
-     * @param {boolean} showSignIn  prompt the sign-in modal (true after sign-out)
+     * Drop back to local/guest state.
+     *
+     * @param {boolean} showSignIn  prompt the sign-in modal
+     * @param {object}  [opts]
+     * @param {boolean} [opts.wipeLocal=false]
+     *   true  — deliberate sign-out: reset to seed so the next user at this
+     *           browser never sees the previous one's records.
+     *   false — the session merely lapsed (failed token refresh, offline). Keep
+     *           every local record: the user didn't ask to discard anything, and
+     *           any un-pushed edit still lives only here.
      */
-    #resetToGuest(showSignIn) {
+    #resetToGuest(showSignIn, { wipeLocal = false } = {}) {
       this.#teardownChannels();
       this.#user = null;
-      this.#cloudVersion = 0;
+      this.#cloudVersion = null;
       this.#sharedData = [];
       this.#pendingRemovals.clear();
       this.#pendingAdditions.clear();
-      this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+      if (wipeLocal) {
+        this.#dirty = false;
+        this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+      } else {
+        const state = this.#store.getState();
+        state._sharedData = [];
+        state._currentUserEmail = null;
+        this.#store.withoutLocalChange(() => this.#store.persist());
+        this.#bus.emit("state:changed", state);
+      }
+      this.#explicitSignOut = false;
       this.#emitStatus("local");
       this.#emitUser(null);
       this.#bus.emit("auth:changed", { user: null, showSignIn });
@@ -2668,6 +3046,18 @@ RULES:
     }
     get sharedData() {
       return this.#sharedData;
+    }
+    /**
+     * Resolve a share by its stable owner id.
+     *
+     * Prefer this over indexing into sharedData: the array is rebuilt on every
+     * pull, so a positional index captured when a sheet opened can point at a
+     * different owner by the time the user submits.
+     * @param {string} ownerId
+     * @returns {object|null}
+     */
+    shareByOwner(ownerId) {
+      return this.#sharedData.find((s) => s._ownerId === ownerId) || null;
     }
     /**
      * Public entry point to re-pull family shares from the cloud and notify the
@@ -2682,6 +3072,7 @@ RULES:
     /** Debounced cloud push — called after every local save. */
     schedulePush() {
       if (!this.#sb || !this.#user) return;
+      this.#dirty = true;
       clearTimeout(this.#saveTimer);
       this.#saveTimer = setTimeout(() => this.push(), 1e3);
     }
@@ -2702,37 +3093,50 @@ RULES:
      * @param {object} state  the state snapshot to persist
      * @returns {Promise<boolean>} true on success, false if a newer version won
      */
-    async #commitState(state) {
+    async #commitState(rawState) {
+      const state = Repository.stripTransient(rawState);
       const expected = this.#cloudVersion;
+      if (expected === null) {
+        throw new Error("Cloud state not loaded yet \u2014 skipping upload to avoid overwriting it");
+      }
       if (expected > 0) {
-        const { data: rows, error: error2 } = await this.#sb.from("user_data").update({ data: state, version: expected + 1, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", this.#user.id).eq("version", expected).select("version");
+        const { data: rows2, error: error2 } = await this.#sb.from("user_data").update({ data: state, version: expected + 1, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", this.#user.id).eq("version", expected).select("version");
         if (error2) throw error2;
-        if (!rows || !rows.length) return false;
+        if (!rows2 || !rows2.length) return false;
         this.#cloudVersion = expected + 1;
         this.#lastSelfVersion = this.#cloudVersion;
         return true;
       }
-      const { error } = await this.#sb.from("user_data").upsert({
+      const { data: rows, error } = await this.#sb.from("user_data").upsert({
         id: this.#user.id,
         data: state,
         version: 1,
         updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      }, { onConflict: "id" });
+      }, { onConflict: "id", ignoreDuplicates: true }).select("version");
       if (error) throw error;
+      if (!rows || !rows.length) return false;
       this.#cloudVersion = 1;
       this.#lastSelfVersion = this.#cloudVersion;
       return true;
     }
     async #doPush() {
       if (!this.#sb || !this.#user) return;
+      if (this.#cloudVersion === null) {
+        console.warn("[SyncService] Skipping push: cloud state not loaded yet");
+        this.#emitStatus("error");
+        return;
+      }
       this.#emitStatus("syncing");
       try {
         const ok = await this.#commitState(this.#store.getState());
         if (!ok) {
-          this.#toast("Another device saved first \u2014 merging\u2026");
+          this.#stashConflict();
+          this.#toast("Another device saved first \u2014 your local copy was kept as a backup");
           await this.#doPull();
+          this.#dirty = false;
           return;
         }
+        this.#dirty = false;
         this.#emitStatus("synced");
         await this.#pushFamilyShares();
         await this.#pullMemberContributions();
@@ -2752,9 +3156,72 @@ RULES:
       this.#syncing = this.#syncing.then(() => this.#doPull()).catch(() => false);
       return this.#syncing;
     }
+    /**
+     * Persist the current state under a recovery key so a pull can never destroy
+     * work outright. Best-effort: a full quota must not break sync.
+     */
+    #stashConflict() {
+      try {
+        const savedAt = (/* @__PURE__ */ new Date()).toISOString();
+        const key = `pocket.v1.conflict.${Date.now()}`;
+        localStorage.setItem(key, JSON.stringify({ savedAt, state: this.#store.getState() }));
+        const idx = this.conflictBackups();
+        idx.unshift({ key, savedAt });
+        for (const stale of idx.slice(5)) {
+          try {
+            localStorage.removeItem(stale.key);
+          } catch (_) {
+          }
+        }
+        localStorage.setItem("pocket.v1.conflicts", JSON.stringify(idx.slice(0, 5)));
+      } catch (_) {
+      }
+    }
+    /** @returns {{key:string, savedAt:string}[]} recoverable conflict copies, newest first */
+    conflictBackups() {
+      try {
+        return JSON.parse(localStorage.getItem("pocket.v1.conflicts") || "[]");
+      } catch (_) {
+        return [];
+      }
+    }
+    /** @param {string} key @returns {object|null} the stashed state, or null */
+    readConflictBackup(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw).state ?? null : null;
+      } catch (_) {
+        return null;
+      }
+    }
+    /** Forget one backup (after restore, or on user discard). @param {string} key */
+    discardConflictBackup(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (_) {
+      }
+      try {
+        localStorage.setItem(
+          "pocket.v1.conflicts",
+          JSON.stringify(this.conflictBackups().filter((b) => b.key !== key))
+        );
+      } catch (_) {
+      }
+    }
     /** @returns {boolean} isFirstSignIn */
     async #doPull() {
       if (!this.#sb || !this.#user) return false;
+      if (this.#dirty && !this.#flushing) {
+        this.#flushing = true;
+        clearTimeout(this.#saveTimer);
+        try {
+          await this.#doPush();
+        } catch (_) {
+        } finally {
+          this.#flushing = false;
+        }
+        if (!this.#dirty && this.#cloudVersion !== null) return false;
+      }
       this.#emitStatus("syncing");
       try {
         const { data, error } = await this.#sb.from("user_data").select("data, version, updated_at").eq("id", this.#user.id).single();
@@ -2762,6 +3229,7 @@ RULES:
         if (data?.data) {
           this.#store.replaceState(data.data, (s) => this.#migrateDefaults(s));
           this.#cloudVersion = data.version ?? 0;
+          this.#dirty = false;
           new RecurringService().process();
           await this.#pullFamilyShares();
           await this.#pullMemberContributions();
@@ -2884,6 +3352,52 @@ RULES:
       }
     }
     /**
+     * Edit a transaction the member previously contributed to a shared account.
+     *
+     * An edit is a REPLACE, not a second add: the owner is sent a `_replace`
+     * marker for the old row plus an add carrying the SAME transaction id. The
+     * owner applies deletes before computing which adds are new, so the pair
+     * lands as an in-place update. Sending only the add would be skipped as a
+     * duplicate id; minting a fresh id (the old behaviour) left the original in
+     * the owner's ledger and the account was double-charged.
+     *
+     * `_replace` also tells the owner this needs EDIT rights rather than DELETE
+     * rights, so a member with 'edit' can still correct their own entry.
+     *
+     * @param {string} ownerId
+     * @param {string} txId     the id being replaced (kept on the new row)
+     * @param {object} txData   the updated transaction
+     */
+    async updateContribution(ownerId, txId, txData) {
+      if (!this.#sb || !this.#user) throw new Error("Not signed in");
+      const share = this.#sharedData.find((s) => s._ownerId === ownerId);
+      const next = { ...txData, id: txId };
+      const accountId = next.accountId ?? next.splits?.[0]?.accountId ?? share?.accounts?.[0]?.id ?? (share?.permission ? Object.keys(share.permission)[0] : null);
+      const email = this.#user.email.toLowerCase();
+      const { error: delErr } = await this.#sb.from("family_contributions").upsert({
+        owner_id: ownerId,
+        member_email: email,
+        account_id: accountId,
+        tx_data: { _delete: true, _replace: true, id: `rep_${txId}`, targetId: txId },
+        synced: false
+      }, { onConflict: "id", ignoreDuplicates: true });
+      if (delErr) throw delErr;
+      const { error: addErr } = await this.#sb.from("family_contributions").upsert({
+        owner_id: ownerId,
+        member_email: email,
+        account_id: accountId,
+        tx_data: next,
+        synced: false
+      }, { onConflict: "id", ignoreDuplicates: true });
+      if (addErr) throw addErr;
+      if (share) {
+        share.transactions = (share.transactions || []).map((t) => t.id === txId ? next : t);
+        this.#deriveShareBalances(share);
+        this.#pendingAdditions.set(txId, { tx: next, ownerId });
+        this.#bus.emit("state:changed", this.#store.getState());
+      }
+    }
+    /**
      * Schedule a pullFamilyShares + state:changed after a delay.
      * Called after shared tx submit/delete to get the owner's confirmed snapshot.
      * @param {number} delayMs
@@ -2912,17 +3426,40 @@ RULES:
       const balances = LedgerMath.balances(share.accounts, share.transactions || [], this.#fx);
       for (const a of share.accounts) a.balance = balances.get(a.id) ?? a.balance ?? 0;
     }
+    /**
+     * Revoke a member's access: delete their family_shares row and tell their
+     * client to refresh.
+     *
+     * Removing someone from state.family alone was not enough — the row survived,
+     * so their #pullFamilyShares() kept returning the last snapshot (every shared
+     * account, its transactions, and ALL of the owner's categories) indefinitely.
+     *
+     * @param {string} email
+     */
+    async revokeMemberShare(email) {
+      if (!this.#sb || !this.#user || !email) return;
+      const addr = email.toLowerCase().trim();
+      try {
+        await this.#sb.from("family_shares").delete().eq("owner_id", this.#user.id).eq("member_email", addr);
+        this.#broadcastToMember(addr);
+      } catch (e) {
+        console.warn("[SyncService] revokeMemberShare error:", e);
+      }
+    }
     async #pushFamilyShares() {
       const state = this.#store.getState();
-      if (!this.#sb || !this.#user || !state.family?.length) return;
-      for (const member of state.family) {
+      if (!this.#sb || !this.#user) return;
+      for (const member of state.family || []) {
         if (!member.email) continue;
         const permMap = {};
         (member.permissions || []).forEach((p) => {
           permMap[p.accountId] = p.access;
         });
         const sharedIds = Object.keys(permMap);
-        if (!sharedIds.length) continue;
+        if (!sharedIds.length) {
+          await this.revokeMemberShare(member.email);
+          continue;
+        }
         const snapshot = {
           sharedBy: state.user.name || this.#user.email,
           // Owner's home currency so members can embed correct exchangeRate /
@@ -2966,13 +3503,13 @@ RULES:
     async #pullFamilyShares() {
       if (!this.#sb || !this.#user?.email) return;
       try {
-        const { data, error } = await this.#sb.from("family_shares").select("owner_id, snapshot").eq("member_email", this.#user.email.toLowerCase());
+        const { data, error } = await this.#sb.from("family_shares").select("owner_id, snapshot").eq("member_email", this.#user.email.toLowerCase()).order("owner_id");
         if (error) {
           console.warn("[SyncService] pullFamilyShares error:", error);
           return;
         }
         const rawIds = new Set((data || []).flatMap((r) => (r.snapshot?.transactions || []).map((t) => t.id)));
-        this.#sharedData = (data || []).filter((r) => r.snapshot && r.owner_id !== this.#user.id).map((r) => ({ ...r.snapshot, _ownerId: r.owner_id }));
+        this.#sharedData = (data || []).filter((r) => r.snapshot && r.owner_id !== this.#user.id).map((r) => ({ ...r.snapshot, _ownerId: r.owner_id })).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)));
         for (const txId of [...this.#pendingRemovals]) {
           if (!rawIds.has(txId)) this.#pendingRemovals.delete(txId);
         }
@@ -2999,14 +3536,81 @@ RULES:
         console.warn("[SyncService] pullFamilyShares error:", e);
       }
     }
+    /**
+     * Current access level a member holds on each of the owner's accounts.
+     * @param {string} email
+     * @returns {Record<string,string>} accountId → 'view'|'add'|'edit'|'full'
+     */
+    #memberPermissions(email) {
+      const key = (email || "").toLowerCase().trim();
+      const member = (this.#store.getState().family || []).find((m) => (m.email || "").toLowerCase().trim() === key);
+      const map = {};
+      for (const p of member?.permissions || []) map[p.accountId] = p.access;
+      return map;
+    }
+    /**
+     * Decide whether an incoming contribution is allowed, against the CURRENT
+     * permission map rather than whatever the member's cached snapshot claimed.
+     *
+     * This is the owner's only enforcement point: permissions are otherwise
+     * checked in render code, which a stale or hostile client never runs. Access
+     * levels follow FAMILY_ACCESS_LEVELS — add ≤ edit ≤ full.
+     *
+     * @param {object} row  a family_contributions row
+     * @returns {{ok:true}|{ok:false, reason:string}}
+     */
+    #authoriseContribution(row) {
+      const perms = this.#memberPermissions(row.member_email);
+      const tx = row.tx_data || {};
+      const level = (accId) => perms[accId] || null;
+      if (tx._delete === true) {
+        const targetId = tx.targetId || tx.id;
+        const target = (this.#store.getState().transactions || []).find((t) => t.id === targetId);
+        if (!target) return { ok: true };
+        const access = level(target.accountId);
+        const allowed = tx._replace ? ["edit", "full"].includes(access) : access === "full";
+        return allowed ? { ok: true } : { ok: false, reason: `no ${tx._replace ? "edit" : "delete"} access on ${target.accountId}` };
+      }
+      const touched = new Set([tx.accountId, ...(tx.splits || []).map((s) => s.accountId || tx.accountId)].filter(Boolean));
+      if (!touched.size) return { ok: false, reason: "no account on the contribution" };
+      for (const accId of touched) {
+        if (!["add", "edit", "full"].includes(level(accId))) {
+          return { ok: false, reason: `no write access on ${accId}` };
+        }
+      }
+      return { ok: true };
+    }
     async #pullMemberContributions() {
       if (!this.#sb || !this.#user) return;
       try {
-        const { data, error } = await this.#sb.from("family_contributions").select("id, tx_data").eq("owner_id", this.#user.id).eq("synced", false);
+        const { data, error } = await this.#sb.from("family_contributions").select("id, tx_data, member_email, account_id").eq("owner_id", this.#user.id).eq("synced", false);
         if (error || !data?.length) return;
         const state = this.#store.getState();
-        const deleteRows = data.filter((r) => r.tx_data?._delete === true);
-        const addRows = data.filter((r) => !r.tx_data?._delete && r.tx_data?.id);
+        const rejected = [];
+        const rows = [];
+        for (const row of data) {
+          const verdict = this.#authoriseContribution(row);
+          if (verdict.ok) rows.push(row);
+          else {
+            rejected.push(row);
+            console.warn(
+              "[SyncService] Rejected contribution from",
+              row.member_email,
+              "\u2014",
+              verdict.reason
+            );
+          }
+        }
+        if (rejected.length) {
+          try {
+            await this.#sb.from("family_contributions").update({ synced: true }).in("id", rejected.map((r) => r.id));
+          } catch (_) {
+          }
+          this.#toast(`${rejected.length} family change${rejected.length > 1 ? "s" : ""} blocked \u2014 permission removed`);
+        }
+        if (!rows.length) return;
+        const deleteRows = rows.filter((r) => r.tx_data?._delete === true);
+        const addRows = rows.filter((r) => !r.tx_data?._delete && r.tx_data?.id);
         if (deleteRows.length) {
           const deleteIds = new Set(deleteRows.map((r) => r.tx_data.targetId || r.tx_data.id));
           state.transactions = state.transactions.filter((t) => !deleteIds.has(t.id));
@@ -3018,10 +3622,10 @@ RULES:
           state.transactions.push(tx);
         });
         if (newRows.length || deleteRows.length) {
-          this.#store.persist();
+          this.#store.withoutLocalChange(() => this.#store.persist());
           const committed = await this.#commitState(state);
           if (committed) {
-            const ids = data.map((r) => r.id);
+            const ids = rows.map((r) => r.id);
             await this.#sb.from("family_contributions").update({ synced: true }).in("id", ids);
             await this.#pushFamilyShares();
             this.#bus.emit("state:changed", state);
@@ -3051,7 +3655,7 @@ RULES:
     }
   };
 
-  // src/domain/services/ThemeService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ThemeService.js
   var ThemeService = class {
     #store;
     constructor(store) {
@@ -3080,32 +3684,439 @@ RULES:
     }
   };
 
-  // src/domain/services/PaymentTypeService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/PaymentTypeService.js
   var BASE_TYPES = ["card", "cash", "transfer", "cheque", "online"];
   var PaymentTypeService = class {
     #store;
     constructor(store) {
       this.#store = store;
     }
+    // ── Queries ─────────────────────────────────────────────────────────
+    /** @returns {string[]} the methods currently offered, in display order */
     allTypes() {
-      const custom = this.#store.getState().user?.customPaymentTypes || [];
-      return [...BASE_TYPES, ...custom];
+      const user = this.#store.getState().user || {};
+      const hidden = new Set(user.hiddenPaymentTypes || []);
+      const custom = user.customPaymentTypes || [];
+      return [...BASE_TYPES.filter((t) => !hidden.has(t)), ...custom];
     }
+    /** @returns {string[]} the unmodified built-in list */
+    static get baseTypes() {
+      return [...BASE_TYPES];
+    }
+    /** @returns {string[]} built-ins the user has deleted or renamed away */
+    hiddenTypes() {
+      return [...this.#store.getState().user?.hiddenPaymentTypes || []];
+    }
+    /** @param {string} name @returns {boolean} */
+    isBuiltIn(name) {
+      return BASE_TYPES.includes(name);
+    }
+    /**
+     * How many transactions (including the far side of transfers) use a method.
+     * @param {string} name
+     * @returns {number}
+     */
+    usageCount(name) {
+      const txs = this.#store.getState().transactions || [];
+      return txs.filter((t) => t.paymentType === name).length;
+    }
+    // ── Mutations ───────────────────────────────────────────────────────
+    /**
+     * Add a user-defined method.
+     * @param {string} name
+     * @returns {string|undefined} the stored name, or undefined when rejected
+     */
     addCustom(name) {
-      const n = name.trim();
+      const n = (name || "").trim();
       if (!n) return;
       const state = this.#store.getState();
       if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
-      const list = state.user.customPaymentTypes;
-      if (!list.includes(n)) {
-        list.push(n);
+      const hidden = state.user.hiddenPaymentTypes || [];
+      const hiddenIdx = hidden.findIndex((t) => t.toLowerCase() === n.toLowerCase());
+      if (hiddenIdx >= 0) {
+        hidden.splice(hiddenIdx, 1);
         this.#store.flush();
+        return BASE_TYPES.find((t) => t.toLowerCase() === n.toLowerCase()) || n;
       }
+      if (this.allTypes().some((t) => t.toLowerCase() === n.toLowerCase())) return n;
+      state.user.customPaymentTypes.push(n);
+      this.#store.flush();
+      return n;
+    }
+    /**
+     * Rename a method and migrate every transaction that referenced it.
+     *
+     * @param {string} oldName
+     * @param {string} newName
+     * @returns {{ok:true, name:string, migrated:number}|{ok:false, reason:string}}
+     */
+    rename(oldName, newName) {
+      const next = (newName || "").trim();
+      if (!next) return { ok: false, reason: "Enter a name" };
+      if (next === oldName) return { ok: true, name: oldName, migrated: 0 };
+      if (!this.allTypes().includes(oldName)) return { ok: false, reason: "That method no longer exists" };
+      if (this.allTypes().some((t) => t !== oldName && t.toLowerCase() === next.toLowerCase())) {
+        return { ok: false, reason: `"${next}" already exists` };
+      }
+      const state = this.#store.getState();
+      if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
+      if (!Array.isArray(state.user.hiddenPaymentTypes)) state.user.hiddenPaymentTypes = [];
+      if (this.isBuiltIn(oldName)) {
+        state.user.hiddenPaymentTypes.push(oldName);
+        state.user.customPaymentTypes.push(next);
+      } else {
+        const i = state.user.customPaymentTypes.indexOf(oldName);
+        if (i < 0) return { ok: false, reason: "That method no longer exists" };
+        state.user.customPaymentTypes[i] = next;
+      }
+      let migrated = 0;
+      for (const t of state.transactions || []) {
+        if (t.paymentType === oldName) {
+          t.paymentType = next;
+          migrated++;
+        }
+      }
+      for (const item of state.regularItems || []) {
+        if (item.paymentType === oldName) item.paymentType = next;
+      }
+      this.#store.flush();
+      return { ok: true, name: next, migrated };
+    }
+    /**
+     * Delete a method. Refused while transactions still reference it — the same
+     * rule the category delete uses, so a method can never vanish out from under
+     * existing data.
+     *
+     * @param {string} name
+     * @returns {{ok:true}|{ok:false, reason:string, count?:number}}
+     */
+    remove(name) {
+      if (!this.allTypes().includes(name)) return { ok: false, reason: "That method no longer exists" };
+      if (this.allTypes().length <= 1) return { ok: false, reason: "Keep at least one payment method" };
+      const count = this.usageCount(name);
+      if (count > 0) {
+        return {
+          ok: false,
+          count,
+          reason: `${count} transaction${count === 1 ? "" : "s"} still use this \u2014 reassign them first`
+        };
+      }
+      const state = this.#store.getState();
+      if (this.isBuiltIn(name)) {
+        if (!Array.isArray(state.user.hiddenPaymentTypes)) state.user.hiddenPaymentTypes = [];
+        state.user.hiddenPaymentTypes.push(name);
+      } else {
+        const i = (state.user.customPaymentTypes || []).indexOf(name);
+        if (i < 0) return { ok: false, reason: "That method no longer exists" };
+        state.user.customPaymentTypes.splice(i, 1);
+      }
+      this.#store.flush();
+      return { ok: true };
+    }
+    /** Restore every deleted built-in. @returns {number} how many came back */
+    restoreBuiltIns() {
+      const state = this.#store.getState();
+      const hidden = state.user.hiddenPaymentTypes || [];
+      const n = hidden.length;
+      if (!n) return 0;
+      state.user.hiddenPaymentTypes = [];
+      this.#store.flush();
       return n;
     }
   };
 
-  // src/domain/services/ExchangeRateService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/AccountGroupService.js
+  var AccountGroupService = class {
+    /** @type {Store} */
+    #store;
+    constructor(store) {
+      this.#store = store || Store.getInstance();
+    }
+    // ── Queries ─────────────────────────────────────────────────────────
+    /** @returns {object[]} all groups, in stored order */
+    all() {
+      const state = this.#store.getState();
+      if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
+      return state.accountGroups;
+    }
+    /** @param {string} id @returns {object|undefined} */
+    find(id) {
+      return this.all().find((g) => g.id === id);
+    }
+    /**
+     * Accounts belonging to a group.
+     * @param {string} id
+     * @returns {object[]}
+     */
+    accountsIn(id) {
+      return this.#store.getState().accounts.filter((a) => a.groupId === id);
+    }
+    /**
+     * Accounts with no group, or whose group no longer exists.
+     * @returns {object[]}
+     */
+    ungrouped() {
+      const valid = new Set(this.all().map((g) => g.id));
+      return this.#store.getState().accounts.filter((a) => !a.groupId || !valid.has(a.groupId));
+    }
+    // ── Mutations ───────────────────────────────────────────────────────
+    /**
+     * Create a group. Re-uses an existing group when the name matches
+     * case-insensitively, so "create" is idempotent from the user's point of view.
+     *
+     * @param {string} name
+     * @param {object} [opts]
+     * @param {string} [opts.color]
+     * @returns {{ok:true, group:object, created:boolean}|{ok:false, reason:string}}
+     */
+    create(name, { color } = {}) {
+      const clean = (name || "").trim();
+      if (!clean) return { ok: false, reason: "Enter a group name" };
+      const existing = this.all().find((g) => g.name.toLowerCase() === clean.toLowerCase());
+      if (existing) return { ok: true, group: existing, created: false };
+      const group = {
+        id: IdGenerator.generate("grp"),
+        name: clean,
+        color: color || CategoryService.colorForName(clean)
+      };
+      this.all().push(group);
+      this.#store.flush();
+      return { ok: true, group, created: true };
+    }
+    /**
+     * Rename a group in place — accounts reference it by id, so nothing else
+     * needs updating.
+     * @param {string} id
+     * @param {string} name
+     * @returns {{ok:true, group:object}|{ok:false, reason:string}}
+     */
+    rename(id, name) {
+      const clean = (name || "").trim();
+      if (!clean) return { ok: false, reason: "Enter a group name" };
+      const group = this.find(id);
+      if (!group) return { ok: false, reason: "That group no longer exists" };
+      const clash = this.all().find(
+        (g) => g.id !== id && g.name.toLowerCase() === clean.toLowerCase()
+      );
+      if (clash) return { ok: false, reason: `"${clash.name}" already exists` };
+      group.name = clean;
+      this.#store.flush();
+      return { ok: true, group };
+    }
+    /**
+     * Delete a group. Its accounts are un-grouped, never deleted.
+     * @param {string} id
+     * @returns {{ok:true, orphaned:number}|{ok:false, reason:string}}
+     */
+    delete(id) {
+      const state = this.#store.getState();
+      if (!this.find(id)) return { ok: false, reason: "That group no longer exists" };
+      let orphaned = 0;
+      for (const a of state.accounts) {
+        if (a.groupId === id) {
+          a.groupId = null;
+          orphaned++;
+        }
+      }
+      state.accountGroups = this.all().filter((g) => g.id !== id);
+      this.#store.flush();
+      return { ok: true, orphaned };
+    }
+    /**
+     * Move a set of accounts into a group (or out of every group when groupId is
+     * null). This is the bulk-assign the UI needs — assigning one at a time
+     * through the account form was the only way before.
+     *
+     * @param {string[]}      accountIds
+     * @param {string|null}   groupId
+     * @returns {number} how many accounts changed
+     */
+    assign(accountIds, groupId) {
+      const ids = new Set((accountIds || []).filter(Boolean));
+      if (!ids.size) return 0;
+      if (groupId && !this.find(groupId)) return 0;
+      let moved = 0;
+      for (const a of this.#store.getState().accounts) {
+        if (!ids.has(a.id)) continue;
+        const next = groupId || null;
+        if ((a.groupId || null) !== next) {
+          a.groupId = next;
+          moved++;
+        }
+      }
+      if (moved) this.#store.flush();
+      return moved;
+    }
+    /**
+     * Set a group's exact membership: every listed account joins, and any account
+     * currently in the group but not listed is un-grouped. Used by the manage
+     * sheet's tick-list, where unticking must mean "remove from this group".
+     *
+     * @param {string}   groupId
+     * @param {string[]} accountIds
+     * @returns {number} how many accounts changed
+     */
+    setMembers(groupId, accountIds) {
+      if (!this.find(groupId)) return 0;
+      const want = new Set((accountIds || []).filter(Boolean));
+      let changed = 0;
+      for (const a of this.#store.getState().accounts) {
+        const shouldBeIn = want.has(a.id);
+        const isIn = a.groupId === groupId;
+        if (shouldBeIn && !isIn) {
+          a.groupId = groupId;
+          changed++;
+        } else if (!shouldBeIn && isIn) {
+          a.groupId = null;
+          changed++;
+        }
+      }
+      if (changed) this.#store.flush();
+      return changed;
+    }
+    /**
+     * Replace the current grouping with one group per currency.
+     *
+     * This REASSIGNS every account, so it discards any hand-made arrangement —
+     * callers must confirm with the user first. Groups that end up empty
+     * afterwards are removed, so repeated runs don't accumulate debris.
+     *
+     * @returns {{groups:number, accounts:number, removed:number}}
+     */
+    groupByCurrency() {
+      const state = this.#store.getState();
+      if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
+      const byCurrency = /* @__PURE__ */ new Map();
+      let assigned = 0;
+      for (const a of state.accounts) {
+        const ccy = (a.currency || "").toUpperCase() || "UNKNOWN";
+        if (!byCurrency.has(ccy)) {
+          const existing = state.accountGroups.find((g) => g.name.toLowerCase() === ccy.toLowerCase());
+          byCurrency.set(ccy, existing || {
+            id: IdGenerator.generate("grp"),
+            name: ccy,
+            color: CategoryService.colorForName(ccy)
+          });
+          if (!existing) state.accountGroups.push(byCurrency.get(ccy));
+        }
+        const target = byCurrency.get(ccy).id;
+        if (a.groupId !== target) {
+          a.groupId = target;
+          assigned++;
+        }
+      }
+      const used = new Set(state.accounts.map((a) => a.groupId).filter(Boolean));
+      const before = state.accountGroups.length;
+      state.accountGroups = state.accountGroups.filter((g) => used.has(g.id));
+      this.#store.flush();
+      return {
+        groups: byCurrency.size,
+        accounts: assigned,
+        removed: before - state.accountGroups.length
+      };
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/FamilyShareService.js
+  var LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
+  var FamilyShareService = class {
+    /** @type {Store} */
+    #store;
+    constructor(store) {
+      this.#store = store || Store.getInstance();
+    }
+    // ── Queries ─────────────────────────────────────────────────────────
+    /** @returns {object[]} every family member */
+    members() {
+      const state = this.#store.getState();
+      if (!Array.isArray(state.family)) state.family = [];
+      return state.family;
+    }
+    /** @returns {object[]} the level descriptors, for rendering choices */
+    static get levels() {
+      return FAMILY_ACCESS_LEVELS;
+    }
+    /**
+     * The access a member currently holds on one account.
+     * @param {string} memberId
+     * @param {string} accountId
+     * @returns {string|null} 'view'|'add'|'edit'|'full', or null for no access
+     */
+    accessFor(memberId, accountId) {
+      const member = this.members().find((m) => m.id === memberId);
+      return (member?.permissions || []).find((p) => p.accountId === accountId)?.access || null;
+    }
+    /**
+     * Everyone this account is shared with.
+     * @param {string} accountId
+     * @returns {Array<{member:object, access:string}>}
+     */
+    sharedWith(accountId) {
+      return this.members().map((member) => ({ member, access: this.accessFor(member.id, accountId) })).filter((row) => !!row.access);
+    }
+    /**
+     * Account ids shared with at least one member — used to badge account cards.
+     * @returns {Set<string>}
+     */
+    sharedAccountIds() {
+      const out = /* @__PURE__ */ new Set();
+      for (const m of this.members()) {
+        for (const p of m.permissions || []) if (p.access) out.add(p.accountId);
+      }
+      return out;
+    }
+    // ── Mutations ───────────────────────────────────────────────────────
+    /**
+     * Grant, change or revoke a member's access to one account.
+     *
+     * Passing `null` revokes. Revoking the member's LAST account is a full
+     * revocation as far as the cloud is concerned — the caller is expected to
+     * follow up with SyncService.revokeMemberShare() so the stale snapshot on the
+     * member's device is dropped rather than left serving old data.
+     *
+     * @param {string}      memberId
+     * @param {string}      accountId
+     * @param {string|null} access
+     * @returns {{ok:true, access:string|null, member:object, wasLast:boolean}|{ok:false, reason:string}}
+     */
+    setAccess(memberId, accountId, access) {
+      const member = this.members().find((m) => m.id === memberId);
+      if (!member) return { ok: false, reason: "That member no longer exists" };
+      if (access !== null && !LEVELS.has(access)) return { ok: false, reason: `Unknown access level "${access}"` };
+      if (!this.#store.getState().accounts.some((a) => a.id === accountId)) {
+        return { ok: false, reason: "That account no longer exists" };
+      }
+      if (!Array.isArray(member.permissions)) member.permissions = [];
+      const idx = member.permissions.findIndex((p) => p.accountId === accountId);
+      if (access === null) {
+        if (idx >= 0) member.permissions.splice(idx, 1);
+      } else if (idx >= 0) {
+        member.permissions[idx].access = access;
+      } else {
+        member.permissions.push({ accountId, access });
+      }
+      const wasLast = access === null && member.permissions.length === 0;
+      this.#store.flush();
+      return { ok: true, access, member, wasLast };
+    }
+    /**
+     * Stop sharing an account with everyone.
+     * @param {string} accountId
+     * @returns {Array<{member:object, wasLast:boolean}>} members that were affected
+     */
+    unshareAccount(accountId) {
+      const affected = [];
+      for (const member of this.members()) {
+        if (!(member.permissions || []).some((p) => p.accountId === accountId)) continue;
+        member.permissions = member.permissions.filter((p) => p.accountId !== accountId);
+        affected.push({ member, wasLast: member.permissions.length === 0 });
+      }
+      if (affected.length) this.#store.flush();
+      return affected;
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ExchangeRateService.js
   var ENDPOINT = "https://open.er-api.com/v6/latest/USD";
   var REFRESH_MS = 6 * 60 * 60 * 1e3;
   var ExchangeRateService = class {
@@ -3145,7 +4156,7 @@ RULES:
         this.#merge(rates);
         state.fxRates = { ...RATES };
         state.fxRatesUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
-        this.#store.persist();
+        this.#store.withoutLocalChange(() => this.#store.persist());
         this.#bus.emit("state:changed", state);
         return true;
       } catch (e) {
@@ -3165,7 +4176,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Toast.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Toast.js
   var Toast = class {
     /** @type {HTMLElement|null} */
     #el = null;
@@ -3210,7 +4221,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Modal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Modal.js
   var Modal = class {
     /** @type {HTMLElement|null} */
     #backdrop = null;
@@ -3290,8 +4301,13 @@ RULES:
       if (!this.#active || this.#active === "_raw") return;
       const view = this.#registry.get(this.#active);
       if (!view || !this.#card) return;
+      const scrollTop = this.#card.scrollTop;
       this.#card.innerHTML = view.render(this.#currentOpts ?? {});
       if (typeof lucide !== "undefined") lucide.createIcons();
+      this.#card.scrollTop = scrollTop;
+      requestAnimationFrame(() => {
+        if (this.#card) this.#card.scrollTop = scrollTop;
+      });
     }
     /** Close the active modal. */
     close() {
@@ -3322,7 +4338,7 @@ RULES:
     }
   };
 
-  // src/core/Html.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/core/Html.js
   var Html = class {
     /**
      * Escape text / double-quoted attribute content.
@@ -3366,7 +4382,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Navigation.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/Navigation.js
   var Navigation = class _Navigation {
     /** @type {HTMLElement|null} */
     #sidebar = null;
@@ -3510,7 +4526,1385 @@ RULES:
     }
   };
 
-  // src/ui/views/BaseView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/OverlaySheet.js
+  var SHEET_CSS = `
+.sheet-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); z-index:70; display:none; }
+.sheet-backdrop.open { display:flex; align-items:flex-end; justify-content:center; }
+@media (min-width:640px) { .sheet-backdrop.open { align-items:center; } }
+.sheet { background:#fff; color:#09090b; width:100%; max-width:520px; height:88vh; max-height:88vh;
+         border-radius:18px 18px 0 0; display:flex; flex-direction:column; overflow:hidden; }
+@media (min-width:640px) { .sheet { border-radius:18px; height:70vh; } }
+html.dark .sheet { background:#0c0c0f; color:#fafafa; border:1px solid #27272a; }
+.sheet-head { padding:.85rem 1rem .6rem; border-bottom:1px solid #e4e4e7; flex-shrink:0; }
+html.dark .sheet-head { border-color:#1f1f23; }
+.sheet-body { flex:1; overflow-y:auto; overscroll-behavior:contain; padding:.5rem; }
+.sheet-foot { padding:.7rem 1rem; border-top:1px solid #e4e4e7; flex-shrink:0; display:flex; align-items:center; gap:.5rem; }
+html.dark .sheet-foot { border-color:#1f1f23; }
+.sheet-row { width:100%; display:flex; align-items:center; gap:.7rem; padding:.6rem .65rem; border-radius:12px;
+             text-align:left; font-size:.9rem; cursor:pointer; background:transparent; border:none; color:inherit; }
+.sheet-row:hover { background:#f4f4f5; }
+html.dark .sheet-row:hover { background:#18181b; }
+.sheet-row.is-selected { background:#f4f4f5; font-weight:600; }
+html.dark .sheet-row.is-selected { background:#1c1c20; }
+.sheet-row-static { cursor:default; }
+.sheet-row-static:hover { background:transparent; }
+.sheet-dot { width:10px; height:10px; border-radius:9999px; flex-shrink:0; }
+.sheet-row-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sheet-row-meta { font-size:.7rem; color:#71717a; flex-shrink:0; }
+.sheet-note { font-size:.72rem; color:#71717a; }
+.sheet-empty { padding:1.4rem .75rem; text-align:center; font-size:.82rem; color:#71717a; }
+.sheet-crumb { display:flex; align-items:center; gap:.4rem; font-size:.75rem; color:#71717a; margin-bottom:.5rem; }
+.sheet-inline-form { display:flex; gap:.4rem; margin-top:.4rem; }
+/* Sheets sit above the modal (z-50); lift the toast above the sheet so
+   messages raised while a sheet is open remain visible. */
+.toast { z-index:90; }
+`;
+  var OverlaySheet = class {
+    /** @type {HTMLElement|null} */
+    #backdrop = null;
+    /** @type {HTMLElement|null} */
+    #sheet = null;
+    /** @type {boolean} */
+    #open = false;
+    /** @type {string} */
+    #id;
+    /**
+     * @param {object} cfg
+     * @param {string} cfg.id  DOM id for the backdrop element
+     */
+    constructor({ id }) {
+      this.#id = id;
+    }
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+    /**
+     * Create the overlay and inject the shared stylesheet. Call once, after
+     * Modal.mount(), so the sheet's node sits after the modal in document order.
+     * @param {HTMLElement} [container=document.body]
+     */
+    mount(container = document.body) {
+      if (!document.getElementById("overlaySheetStyles")) {
+        const style = document.createElement("style");
+        style.id = "overlaySheetStyles";
+        style.textContent = SHEET_CSS;
+        document.head.appendChild(style);
+      }
+      this.#backdrop = document.createElement("div");
+      this.#backdrop.id = this.#id;
+      this.#backdrop.className = "sheet-backdrop";
+      this.#backdrop.addEventListener("click", (e) => {
+        if (e.target === this.#backdrop) this.close();
+      });
+      this.#sheet = document.createElement("div");
+      this.#sheet.className = "sheet";
+      this.#sheet.addEventListener("click", (e) => e.stopPropagation());
+      this.#backdrop.appendChild(this.#sheet);
+      container.appendChild(this.#backdrop);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && this.#open) {
+          e.stopPropagation();
+          this.close();
+        }
+      }, true);
+    }
+    /** @returns {boolean} */
+    get isOpen() {
+      return this.#open;
+    }
+    /** @returns {HTMLElement|null} the inner sheet element */
+    get element() {
+      return this.#sheet;
+    }
+    /** Show the sheet and paint it. Subclasses call this from their own open(). */
+    show() {
+      this.#open = true;
+      this.#backdrop?.classList.add("open");
+      this.render();
+    }
+    /** Hide the sheet and clear its content. */
+    close() {
+      if (!this.#open) return;
+      this.#open = false;
+      this.#backdrop?.classList.remove("open");
+      if (this.#sheet) this.#sheet.innerHTML = "";
+      this.onClosed();
+    }
+    /** Repaint the whole sheet from renderContent(). */
+    render() {
+      if (!this.#sheet) return;
+      this.#sheet.innerHTML = this.renderContent();
+      this.refreshIcons();
+    }
+    // ── Subclass hooks ────────────────────────────────────────────────────
+    /** @returns {string} the sheet's inner HTML — subclasses must override. */
+    renderContent() {
+      return "";
+    }
+    /** Called after the sheet hides. Override to release per-open state. */
+    onClosed() {
+    }
+    // ── Helpers for subclasses ────────────────────────────────────────────
+    /**
+     * Replace one region of the sheet without re-creating the rest — used to
+     * patch a list while the user is typing in a search box above it, so the
+     * focused input is never torn down.
+     * @param {string} selector
+     * @param {string} html
+     */
+    patch(selector, html) {
+      const el = this.#sheet?.querySelector(selector);
+      if (!el) return;
+      el.innerHTML = html;
+      this.refreshIcons();
+    }
+    /** @param {string} selector @returns {HTMLElement|null} */
+    find(selector) {
+      return this.#sheet?.querySelector(selector) ?? null;
+    }
+    /** Re-run Lucide icon replacement inside the sheet. */
+    refreshIcons() {
+      if (typeof lucide !== "undefined") lucide.createIcons();
+    }
+    /**
+     * Move focus into the sheet once the browser has painted it.
+     * @param {string} selector
+     */
+    focusLater(selector, delay = 20) {
+      setTimeout(() => this.find(selector)?.focus(), delay);
+    }
+    /**
+     * Escape for text and quoted-attribute content.
+     * NOT safe for inline handler arguments — use js() there.
+     * @param {*} s @returns {string}
+     */
+    esc(s) {
+      return Html.escape(s);
+    }
+    /**
+     * Escape a value interpolated into a single-quoted JS string inside an inline
+     * handler, e.g. onclick="fn('${this.js(name)}')".
+     *
+     * esc() is wrong here: the HTML parser decodes character references in
+     * attribute values before the value becomes the handler body, so an escaped
+     * &#39; turns back into a real quote and terminates the string early.
+     * @param {*} s @returns {string}
+     */
+    js(s) {
+      return Html.js(s);
+    }
+    /**
+     * Validate a CSS hex colour, falling back to a neutral grey.
+     * @param {*} c @param {string} [fallback] @returns {string}
+     */
+    safeColor(c, fallback = "#71717a") {
+      return Html.color(c, fallback);
+    }
+    /**
+     * Validate a Lucide icon slug, falling back to a safe default.
+     * @param {*} name @param {string} [fallback] @returns {string}
+     */
+    safeIcon(name, fallback = "circle") {
+      return Html.icon(name, fallback);
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/CategoryPickerSheet.js
+  var CategoryPickerSheet = class extends OverlaySheet {
+    /** @type {Store} */
+    #store;
+    /** @type {CategoryService} */
+    #categories;
+    // ── Per-open session state ────────────────────────────────────────────
+    #mode = "single";
+    // 'single' | 'multi'
+    #type = null;
+    // 'expense' | 'income' | 'transfer' | null
+    #title = "Choose category";
+    #allowAdd = true;
+    #onSelect = null;
+    // (ids: string[]) => void
+    #selected = (
+      /** @type {Set<string>} */
+      /* @__PURE__ */ new Set()
+    );
+    #parentId = null;
+    // null → step 1 (parents)
+    #query = "";
+    #adding = false;
+    // inline add row visible?
+    /**
+     * @param {object} [deps]
+     * @param {Store}           [deps.store]
+     * @param {CategoryService} [deps.categoryService]
+     */
+    constructor({ store, categoryService } = {}) {
+      super({ id: "catPickerRoot" });
+      this.#store = store || Store.getInstance();
+      this.#categories = categoryService || new CategoryService();
+    }
+    // ── Public API ────────────────────────────────────────────────────────
+    /**
+     * Open the picker.
+     *
+     * @param {object}   cfg
+     * @param {'single'|'multi'} [cfg.mode='single']
+     * @param {string|null}      [cfg.type=null]        type filter
+     * @param {string[]}         [cfg.selected=[]]      pre-selected category IDs
+     * @param {string}           [cfg.title]
+     * @param {boolean}          [cfg.allowAdd=true]    show the inline add rows
+     * @param {(ids:string[]) => void} cfg.onSelect     called with the chosen IDs
+     */
+    open({ mode = "single", type = null, selected = [], title, allowAdd = true, onSelect } = {}) {
+      this.#mode = mode === "multi" ? "multi" : "single";
+      this.#type = type || null;
+      this.#title = title || (this.#mode === "multi" ? "Choose categories" : "Choose category");
+      this.#allowAdd = allowAdd !== false;
+      this.#onSelect = typeof onSelect === "function" ? onSelect : null;
+      this.#selected = new Set((selected || []).filter(Boolean));
+      this.#query = "";
+      this.#adding = false;
+      this.#parentId = null;
+      const first = [...this.#selected][0];
+      if (first) {
+        const cat = this.#categories.find(first);
+        if (cat?.parentId && (!this.#type || cat.type === this.#type)) this.#parentId = cat.parentId;
+      }
+      this.show();
+      this.focusLater("[data-cat-search]", 30);
+    }
+    /** @override — drop the callback so a stray close can't fire it later. */
+    onClosed() {
+      this.#onSelect = null;
+    }
+    // ── Interaction handlers (called from inline onclick in the sheet) ─────
+    /** Drill into a parent's subcategories. @param {string} id */
+    openParent(id) {
+      this.#parentId = id;
+      this.#query = "";
+      this.#adding = false;
+      this.render();
+    }
+    /** Return to the parent list. */
+    back() {
+      this.#parentId = null;
+      this.#adding = false;
+      this.render();
+    }
+    /** Live-filter as the user types. @param {string} q */
+    setQuery(q) {
+      this.#query = q || "";
+      this.#adding = false;
+      this.#renderBody();
+    }
+    /**
+     * Pick a category. In single mode this commits and closes; in multi mode it
+     * toggles the checkbox.
+     * @param {string} id
+     */
+    choose(id) {
+      if (this.#mode === "multi") {
+        if (this.#selected.has(id)) this.#selected.delete(id);
+        else this.#selected.add(id);
+        this.#renderBody();
+        this.#renderFootCount();
+        return;
+      }
+      const cb = this.#onSelect;
+      this.#selected = /* @__PURE__ */ new Set([id]);
+      this.close();
+      cb?.([id]);
+    }
+    /** Clear the selection (single mode → "Uncategorised"). */
+    chooseNone() {
+      const cb = this.#onSelect;
+      this.#selected.clear();
+      if (this.#mode === "multi") {
+        this.#renderBody();
+        this.#renderFootCount();
+        return;
+      }
+      this.close();
+      cb?.([]);
+    }
+    /** Commit the multi-select and close. */
+    done() {
+      const cb = this.#onSelect;
+      const ids = [...this.#selected];
+      this.close();
+      cb?.(ids);
+    }
+    /** Show / hide the inline "new category" input. @param {boolean} on */
+    toggleAdd(on) {
+      this.#adding = !!on;
+      this.#renderBody();
+      if (on) this.focusLater("[data-cat-new]");
+    }
+    /**
+     * Create a category from the inline add row. Creates a parent when on step 1
+     * and a subcategory of the open parent when on step 2. In single mode the new
+     * category is selected immediately — the common case is "the category I want
+     * doesn't exist yet".
+     */
+    submitAdd() {
+      const input = this.find("[data-cat-new]");
+      const name = input?.value || "";
+      const type = this.#type || "expense";
+      const res = this.#categories.quickCreate(name, { parentId: this.#parentId, type });
+      if (!res.ok) {
+        const err = this.find("[data-cat-add-error]");
+        if (err) err.textContent = res.reason;
+        input?.focus();
+        return;
+      }
+      this.#adding = false;
+      if (this.#mode === "multi") {
+        this.#selected.add(res.category.id);
+        this.#renderBody();
+        this.#renderFootCount();
+      } else if (this.#parentId) {
+        this.choose(res.category.id);
+      } else {
+        this.openParent(res.category.id);
+      }
+    }
+    /** Enter submits the inline add row. @param {KeyboardEvent} e */
+    onAddKey(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.submitAdd();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleAdd(false);
+      }
+    }
+    // ── Rendering ─────────────────────────────────────────────────────────
+    /** @override */
+    renderContent() {
+      const parent = this.#parentId ? this.#categories.find(this.#parentId) : null;
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2 mb-2">
+          ${parent ? `<button type="button" class="btn btn-ghost px-2" onclick="window.__app.catPicker.back()" aria-label="Back">
+                 <i data-lucide="chevron-left"></i>
+               </button>` : ""}
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold truncate">${parent ? this.esc(parent.name) : this.esc(this.#title)}</div>
+            ${parent ? `<div class="sheet-note">Choose a subcategory</div>` : ""}
+          </div>
+          <button type="button" class="btn btn-ghost px-2" onclick="window.__app.catPicker.close()" aria-label="Close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <input class="input" data-cat-search type="search" autocomplete="off"
+               placeholder="Search all categories\u2026"
+               value="${this.esc(this.#query)}"
+               oninput="window.__app.catPicker.setQuery(this.value)">
+      </div>
+      <div class="sheet-body" data-cat-body>${this.#bodyHtml()}</div>
+      ${this.#footHtml()}`;
+    }
+    #footHtml() {
+      if (this.#mode !== "multi") return "";
+      return `
+      <div class="sheet-foot">
+        <div class="text-xs text-zinc-500" data-cat-count>${this.#countLabel()}</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-ghost" onclick="window.__app.catPicker.chooseNone()">Clear</button>
+        <button type="button" class="btn btn-primary" onclick="window.__app.catPicker.done()">
+          <i data-lucide="check"></i> Done
+        </button>
+      </div>`;
+    }
+    #countLabel() {
+      const n = this.#selected.size;
+      return n === 0 ? "None selected" : `${n} selected`;
+    }
+    #renderFootCount() {
+      const el = this.find("[data-cat-count]");
+      if (el) el.textContent = this.#countLabel();
+    }
+    #bodyHtml() {
+      return this.#query.trim() ? this.#searchHtml() : this.#parentId ? this.#childrenHtml() : this.#parentsHtml();
+    }
+    #renderBody() {
+      this.patch("[data-cat-body]", this.#bodyHtml());
+    }
+    // ── Step 1: parents ───────────────────────────────────────────────────
+    #parentsHtml() {
+      const roots = this.#categories.visibleRoots(this.#type);
+      const orphans = this.#categories.orphans(this.#type);
+      const rows = roots.map((root) => {
+        const kids = this.#categories.visibleChildren(root.id, this.#type);
+        const action = kids.length ? `window.__app.catPicker.openParent('${this.js(root.id)}')` : `window.__app.catPicker.choose('${this.js(root.id)}')`;
+        const selectedHere = kids.length ? kids.some((k) => this.#selected.has(k.id)) || this.#selected.has(root.id) : this.#selected.has(root.id);
+        const pickedCount = kids.filter((k) => this.#selected.has(k.id)).length;
+        const trailing = kids.length ? `<span class="sheet-row-meta">${pickedCount ? `${pickedCount} of ${kids.length}` : kids.length}</span>
+           <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px"></i>` : this.#tick(this.#selected.has(root.id));
+        return `
+        <button type="button" class="sheet-row ${selectedHere ? "is-selected" : ""}" onclick="${action}">
+          <span class="sheet-dot" style="background:${this.esc(root.color || "#a1a1aa")}"></span>
+          <span class="sheet-row-name">${this.esc(root.name)}</span>
+          ${trailing}
+        </button>`;
+      }).join("");
+      const orphanRows = orphans.length ? `<div class="sheet-crumb mt-2 px-1">Ungrouped</div>` + orphans.map((c) => this.#leafRow(c, false)).join("") : "";
+      const none = this.#mode === "single" ? `<button type="button" class="sheet-row" onclick="window.__app.catPicker.chooseNone()">
+           <span class="sheet-dot" style="background:#d4d4d8"></span>
+           <span class="sheet-row-name text-zinc-500">Uncategorised</span>
+           ${this.#tick(this.#selected.size === 0)}
+         </button>` : "";
+      const empty = !roots.length && !orphans.length ? `<div class="sheet-empty">No categories yet \u2014 add your first one below.</div>` : "";
+      return none + rows + orphanRows + empty + this.#addHtml("parent");
+    }
+    // ── Step 2: subcategories ─────────────────────────────────────────────
+    #childrenHtml() {
+      const parent = this.#categories.find(this.#parentId);
+      if (!parent) {
+        this.#parentId = null;
+        return this.#parentsHtml();
+      }
+      const kids = this.#categories.visibleChildren(this.#parentId, this.#type);
+      const wholeGroup = this.#mode === "multi" ? `<button type="button" class="sheet-row ${this.#selected.has(parent.id) ? "is-selected" : ""}"
+                 onclick="window.__app.catPicker.choose('${this.js(parent.id)}')">
+           <span class="sheet-dot" style="background:${this.esc(parent.color || "#a1a1aa")}"></span>
+           <span class="sheet-row-name">Whole group \xB7 ${this.esc(parent.name)}</span>
+           ${this.#tick(this.#selected.has(parent.id))}
+         </button>
+         <div class="sheet-crumb px-1 mt-1">Or pick specific subcategories</div>` : "";
+      const rows = kids.map((c) => this.#leafRow(c, false)).join("") || `<div class="sheet-empty">No subcategories in ${this.esc(parent.name)} yet.</div>`;
+      return wholeGroup + rows + this.#addHtml("child", parent.name);
+    }
+    // ── Search results ────────────────────────────────────────────────────
+    #searchHtml() {
+      const hits = this.#categories.search(this.#query, this.#type);
+      if (!hits.length) {
+        return `<div class="sheet-empty">Nothing matches \u201C${this.esc(this.#query.trim())}\u201D.</div>`;
+      }
+      return hits.map((c) => {
+        const isGroup = !c.parentId && this.#categories.hasChildren(c.id, this.#type);
+        if (isGroup && this.#mode === "single") {
+          return `
+          <button type="button" class="sheet-row" onclick="window.__app.catPicker.openParent('${this.js(c.id)}')">
+            <span class="sheet-dot" style="background:${this.esc(c.color || "#a1a1aa")}"></span>
+            <span class="sheet-row-name">${this.esc(c.name)}</span>
+            <span class="sheet-row-meta">group</span>
+            <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px"></i>
+          </button>`;
+        }
+        return this.#leafRow(c, true);
+      }).join("");
+    }
+    // ── Shared row + add-row builders ─────────────────────────────────────
+    /**
+     * One selectable category row.
+     * @param {object}  c
+     * @param {boolean} showPath  prefix with the parent name (search results)
+     */
+    #leafRow(c, showPath) {
+      const parent = c.parentId ? this.#categories.find(c.parentId) : null;
+      const label = showPath && parent ? `<span class="text-zinc-500">${this.esc(parent.name)} / </span>${this.esc(c.name)}` : this.esc(c.name);
+      return `
+      <button type="button" class="sheet-row ${this.#selected.has(c.id) ? "is-selected" : ""}"
+              onclick="window.__app.catPicker.choose('${this.js(c.id)}')">
+        <span class="sheet-dot" style="background:${this.esc(c.color || "#a1a1aa")}"></span>
+        <span class="sheet-row-name">${label}</span>
+        ${this.#tick(this.#selected.has(c.id))}
+      </button>`;
+    }
+    #tick(on) {
+      return on ? `<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>` : `<span style="width:15px;height:15px;flex-shrink:0"></span>`;
+    }
+    /**
+     * The inline quick-add row. Name only — icon and colour are derived from the
+     * name by CategoryService.guessAppearance(), so adding never interrupts the
+     * transaction the user is in the middle of entering.
+     * @param {'parent'|'child'} kind
+     * @param {string} [parentName]
+     */
+    #addHtml(kind, parentName = "") {
+      if (!this.#allowAdd) return "";
+      const label = kind === "parent" ? "New parent category" : `New subcategory in ${this.esc(parentName)}`;
+      if (!this.#adding) {
+        return `
+        <button type="button" class="sheet-row text-zinc-500 mt-1" onclick="window.__app.catPicker.toggleAdd(true)">
+          <i data-lucide="plus" style="width:15px;height:15px"></i>
+          <span class="sheet-row-name">${label}</span>
+        </button>`;
+      }
+      return `
+      <div class="px-1 pt-2">
+        <div class="sheet-note mb-1">${label}</div>
+        <div class="sheet-inline-form">
+          <input class="input" data-cat-new placeholder="Name" autocomplete="off"
+                 onkeydown="window.__app.catPicker.onAddKey(event)">
+          <button type="button" class="btn btn-primary" onclick="window.__app.catPicker.submitAdd()">Add</button>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.catPicker.toggleAdd(false)">Cancel</button>
+        </div>
+        <div class="sheet-note text-rose-500 mt-1" data-cat-add-error></div>
+      </div>`;
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/AccountGroupSheet.js
+  var AccountGroupSheet = class extends OverlaySheet {
+    /** @type {Store} */
+    #store;
+    /** @type {import('../../domain/services/AccountGroupService.js').AccountGroupService} */
+    #groups;
+    /** @type {import('../../domain/services/CurrencyService.js').CurrencyService} */
+    #fx;
+    // ── Per-open session state ────────────────────────────────────────────
+    #groupId = null;
+    // null → group list; otherwise the open group's members
+    #editing = null;
+    // group id being renamed
+    #adding = false;
+    #error = "";
+    #onClose = null;
+    /** Working member selection while a group's tick-list is open. */
+    #picked = (
+      /** @type {Set<string>} */
+      /* @__PURE__ */ new Set()
+    );
+    /**
+     * @param {object} deps
+     * @param {Store}  [deps.store]
+     * @param {object} deps.accountGroupService
+     * @param {object} deps.currencyService
+     */
+    constructor({ store, accountGroupService, currencyService }) {
+      super({ id: "accountGroupSheetRoot" });
+      this.#store = store || Store.getInstance();
+      this.#groups = accountGroupService;
+      this.#fx = currencyService;
+    }
+    // ── Public API ────────────────────────────────────────────────────────
+    /** @param {object} [cfg] @param {() => void} [cfg.onClose] */
+    open({ onClose } = {}) {
+      this.#groupId = null;
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.#picked = /* @__PURE__ */ new Set();
+      this.#onClose = typeof onClose === "function" ? onClose : null;
+      this.show();
+    }
+    /** @override */
+    onClosed() {
+      const cb = this.#onClose;
+      this.#onClose = null;
+      cb?.();
+    }
+    // ── Navigation ────────────────────────────────────────────────────────
+    /** Open a group's member tick-list. @param {string} id */
+    openGroup(id) {
+      this.#groupId = id;
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.#picked = new Set(this.#groups.accountsIn(id).map((a) => a.id));
+      this.render();
+    }
+    /** Back to the group list. */
+    back() {
+      this.#groupId = null;
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+    }
+    // ── Group CRUD ────────────────────────────────────────────────────────
+    /** @param {string} id */
+    edit(id) {
+      this.#editing = id;
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+      this.focusLater("[data-grp-input]");
+    }
+    startAdd() {
+      this.#adding = true;
+      this.#editing = null;
+      this.#error = "";
+      this.render();
+      this.focusLater("[data-grp-input]");
+    }
+    cancel() {
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+    }
+    /** Commit the rename or the new group. */
+    submit() {
+      const value = this.find("[data-grp-input]")?.value || "";
+      if (this.#editing) {
+        const res2 = this.#groups.rename(this.#editing, value);
+        if (!res2.ok) {
+          this.#error = res2.reason;
+          this.render();
+          this.focusLater("[data-grp-input]");
+          return;
+        }
+        this.#editing = null;
+        this.#error = "";
+        this.render();
+        return;
+      }
+      const res = this.#groups.create(value);
+      if (!res.ok) {
+        this.#error = res.reason;
+        this.render();
+        this.focusLater("[data-grp-input]");
+        return;
+      }
+      this.#adding = false;
+      this.#error = "";
+      this.openGroup(res.group.id);
+    }
+    /** @param {string} id */
+    remove(id) {
+      const res = this.#groups.delete(id);
+      this.#error = res.ok ? "" : res.reason;
+      if (res.ok && this.#groupId === id) this.#groupId = null;
+      this.render();
+    }
+    /** @param {KeyboardEvent} e */
+    onKey(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.submit();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.cancel();
+      }
+    }
+    // ── Bulk membership ───────────────────────────────────────────────────
+    /** Tick / untick an account in the open group. @param {string} accountId */
+    toggleAccount(accountId) {
+      if (this.#picked.has(accountId)) this.#picked.delete(accountId);
+      else this.#picked.add(accountId);
+      this.render();
+    }
+    /** Tick every account currently listed. */
+    pickAll() {
+      for (const a of this.#store.getState().accounts) this.#picked.add(a.id);
+      this.render();
+    }
+    /** Untick everything. */
+    pickNone() {
+      this.#picked.clear();
+      this.render();
+    }
+    /** Apply the tick-list to the open group. */
+    applyMembers() {
+      if (!this.#groupId) return;
+      const moved = this.#groups.setMembers(this.#groupId, [...this.#picked]);
+      this.#error = "";
+      this.back();
+      if (moved) this.#toast(`${moved} account${moved === 1 ? "" : "s"} updated`);
+    }
+    // ── Group by currency ─────────────────────────────────────────────────
+    /**
+     * Replace the whole arrangement with one group per currency. Destructive to
+     * any hand-made grouping, so it confirms first.
+     */
+    groupByCurrency() {
+      const accounts = this.#store.getState().accounts || [];
+      const distinct = new Set(accounts.map((a) => (a.currency || "").toUpperCase()).filter(Boolean));
+      if (!distinct.size) {
+        this.#error = "No accounts to group";
+        this.render();
+        return;
+      }
+      const ok = window.confirm(
+        `Regroup all ${accounts.length} account${accounts.length === 1 ? "" : "s"} into ${distinct.size} currency group${distinct.size === 1 ? "" : "s"}?
+
+This replaces your current grouping.`
+      );
+      if (!ok) return;
+      const res = this.#groups.groupByCurrency();
+      this.#error = "";
+      this.render();
+      this.#toast(`Grouped into ${res.groups} currenc${res.groups === 1 ? "y" : "ies"}`);
+    }
+    #toast(message) {
+      window.__app?.showToast?.(message);
+    }
+    // ── Rendering ─────────────────────────────────────────────────────────
+    /** @override */
+    renderContent() {
+      return this.#groupId ? this.#membersView() : this.#listView();
+    }
+    #listView() {
+      const groups = this.#groups.all();
+      const ungrouped = this.#groups.ungrouped();
+      const rows = groups.map((g) => {
+        if (this.#editing === g.id) return this.#inputRow(g.name);
+        const n = this.#groups.accountsIn(g.id).length;
+        return `
+        <div class="sheet-row sheet-row-static">
+          <span class="sheet-dot" style="background:${this.safeColor(g.color)}"></span>
+          <button type="button" class="sheet-row-name text-left"
+                  style="background:none;border:none;color:inherit;font:inherit;cursor:pointer"
+                  onclick="window.__app.accountGroupSheet.openGroup('${this.js(g.id)}')">
+            ${this.esc(g.name)}
+          </button>
+          <span class="sheet-row-meta">${n} account${n === 1 ? "" : "s"}</span>
+          <button type="button" class="btn btn-ghost px-2" title="Rename"
+                  onclick="window.__app.accountGroupSheet.edit('${this.js(g.id)}')">
+            <i data-lucide="pencil" style="width:14px;height:14px"></i>
+          </button>
+          <button type="button" class="btn btn-ghost px-2 text-rose-500" title="Delete"
+                  onclick="window.__app.accountGroupSheet.remove('${this.js(g.id)}')">
+            <i data-lucide="trash-2" style="width:14px;height:14px"></i>
+          </button>
+          <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px"></i>
+        </div>`;
+      }).join("");
+      const empty = groups.length ? "" : `<div class="sheet-empty">No groups yet \u2014 create one, or group by currency.</div>`;
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold">Account groups</div>
+            <div class="sheet-note">Tap a group to choose which accounts belong to it</div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.accountGroupSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body">
+        ${this.#error ? `<div class="sheet-note text-rose-500 px-2 pb-1">${this.esc(this.#error)}</div>` : ""}
+        ${rows}${empty}
+        ${this.#adding ? this.#inputRow("") : `
+          <button type="button" class="sheet-row text-zinc-500 mt-1"
+                  onclick="window.__app.accountGroupSheet.startAdd()">
+            <i data-lucide="plus" style="width:15px;height:15px"></i>
+            <span class="sheet-row-name">New group</span>
+          </button>`}
+        <button type="button" class="sheet-row text-zinc-500"
+                onclick="window.__app.accountGroupSheet.groupByCurrency()">
+          <i data-lucide="coins" style="width:15px;height:15px"></i>
+          <span class="sheet-row-name">Group by currency</span>
+          <span class="sheet-row-meta">replaces current grouping</span>
+        </button>
+        ${ungrouped.length ? `
+          <div class="sheet-crumb px-1 mt-3">Ungrouped \xB7 ${ungrouped.length}</div>
+          ${ungrouped.map((a) => `
+            <div class="sheet-row sheet-row-static">
+              <span class="sheet-dot" style="background:${this.safeColor(a.color, "#a1a1aa")}"></span>
+              <span class="sheet-row-name">${this.esc(a.name)}</span>
+              <span class="sheet-row-meta">${this.esc(a.currency)}</span>
+            </div>`).join("")}` : ""}
+      </div>
+      <div class="sheet-foot">
+        <div class="sheet-note">Deleting a group never deletes its accounts</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-primary"
+                onclick="window.__app.accountGroupSheet.close()">Done</button>
+      </div>`;
+    }
+    #membersView() {
+      const group = this.#groups.find(this.#groupId);
+      if (!group) {
+        this.#groupId = null;
+        return this.#listView();
+      }
+      const accounts = this.#store.getState().accounts || [];
+      const rows = accounts.map((a) => {
+        const on = this.#picked.has(a.id);
+        const other = a.groupId && a.groupId !== this.#groupId ? this.#groups.find(a.groupId)?.name : null;
+        return `
+        <button type="button" class="sheet-row ${on ? "is-selected" : ""}"
+                onclick="window.__app.accountGroupSheet.toggleAccount('${this.js(a.id)}')">
+          <span class="sheet-dot" style="background:${this.safeColor(a.color, "#a1a1aa")}"></span>
+          <span class="sheet-row-name">
+            ${this.esc(a.name)}
+            ${other ? `<span class="sheet-row-meta"> \xB7 in ${this.esc(other)}</span>` : ""}
+          </span>
+          <span class="sheet-row-meta">${this.esc(a.currency)}</span>
+          ${on ? `<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>` : `<span style="width:15px;height:15px;flex-shrink:0"></span>`}
+        </button>`;
+      }).join("") || `<div class="sheet-empty">No accounts yet.</div>`;
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <button type="button" class="btn btn-ghost px-2" aria-label="Back"
+                  onclick="window.__app.accountGroupSheet.back()">
+            <i data-lucide="chevron-left"></i>
+          </button>
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold truncate">${this.esc(group.name)}</div>
+            <div class="sheet-note">Tick the accounts that belong here</div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.accountGroupSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body">${rows}</div>
+      <div class="sheet-foot">
+        <div class="text-xs text-zinc-500">${this.#picked.size} selected</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-ghost" onclick="window.__app.accountGroupSheet.pickNone()">None</button>
+        <button type="button" class="btn btn-ghost" onclick="window.__app.accountGroupSheet.pickAll()">All</button>
+        <button type="button" class="btn btn-primary" onclick="window.__app.accountGroupSheet.applyMembers()">
+          <i data-lucide="check"></i> Save
+        </button>
+      </div>`;
+    }
+    /** Shared rename / create input row. */
+    #inputRow(value) {
+      return `
+      <div class="px-1 py-2">
+        <div class="sheet-inline-form">
+          <input class="input" data-grp-input autocomplete="off" placeholder="Group name"
+                 value="${this.esc(value)}"
+                 onkeydown="window.__app.accountGroupSheet.onKey(event)">
+          <button type="button" class="btn btn-primary" onclick="window.__app.accountGroupSheet.submit()">Save</button>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.accountGroupSheet.cancel()">Cancel</button>
+        </div>
+      </div>`;
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/AccountShareSheet.js
+  var AccountShareSheet = class extends OverlaySheet {
+    /** @type {Store} */
+    #store;
+    /** @type {FamilyShareService} */
+    #shares;
+    /** @type {object} */
+    #sync;
+    // ── Per-open session state ────────────────────────────────────────────
+    #accountId = null;
+    #memberId = null;
+    // member whose level list is open
+    #error = "";
+    #onClose = null;
+    /**
+     * @param {object} deps
+     * @param {Store}              [deps.store]
+     * @param {FamilyShareService} deps.familyShareService
+     * @param {object}             deps.syncService
+     */
+    constructor({ store, familyShareService, syncService }) {
+      super({ id: "accountShareSheetRoot" });
+      this.#store = store || Store.getInstance();
+      this.#shares = familyShareService;
+      this.#sync = syncService;
+    }
+    // ── Public API ────────────────────────────────────────────────────────
+    /**
+     * @param {string} accountId
+     * @param {object} [cfg]
+     * @param {() => void} [cfg.onClose]
+     */
+    open(accountId, { onClose } = {}) {
+      this.#accountId = accountId;
+      this.#memberId = null;
+      this.#error = "";
+      this.#onClose = typeof onClose === "function" ? onClose : null;
+      this.show();
+    }
+    /** @override */
+    onClosed() {
+      const cb = this.#onClose;
+      this.#onClose = null;
+      cb?.();
+    }
+    // ── Interaction ───────────────────────────────────────────────────────
+    /** Expand the access-level choices for one member. @param {string} memberId */
+    pick(memberId) {
+      this.#memberId = this.#memberId === memberId ? null : memberId;
+      this.#error = "";
+      this.render();
+    }
+    /**
+     * Apply an access level. `access` of '' means revoke.
+     * @param {string} memberId
+     * @param {string} access
+     */
+    setAccess(memberId, access) {
+      const level = access || null;
+      const res = this.#shares.setAccess(memberId, this.#accountId, level);
+      if (!res.ok) {
+        this.#error = res.reason;
+        this.render();
+        return;
+      }
+      if (res.wasLast && res.member?.email) {
+        this.#sync?.revokeMemberShare?.(res.member.email);
+      }
+      this.#memberId = null;
+      this.#error = "";
+      this.render();
+      const name = res.member?.name || "member";
+      window.__app?.showToast?.(
+        level ? `Shared with ${name}` : `Stopped sharing with ${name}`
+      );
+    }
+    /** Remove every member's access to this account. */
+    unshareAll() {
+      const affected = this.#shares.unshareAccount(this.#accountId);
+      for (const { member, wasLast } of affected) {
+        if (wasLast && member.email) this.#sync?.revokeMemberShare?.(member.email);
+      }
+      this.#error = "";
+      this.render();
+      if (affected.length) {
+        window.__app?.showToast?.(`Stopped sharing with ${affected.length} member${affected.length === 1 ? "" : "s"}`);
+      }
+    }
+    /** Hand off to the existing member modal to invite someone new. */
+    invite() {
+      this.close();
+      window.__app?.openModal?.("familyMember", {});
+    }
+    // ── Rendering ─────────────────────────────────────────────────────────
+    /** @override */
+    renderContent() {
+      const account = (this.#store.getState().accounts || []).find((a) => a.id === this.#accountId);
+      if (!account) return this.#missing();
+      const members = this.#shares.members();
+      const shared = this.#shares.sharedWith(this.#accountId);
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <span class="sheet-dot" style="background:${this.safeColor(account.color, "#818cf8")}"></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold truncate">Share \xB7 ${this.esc(account.name)}</div>
+            <div class="sheet-note">
+              ${shared.length ? `Shared with ${shared.length} member${shared.length === 1 ? "" : "s"}` : "Not shared with anyone yet"}
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.accountShareSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body">
+        ${this.#error ? `<div class="sheet-note text-rose-500 px-2 pb-1">${this.esc(this.#error)}</div>` : ""}
+        ${members.length ? members.map((m) => this.#memberRow(m)).join("") : `<div class="sheet-empty">No family members yet \u2014 invite someone to start sharing.</div>`}
+        <button type="button" class="sheet-row text-zinc-500 mt-1"
+                onclick="window.__app.accountShareSheet.invite()">
+          <i data-lucide="user-plus" style="width:15px;height:15px"></i>
+          <span class="sheet-row-name">Invite someone</span>
+        </button>
+        ${shared.length ? `
+          <button type="button" class="sheet-row text-rose-500 mt-1"
+                  onclick="window.__app.accountShareSheet.unshareAll()">
+            <i data-lucide="user-minus" style="width:15px;height:15px"></i>
+            <span class="sheet-row-name">Stop sharing with everyone</span>
+          </button>` : ""}
+      </div>
+      <div class="sheet-foot">
+        <div class="sheet-note">Changes sync to their device right away</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-primary"
+                onclick="window.__app.accountShareSheet.close()">Done</button>
+      </div>`;
+    }
+    /** One member row, expanding into the access-level choices when tapped. */
+    #memberRow(m) {
+      const access = this.#shares.accessFor(m.id, this.#accountId);
+      const level = FamilyShareService.levels.find((l) => l.id === access);
+      const open = this.#memberId === m.id;
+      const header = `
+      <button type="button" class="sheet-row ${access ? "is-selected" : ""}"
+              onclick="window.__app.accountShareSheet.pick('${this.js(m.id)}')">
+        <span class="sheet-dot" style="background:${this.safeColor(m.color, "#a1a1aa")}"></span>
+        <span class="sheet-row-name">
+          ${this.esc(m.name || m.email || "Member")}
+          ${m.email ? `<span class="sheet-row-meta"> \xB7 ${this.esc(m.email)}</span>` : ""}
+        </span>
+        <span class="sheet-row-meta" ${level ? `style="color:${this.safeColor(level.color)}"` : ""}>
+          ${level ? this.esc(level.label) : "No access"}
+        </span>
+        <i data-lucide="${open ? "chevron-down" : "chevron-right"}" class="text-zinc-400"
+           style="width:15px;height:15px"></i>
+      </button>`;
+      if (!open) return header;
+      const choices = [
+        ...FamilyShareService.levels.map((l) => ({
+          id: l.id,
+          label: l.label,
+          desc: l.desc,
+          color: l.color,
+          icon: l.icon
+        })),
+        { id: "", label: "No access", desc: "Remove this account from their view", color: "#71717a", icon: "ban" }
+      ].map((l) => {
+        const on = (access || "") === l.id;
+        return `
+        <button type="button" class="sheet-row ${on ? "is-selected" : ""}" style="padding-left:2rem"
+                onclick="window.__app.accountShareSheet.setAccess('${this.js(m.id)}','${this.js(l.id)}')">
+          <i data-lucide="${this.safeIcon(l.icon)}" style="width:14px;height:14px;color:${this.safeColor(l.color)}"></i>
+          <span class="sheet-row-name">
+            ${this.esc(l.label)}
+            <span class="sheet-row-meta"> \xB7 ${this.esc(l.desc)}</span>
+          </span>
+          ${on ? `<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>` : ""}
+        </button>`;
+      }).join("");
+      const noEmail = !m.email ? `<div class="sheet-note text-amber-600 px-3 pb-1">
+           Add an email to this member so the share can reach their device.
+         </div>` : "";
+      return header + noEmail + choices;
+    }
+    #missing() {
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 text-base font-semibold">Share</div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.accountShareSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body"><div class="sheet-empty">That account no longer exists.</div></div>`;
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/PaymentMethodSheet.js
+  var PaymentMethodSheet = class extends OverlaySheet {
+    /** @type {import('../../domain/services/PaymentTypeService.js').PaymentTypeService} */
+    #service;
+    // ── Per-open session state ────────────────────────────────────────────
+    #editing = null;
+    // name currently being renamed
+    #adding = false;
+    #error = "";
+    #onClose = null;
+    // (renames: Map<string,string>) => void
+    /** old name → new name, so the caller can follow a rename it had selected. */
+    #renames = /* @__PURE__ */ new Map();
+    /**
+     * @param {object} deps
+     * @param {import('../../domain/services/PaymentTypeService.js').PaymentTypeService} deps.paymentTypeService
+     */
+    constructor({ paymentTypeService }) {
+      super({ id: "paymentSheetRoot" });
+      this.#service = paymentTypeService;
+    }
+    // ── Public API ────────────────────────────────────────────────────────
+    /**
+     * @param {object} [cfg]
+     * @param {(renames: Map<string,string>) => void} [cfg.onClose]
+     *   Called once the sheet closes, with every rename applied while it was
+     *   open, so the caller can re-point a selection at its new name.
+     */
+    open({ onClose } = {}) {
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.#renames = /* @__PURE__ */ new Map();
+      this.#onClose = typeof onClose === "function" ? onClose : null;
+      this.show();
+    }
+    /** @override */
+    onClosed() {
+      const cb = this.#onClose;
+      this.#onClose = null;
+      cb?.(this.#renames);
+    }
+    // ── Interaction handlers ──────────────────────────────────────────────
+    /** Begin renaming a method. @param {string} name */
+    edit(name) {
+      this.#editing = name;
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+      this.focusLater("[data-pm-input]");
+    }
+    /** Leave rename / add mode. */
+    cancel() {
+      this.#editing = null;
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+    }
+    /** Show the "new method" row. */
+    startAdd() {
+      this.#adding = true;
+      this.#editing = null;
+      this.#error = "";
+      this.render();
+      this.focusLater("[data-pm-input]");
+    }
+    /** Commit the rename or the addition, depending on which row is open. */
+    submit() {
+      const value = this.find("[data-pm-input]")?.value || "";
+      if (this.#editing !== null) {
+        const res = this.#service.rename(this.#editing, value);
+        if (!res.ok) {
+          this.#error = res.reason;
+          this.render();
+          this.focusLater("[data-pm-input]");
+          return;
+        }
+        for (const [from, to] of this.#renames) if (to === this.#editing) this.#renames.set(from, res.name);
+        if (![...this.#renames.values()].includes(res.name)) this.#renames.set(this.#editing, res.name);
+        this.#editing = null;
+        this.#error = "";
+        this.render();
+        return;
+      }
+      const added = this.#service.addCustom(value);
+      if (!added) {
+        this.#error = "Enter a name";
+        this.render();
+        this.focusLater("[data-pm-input]");
+        return;
+      }
+      this.#adding = false;
+      this.#error = "";
+      this.render();
+    }
+    /**
+     * Delete a method. Blocked while transactions still reference it; the reason
+     * (with the count) is shown inline rather than as a transient toast.
+     * @param {string} name
+     */
+    remove(name) {
+      const res = this.#service.remove(name);
+      this.#error = res.ok ? "" : res.reason;
+      this.render();
+    }
+    /** Bring back every built-in the user has deleted. */
+    restoreBuiltIns() {
+      this.#service.restoreBuiltIns();
+      this.#error = "";
+      this.render();
+    }
+    /** @param {KeyboardEvent} e */
+    onKey(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.submit();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.cancel();
+      }
+    }
+    // ── Rendering ─────────────────────────────────────────────────────────
+    /** @override */
+    renderContent() {
+      const types = this.#service.allTypes();
+      const hasDeleted = this.#service.hiddenTypes().length > 0;
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold">Payment methods</div>
+            <div class="sheet-note">Rename or remove the methods you use</div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" onclick="window.__app.paymentSheet.close()" aria-label="Close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body">
+        ${this.#error ? `<div class="sheet-note text-rose-500 px-2 pb-1">${this.esc(this.#error)}</div>` : ""}
+        ${types.map((t) => this.#row(t)).join("")}
+        ${this.#addHtml()}
+        ${hasDeleted ? `<button type="button" class="sheet-row text-zinc-500 mt-2"
+                     onclick="window.__app.paymentSheet.restoreBuiltIns()">
+               <i data-lucide="rotate-ccw" style="width:15px;height:15px"></i>
+               <span class="sheet-row-name">Restore deleted defaults</span>
+             </button>` : ""}
+      </div>
+      <div class="sheet-foot">
+        <div class="sheet-note">Renaming updates every transaction that used it</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-primary" onclick="window.__app.paymentSheet.close()">Done</button>
+      </div>`;
+    }
+    /** One method row — either its normal display or the open rename input. */
+    #row(name) {
+      if (this.#editing === name) return this.#inputRow(name);
+      const used = this.#service.usageCount(name);
+      const arg = Html.js(name);
+      return `
+      <div class="sheet-row sheet-row-static">
+        <span class="sheet-row-name">${this.esc(this.#label(name))}</span>
+        ${used ? `<span class="sheet-row-meta">in use ${used}</span>` : ""}
+        <button type="button" class="btn btn-ghost px-2" title="Rename"
+                onclick="window.__app.paymentSheet.edit('${arg}')">
+          <i data-lucide="pencil" style="width:14px;height:14px"></i>
+        </button>
+        ${used ? `<span style="width:30px;flex-shrink:0"></span>` : `<button type="button" class="btn btn-ghost px-2 text-rose-500" title="Delete"
+                     onclick="window.__app.paymentSheet.remove('${arg}')">
+               <i data-lucide="trash-2" style="width:14px;height:14px"></i>
+             </button>`}
+      </div>`;
+    }
+    /** The shared rename / add input row. */
+    #inputRow(value = "") {
+      return `
+      <div class="px-1 py-2">
+        <div class="sheet-inline-form">
+          <input class="input" data-pm-input autocomplete="off" placeholder="Method name"
+                 value="${this.esc(value)}"
+                 onkeydown="window.__app.paymentSheet.onKey(event)">
+          <button type="button" class="btn btn-primary" onclick="window.__app.paymentSheet.submit()">Save</button>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.paymentSheet.cancel()">Cancel</button>
+        </div>
+      </div>`;
+    }
+    #addHtml() {
+      if (this.#adding) return this.#inputRow("");
+      if (this.#editing !== null) return "";
+      return `
+      <button type="button" class="sheet-row text-zinc-500 mt-1" onclick="window.__app.paymentSheet.startAdd()">
+        <i data-lucide="plus" style="width:15px;height:15px"></i>
+        <span class="sheet-row-name">New method</span>
+      </button>`;
+    }
+    /** Built-ins are stored lowercase; show them capitalised like the dropdown. */
+    #label(name) {
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/components/CategoryField.js
+  var CategoryField = class _CategoryField {
+    /**
+     * @param {object}   cfg
+     * @param {string}   cfg.id                       unique DOM id for the field
+     * @param {string}   cfg.name                     form field name ('categoryId')
+     * @param {string[]|string|null} [cfg.value]      selected id(s)
+     * @param {'single'|'multi'} [cfg.mode='single']
+     * @param {string|null} [cfg.type=null]           type filter for the picker
+     * @param {string}   [cfg.title]                  sheet heading
+     * @param {string}   [cfg.placeholder]            shown when nothing is chosen
+     * @param {string}   [cfg.onPick]                 optional window.__app method
+     *                                                called as (fieldId, ids) after a pick
+     * @param {object[]} cfg.categories               full category list (for labelling)
+     * @returns {string} HTML
+     */
+    static render({
+      id,
+      name,
+      value = null,
+      mode = "single",
+      type = null,
+      title = "",
+      placeholder = "\u2014 Uncategorised \u2014",
+      onPick = "",
+      categories = []
+    }) {
+      const ids = _CategoryField.#toIds(value);
+      const esc = _CategoryField.#esc;
+      const label = _CategoryField.#labelFor(ids, categories, placeholder);
+      const dot = _CategoryField.#dotFor(ids, categories);
+      return `
+      <div id="${esc(id)}" class="cat-field"
+           data-cat-field
+           data-name="${esc(name)}"
+           data-mode="${esc(mode)}"
+           data-type="${esc(type || "")}"
+           data-title="${esc(title)}"
+           data-placeholder="${esc(placeholder)}"
+           data-onpick="${esc(onPick)}">
+        ${_CategoryField.#hiddenInputs(name, ids)}
+        <button type="button" class="select flex items-center gap-2 text-left"
+                onclick="window.__app.openCategoryPicker('${Html.js(id)}')">
+          ${dot}
+          <span class="flex-1 min-w-0 truncate" data-cat-label>${label}</span>
+          <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px;flex-shrink:0"></i>
+        </button>
+      </div>`;
+    }
+    /**
+     * Read the currently-selected ids out of a rendered field.
+     * @param {HTMLElement} el
+     * @returns {string[]}
+     */
+    static getValue(el) {
+      if (!el) return [];
+      return [...el.querySelectorAll("input[type=hidden]")].map((i) => i.value).filter(Boolean);
+    }
+    /**
+     * Replace the field's value and repaint its label in place.
+     * @param {HTMLElement} el
+     * @param {string[]}    ids
+     * @param {object[]}    categories
+     */
+    static setValue(el, ids, categories = []) {
+      if (!el) return;
+      const name = el.dataset.name || "categoryId";
+      const placeholder = el.dataset.placeholder || "\u2014 Uncategorised \u2014";
+      const clean = (ids || []).filter(Boolean);
+      el.querySelectorAll("input[type=hidden]").forEach((i) => i.remove());
+      el.insertAdjacentHTML("afterbegin", _CategoryField.#hiddenInputs(name, clean));
+      const labelEl = el.querySelector("[data-cat-label]");
+      if (labelEl) labelEl.innerHTML = _CategoryField.#labelFor(clean, categories, placeholder);
+      const btn = el.querySelector("button");
+      const old = btn?.querySelector("[data-cat-dot]");
+      if (btn) {
+        const dotHtml = _CategoryField.#dotFor(clean, categories);
+        if (old) old.outerHTML = dotHtml;
+        else btn.insertAdjacentHTML("afterbegin", dotHtml);
+      }
+    }
+    // ── Private ───────────────────────────────────────────────────────────
+    /**
+     * Multi-select fields emit one hidden input per id so getAll() sees an array;
+     * single-select fields always emit exactly one input (empty when cleared) so
+     * Object.fromEntries() still produces the key.
+     */
+    static #hiddenInputs(name, ids) {
+      const esc = _CategoryField.#esc;
+      if (!ids.length) return `<input type="hidden" name="${esc(name)}" value="">`;
+      return ids.map((v) => `<input type="hidden" name="${esc(name)}" value="${esc(v)}">`).join("");
+    }
+    static #labelFor(ids, categories, placeholder) {
+      const esc = _CategoryField.#esc;
+      if (!ids.length) return `<span class="text-zinc-500">${esc(placeholder)}</span>`;
+      const byId = new Map(categories.map((c) => [c.id, c]));
+      const full = (id) => {
+        const c = byId.get(id);
+        if (!c) return null;
+        const p = c.parentId ? byId.get(c.parentId) : null;
+        return p ? `${p.name} / ${c.name}` : c.name;
+      };
+      const names = ids.map(full).filter(Boolean);
+      if (!names.length) return `<span class="text-zinc-500">${esc(placeholder)}</span>`;
+      if (names.length === 1) return esc(names[0]);
+      return `${esc(names[0])} <span class="text-zinc-500">+${names.length - 1} more</span>`;
+    }
+    static #dotFor(ids, categories) {
+      const byId = new Map(categories.map((c) => [c.id, c]));
+      const first = ids.map((i) => byId.get(i)).find(Boolean);
+      const color = first?.color || "#d4d4d8";
+      return `<span data-cat-dot class="inline-block rounded-full flex-shrink-0"
+                  style="width:10px;height:10px;background:${_CategoryField.#esc(color)}"></span>`;
+    }
+    static #toIds(value) {
+      if (Array.isArray(value)) return value.filter(Boolean);
+      return value ? [value] : [];
+    }
+    static #esc(s) {
+      return (s ?? "").toString().replace(
+        /[&<>"']/g,
+        (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]
+      );
+    }
+  };
+
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
     #store;
@@ -3606,12 +6000,57 @@ RULES:
     </span>`;
     }
     /**
-     * Escape HTML special characters.
+     * Escape HTML special characters — safe for text and quoted attribute values.
+     * NOT safe for values interpolated into an inline event handler; use jsArg().
      * @param {string|any} s
      * @returns {string}
      */
     escapeHtml(s) {
       return Html.escape(s);
+    }
+    /**
+     * Escape a value that lands inside a single-quoted JS string in an inline
+     * handler, e.g. onclick="fn('${this.jsArg(id)}')".
+     *
+     * escapeHtml() is not sufficient here: the HTML parser decodes character
+     * references in attribute values BEFORE the value becomes the handler body,
+     * so an escaped &#39; turns back into a real quote and ends the string early.
+     * @param {string|any} s
+     * @returns {string}
+     */
+    jsArg(s) {
+      return Html.js(s);
+    }
+    /**
+     * Validate a CSS hex colour, falling back to a neutral grey. Use for any
+     * colour that came from outside this device — notably family-share snapshots,
+     * which are another user's data interpolated into a style attribute.
+     * @param {string|any} c
+     * @param {string} [fallback]
+     * @returns {string}
+     */
+    safeColor(c, fallback = "#71717a") {
+      return Html.color(c, fallback);
+    }
+    /**
+     * Validate a Lucide icon slug, falling back to a safe default.
+     * @param {string|any} name
+     * @param {string} [fallback]
+     * @returns {string}
+     */
+    safeIcon(name, fallback = "circle") {
+      return Html.icon(name, fallback);
+    }
+    /**
+     * `step` for a money <input type="number">, derived from the currency's minor
+     * unit. A hard-coded 0.01 makes the third decimal unreachable in KWD, BHD,
+     * OMR, TND, JOD, IQD and LYD — the browser rejects 1.234 with a step mismatch
+     * and refuses to submit — and needlessly allows fractions of a yen.
+     * @param {string} currency
+     * @returns {string} e.g. '1' (JPY), '0.01' (USD), '0.001' (KWD)
+     */
+    amountStep(currency) {
+      return CurrencyService.stepFor(currency);
     }
     /**
      * Empty-state card HTML.
@@ -3649,7 +6088,7 @@ RULES:
     }
   };
 
-  // src/domain/services/ReportService.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/domain/services/ReportService.js
   var ReportService = class {
     /** @type {Store} */
     #store;
@@ -3755,8 +6194,7 @@ RULES:
         for (const c of LedgerMath.contributions(t)) {
           const acc = byId.get(c.accountId);
           if (!acc) continue;
-          const m = Number.isFinite(c.minor) ? c.minor : 0;
-          d += this.#fx.convert(m, c.currency, home);
+          d += Number.isFinite(c.acctMinor) ? this.#fx.convert(c.acctMinor, acc.currency, home) : this.#fx.convert(Number.isFinite(c.minor) ? c.minor : 0, c.currency, home);
         }
         return d;
       };
@@ -3798,7 +6236,7 @@ RULES:
     }
   };
 
-  // src/ui/views/TransactionRowRenderer.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/TransactionRowRenderer.js
   var TransactionRowRenderer = class {
     /** @type {Store} */
     #store;
@@ -4001,7 +6439,7 @@ RULES:
     }
   };
 
-  // src/ui/views/DashboardView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/DashboardView.js
   var DashboardView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -4144,14 +6582,14 @@ RULES:
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${i.cat.color}"></span>
-          <span class="text-zinc-700 dark:text-zinc-300">${i.cat.name}</span>
+          <span class="text-zinc-700 dark:text-zinc-300">${this.escapeHtml(i.cat.name)}</span>
         </div>
         <div class="text-zinc-500">${Math.round(100 * i.amount / total)}%</div>
       </div>`).join("");
     }
   };
 
-  // src/ui/views/TransactionsView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/TransactionsView.js
   var TransactionsView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -4327,11 +6765,12 @@ RULES:
         value: p,
         label: p.charAt(0).toUpperCase() + p.slice(1)
       }));
+      const capitalise = (v) => this.escapeHtml(String(v).charAt(0).toUpperCase() + String(v).slice(1));
       const allActiveChips = [
-        ...f.accountIds.map((v) => `<span class="chip">${this.escapeHtml(accountOpts.find((o) => o.value === v)?.label || v)} <button onclick="window.__app.txFilterToggle('accountIds','${v}')">\xD7</button></span>`),
-        ...f.categoryIds.map((v) => `<span class="chip">${this.escapeHtml(categoryOpts.find((o) => o.value === v)?.label || v)} <button onclick="window.__app.txFilterToggle('categoryIds','${v}')">\xD7</button></span>`),
-        ...f.types.map((v) => `<span class="chip">${v.charAt(0).toUpperCase() + v.slice(1)} <button onclick="window.__app.txFilterToggle('types','${v}')">\xD7</button></span>`),
-        ...f.paymentTypes.map((v) => `<span class="chip">${v.charAt(0).toUpperCase() + v.slice(1)} <button onclick="window.__app.txFilterToggle('paymentTypes','${v}')">\xD7</button></span>`),
+        ...f.accountIds.map((v) => `<span class="chip">${this.escapeHtml(accountOpts.find((o) => o.value === v)?.label || v)} <button onclick="window.__app.txFilterToggle('accountIds','${this.jsArg(v)}')">\xD7</button></span>`),
+        ...f.categoryIds.map((v) => `<span class="chip">${this.escapeHtml(categoryOpts.find((o) => o.value === v)?.label || v)} <button onclick="window.__app.txFilterToggle('categoryIds','${this.jsArg(v)}')">\xD7</button></span>`),
+        ...f.types.map((v) => `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('types','${this.jsArg(v)}')">\xD7</button></span>`),
+        ...f.paymentTypes.map((v) => `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('paymentTypes','${this.jsArg(v)}')">\xD7</button></span>`),
         f.dateFrom || f.dateTo ? `<span class="chip">${f.dateFrom || "\u2026"} \u2192 ${f.dateTo || "\u2026"} <button onclick="window.__app.txFilterClear('dates')">\xD7</button></span>` : "",
         f.range !== "30" && !f.dateFrom && !f.dateTo ? `<span class="chip">${f.range === "all" ? "All time" : "Last " + f.range + "d"} <button onclick="window.__app.txFilterSet('range','30')">\xD7</button></span>` : "",
         f.amountMin || f.amountMax ? `<span class="chip">${f.amountMin || "0"}\u2013${f.amountMax || "\u221E"} ${cur} <button onclick="window.__app.txFilterClear('amounts')">\xD7</button></span>` : ""
@@ -4344,7 +6783,7 @@ RULES:
             <input class="input pl-9" placeholder="Search payee, note or category\u2026"
                    value="${this.escapeHtml(f.search)}"
                    data-focus-key="txSearch"
-                   oninput="window.__app.txFilterSet('search',this.value)" />
+                   oninput="window.__app.txFilterSetDebounced('search',this.value)" />
           </div>
           <button class="btn ${this.#filterOpen ? "btn-primary" : "btn-outline"} relative shrink-0"
                   onclick="window.__app.toggleTxFilterPanel()" title="Advanced filters">
@@ -4403,11 +6842,15 @@ RULES:
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Min amount (${cur})</label>
-          <input class="input" type="number" min="0" step="0.01" placeholder="0.00" value="${f.amountMin}" oninput="window.__app.txFilterSet('amountMin',this.value)">
+          <input class="input" type="number" min="0" step="${this.amountStep(cur)}" placeholder="0.00"
+                 value="${f.amountMin}" data-focus-key="txAmountMin"
+                 oninput="window.__app.txFilterSet('amountMin',this.value)">
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Max amount (${cur})</label>
-          <input class="input" type="number" min="0" step="0.01" placeholder="No limit" value="${f.amountMax}" oninput="window.__app.txFilterSet('amountMax',this.value)">
+          <input class="input" type="number" min="0" step="${this.amountStep(cur)}" placeholder="No limit"
+                 value="${f.amountMax}" data-focus-key="txAmountMax"
+                 oninput="window.__app.txFilterSet('amountMax',this.value)">
         </div>
         ${activeCount ? `
           <div class="md:col-span-2 pt-1 border-t border-zinc-100 dark:border-zinc-800">
@@ -4421,9 +6864,9 @@ RULES:
       const remaining = options.filter((o) => !selected.includes(o.value));
       const chips = selected.map((v) => {
         const lbl = options.find((o) => o.value === v)?.label || v;
-        return `<span class="chip" style="background:#f4f4f5">${this.escapeHtml(lbl)}<button type="button" onclick="window.__app.txFilterToggle('${field}','${v}')" style="margin-left:4px;opacity:.6" title="Remove">\xD7</button></span>`;
+        return `<span class="chip" style="background:#f4f4f5">${this.escapeHtml(lbl)}<button type="button" onclick="window.__app.txFilterToggle('${this.jsArg(field)}','${this.jsArg(v)}')" style="margin-left:4px;opacity:.6" title="Remove">\xD7</button></span>`;
       }).join("");
-      const dropdown = remaining.length ? `<select class="select text-sm mt-1" onchange="if(this.value){window.__app.txFilterToggle('${field}',this.value);this.value=''}">
+      const dropdown = remaining.length ? `<select class="select text-sm mt-1" onchange="if(this.value){window.__app.txFilterToggle('${this.jsArg(field)}',this.value);this.value=''}">
            <option value="">${placeholder}</option>
            ${remaining.map((o) => `<option value="${this.escapeHtml(o.value)}">${this.escapeHtml(o.label)}</option>`).join("")}
          </select>` : selected.length ? `<div class="text-xs text-zinc-400 mt-1">All selected</div>` : "";
@@ -4525,7 +6968,7 @@ RULES:
     }
   };
 
-  // src/ui/views/AccountsView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/AccountsView.js
   var AccountsView = class extends BaseView {
     constructor() {
       super();
@@ -4560,6 +7003,10 @@ RULES:
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllAccountGroups()" title="Expand all groups"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ""}
           ` : ""}
+          <button class="btn btn-outline text-sm" onclick="window.__app.openAccountGroups()"
+                  title="Create, rename and fill account groups">
+            <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
+          </button>
           <button class="btn btn-primary" onclick="window.__app.openModal('account')">
             <i data-lucide="plus"></i> New account
           </button>
@@ -4584,13 +7031,14 @@ RULES:
         (t) => t.accountId === a.id || Array.isArray(t.splits) && t.splits.some((s) => (s.accountId || t.accountId) === a.id)
       ).length;
       const isSharedOut = sharedOutIds.has(a.id);
+      const accColor = this.safeColor(a.color, "#818cf8");
       return `
       <div class="card p-5 relative overflow-hidden ${a.archived ? "opacity-60" : ""} hover:shadow-md transition-shadow cursor-pointer"
-           onclick="window.__app.openAccountDetail('${a.id}')">
-        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${a.color}22"></div>
+           onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}')">
+        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${accColor}22"></div>
         <div class="flex items-start gap-3 relative">
-          <div class="icon-pill" style="background:${a.color};color:white">
-            <i data-lucide="${a.icon || "wallet"}"></i>
+          <div class="icon-pill" style="background:${accColor};color:white">
+            <i data-lucide="${this.safeIcon(a.icon, "wallet")}"></i>
           </div>
           <div class="flex-1">
             <div class="flex items-center gap-2">
@@ -4598,10 +7046,15 @@ RULES:
               ${a.archived ? '<span class="chip">Archived</span>' : ""}
               ${isSharedOut ? `<span title="Shared with family" style="display:inline-flex;align-items:center;gap:2px;font-size:.6rem;background:#818cf822;color:#818cf8;border-radius:6px;padding:1px 5px"><i data-lucide="users" style="width:10px;height:10px"></i> Shared</span>` : ""}
             </div>
-            <div class="text-xs text-zinc-500 capitalize">${a.type} \xB7 ${a.currency} \xB7 ${txCount} transaction${txCount === 1 ? "" : "s"}</div>
+            <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} \xB7 ${this.escapeHtml(a.currency)} \xB7 ${txCount} transaction${txCount === 1 ? "" : "s"}</div>
           </div>
           <button class="btn btn-ghost"
-                  onclick="event.stopPropagation();window.__app.openModal('account',{id:'${a.id}'})"
+                  onclick="event.stopPropagation();window.__app.shareAccount('${this.jsArg(a.id)}')"
+                  title="${isSharedOut ? "Manage who this is shared with" : "Share with family"}">
+            <i data-lucide="${isSharedOut ? "users" : "user-plus"}"></i>
+          </button>
+          <button class="btn btn-ghost"
+                  onclick="event.stopPropagation();window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})"
                   title="Edit account">
             <i data-lucide="pencil"></i>
           </button>
@@ -4622,7 +7075,7 @@ RULES:
       return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"
-                onclick="window.__app.toggleAccountGroupCollapse('${sec.id}')"
+                onclick="window.__app.toggleAccountGroupCollapse('${this.jsArg(sec.id)}')"
                 class="text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 -my-1 p-1"
                 title="${isCollapsed ? "Expand" : "Collapse"} group">
           <i data-lucide="${isCollapsed ? "chevron-right" : "chevron-down"}" style="width:15px;height:15px;display:inline"></i>
@@ -4633,8 +7086,13 @@ RULES:
         <div class="flex-1"></div>
         <span class="text-xs text-zinc-500">${this.formatMoney(totalHome, home)}</span>
         ${sec.id !== "__none__" ? `
-          <button class="text-xs text-zinc-400 hover:text-rose-500 ml-1 p-1"
-                  onclick="window.__app.deleteAccountGroup('${sec.id}')"
+          <button class="text-xs text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 ml-1 p-1"
+                  onclick="window.__app.openAccountGroups()"
+                  title="Rename group or change its accounts">
+            <i data-lucide="pencil" style="width:12px;height:12px"></i>
+          </button>
+          <button class="text-xs text-zinc-400 hover:text-rose-500 p-1"
+                  onclick="window.__app.deleteAccountGroup('${this.jsArg(sec.id)}')"
                   title="Delete group">
             <i data-lucide="trash-2" style="width:12px;height:12px"></i>
           </button>` : ""}
@@ -4647,21 +7105,22 @@ RULES:
           const perm = (share.permission || {})[a.id] || "view";
           const txCount = (share.transactions || []).filter((t) => t.accountId === a.id).length;
           const permLabel = this.#accessLabel(perm);
+          const accColor = this.safeColor(a.color, "#818cf8");
           return `
           <div class="card p-5 relative overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
                style="border-color:#818cf822"
-               onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${si}})">
-            <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${a.color || "#818cf8"}22"></div>
+               onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}',{shareIndex:${Number(si) || 0}})">
+            <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none" style="background:${accColor}22"></div>
             <div class="flex items-start gap-3 relative">
-              <div class="icon-pill" style="background:${a.color || "#818cf8"};color:white">
-                <i data-lucide="${a.icon || "wallet"}"></i>
+              <div class="icon-pill" style="background:${accColor};color:white">
+                <i data-lucide="${this.safeIcon(a.icon, "wallet")}"></i>
               </div>
               <div class="flex-1">
                 <div class="flex items-center gap-2 flex-wrap">
                   <div class="font-semibold">${this.escapeHtml(a.name)}</div>
                   <span class="chip" style="background:#818cf822;color:#818cf8;font-size:.6rem">${permLabel}</span>
                 </div>
-                <div class="text-xs text-zinc-500 capitalize">${a.type} \xB7 ${a.currency} \xB7 ${txCount} transaction${txCount === 1 ? "" : "s"}</div>
+                <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} \xB7 ${this.escapeHtml(a.currency)} \xB7 ${txCount} transaction${txCount === 1 ? "" : "s"}</div>
                 <div class="text-xs text-zinc-400 mt-0.5">Shared by ${this.escapeHtml(share.sharedBy || "Family")}</div>
               </div>
             </div>
@@ -4695,7 +7154,7 @@ RULES:
     }
   };
 
-  // src/ui/views/AccountDetailView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/AccountDetailView.js
   var AccountDetailView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -4845,10 +7304,11 @@ RULES:
         </button>
         <div class="flex-1"></div>
         ${isShared ? `<span class="chip" style="background:#818cf822;color:#818cf8">${permLabel} \xB7 Shared by ${this.escapeHtml(share?.sharedBy || "")}</span>` : ""}
-        ${canManage && Math.abs(residual) >= 1 ? `<button class="btn btn-outline text-amber-600" onclick="window.__app.reconcileAccount('${a.id}')" title="Balance out of sync"><i data-lucide="scale"></i><span class="hidden md:inline ml-1">Reconcile</span></button>` : ""}
-        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(${shareIndex})" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ""}
+        ${canManage && Math.abs(residual) >= 1 ? `<button class="btn btn-outline text-amber-600" onclick="window.__app.reconcileAccount('${this.jsArg(a.id)}')" title="Balance out of sync"><i data-lucide="scale"></i><span class="hidden md:inline ml-1">Reconcile</span></button>` : ""}
+        ${isShared ? `<button class="btn btn-outline" onclick="window.__app.refreshSharedAccount(${Number(shareIndex) || 0})" title="Refresh"><i data-lucide="refresh-cw"></i><span class="hidden md:inline ml-1">Refresh</span></button>` : ""}
         ${canManage || canDelete ? `<button class="btn ${this.#multiSelect ? "btn-primary" : "btn-outline"}" onclick="window.__app.toggleAccountMultiSelect()" title="Select multiple"><i data-lucide="check-square"></i></button>` : ""}
-        ${canManage ? `<button class="btn btn-outline" onclick="window.__app.openModal('account',{id:'${a.id}'})"><i data-lucide="pencil"></i><span class="hidden md:inline ml-1">Edit</span></button>` : ""}
+        ${!isShared && canManage ? `<button class="btn btn-outline" onclick="window.__app.shareAccount('${this.jsArg(a.id)}')" title="Share with family"><i data-lucide="user-plus"></i><span class="hidden md:inline ml-1">Share</span></button>` : ""}
+        ${canManage ? `<button class="btn btn-outline" onclick="window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})"><i data-lucide="pencil"></i><span class="hidden md:inline ml-1">Edit</span></button>` : ""}
         ${newTxBtn}
       </div>
 
@@ -4865,17 +7325,17 @@ RULES:
         </div>` : ""}
 
       <div class="card p-5 mb-4 relative overflow-hidden ${a.archived ? "opacity-70" : ""}">
-        <div class="absolute -right-10 -top-10 w-40 h-40 rounded-full" style="background:${a.color || "#818cf8"}22"></div>
+        <div class="absolute -right-10 -top-10 w-40 h-40 rounded-full" style="background:${this.safeColor(a.color, "#818cf8")}22"></div>
         <div class="flex items-start gap-3 relative">
-          <div class="icon-pill" style="background:${a.color || "#818cf8"};color:white;width:44px;height:44px">
-            <i data-lucide="${a.icon || "wallet"}" style="width:22px;height:22px"></i>
+          <div class="icon-pill" style="background:${this.safeColor(a.color, "#818cf8")};color:white;width:44px;height:44px">
+            <i data-lucide="${this.safeIcon(a.icon, "wallet")}" style="width:22px;height:22px"></i>
           </div>
           <div class="flex-1">
             <div class="flex items-center gap-2">
               <div class="text-xl font-semibold">${this.escapeHtml(a.name)}</div>
               ${a.archived ? '<span class="chip">Archived</span>' : ""}
             </div>
-            <div class="text-xs text-zinc-500 capitalize">${a.type || ""} \xB7 ${a.currency}</div>
+            <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type || "")} \xB7 ${this.escapeHtml(a.currency)}</div>
           </div>
           <div class="text-right">
             <div class="text-xs text-zinc-500">Balance</div>
@@ -5107,7 +7567,7 @@ RULES:
     }
   };
 
-  // src/ui/views/BudgetsView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -5204,7 +7664,7 @@ RULES:
     }
   };
 
-  // src/ui/views/BudgetDetailView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/BudgetDetailView.js
   var BudgetDetailView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -5318,7 +7778,7 @@ RULES:
     }
   };
 
-  // src/ui/views/CategoriesView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/CategoriesView.js
   var CategoriesView = class extends BaseView {
     constructor() {
       super();
@@ -5405,7 +7865,7 @@ RULES:
     }
   };
 
-  // src/ui/views/ReportsView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/ReportsView.js
   var ReportsView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -5641,7 +8101,7 @@ RULES:
     }
   };
 
-  // src/ui/views/DebtsView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/DebtsView.js
   var DebtsView = class extends BaseView {
     constructor() {
       super();
@@ -5756,7 +8216,7 @@ RULES:
     }
   };
 
-  // src/ui/views/CalendarView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/CalendarView.js
   var CalendarView = class extends BaseView {
     /** @type {HijriCalendarService} */
     #hijri;
@@ -5967,7 +8427,7 @@ RULES:
         if (!it) return;
         byItem[t.regularItemId] = byItem[t.regularItemId] || { item: it, count: 0, qty: 0, total: 0 };
         byItem[t.regularItemId].count += 1;
-        byItem[t.regularItemId].qty += Number(t.quantity || 1);
+        byItem[t.regularItemId].qty += Number(t.qty || 1);
         byItem[t.regularItemId].total += this.convert(t.amount, t.currency, home);
       });
       const rows = Object.values(byItem).sort((a, b) => b.total - a.total);
@@ -6075,7 +8535,7 @@ RULES:
     }
   };
 
-  // src/ui/views/FamilyView.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/views/FamilyView.js
   var ACCOUNT_TYPE_ICONS2 = {
     cash: "wallet",
     bank: "landmark",
@@ -6148,7 +8608,7 @@ RULES:
         const lvl = ACCESS_LEVELS[p.access] || ACCESS_LEVELS.view;
         return { acc, lvl };
       }).filter(Boolean);
-      const initial = m.initials || m.name.slice(0, 2).toUpperCase();
+      const initial = (m.initials || (m.name || m.email || "?").slice(0, 2)).toUpperCase();
       return `
       <div class="card p-4">
         <div class="flex items-start gap-3 mb-4">
@@ -6212,14 +8672,14 @@ RULES:
           <div class="space-y-2">
             ${sharedAccs.map(({ a, lvl }) => `
               <div class="flex items-center gap-2 cursor-pointer hover:opacity-80"
-                   onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${shareIndex}})">
+                   onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}',{shareIndex:${Number(shareIndex) || 0}})">
                 <div class="icon-pill w-7 h-7 rounded-lg flex-shrink-0"
-                     style="background:${a.color || "#818cf8"}22;color:${a.color || "#818cf8"}">
-                  <i data-lucide="${a.icon || "wallet"}" style="width:13px;height:13px"></i>
+                     style="background:${this.safeColor(a.color, "#818cf8")}22;color:${this.safeColor(a.color, "#818cf8")}">
+                  <i data-lucide="${this.safeIcon(a.icon, "wallet")}" style="width:13px;height:13px"></i>
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="text-sm truncate font-medium">${this.escapeHtml(a.name)}</div>
-                  <div class="text-xs text-zinc-500">${a.currency} \xB7 ${this.formatMoney(a.balance, a.currency)}</div>
+                  <div class="text-xs text-zinc-500">${this.escapeHtml(a.currency)} \xB7 ${this.formatMoney(a.balance, a.currency)}</div>
                 </div>
                 <span class="chip text-xs" style="background:${lvl.color}18;color:${lvl.color}">
                   <i data-lucide="${lvl.icon}" style="width:10px;height:10px;display:inline"></i> ${lvl.label}
@@ -6240,123 +8700,7 @@ RULES:
     }
   };
 
-  // src/ui/components/CategoryOptionRenderer.js
-  var CategoryOptionRenderer = class _CategoryOptionRenderer {
-    /**
-     * Build <option> / <optgroup> HTML for a category <select>.
-     *
-     * @param {object[]}      allCats    Full category list (unfiltered).
-     * @param {string|null}   selectedId Currently-selected category ID (or null).
-     * @param {string|null}   typeFilter 'expense' | 'income' | 'transfer' | null (no filter).
-     * @returns {string}  HTML fragment — insert after a blank "Uncategorised" <option>.
-     */
-    static render(allCats, selectedId, typeFilter = null) {
-      const matchType = (c) => !typeFilter || c.type === typeFilter;
-      const esc = _CategoryOptionRenderer.#esc;
-      const sel = (id) => id === selectedId ? "selected" : "";
-      const renderedChildIds = /* @__PURE__ */ new Set();
-      const roots = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
-      const grouped = roots.map((root) => {
-        const children = allCats.filter((c) => c.parentId === root.id && matchType(c)).sort((a, b) => a.name.localeCompare(b.name));
-        if (children.length > 0) {
-          children.forEach((c) => renderedChildIds.add(c.id));
-          return `<optgroup label="${esc(root.name)}">${children.map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`).join("")}</optgroup>`;
-        }
-        if (matchType(root)) {
-          return `<option value="${root.id}" ${sel(root.id)}>${esc(root.name)}</option>`;
-        }
-        return "";
-      }).filter(Boolean).join("");
-      const orphans = allCats.filter((c) => c.parentId && matchType(c) && !renderedChildIds.has(c.id)).sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`).join("");
-      return grouped + orphans;
-    }
-    /**
-     * Build a flat, indented option list that mirrors the parent → child
-     * hierarchy while keeping BOTH parents and children selectable.
-     *
-     * Unlike render() (which uses <optgroup>, whose labels are not selectable),
-     * this is used where a parent category itself is a valid choice — e.g. a
-     * budget that should cover a whole category including its sub-categories.
-     *
-     *   Food & Drink            ← selectable parent
-     *      ↳ Coffee             ← selectable, indented child
-     *      ↳ Groceries
-     *   Transport
-     *
-     * @param {object[]}    allCats    Full category list (unfiltered).
-     * @param {string|null} selectedId Currently-selected category ID (or null).
-     * @param {string|null} typeFilter 'expense' | 'income' | 'transfer' | null.
-     * @returns {string} HTML fragment of <option> elements.
-     */
-    static renderHierarchical(allCats, selectedId, typeFilter = null) {
-      const matchType = (c) => !typeFilter || c.type === typeFilter;
-      const esc = _CategoryOptionRenderer.#esc;
-      const sel = (id) => id === selectedId ? "selected" : "";
-      const childPrefix = "\xA0\xA0\xA0\u21B3\xA0";
-      const rendered = /* @__PURE__ */ new Set();
-      const roots = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
-      let html = "";
-      for (const root of roots) {
-        const children = allCats.filter((c) => c.parentId === root.id && matchType(c)).sort((a, b) => a.name.localeCompare(b.name));
-        if (!matchType(root) && children.length === 0) continue;
-        if (matchType(root)) {
-          html += `<option value="${root.id}" ${sel(root.id)}>${esc(root.name)}</option>`;
-        }
-        for (const c of children) {
-          rendered.add(c.id);
-          html += `<option value="${c.id}" ${sel(c.id)}>${childPrefix}${esc(c.name)}</option>`;
-        }
-      }
-      const orphans = allCats.filter((c) => c.parentId && matchType(c) && !rendered.has(c.id)).sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${c.id}" ${sel(c.id)}>${esc(c.name)}</option>`).join("");
-      return html + orphans;
-    }
-    /**
-     * Build an indented checkbox tree for selecting MULTIPLE categories (e.g. a
-     * budget that spans several sub-categories). Parents and children both get a
-     * checkbox; children are indented under their parent.
-     *
-     * @param {object[]}        allCats     Full category list (unfiltered).
-     * @param {string[]|Set}    selectedIds Currently-checked category IDs.
-     * @param {string|null}     typeFilter  'expense' | 'income' | 'transfer' | null.
-     * @param {string}          name        Checkbox group name (FormData key).
-     * @returns {string} HTML fragment of <label><input type="checkbox"> rows.
-     */
-    static renderCheckboxTree(allCats, selectedIds = [], typeFilter = null, name = "categoryIds") {
-      const set = selectedIds instanceof Set ? selectedIds : new Set(selectedIds);
-      const matchType = (c) => !typeFilter || c.type === typeFilter;
-      const esc = _CategoryOptionRenderer.#esc;
-      const row = (c, indent) => `
-      <label class="flex items-center gap-2 py-1.5 px-2 rounded-lg cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800/60 ${indent ? "pl-7" : ""}">
-        <input type="checkbox" name="${name}" value="${c.id}" ${set.has(c.id) ? "checked" : ""} class="accent-zinc-900 dark:accent-white">
-        <span class="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${c.color || "#a1a1aa"}"></span>
-        <span class="text-sm ${indent ? "text-zinc-600 dark:text-zinc-300" : "font-medium"}">${indent ? "\u21B3 " : ""}${esc(c.name)}</span>
-      </label>`;
-      const roots = allCats.filter((c) => !c.parentId).sort((a, b) => a.name.localeCompare(b.name));
-      const rendered = /* @__PURE__ */ new Set();
-      let html = "";
-      for (const root of roots) {
-        const children = allCats.filter((c) => c.parentId === root.id && matchType(c)).sort((a, b) => a.name.localeCompare(b.name));
-        if (!matchType(root) && children.length === 0) continue;
-        if (matchType(root)) html += row(root, false);
-        for (const c of children) {
-          rendered.add(c.id);
-          html += row(c, true);
-        }
-      }
-      const orphans = allCats.filter((c) => c.parentId && matchType(c) && !rendered.has(c.id)).sort((a, b) => a.name.localeCompare(b.name));
-      for (const c of orphans) html += row(c, false);
-      return html || '<div class="text-xs text-zinc-500 py-2 px-2">No matching categories yet.</div>';
-    }
-    // ── Private ─────────────────────────────────────────────────────────────
-    static #esc(s) {
-      return (s || "").toString().replace(
-        /[&<>"']/g,
-        (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]
-      );
-    }
-  };
-
-  // src/ui/modals/TransactionModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class {
     /** @type {Store} */
@@ -6374,6 +8718,15 @@ RULES:
     // overrides data.type when user switches tabs
     #splitsSeeded = false;
     // true after initial seed; prevents re-seed on refresh
+    /**
+     * Live form values captured immediately before a re-render, merged over the
+     * modal's source data by render(). Anything that re-renders the modal
+     * mid-edit (toggling splits, switching type, adding a payment method,
+     * nudging the Hijri offset) would otherwise reset the form to its opening
+     * state and silently discard whatever the user had typed.
+     * @type {object}
+     */
+    #draft = {};
     constructor() {
       this.#store = Store.getInstance();
       this.#fx = new CurrencyService();
@@ -6390,10 +8743,70 @@ RULES:
     }
     setType(type) {
       this.#currentType = type;
+      const cat = this.#draft.categoryId ? this.#store.getState().categories.find((c) => c.id === this.#draft.categoryId) : null;
+      if (cat && cat.type !== type) this.#draft.categoryId = "";
     }
     /** @returns {{shareIndex:number, accountId:string, editTxId?:string}|null} */
     get sharedTxMode() {
       return this.#sharedTxMode;
+    }
+    /**
+     * Snapshot the live #txForm into the draft. Call this immediately before any
+     * re-render of the modal; render() then merges the draft back over the
+     * underlying transaction so the user's in-progress edits survive.
+     *
+     * Split rows are NOT captured here — their category, account and amount are
+     * already pushed into #splits by their own change handlers.
+     */
+    captureForm() {
+      const form = document.getElementById("txForm");
+      if (!form) return;
+      const fd = new FormData(form);
+      const has = (k) => fd.get(k) !== null;
+      const str = (k) => (fd.get(k) ?? "").toString();
+      const currency = has("currency") ? str("currency") : this.#draft.currency;
+      if (currency) this.#draft.currency = currency;
+      if (has("amount")) {
+        const raw = str("amount").trim();
+        this.#draft.amount = raw === "" ? 0 : this.#fx.toMinor(Number(raw) || 0, currency || "USD");
+        this.#draft.amountRaw = raw;
+      }
+      for (const key of [
+        "accountId",
+        "categoryId",
+        "payee",
+        "note",
+        "date",
+        "paymentType",
+        "transferToAccountId"
+      ]) {
+        if (has(key)) this.#draft[key] = str(key);
+      }
+      for (const key of ["transferRate", "txFxRate"]) {
+        if (has(key)) {
+          const n = parseFloat(str(key));
+          if (n > 0) this.#draft[key] = n;
+          else delete this.#draft[key];
+        }
+      }
+      this.#draft.recurring = form.elements?.recurringEnabled?.checked ? {
+        rule: form.elements.recurringRule?.value || "monthly",
+        interval: Number(form.elements.recurringInterval?.value) || 1,
+        until: form.elements.recurringUntil?.value || null
+      } : null;
+    }
+    /** Discard the captured draft (used when the modal opens fresh). */
+    clearDraft() {
+      this.#draft = {};
+    }
+    /**
+     * Force the payment method in the draft — used after the manage sheet renames
+     * or deletes the method the form had selected, so the next render shows the
+     * surviving name instead of falling back to the default.
+     * @param {string} name
+     */
+    setPaymentType(name) {
+      if (name) this.#draft.paymentType = name;
     }
     toggleSplits() {
       this.#splitsEnabled = !this.#splitsEnabled;
@@ -6428,8 +8841,12 @@ RULES:
       const state = this.#store.getState();
       this.#sharedTxMode = sharedTxMode || null;
       const sharedEditTx = sharedTxMode?.editTxId ? (state._sharedData?.[sharedTxMode.shareIndex]?.transactions || []).find((t) => t.id === sharedTxMode.editTxId) : null;
-      const editing = id ? state.transactions.find((t) => t.id === id) : null;
-      const data = editing ? { ...editing } : sharedEditTx ? { ...sharedEditTx } : prefill || {
+      let editing = id ? state.transactions.find((t) => t.id === id) : null;
+      if (editing && editing.type === "transfer" && editing.transferDir === "in" && editing.transferPairId) {
+        const outLeg = state.transactions.find((t) => t.id === editing.transferPairId);
+        if (outLeg) editing = outLeg;
+      }
+      const data = editing ? { ...editing } : sharedEditTx ? { ...sharedEditTx } : prefill ? { ...prefill } : {
         type: "expense",
         amount: 0,
         currency: state.user.defaultCurrency || state.user.homeCurrency,
@@ -6457,13 +8874,14 @@ RULES:
           data.txFxRate = this.#fx.fromMinor(editing.acctMinor, acc.currency) / this.#fx.fromMinor(editing.amount, editing.currency);
         }
       }
+      Object.assign(data, this.#draft);
       if (!this.#splitsSeeded) {
         this.#splits = editing && Array.isArray(editing.splits) ? editing.splits.map((s) => ({ ...s })) : prefill && Array.isArray(prefill?.splits) ? prefill.splits.map((s) => ({ ...s })) : [];
         this.#splitsEnabled = this.#splits.length > 0;
         this.#splitsSeeded = true;
       }
       const type = this.#currentType || data.type || "expense";
-      const amountValue = editing || sharedEditTx ? this.#fx.fromMinor(data.amount, data.currency) : data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0;
+      const amountValue = this.#draft.amountRaw !== void 0 ? this.#draft.amountRaw : editing || sharedEditTx ? this.#fx.fromMinor(data.amount, data.currency) : data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0;
       const cats = state.categories;
       const isSharedMode = !!this.#sharedTxMode;
       const sharedAccObj = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || []).find((a) => a.id === this.#sharedTxMode.accountId) : null;
@@ -6473,10 +8891,13 @@ RULES:
       const miqaat = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
       const hijriLabel = this.#hijri.format(data.date, { long: true });
       const hijriPreview = `${hijriLabel}${miqaat ? ` \xB7 <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ""}`;
-      const paymentTypeOptions = (window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES).map((p) => {
-        const sel = (data.paymentType || "card") === p ? "selected" : "";
+      const current = data.paymentType || "card";
+      const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
+      const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
+      const payChipCls = (on) => "px-3 py-1.5 rounded-full border text-sm " + (on ? "bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800");
+      const paymentChips = paymentTypes.map((p) => {
         const label = p.charAt(0).toUpperCase() + p.slice(1);
-        return '<option value="' + p + '" ' + sel + ">" + label + "</option>";
+        return `<button type="button" data-pay-chip="${this.#esc(p)}" onclick="window.__app.pickPaymentType('${Html.js(p)}')" class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
       }).join("");
       return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ""}')" class="p-5">
@@ -6500,13 +8921,10 @@ RULES:
           <div class="text-xs text-zinc-500 mb-1">Amount</div>
           <div class="flex gap-2 items-center">
             <input class="input text-2xl font-semibold border-0 bg-transparent p-0 focus:ring-0"
-                   style="border:none" name="amount" type="number" step="0.01" required
+                   style="border:none" name="amount" type="number" step="${CurrencyService.stepFor(data.currency)}" required
                    value="${amountValue || ""}" placeholder="0.00" autofocus
                    oninput="window.__app.onTxFormChange()">
-            ${isSharedMode ? `<input type="hidden" name="currency" value="${data.currency}">
-                 <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${data.currency}</span>` : `<select class="select w-24" name="currency" onchange="window.__app.onTxCurrencyChange()">
-                   ${CURRENCIES.map((c) => `<option value="${c}" ${data.currency === c ? "selected" : ""}>${this.#fx.label(c).split("\u2014")[0].trim()}</option>`).join("")}
-                 </select>`}
+            ${this.#currencyControl(data, state, type, isSharedMode)}
           </div>
         </div>
 
@@ -6523,12 +8941,14 @@ RULES:
           </div>
           <div>
             <label class="text-xs text-zinc-500">Payment</label>
-            <select class="select" name="paymentType"
-              onchange="window.__app?.addCustomPaymentType?.(this)"
-              data-prev="${data.paymentType || "card"}">
-              ${paymentTypeOptions}
-              <option value="__add_payment__">\uFF0B Add custom\u2026</option>
-            </select>
+            <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
+            <div class="flex flex-wrap gap-2 mt-1">
+              ${paymentChips}
+              <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
+                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\uFF0B Add</button>
+              <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
+                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\u2699 Manage</button>
+            </div>
           </div>
         </div>
 
@@ -6564,7 +8984,7 @@ RULES:
 
         <div class="flex items-center gap-2">
           ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : canDeleteShared ? `<button type="button" class="btn btn-outline text-rose-500"
-                         onclick="window.__app.deleteSharedTxContrib(${this.#sharedTxMode.shareIndex},'${sharedEditTx.id}')">
+                         onclick="window.__app.deleteSharedTxContrib(${Number(this.#sharedTxMode.shareIndex) || 0},'${Html.js(sharedEditTx.id)}')">
                    <i data-lucide="trash-2"></i> Delete
                  </button>` : ""}
           <div class="flex-1"></div>
@@ -6578,6 +8998,7 @@ RULES:
       this.#splits = [];
       this.#splitsEnabled = false;
       this.#splitsSeeded = false;
+      this.#draft = {};
       const data = opts?.prefill || {};
       if (data.type === "transfer") {
         setTimeout(() => window.__app?.updateTransferFxPanel?.(false), 0);
@@ -6585,19 +9006,54 @@ RULES:
       setTimeout(() => window.__app?.updateTxFxPanel?.(false), 0);
     }
     // ── Private render helpers ────────────────────────────────────────────
+    /**
+     * The currency control beside the amount.
+     *
+     * For a TRANSFER it is locked to the source account's currency: money leaves
+     * that account, so the amount can only be denominated in it. Letting the two
+     * disagree is what made the FX panel quote a source→destination rate while
+     * the amount was read in the user's default currency, booking legs that were
+     * thousands apart. Shared mode is locked for the same reason — the row lives
+     * in the owner's book.
+     *
+     * @param {object}  data
+     * @param {object}  state
+     * @param {string}  type
+     * @param {boolean} isSharedMode
+     * @returns {string} HTML
+     */
+    #currencyControl(data, state, type, isSharedMode) {
+      if (isSharedMode) {
+        return `<input type="hidden" name="currency" value="${this.#esc(data.currency)}">
+              <span class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2">${this.#esc(data.currency)}</span>`;
+      }
+      if (type === "transfer") {
+        const src = state.accounts.find((a) => a.id === data.accountId) || state.accounts[0];
+        const ccy = src?.currency || data.currency;
+        return `<input type="hidden" name="currency" id="txCurrencyLocked" value="${this.#esc(ccy)}">
+              <span id="txCurrencyLabel"
+                    class="text-sm font-medium text-zinc-600 dark:text-zinc-400 px-2 flex items-center gap-1"
+                    title="A transfer is always in the source account's currency">
+                <i data-lucide="lock" style="width:11px;height:11px"></i>${this.#esc(ccy)}
+              </span>`;
+      }
+      return `<select class="select w-24" name="currency" onchange="window.__app.onTxCurrencyChange()">
+              ${CURRENCIES.map((c) => `<option value="${this.#esc(c)}" ${data.currency === c ? "selected" : ""}>${this.#esc(this.#fx.label(c).split("\u2014")[0].trim())}</option>`).join("")}
+            </select>`;
+    }
     #transferFields(data, state) {
       return `
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div>
           <label class="text-xs text-zinc-500">Account</label>
-          <select class="select" name="accountId" onchange="window.__app.updateTransferFxPanel(false)">
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${a.currency}</option>`).join("")}
+          <select class="select" name="accountId" onchange="window.__app.onTransferSourceChange(this.value)">
+            ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
           </select>
         </div>
         <div>
           <label class="text-xs text-zinc-500">To account</label>
-          <select class="select" name="transferToAccountId" onchange="window.__app.updateTransferFxPanel(false)">
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.transferToAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${a.currency}</option>`).join("")}
+          <select class="select" name="transferToAccountId" onchange="window.__app.resetTransferFx()">
+            ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.transferToAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
           </select>
         </div>
       </div>
@@ -6628,20 +9084,19 @@ RULES:
     }
     #accountCategoryFields(data, state, cats, type, isSharedMode) {
       const sharedOpts = (state._sharedData || []).flatMap(
-        (share) => (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => `<option value="${a.id}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} (shared)</option>`)
+        (share) => (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} (shared)</option>`)
       ).join("");
       const sharedAccName = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || []).find((a) => a.id === this.#sharedTxMode.accountId)?.name || "Shared account" : null;
-      const accountSelect = isSharedMode ? `<input type="hidden" name="accountId" value="${this.#sharedTxMode.accountId}">
+      const accountSelect = isSharedMode ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
          <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
            <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
            <span class="truncate">${this.#esc(sharedAccName)}</span>
          </div>` : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
            <optgroup label="My accounts">
-             ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
+             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
            </optgroup>
            ${sharedOpts ? `<optgroup label="Shared with me">${sharedOpts}</optgroup>` : ""}
          </select>`;
-      const filteredCats = cats.filter((c) => c.type === type);
       return `
       <div class="grid grid-cols-2 gap-3 mb-3">
         <div><label class="text-xs text-zinc-500">Account</label>${accountSelect}</div>
@@ -6653,10 +9108,14 @@ RULES:
               <i data-lucide="split" style="width:11px;height:11px;display:inline"></i> Split
             </button>
           </div>
-          <select class="select" name="categoryId">
-            <option value="">\u2014 Uncategorised \u2014</option>
-            ${CategoryOptionRenderer.render(cats, data.categoryId, type)}
-          </select>
+          ${CategoryField.render({
+        id: "txCategory",
+        name: "categoryId",
+        value: data.categoryId,
+        type,
+        title: "Choose category",
+        categories: cats
+      })}
         </div>
       </div>
 
@@ -6689,14 +9148,15 @@ RULES:
       </div>`;
     }
     #splitsArea(data, cats, type, accounts = [], totalMajor = 0) {
-      const filteredCats = cats.filter((c) => c.type === type);
       const currency = data.currency || "USD";
-      const splitSum = this.#splits.reduce((s, sp) => s + this.#fx.fromMinor(sp.amount || 0, currency), 0);
-      const diff = totalMajor - splitSum;
-      const diffAbs = Math.abs(diff);
-      const diffFmt = this.#fx.formatMoney(this.#fx.toMinor(diffAbs, currency), currency);
+      const totalMinor = this.#fx.toMinor(totalMajor, currency);
+      const sumMinor = this.#splits.reduce((s, sp) => s + (sp.amount || 0), 0);
+      const diffMinor = totalMinor - sumMinor;
+      const splitSum = this.#fx.fromMinor(sumMinor, currency);
+      const diff = diffMinor;
+      const diffFmt = this.#fx.formatMoney(Math.abs(diffMinor), currency);
       let diffHtml = "";
-      if (Math.abs(diff) >= 5e-3) {
+      if (diffMinor !== 0) {
         const over = diff < 0;
         const color = over ? "text-rose-500" : "text-amber-500";
         const label = over ? `<span class="${color} font-medium">${diffFmt} over</span>` : `<span class="${color} font-medium">${diffFmt} remaining</span>`;
@@ -6704,8 +9164,8 @@ RULES:
       } else {
         diffHtml = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
       }
-      const sumFmt = this.#fx.formatMoney(this.#fx.toMinor(splitSum, currency), currency);
-      const totalFmt = this.#fx.formatMoney(this.#fx.toMinor(totalMajor, currency), currency);
+      const sumFmt = this.#fx.formatMoney(sumMinor, currency);
+      const totalFmt = this.#fx.formatMoney(totalMinor, currency);
       return `
       <input type="hidden" name="accountId" value="${data.accountId || ""}">
       <div class="mb-3">
@@ -6729,9 +9189,9 @@ RULES:
         <div id="splitDiffLine">${diffHtml}</div>
 
         <div id="splitsContainer" class="space-y-2 mt-2">
-          ${this.#splits.map((s, i) => this.#splitRow(s, i, filteredCats, currency, accounts, data.accountId)).join("")}
+          ${this.#splits.map((s, i) => this.#splitRow(s, i, cats, type, currency, accounts, data.accountId)).join("")}
         </div>
-        <button type="button" onclick="window.__app.addSplit('${this.#esc(data.accountId || "")}')"
+        <button type="button" onclick="window.__app.addSplit('${Html.js(data.accountId || "")}')"
                 class="btn btn-ghost text-xs mt-2 w-full border border-dashed border-zinc-300 dark:border-zinc-700">
           <i data-lucide="plus" style="width:13px;height:13px"></i> Add split
         </button>
@@ -6739,20 +9199,28 @@ RULES:
     }
     /**
      * Render one split row.
-     * Uses CategoryOptionRenderer for proper optgroup hierarchy + orphan rescue.
+     * The category control is a CategoryField, so each row opens the same
+     * two-step picker instead of a long dropdown; onPick mirrors the choice back
+     * into the in-memory split model via onSplitCategoryPicked().
      * The oninput on the amount field calls updateSplitTotal() — a lightweight
      * DOM patch — instead of a full modal refresh, so focus is never lost.
      */
-    #splitRow(s, i, cats, currency, accounts = [], defaultAccountId = null) {
+    #splitRow(s, i, cats, type, currency, accounts = [], defaultAccountId = null) {
       const accId = s.accountId || defaultAccountId || "";
       return `
       <div class="card-muted rounded-xl p-2 space-y-1.5">
         <div class="flex gap-2">
-          <select class="select text-sm flex-1" name="split_cat_${i}"
-                  onchange="window.__app.setSplitField(${i},'categoryId',this.value)">
-            <option value="">\u2014 Uncategorised \u2014</option>
-            ${CategoryOptionRenderer.render(cats, s.categoryId, null)}
-          </select>
+          <div class="flex-1 min-w-0">
+            ${CategoryField.render({
+        id: `splitCat_${i}`,
+        name: `split_cat_${i}`,
+        value: s.categoryId,
+        type,
+        title: `Split ${i + 1} category`,
+        onPick: "onSplitCategoryPicked",
+        categories: cats
+      })}
+          </div>
           <button type="button" onclick="window.__app.removeSplit(${i})"
                   class="btn btn-ghost text-rose-500 flex-shrink-0 px-2">
             <i data-lucide="trash-2" style="width:13px;height:13px"></i>
@@ -6761,9 +9229,9 @@ RULES:
         <div class="flex gap-2">
           <select class="select text-sm flex-1" name="split_acc_${i}"
                   onchange="window.__app.setSplitField(${i},'accountId',this.value)">
-            ${accounts.map((a) => `<option value="${a.id}" ${accId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
+            ${accounts.map((a) => `<option value="${this.#esc(a.id)}" ${accId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
           </select>
-          <input class="input text-sm w-28 flex-shrink-0" type="number" step="0.01" placeholder="0.00"
+          <input class="input text-sm w-28 flex-shrink-0" type="number" step="${CurrencyService.stepFor(currency)}" placeholder="0.00"
                  name="split_amt_${i}"
                  value="${s.amount ? this.#fx.fromMinor(s.amount, currency) : ""}"
                  oninput="window.__app.setSplitAmount(${i},this.value,'${currency}');window.__app.updateSplitTotal()">
@@ -6794,8 +9262,8 @@ RULES:
         </div>
       </div>`;
     }
-    // Category options are now rendered by CategoryOptionRenderer.render() —
-    // the static class provides optgroup hierarchy and orphan rescue in one place.
+    // Category selection is handled by CategoryField + CategoryPickerSheet:
+    // a two-step parent → subcategory sheet rather than one long dropdown.
     #esc(s) {
       return (s || "").toString().replace(
         /[&<>"']/g,
@@ -6804,7 +9272,7 @@ RULES:
     }
   };
 
-  // src/ui/modals/AccountModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/AccountModal.js
   var AccountModal = class {
     /** @type {Store} */
     #store;
@@ -6859,7 +9327,7 @@ RULES:
         <div class="grid grid-cols-2 gap-3 mb-1">
           <div>
             <label class="text-xs text-zinc-500">${editing ? "Current balance" : "Starting balance"}</label>
-            <input class="input" name="balance" type="number" step="0.01" value="${balanceDisplay}">
+            <input class="input" name="balance" type="number" step="${CurrencyService.stepFor(a.currency)}" value="${balanceDisplay}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">Colour</label>
@@ -6904,7 +9372,7 @@ RULES:
     }
   };
 
-  // src/ui/modals/CategoryModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CategoryModal.js
   var ICONS = [
     "tag",
     "utensils",
@@ -6999,7 +9467,7 @@ RULES:
     }
   };
 
-  // src/ui/modals/BudgetModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/BudgetModal.js
   var BudgetModal = class {
     /** @type {Store} */
     #store;
@@ -7032,10 +9500,17 @@ RULES:
 
         <div class="mb-3">
           <label class="text-xs text-zinc-500 mb-1 block">Categories</label>
-          <div class="card-muted p-2 max-h-52 overflow-y-auto">
-            ${CategoryOptionRenderer.renderCheckboxTree(state.categories, selectedIds, "expense", "categoryIds")}
-          </div>
-          <div class="text-xs text-zinc-500 mt-1">Tick a parent to budget the whole group (sub-categories included), or tick specific sub-categories \u2014 e.g. just two of them.</div>
+          ${CategoryField.render({
+        id: "budgetCategories",
+        name: "categoryIds",
+        value: selectedIds,
+        mode: "multi",
+        type: "expense",
+        title: "Budget categories",
+        placeholder: "\u2014 Pick categories \u2014",
+        categories: state.categories
+      })}
+          <div class="text-xs text-zinc-500 mt-1">Pick "Whole group" on a parent to budget it including all sub-categories, or drill in and tick specific sub-categories \u2014 e.g. just two of them.</div>
         </div>
 
         <div class="mb-3">
@@ -7059,7 +9534,7 @@ RULES:
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Limit</label>
-            <input class="input" name="amount" type="number" step="0.01" required value="${amount}">
+            <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(b.currency)}" required value="${amount}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">Currency</label>
@@ -7093,7 +9568,7 @@ RULES:
     }
   };
 
-  // src/ui/modals/SettingsModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
     #store;
@@ -7218,6 +9693,28 @@ RULES:
           </div>
         </div>
 
+        ${(() => {
+        let backups = [];
+        try {
+          backups = JSON.parse(localStorage.getItem("pocket.v1.conflicts") || "[]");
+        } catch (_) {
+        }
+        if (!backups.length) return "";
+        return `
+        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
+          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
+            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
+          ${backups.map((b) => `
+            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
+              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
+              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
+              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
+            </div>`).join("")}
+        </div>`;
+      })()}
+
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-start gap-3 mb-3">
@@ -7277,6 +9774,7 @@ RULES:
 create table if not exists public.user_data (
   id   uuid references auth.users on delete cascade primary key,
   data jsonb not null default '{}',
+  version integer not null default 0,
   updated_at timestamptz default now()
 );
 alter table public.user_data enable row level security;
@@ -7311,7 +9809,28 @@ create policy "member_reads_shares"
   using (member_email = lower((auth.jwt()->>'email')));
 create trigger family_shares_updated_at
   before update on public.family_shares
-  for each row execute function public.touch_updated_at();</div>
+  for each row execute function public.touch_updated_at();
+
+-- \u2500\u2500 Family contributions inbox (members write; the owner applies) \u2500\u2500\u2500\u2500
+create table if not exists public.family_contributions (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid references auth.users on delete cascade not null,
+  member_email text not null,
+  account_id   text not null,
+  tx_data      jsonb not null,
+  synced       boolean not null default false,
+  created_at   timestamptz default now()
+);
+alter table public.family_contributions enable row level security;
+create policy "member_manages_own_contributions"
+  on public.family_contributions for all
+  using  (member_email = lower((auth.jwt()->>'email')))
+  with check (member_email = lower((auth.jwt()->>'email')));
+create policy "owner_manages_contributions"
+  on public.family_contributions for all
+  using  (auth.uid() = owner_id)
+  with check (auth.uid() = owner_id);
+alter publication supabase_realtime add table public.family_contributions;</div>
                 <button class="btn btn-outline w-full mt-1 justify-center text-xs"
                         onclick="window.__app.copySql()">
                   <i data-lucide="copy"></i> Copy SQL
@@ -7453,7 +9972,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/CsvModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CsvModal.js
   var CsvModal = class {
     render() {
       return `
@@ -7520,7 +10039,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/DebtModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/DebtModal.js
   var DebtModal = class {
     /** @type {Store} */
     #store;
@@ -7595,7 +10114,7 @@ create trigger family_shares_updated_at
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Principal</label>
-            <input class="input" name="principal" type="number" step="0.01" required
+            <input class="input" name="principal" type="number" step="${CurrencyService.stepFor(d.currency)}" required
                    value="${principalDisp}" ${editing ? "readonly" : ""}>
           </div>
           <div>
@@ -7692,7 +10211,7 @@ create trigger family_shares_updated_at
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Amount</label>
-            <input class="input" name="amount" type="number" step="0.01" required
+            <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(debt.currency)}" required
                    value="${remDisp}" max="${remDisp}" autofocus>
           </div>
           <div>
@@ -7741,7 +10260,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/FamilyModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/FamilyModal.js
   var FamilyModal = class {
     /** @type {Store} */
     #store;
@@ -7945,7 +10464,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/ReconcileModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/ReconcileModal.js
   var ReconcileModal = class {
     /** @type {Store}          */
     #store;
@@ -8076,7 +10595,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/AuthModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/AuthModal.js
   var AuthModal = class {
     /** @type {Store} */
     #store;
@@ -8127,7 +10646,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/RegularItemModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/RegularItemModal.js
   var ITEM_ICONS = [
     "coffee",
     "shopping-basket",
@@ -8185,7 +10704,6 @@ create trigger family_shares_updated_at
         color: ITEM_COLORS[0]
       };
       const amountVal = editing ? this.#fx.fromMinor(editing.defaultAmount, editing.currency) : 0;
-      const expenseCats = state.categories.filter((c) => c.type === "expense" || !c.type);
       return `
       <form id="regularItemForm"
             onsubmit="window.__app.submitRegularItem(event,'${editing?.id || ""}')"
@@ -8209,7 +10727,7 @@ create trigger family_shares_updated_at
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Default amount</label>
-            <input class="input" name="defaultAmount" type="number" step="0.01" min="0"
+            <input class="input" name="defaultAmount" type="number" step="${CurrencyService.stepFor(data.currency)}" min="0"
                    placeholder="0.00" value="${amountVal || ""}">
           </div>
           <div>
@@ -8232,10 +10750,14 @@ create trigger family_shares_updated_at
         <!-- Category -->
         <div class="mb-4">
           <label class="text-xs text-zinc-500">Default category</label>
-          <select class="select" name="categoryId">
-            <option value="">\u2014 Uncategorised \u2014</option>
-            ${expenseCats.map((c) => `<option value="${c.id}" ${data.categoryId === c.id ? "selected" : ""}>${this.#esc(c.name)}</option>`).join("")}
-          </select>
+          ${CategoryField.render({
+        id: "regularItemCategory",
+        name: "categoryId",
+        value: data.categoryId,
+        type: "expense",
+        title: "Default category",
+        categories: state.categories
+      })}
         </div>
 
         <!-- Frequency -->
@@ -8299,7 +10821,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/DayLogsModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/DayLogsModal.js
   var DayLogsModal = class {
     #store;
     #hijriService;
@@ -8394,7 +10916,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/ui/modals/CurrencySetupModal.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/ui/modals/CurrencySetupModal.js
   var CurrencySetupModal = class {
     #store;
     #hijri;
@@ -8516,7 +11038,7 @@ create trigger family_shares_updated_at
     }
   };
 
-  // src/app.js
+  // ../../sessions/laughing-epic-clarke/mnt/Budget App/legacy-web/src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
     card: ["credit", "card", "visa", "mastercard", "amex", "american express", "discover", "platinum"],
@@ -8524,24 +11046,6 @@ create trigger family_shares_updated_at
     invest: ["invest", "ira", "roth", "401k", "brokerage", "stocks", "crypto"],
     bank: []
   };
-  var CATEGORY_KEYWORD_DEFAULTS = [
-    { keys: ["food", "drink", "grocery", "restaurant", "dining", "meal", "cafe", "coffee", "snack", "pizza", "burger"], icon: "utensils", color: "#f97316" },
-    { keys: ["transport", "transit", "uber", "lyft", "taxi", "gas", "fuel", "car", "metro", "bus", "train", "flight", "travel"], icon: "car", color: "#3b82f6" },
-    { keys: ["shop", "clothing", "retail", "amazon", "walmart", "store", "apparel"], icon: "shopping-bag", color: "#ec4899" },
-    { keys: ["health", "medical", "pharmacy", "doctor", "dental", "hospital", "vitamin"], icon: "heart-pulse", color: "#ef4444" },
-    { keys: ["housing", "rent", "mortgage", "home", "maintenance"], icon: "home", color: "#a16207" },
-    { keys: ["entertainment", "movies", "netflix", "spotify", "games", "disney", "concert", "music"], icon: "film", color: "#8b5cf6" },
-    { keys: ["bills", "utility", "utilities", "electric", "internet", "wifi", "phone", "water"], icon: "receipt", color: "#0891b2" },
-    { keys: ["education", "school", "tuition", "book", "course"], icon: "graduation-cap", color: "#10b981" },
-    { keys: ["salary", "payroll", "wage", "income", "paycheck"], icon: "banknote", color: "#22c55e" },
-    { keys: ["freelance", "contract", "gig", "consulting"], icon: "briefcase", color: "#14b8a6" },
-    { keys: ["savings", "save", "deposit"], icon: "landmark", color: "#06b6d4" },
-    { keys: ["transfer"], icon: "arrow-right-left", color: "#737373" },
-    { keys: ["gift", "present"], icon: "gift", color: "#d946ef" },
-    { keys: ["fitness", "gym", "sport", "workout"], icon: "dumbbell", color: "#84cc16" },
-    { keys: ["baby", "child", "kid", "daycare"], icon: "baby", color: "#fb7185" },
-    { keys: ["pet", "dog", "cat", "vet"], icon: "paw-print", color: "#d97706" }
-  ];
   var Application = class _Application {
     // ── Singleton ──────────────────────────────────────────────────────────────
     static #instance = null;
@@ -8577,6 +11081,10 @@ create trigger family_shares_updated_at
     #themeService;
     /** @type {PaymentTypeService}   */
     #paymentTypeService;
+    /** @type {AccountGroupService}  */
+    #accountGroups;
+    /** @type {FamilyShareService}   */
+    #familyShares;
     /** @type {ExchangeRateService}  */
     #fxRates;
     // ── UI components ──────────────────────────────────────────────────────────
@@ -8586,6 +11094,14 @@ create trigger family_shares_updated_at
     #modal;
     /** @type {Navigation} */
     #nav;
+    /** @type {CategoryPickerSheet} */
+    #catPicker;
+    /** @type {PaymentMethodSheet}  */
+    #paymentSheet;
+    /** @type {AccountGroupSheet}   */
+    #accountGroupSheet;
+    /** @type {AccountShareSheet}   */
+    #accountShareSheet;
     // ── Views (lazy-created on first navigate) ─────────────────────────────────
     #views = (
       /** @type {Map<string,object>} */
@@ -8620,6 +11136,8 @@ create trigger family_shares_updated_at
     #swipeIsOwnContrib = false;
     #swipeWrapper = null;
     // the .tx-swipe-wrapper element, stored on start
+    #filterRenderTimer = null;
+    // debounce for the transaction search box
     // ── Private constructor (use getInstance()) ────────────────────────────────
     constructor() {
       if (_Application.#instance) throw new Error("Use Application.getInstance()");
@@ -8636,10 +11154,29 @@ create trigger family_shares_updated_at
       this.#sync = new SyncService();
       this.#themeService = new ThemeService(this.#store);
       this.#paymentTypeService = new PaymentTypeService(this.#store);
+      this.#accountGroups = new AccountGroupService(this.#store);
+      this.#familyShares = new FamilyShareService(this.#store);
       this.#fxRates = new ExchangeRateService();
       this.#toast = new Toast();
       this.#modal = new Modal();
       this.#nav = new Navigation();
+      this.#catPicker = new CategoryPickerSheet({
+        store: this.#store,
+        categoryService: this.#categories
+      });
+      this.#paymentSheet = new PaymentMethodSheet({
+        paymentTypeService: this.#paymentTypeService
+      });
+      this.#accountGroupSheet = new AccountGroupSheet({
+        store: this.#store,
+        accountGroupService: this.#accountGroups,
+        currencyService: this.#fx
+      });
+      this.#accountShareSheet = new AccountShareSheet({
+        store: this.#store,
+        familyShareService: this.#familyShares,
+        syncService: this.#sync
+      });
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Initialisation
@@ -8647,6 +11184,7 @@ create trigger family_shares_updated_at
     /** Boot the application. Call once after DOMContentLoaded. */
     async init() {
       this.#store.setDeriveHook(() => this.#accounts.recompute());
+      this.#store.setLocalChangeHook(() => this.#sync.schedulePush?.());
       this.#store.init(() => SeedFactory.create(), (s) => StateMigrator.migrate(s));
       this.#ensureUserDefaults();
       this.#accounts.recompute();
@@ -8665,6 +11203,10 @@ create trigger family_shares_updated_at
       const container = document.getElementById("app");
       this.#toast.mount(container);
       this.#modal.mount(container);
+      this.#catPicker.mount(container);
+      this.#paymentSheet.mount(container);
+      this.#accountGroupSheet.mount(container);
+      this.#accountShareSheet.mount(container);
       this.#nav.mount({
         onNavigate: (id) => this.navigate(id),
         onAdd: () => this.openModal("transaction", {}),
@@ -8793,7 +11335,62 @@ create trigger family_shares_updated_at
       lucide?.createIcons?.();
     }
     closeModal() {
+      if (this.#catPicker?.isOpen) this.#catPicker.close();
+      if (this.#paymentSheet?.isOpen) this.#paymentSheet.close();
+      if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
+      if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
       this.#modal.close();
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+    // Category picker
+    // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * The sheet instance — inline onclick handlers inside the sheet call through
+     * window.__app.catPicker.*, which keeps the Application surface uncluttered.
+     * @returns {CategoryPickerSheet}
+     */
+    get catPicker() {
+      return this.#catPicker;
+    }
+    /**
+     * Open the two-step category picker for a CategoryField.
+     *
+     * Everything the picker needs is read from the field's data-* attributes, so
+     * any modal can drop in a field without adding a bespoke handler here. The
+     * result is written straight back into the field's hidden inputs — no modal
+     * refresh, so a half-filled transaction form survives the round trip.
+     *
+     * @param {string} fieldId
+     */
+    openCategoryPicker(fieldId) {
+      const field = document.getElementById(fieldId);
+      if (!field) return;
+      const mode = field.dataset.mode === "multi" ? "multi" : "single";
+      const type = field.dataset.type || null;
+      const title = field.dataset.title || "";
+      const onPick = field.dataset.onpick || "";
+      this.#catPicker.open({
+        mode,
+        type,
+        title,
+        selected: CategoryField.getValue(field),
+        onSelect: (ids) => {
+          const live = document.getElementById(fieldId) || field;
+          CategoryField.setValue(live, ids, this.#store.getState().categories);
+          lucide?.createIcons?.();
+          if (onPick && typeof this[onPick] === "function") this[onPick](fieldId, ids);
+        }
+      });
+    }
+    /**
+     * onPick hook for split rows — mirrors the chosen category back into the
+     * in-memory split model. The field id encodes the row index (splitCat_<i>).
+     * @param {string} fieldId
+     * @param {string[]} ids
+     */
+    onSplitCategoryPicked(fieldId, ids) {
+      const i = Number(fieldId.split("_")[1]);
+      if (Number.isInteger(i)) this.#txModal?.setSplitField?.(i, "categoryId", ids[0] || null);
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Sync helpers (exposed to modals / nav)
@@ -8881,22 +11478,74 @@ create trigger family_shares_updated_at
     get paymentTypeService() {
       return this.#paymentTypeService;
     }
-    addCustomPaymentType(sel) {
-      const val = sel.value;
-      if (val !== "__add_payment__") {
-        sel.dataset.prev = val;
-        return;
-      }
+    /**
+     * The manage sheet — inline handlers inside it dispatch through
+     * window.__app.paymentSheet.*.
+     * @returns {PaymentMethodSheet}
+     */
+    get paymentSheet() {
+      return this.#paymentSheet;
+    }
+    /**
+     * Router for the payment <select>. Two of its entries are commands rather
+     * than values: "Add custom…" and "Manage methods…". Both restore the previous
+     * selection first, so cancelling out of either leaves the form untouched.
+     * @param {HTMLSelectElement} sel
+     */
+    /**
+     * Payment-type chip tapped (mobile-style selector). Plain values update the
+     * hidden `paymentType` input + chip styling in place (no re-render); the two
+     * command chips route to add / manage.
+     * @param {string} value
+     */
+    pickPaymentType(value) {
+      if (value === "__add_payment__") return this.addCustomPaymentType();
+      if (value === "__manage_payment__") return this.openPaymentTypeManager();
+      const hidden = document.getElementById("paymentTypeInput");
+      if (hidden) hidden.value = value;
+      document.querySelectorAll("[data-pay-chip]").forEach((el) => {
+        const on = el.getAttribute("data-pay-chip") === value;
+        el.className = "px-3 py-1.5 rounded-full border text-sm " + (on ? "bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800");
+      });
+    }
+    addCustomPaymentType() {
       const name = prompt("Custom payment type name:");
-      if (!name?.trim()) {
-        sel.value = sel.dataset.prev || "card";
-        return;
-      }
+      if (!name?.trim()) return;
       const added = this.#paymentTypeService.addCustom(name);
-      if (added) {
-        sel.dataset.prev = added;
-        this.#modal.refresh();
+      if (!added) return;
+      if (this.#modal.active === "transaction") {
+        this.#txModal?.captureForm?.();
+        this.#txModal?.setPaymentType?.(added);
+        this.#refreshModal({ capture: false });
+      } else {
+        this.#render();
       }
+    }
+    /**
+     * Open the payment-method manager over the current modal.
+     *
+     * Methods are stored on transactions as plain strings, so a rename inside the
+     * sheet also has to move the form's own selection — the sheet reports what it
+     * renamed and the selection follows. A method deleted while selected falls
+     * back to the first one still available.
+     */
+    openPaymentTypeManager() {
+      const wasTx = this.#modal.active === "transaction";
+      const before = wasTx ? document.getElementById("paymentTypeInput")?.value || null : null;
+      if (wasTx) this.#txModal?.captureForm?.();
+      this.#paymentSheet.open({
+        onClose: (renames) => {
+          if (!wasTx) {
+            this.#render();
+            return;
+          }
+          const available = this.#paymentTypeService.allTypes();
+          let next = renames.get(before) || before;
+          if (!next || !available.includes(next)) next = available[0] || "card";
+          this.#txModal?.setPaymentType?.(next);
+          this.#refreshModal({ capture: false });
+        }
+      });
     }
     toggleHijri() {
       const u = this.#store.getState().user;
@@ -8916,7 +11565,7 @@ create trigger family_shares_updated_at
       const current = s.user.hijriOffset ?? 0;
       s.user.hijriOffset = Math.max(-7, Math.min(7, current + delta));
       this.#store.persist();
-      this.#modal.refresh();
+      this.#refreshModal();
     }
     /**
      * Explicitly set the Hijri offset (called from the stepper input).
@@ -8928,7 +11577,7 @@ create trigger family_shares_updated_at
       const s = this.#store.getState();
       s.user.hijriOffset = Math.max(-7, Math.min(7, n));
       this.#store.persist();
-      this.#modal.refresh();
+      this.#refreshModal();
     }
     setCalendarMode(v) {
       this.#store.getState().user.calendarMode = v;
@@ -8976,12 +11625,16 @@ create trigger family_shares_updated_at
       if ((sharedMode || sharedMatch) && !id) {
         const currency2 = data.currency;
         const minor2 = this.#fx.toMinor(data.amount, currency2);
-        const sharedAcc = sharedMode ? allShared[sharedMode.shareIndex] : sharedMatch;
+        const sharedAcc = sharedMode ? this.#sync.shareByOwner?.(sharedMode.ownerId) || allShared[sharedMode.shareIndex] : sharedMatch;
         if (!sharedAcc?._ownerId) return this.#toast.show("Shared account not found");
+        if (sharedMode?.ownerId && sharedAcc._ownerId !== sharedMode.ownerId) {
+          return this.#toast.show("Shared account changed \u2014 reopen and try again");
+        }
         const accountId = sharedMode ? sharedMode.accountId || data.accountId : data.accountId;
         const ownerHome = sharedAcc.homeCurrency || state.user.homeCurrency;
+        const editingSharedId = sharedMode?.editTxId || null;
         const tx = {
-          id: IdGenerator.generate("tx"),
+          id: editingSharedId || IdGenerator.generate("tx"),
           accountId,
           categoryId: data.categoryId || null,
           amount: minor2,
@@ -8999,9 +11652,13 @@ create trigger family_shares_updated_at
           addedBy: this.#sync.currentUser?.email || null
         };
         try {
-          await this.#sync.submitContribution(sharedAcc._ownerId, tx);
+          if (editingSharedId) {
+            await this.#sync.updateContribution(sharedAcc._ownerId, editingSharedId, tx);
+          } else {
+            await this.#sync.submitContribution(sharedAcc._ownerId, tx);
+          }
           this.closeModal();
-          this.#toast.show("Transaction submitted");
+          this.#toast.show(editingSharedId ? "Change submitted" : "Transaction submitted");
           this.navigateToSharedAccount(sharedMode?.shareIndex ?? 0, accountId);
           this.#sync.scheduleSharesRefresh(3e3);
           this.#sync.scheduleSharesRefresh(8e3);
@@ -9010,7 +11667,8 @@ create trigger family_shares_updated_at
         }
         return;
       }
-      const currency = data.currency;
+      const srcAcc = data.type === "transfer" ? state.accounts.find((a) => a.id === data.accountId) : null;
+      const currency = srcAcc ? srcAcc.currency : data.currency;
       const minor = this.#fx.toMinor(data.amount, currency);
       const exchRate = (RATES[currency] || 1) / (RATES[state.user.homeCurrency] || 1);
       const refAmt = this.#fx.convert(minor, currency, state.user.homeCurrency);
@@ -9019,11 +11677,17 @@ create trigger family_shares_updated_at
         if (!data.accountId || !data.transferToAccountId || data.accountId === data.transferToAccountId) {
           return this.#toast.show("Pick two different accounts");
         }
+        if (!srcAcc) return this.#toast.show("Pick a source account");
         const toAcc = state.accounts.find((a) => a.id === data.transferToAccountId);
         if (!toAcc) return this.#toast.show("Pick a destination account");
         const toCcy = toAcc.currency;
+        const autoRate = (RATES[toCcy] || 1) / (RATES[currency] || 1);
         let rate = Number(data.transferRate);
-        if (!isFinite(rate) || rate <= 0) rate = (RATES[toCcy] || 1) / (RATES[currency] || 1);
+        if (!isFinite(rate) || rate <= 0) {
+          rate = autoRate;
+        } else if (rate === Number(autoRate.toFixed(6))) {
+          rate = autoRate;
+        }
         const dstMinor = currency === toCcy ? minor : this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * rate, toCcy);
         xfer = { rate, toCcy, dstMinor };
       }
@@ -9043,7 +11707,7 @@ create trigger family_shares_updated_at
         const missingAcc = cleaned.find((s) => !s.accountId || !state.accounts.find((a) => a.id === s.accountId));
         if (missingAcc) return this.#toast.show("Pick an account for every split");
         const sum = cleaned.reduce((s, x) => s + x.amount, 0);
-        if (Math.abs(sum - minor) > 1) {
+        if (sum !== minor) {
           return this.#toast.show(
             `Splits must add up to ${this.#fx.formatMoney(minor, currency)} (currently ${this.#fx.formatMoney(sum, currency)})`
           );
@@ -9062,15 +11726,56 @@ create trigger family_shares_updated_at
       let txAcctMinor;
       if (data.type !== "transfer" && !splits) {
         const accForFx = state.accounts.find((a) => a.id === data.accountId);
-        const txRate = parseFloat(data.txFxRate);
+        let txRate = parseFloat(data.txFxRate);
         if (accForFx && accForFx.currency !== currency && isFinite(txRate) && txRate > 0) {
+          const autoRate = (RATES[accForFx.currency] || 1) / (RATES[currency] || 1);
+          if (txRate === Number(autoRate.toFixed(6))) txRate = autoRate;
           txAcctMinor = this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * txRate, accForFx.currency);
         }
       }
       if (id) {
-        const tx = state.transactions.find((x) => x.id === id);
+        let tx = state.transactions.find((x) => x.id === id);
         if (!tx) return;
-        if (data.type === "transfer" && tx.type === "transfer" && tx.transferPairId) {
+        if (tx.type === "transfer" && tx.transferDir === "in" && tx.transferPairId) {
+          const outLeg = state.transactions.find((x) => x.id === tx.transferPairId);
+          if (outLeg) {
+            id = outLeg.id;
+            tx = outLeg;
+          }
+        }
+        const wasTransfer = tx.type === "transfer";
+        const nowTransfer = data.type === "transfer";
+        if (nowTransfer && !wasTransfer) {
+          state.transactions = state.transactions.filter((t) => t.id !== tx.id);
+          state.transactions.push(
+            ...this.#buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state })
+          );
+        } else if (!nowTransfer && wasTransfer) {
+          if (tx.transferPairId) {
+            state.transactions = state.transactions.filter((t) => t.id !== tx.transferPairId);
+          }
+          this.#transactions.update(id, {
+            accountId: data.accountId,
+            categoryId: splits ? null : data.categoryId || null,
+            amount: minor,
+            currency,
+            exchangeRate: exchRate,
+            refAmount: refAmt,
+            payee: data.payee,
+            note: data.note,
+            date: data.date,
+            hijriDate: this.#hijri.toHijri(data.date),
+            paymentType: data.paymentType,
+            type: data.type,
+            splits,
+            recurring,
+            // Clear every transfer-only field so no dangling pair reference remains.
+            transferPairId: null,
+            transferDir: null,
+            transferRate: null,
+            ...txAcctMinor !== void 0 ? { acctMinor: txAcctMinor } : {}
+          });
+        } else if (data.type === "transfer" && tx.type === "transfer" && tx.transferPairId) {
           const pair = state.transactions.find((x) => x.id === tx.transferPairId);
           Object.assign(tx, {
             accountId: data.accountId,
@@ -9082,6 +11787,9 @@ create trigger family_shares_updated_at
             payee: data.payee || "Transfer",
             note: data.note,
             date: data.date,
+            // Refresh the Hijri snapshot — editing a transfer's date used to
+            // leave both legs showing the old Hijri date.
+            hijriDate: this.#hijri.toHijri(data.date),
             paymentType: "transfer",
             type: "transfer",
             splits: null,
@@ -9101,6 +11809,7 @@ create trigger family_shares_updated_at
               payee: data.payee || "Transfer",
               note: data.note,
               date: data.date,
+              hijriDate: this.#hijri.toHijri(data.date),
               paymentType: "transfer",
               type: "transfer",
               splits: null,
@@ -9131,56 +11840,9 @@ create trigger family_shares_updated_at
         }
       } else {
         if (data.type === "transfer") {
-          const fromId = IdGenerator.generate("tx");
-          const toId = IdGenerator.generate("tx");
-          const toCcy = xfer?.toCcy ?? currency;
-          const dst = xfer?.dstMinor ?? minor;
-          const now = (/* @__PURE__ */ new Date()).toISOString();
-          const txFrom = {
-            id: fromId,
-            accountId: data.accountId,
-            categoryId: null,
-            amount: minor,
-            currency,
-            exchangeRate: exchRate,
-            refAmount: refAmt,
-            payee: data.payee || "Transfer",
-            note: data.note,
-            date: data.date,
-            hijriDate: this.#hijri.toHijri(data.date),
-            paymentType: "transfer",
-            recordState: "cleared",
-            type: "transfer",
-            transferPairId: toId,
-            transferRate: xfer?.rate ?? null,
-            transferDir: "out",
-            tags: [],
-            createdAt: now,
-            addedBy: this.#sync.currentUser?.email || null
-          };
-          const txTo = {
-            id: toId,
-            accountId: data.transferToAccountId,
-            categoryId: null,
-            amount: dst,
-            currency: toCcy,
-            exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1),
-            refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
-            payee: data.payee || "Transfer",
-            note: data.note,
-            date: data.date,
-            hijriDate: this.#hijri.toHijri(data.date),
-            paymentType: "transfer",
-            recordState: "cleared",
-            type: "transfer",
-            transferPairId: fromId,
-            transferRate: xfer?.rate ?? null,
-            transferDir: "in",
-            tags: [],
-            createdAt: now,
-            addedBy: this.#sync.currentUser?.email || null
-          };
-          state.transactions.push(txFrom, txTo);
+          state.transactions.push(
+            ...this.#buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state })
+          );
         } else {
           this.#transactions.create({
             accountId: data.accountId,
@@ -9211,6 +11873,67 @@ create trigger family_shares_updated_at
       this.#render();
       this.#toast.show(id ? "Transaction updated" : "Transaction added");
       this.#sync.schedulePush?.();
+    }
+    /**
+     * Build the two rows that make up a transfer.
+     *
+     * Shared by "new transfer" and by an edit that converts an expense/income
+     * into a transfer, so both paths always produce a fully-paired structure.
+     *
+     * @param {object} data   form values (accountId, transferToAccountId, …)
+     * @param {object} ctx
+     * @param {number} ctx.minor     source amount in minor units
+     * @param {string} ctx.currency  source currency
+     * @param {number} ctx.exchRate  source→home rate
+     * @param {number} ctx.refAmt    source amount in home currency
+     * @param {{rate:number,toCcy:string,dstMinor:number}|null} ctx.xfer
+     * @param {object} ctx.state
+     * @returns {[object, object]} [outgoing leg, incoming leg]
+     */
+    #buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state }) {
+      const fromId = IdGenerator.generate("tx");
+      const toId = IdGenerator.generate("tx");
+      const toCcy = xfer?.toCcy ?? currency;
+      const dst = xfer?.dstMinor ?? minor;
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const shared = {
+        categoryId: null,
+        payee: data.payee || "Transfer",
+        note: data.note,
+        date: data.date,
+        hijriDate: this.#hijri.toHijri(data.date),
+        paymentType: "transfer",
+        recordState: "cleared",
+        type: "transfer",
+        transferRate: xfer?.rate ?? null,
+        tags: [],
+        createdAt: now,
+        addedBy: this.#sync.currentUser?.email || null
+      };
+      return [
+        {
+          ...shared,
+          id: fromId,
+          accountId: data.accountId,
+          amount: minor,
+          currency,
+          exchangeRate: exchRate,
+          refAmount: refAmt,
+          transferPairId: toId,
+          transferDir: "out"
+        },
+        {
+          ...shared,
+          id: toId,
+          accountId: data.transferToAccountId,
+          amount: dst,
+          currency: toCcy,
+          exchangeRate: (RATES[toCcy] || 1) / (RATES[state.user.homeCurrency] || 1),
+          refAmount: this.#fx.convert(dst, toCcy, state.user.homeCurrency),
+          transferPairId: fromId,
+          transferDir: "in"
+        }
+      ];
     }
     deleteTx(id) {
       if (!confirm("Delete this transaction?")) return;
@@ -9282,11 +12005,31 @@ create trigger family_shares_updated_at
         this.#toast.show("Failed: " + (e.message || e));
       }
     }
+    /**
+     * Resolve the stable owner id for a positional shareIndex, captured at the
+     * moment a sheet opens. sharedData is rebuilt on every pull, so carrying the
+     * index alone meant a refresh landing before submit could file the
+     * contribution against a different owner's book entirely.
+     * @param {number} shareIndex
+     * @returns {string|null}
+     */
+    #ownerIdForShare(shareIndex) {
+      return (this.#sync.sharedData || [])[shareIndex]?._ownerId ?? null;
+    }
     openSharedTxModal(shareIndex, accountId) {
-      this.openModal("transaction", { sharedTxMode: { shareIndex, accountId } });
+      this.openModal("transaction", {
+        sharedTxMode: { shareIndex, accountId, ownerId: this.#ownerIdForShare(shareIndex) }
+      });
     }
     openSharedTxEdit(shareIndex, accountId, txId) {
-      this.openModal("transaction", { sharedTxMode: { shareIndex, accountId, editTxId: txId } });
+      this.openModal("transaction", {
+        sharedTxMode: {
+          shareIndex,
+          accountId,
+          editTxId: txId,
+          ownerId: this.#ownerIdForShare(shareIndex)
+        }
+      });
     }
     /**
      * Called by submitTx after a shared-account tx edit succeeds.
@@ -9387,6 +12130,20 @@ create trigger family_shares_updated_at
       v?.setFilter?.(key, value);
       this.#render();
     }
+    /**
+     * Debounced variant for the search box. Every keystroke used to re-run the
+     * whole filter/sort/group pipeline and re-serialise every transaction row
+     * synchronously — O(all transactions) per character. The value is stored
+     * immediately so nothing is lost; only the re-render waits.
+     * @param {string} key
+     * @param {string} value
+     */
+    txFilterSetDebounced(key, value) {
+      const v = this.#views.get("transactions");
+      v?.setFilter?.(key, value);
+      clearTimeout(this.#filterRenderTimer);
+      this.#filterRenderTimer = setTimeout(() => this.#render(), 150);
+    }
     txFilterSetRange(from, to) {
       const v = this.#views.get("transactions");
       v?.setFilter?.("dateFrom", from);
@@ -9422,20 +12179,40 @@ create trigger family_shares_updated_at
       this.#render();
     }
     // ── Transaction modal helpers ────────────────────────────────────────────
-    toggleSplits() {
-      this.#txModal?.toggleSplits?.();
+    /**
+     * Re-render the open modal without losing what the user has typed.
+     *
+     * Modal.refresh() rebuilds the card from the options it was opened with, so
+     * on the transaction form it used to reset every field to its opening state —
+     * toggling splits silently wiped an amount already entered. Snapshotting the
+     * live form into the modal's draft first makes the refresh non-destructive.
+     * Safe to call for any modal: only the transaction modal captures anything.
+     *
+     * @param {object}  [opts]
+     * @param {boolean} [opts.capture=true]  set false when the caller has already
+     *   captured and then adjusted the draft — re-capturing would read the stale
+     *   DOM back over the adjustment.
+     */
+    #refreshModal({ capture = true } = {}) {
+      if (capture && this.#modal.active === "transaction") this.#txModal?.captureForm?.();
       this.#modal.refresh();
       lucide?.createIcons?.();
+      if (this.#modal.active === "transaction") {
+        this.updateTransferFxPanel(false);
+        this.updateTxFxPanel(false);
+      }
+    }
+    toggleSplits() {
+      this.#txModal?.toggleSplits?.();
+      this.#refreshModal();
     }
     addSplit(defaultAccountId = null) {
       this.#txModal?.addSplit?.(defaultAccountId || document.querySelector("[name=accountId]")?.value || null);
-      this.#modal.refresh();
-      lucide?.createIcons?.();
+      this.#refreshModal();
     }
     removeSplit(i) {
       this.#txModal?.removeSplit?.(i);
-      this.#modal.refresh();
-      lucide?.createIcons?.();
+      this.#refreshModal();
     }
     setSplitAmount(i, val, currency) {
       this.#txModal?.setSplitAmount?.(i, val, currency);
@@ -9477,7 +12254,7 @@ create trigger family_shares_updated_at
         </div>`;
       }
       if (diffEl) {
-        if (diffAbs < 1) {
+        if (diffAbs === 0) {
           diffEl.innerHTML = `<div class="flex items-center gap-1 text-xs mt-1 text-emerald-500"><i data-lucide="check" style="width:11px;height:11px"></i> Splits match total</div>`;
         } else {
           const color = diff < 0 ? "text-rose-500" : "text-amber-500";
@@ -9492,37 +12269,9 @@ create trigger family_shares_updated_at
      * note, date, payment, amount, and split state.
      */
     setTxType(type) {
-      const form = document.getElementById("txForm");
-      const snapshot = form ? Object.fromEntries(new FormData(form).entries()) : {};
-      snapshot.type = type;
-      snapshot.amount = Number(snapshot.amount) || 0;
-      if (form?.elements?.recurringEnabled?.checked) {
-        snapshot.recurring = {
-          rule: form.elements.recurringRule?.value || "monthly",
-          interval: Number(form.elements.recurringInterval?.value) || 1,
-          until: form.elements.recurringUntil?.value || null
-        };
-      }
-      const savedSharedMode = this.#txModal?.sharedTxMode;
+      this.#txModal?.captureForm?.();
       this.#txModal?.setType?.(type);
-      this.#modal.refresh();
-      lucide?.createIcons?.();
-      if (form && snapshot.payee) {
-        const el = document.querySelector("[name=payee]");
-        if (el) el.value = snapshot.payee;
-      }
-      if (form && snapshot.note) {
-        const el = document.querySelector("[name=note]");
-        if (el) el.value = snapshot.note;
-      }
-      if (form && snapshot.date) {
-        const el = document.querySelector("[name=date]");
-        if (el) el.value = snapshot.date;
-      }
-      if (form && snapshot.paymentType) {
-        const el = document.querySelector("[name=paymentType]");
-        if (el) el.value = snapshot.paymentType;
-      }
+      this.#refreshModal({ capture: false });
     }
     toggleRecurringFields() {
       const el = document.getElementById("recurringFields");
@@ -9581,8 +12330,15 @@ create trigger family_shares_updated_at
       }
       el.innerHTML = "";
     }
-    /** Apply a category suggestion — sets the category select in the open tx modal. */
+    /** Apply a category suggestion — sets the category field in the open tx modal. */
     applySuggestedCategory(id) {
+      const field = document.getElementById("txCategory");
+      if (field) {
+        CategoryField.setValue(field, [id], this.#store.getState().categories);
+        lucide?.createIcons?.();
+        this.#toast.show("Category applied");
+        return;
+      }
       const sel = document.querySelector("select[name=categoryId]");
       if (sel) {
         sel.value = id;
@@ -9627,8 +12383,8 @@ create trigger family_shares_updated_at
       const toCcy = toAcc.currency;
       const autoRate = (RATES[toCcy] || 1) / (RATES[fromCcy] || 1);
       const rateInp = document.getElementById("fxRate");
-      if (!userChangedRate || !(parseFloat(rateInp?.value) > 0)) {
-        if (rateInp) rateInp.value = autoRate.toFixed(6);
+      if (rateInp && !(parseFloat(rateInp.value) > 0)) {
+        rateInp.value = autoRate.toFixed(6);
       }
       const rate = parseFloat(rateInp?.value) || autoRate;
       const fromAmt = parseFloat(document.querySelector("[name=amount]")?.value) || 0;
@@ -9652,6 +12408,28 @@ create trigger family_shares_updated_at
       const rateInp = document.getElementById("fxRate");
       if (rateInp) {
         rateInp.value = ((RATES[toAcc.currency] || 1) / (RATES[fromAcc.currency] || 1)).toFixed(6);
+      }
+      this.updateTransferFxPanel(false);
+    }
+    /**
+     * Source account changed on a transfer: re-point the locked currency at it
+     * before refreshing the FX panel, so the amount and the quoted rate always
+     * describe the same currency.
+     * @param {string} accId
+     */
+    onTransferSourceChange(accId) {
+      const state = this.#store.getState();
+      const acc = state.accounts.find((a) => a.id === accId);
+      if (acc?.currency) {
+        const hidden = document.getElementById("txCurrencyLocked");
+        const label = document.getElementById("txCurrencyLabel");
+        if (hidden) hidden.value = acc.currency;
+        if (label) {
+          label.innerHTML = `<i data-lucide="lock" style="width:11px;height:11px"></i>${this.#esc(acc.currency)}`;
+          lucide?.createIcons?.();
+        }
+        const rateInp = document.getElementById("fxRate");
+        if (rateInp) rateInp.value = "";
       }
       this.updateTransferFxPanel(false);
     }
@@ -9784,10 +12562,12 @@ create trigger family_shares_updated_at
       if (id) {
         const a2 = state.accounts.find((x) => x.id === id);
         if (!a2) return;
-        const wasMajor = a2.balance;
+        const currencyChanged = a2.currency !== data.currency;
+        const wasMinor = currencyChanged ? this.#fx.convert(a2.balance, a2.currency, data.currency) : a2.balance;
         this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
-        if (newMinor !== wasMajor) {
-          const delta = newMinor - wasMajor;
+        if (!currencyChanged && newMinor !== wasMinor) {
+          const wasMajor = wasMinor;
+          const delta = newMinor - wasMinor;
           const positive = delta > 0;
           const tx = {
             id: IdGenerator.generate("tx"),
@@ -9813,7 +12593,10 @@ create trigger family_shares_updated_at
         this.#store.persist();
         this.closeModal();
         this.#render();
-        this.#toast.show("Account updated" + (newMinor !== wasMajor ? " \xB7 adjustment logged" : ""));
+        const logged = !currencyChanged && newMinor !== wasMinor;
+        this.#toast.show(
+          currencyChanged ? `Account updated \xB7 re-denominated to ${data.currency}` : "Account updated" + (logged ? " \xB7 adjustment logged" : "")
+        );
         this.#sync.schedulePush?.();
         return;
       }
@@ -9863,14 +12646,54 @@ create trigger family_shares_updated_at
       this.#sync.schedulePush?.();
     }
     deleteAccountGroup(id) {
-      const state = this.#store.getState();
       if (!confirm("Delete this group? Accounts will become ungrouped.")) return;
-      state.accounts.forEach((a) => {
-        if (a.groupId === id) a.groupId = null;
-      });
-      state.accountGroups = (state.accountGroups || []).filter((g) => g.id !== id);
-      this.#store.persist();
+      const res = this.#accountGroups.delete(id);
+      if (!res.ok) return this.#toast.show(res.reason);
       this.#render();
+    }
+    /**
+     * The group manager sheet — inline handlers inside it dispatch through
+     * window.__app.accountGroupSheet.*.
+     * @returns {AccountGroupSheet}
+     */
+    get accountGroupSheet() {
+      return this.#accountGroupSheet;
+    }
+    /** Open the group manager (create / rename / delete / bulk-assign). */
+    openAccountGroups() {
+      this.#accountGroupSheet.open({ onClose: () => this.#render() });
+    }
+    /**
+     * The account-share sheet — inline handlers dispatch through
+     * window.__app.accountShareSheet.*.
+     * @returns {AccountShareSheet}
+     */
+    get accountShareSheet() {
+      return this.#accountShareSheet;
+    }
+    /**
+     * "Who can see this account?" — the account-first counterpart to editing a
+     * family member's permissions. Both write the same storage.
+     * @param {string} accountId
+     */
+    shareAccount(accountId) {
+      if (!this.#sync.currentUser) {
+        return this.#toast.show("Sign in to share accounts with family");
+      }
+      this.#accountShareSheet.open(accountId, {
+        onClose: () => {
+          this.#render();
+          this.#sync.schedulePush?.();
+        }
+      });
+    }
+    /**
+     * Toast passthrough so components that aren't views can surface a message
+     * without reaching into the Toast instance directly.
+     * @param {string} message
+     */
+    showToast(message) {
+      this.#toast.show(message);
     }
     onAccGroupChange(sel) {
       const inp = document.getElementById("accNewGroupName");
@@ -10032,9 +12855,11 @@ create trigger family_shares_updated_at
       this.#sync.schedulePush?.();
     }
     deleteCategory(id) {
-      const state = this.#store.getState();
-      if (state.transactions.some((t) => t.categoryId === id)) {
-        return this.#toast.show("Reassign transactions first");
+      const used = this.#categories.usageCount(id);
+      if (used > 0) {
+        return this.#toast.show(
+          `${used} transaction${used === 1 ? "" : "s"} still use this \u2014 reassign them first`
+        );
       }
       if (!confirm("Delete this category?")) return;
       this.#categories.delete(id);
@@ -10071,7 +12896,7 @@ create trigger family_shares_updated_at
       event.preventDefault();
       const fd = new FormData(event.target);
       const data = Object.fromEntries(fd.entries());
-      const categoryIds = fd.getAll("categoryIds");
+      const categoryIds = fd.getAll("categoryIds").filter(Boolean);
       if (!categoryIds.length) return this.#toast.show("Pick at least one category");
       const minor = this.#fx.toMinor(data.amount, data.currency);
       const period = data.period === "hijri" ? "hijri" : "gregorian";
@@ -10111,7 +12936,14 @@ create trigger family_shares_updated_at
         debt.counterparty = data.counterparty || debt.counterparty;
         debt.dueDate = data.dueDate || null;
         debt.note = data.note || "";
-        debt.status = data.markPaid ? "paid" : "active";
+        const wasPaid = debt.status === "paid";
+        const nowPaid = !!data.markPaid;
+        const remaining = this.#debtOutstanding(debt);
+        if (nowPaid && !wasPaid && remaining > 0) {
+          const settled = this.#settleDebtRemainder(debt, remaining, data.accountId);
+          if (settled === null) return;
+        }
+        debt.status = nowPaid ? "paid" : "active";
         this.#store.persist();
         this.closeModal();
         this.#render();
@@ -10211,22 +13043,103 @@ create trigger family_shares_updated_at
       this.#toast.show(debt.status === "paid" ? "Payment recorded \xB7 debt cleared" : `Payment of ${this.#fx.formatMoney(amount, debt.currency)} recorded`);
       this.#sync.schedulePush?.();
     }
+    /**
+     * Outstanding balance on a debt, in the debt's own currency.
+     * Payments in other currencies are converted before summing.
+     * @param {object} debt
+     * @returns {number} minor units still owed (never negative)
+     */
+    #debtOutstanding(debt) {
+      const state = this.#store.getState();
+      const payments = state.transactions.filter(
+        (t) => t.debtId === debt.id && t.id !== debt.initialTxId
+      );
+      const paid = payments.reduce(
+        (s, t) => s + this.#fx.convert(t.amount, t.currency, debt.currency),
+        0
+      );
+      return Math.max(0, debt.principal - paid);
+    }
+    /**
+     * Ask how a debt's remaining balance was settled, and record it accordingly.
+     *
+     * Three real-world cases, because "mark as paid" means different things:
+     *  1. Paid now from a tracked account → write a real payment transaction.
+     *  2. Settled outside the app (cash, forgiven, untracked account) → close it
+     *     with no ledger entry, but record that it was settled externally.
+     *  3. Cancel → leave the debt open.
+     *
+     * @param {object} debt
+     * @param {number} remaining  minor units outstanding
+     * @param {string} [accountId] account hinted by the form
+     * @returns {object|null} the created transaction, null when cancelled
+     */
+    #settleDebtRemainder(debt, remaining, accountId) {
+      const state = this.#store.getState();
+      const amount = this.#fx.formatMoney(remaining, debt.currency);
+      const payNow = window.confirm(
+        `This debt still has ${amount} outstanding.
+
+OK \u2014 I just paid it: log a payment transaction now.
+Cancel \u2014 it was settled outside the app: close it with no transaction.`
+      );
+      if (!payNow) {
+        debt.settledExternally = true;
+        debt.settledAt = DateService.todayIso();
+        return { external: true };
+      }
+      const initial = state.transactions.find((t) => t.id === debt.initialTxId);
+      const accId = accountId || initial?.accountId || state.accounts[0]?.id;
+      const acc = state.accounts.find((a) => a.id === accId);
+      if (!acc) {
+        this.#toast.show("No account to pay from");
+        return null;
+      }
+      const today = DateService.todayIso();
+      const isBorrowed = debt.kind === "borrowed" || debt.direction === "borrowed";
+      const tx = {
+        id: IdGenerator.generate("tx"),
+        accountId: acc.id,
+        categoryId: null,
+        amount: remaining,
+        currency: debt.currency,
+        exchangeRate: (RATES[debt.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
+        refAmount: this.#fx.convert(remaining, debt.currency, state.user.homeCurrency),
+        payee: debt.counterparty || "Debt settlement",
+        note: "Final settlement",
+        date: today,
+        hijriDate: this.#hijri.toHijri(today),
+        paymentType: "transfer",
+        recordState: "cleared",
+        type: isBorrowed ? "expense" : "income",
+        transferPairId: null,
+        tags: ["debt-payment"],
+        splits: null,
+        debtId: debt.id,
+        debtRole: "payment"
+      };
+      state.transactions.push(tx);
+      return tx;
+    }
     deleteDebt(id, destroyPayments = false) {
       const state = this.#store.getState();
       const debt = state.debts.find((d) => d.id === id);
       if (!debt) return;
       const payments = state.transactions.filter((t) => t.debtId === id && t.id !== debt.initialTxId);
-      const msg = destroyPayments ? `Delete this debt AND destroy ${payments.length} linked payment transaction${payments.length === 1 ? "" : "s"}? Account balances will be restored.` : "Delete this debt? The initial transaction is reverted; existing payment transactions are kept but unlinked.";
+      const linked = payments.length + (debt.initialTxId ? 1 : 0);
+      const msg = destroyPayments ? `Delete this debt AND its ${linked} linked transaction${linked === 1 ? "" : "s"} (the original${payments.length ? ` plus ${payments.length} payment${payments.length === 1 ? "" : "s"}` : ""})?
+
+Account balances will be restored as if the debt never existed.` : `Delete this debt but KEEP its ${linked} transaction${linked === 1 ? "" : "s"}?
+
+They stay in your ledger as ordinary transactions and your balances do not change.`;
       if (!confirm(msg)) return;
-      const initial = state.transactions.find((t) => t.id === debt.initialTxId);
-      if (initial) {
-        state.transactions = state.transactions.filter((t) => t.id !== debt.initialTxId);
-      }
       if (destroyPayments) {
-        state.transactions = state.transactions.filter((t) => t.debtId !== id);
+        state.transactions = state.transactions.filter(
+          (t) => t.debtId !== id && t.id !== debt.initialTxId
+        );
       } else {
         state.transactions.forEach((t) => {
-          if (t.debtId === id) {
+          if (t.debtId === id || t.id === debt.initialTxId) {
             t.debtId = null;
             t.debtRole = null;
           }
@@ -10236,7 +13149,7 @@ create trigger family_shares_updated_at
       this.#store.persist();
       this.closeModal();
       this.#render();
-      this.#toast.show(destroyPayments ? `Debt and ${payments.length} payment(s) destroyed` : "Debt deleted");
+      this.#toast.show(destroyPayments ? `Debt and ${linked} transaction${linked === 1 ? "" : "s"} removed` : `Debt deleted \xB7 ${linked} transaction${linked === 1 ? "" : "s"} kept`);
       this.#sync.schedulePush?.();
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -10278,8 +13191,10 @@ create trigger family_shares_updated_at
     deleteFamilyMember(id) {
       if (!confirm("Remove this family member?")) return;
       const state = this.#store.getState();
+      const member = (state.family || []).find((m) => m.id === id);
       state.family = (state.family || []).filter((m) => m.id !== id);
       this.#store.persist();
+      if (member?.email) this.#sync.revokeMemberShare?.(member.email);
       this.closeModal();
       this.#render();
       this.#sync.schedulePush?.();
@@ -10341,13 +13256,20 @@ create trigger family_shares_updated_at
       this.#sync.schedulePush?.();
     }
     deleteRegularItem(id) {
-      if (!confirm("Delete this regular item?")) return;
       const s = this.#store.getState();
-      s.transactions = (s.transactions || []).filter((t) => t.regularItemId !== id);
+      const logged = (s.transactions || []).filter((t) => t.regularItemId === id).length;
+      const msg = logged ? `Delete this regular item?
+
+The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay in your ledger.` : "Delete this regular item?";
+      if (!confirm(msg)) return;
+      (s.transactions || []).forEach((t) => {
+        if (t.regularItemId === id) t.regularItemId = null;
+      });
       s.regularItems = (s.regularItems || []).filter((i) => i.id !== id);
       this.#store.persist();
       this.closeModal();
       this.#render();
+      this.#toast.show(logged ? `Item deleted \xB7 ${logged} transaction${logged === 1 ? "" : "s"} kept` : "Item deleted");
       this.#sync.schedulePush?.();
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -10408,13 +13330,15 @@ create trigger family_shares_updated_at
     prefillRegularLog(sel) {
       const opt = sel.options[sel.selectedIndex];
       const price = parseFloat(opt?.dataset?.price) || 0;
+      const ccy = opt?.dataset?.currency || this.#store.getState().user.homeCurrency || "USD";
+      const digits = this.#fx.minorDigits(ccy);
       const unitEl = document.getElementById("dayLogUnit");
       const qtyEl = document.getElementById("dayLogQty");
       const totalEl = document.getElementById("dayLogTotal");
-      if (unitEl) unitEl.value = price > 0 ? price.toFixed(2) : "";
+      if (unitEl) unitEl.value = price > 0 ? price.toFixed(digits) : "";
       if (totalEl && qtyEl) {
         const qty = parseFloat(qtyEl.value) || 1;
-        totalEl.value = price > 0 ? (price * qty).toFixed(2) : "";
+        totalEl.value = price > 0 ? (price * qty).toFixed(digits) : "";
       }
     }
     updateRegularLogTotal() {
@@ -10564,8 +13488,12 @@ create trigger family_shares_updated_at
       reader.onload = () => {
         try {
           const parsed = JSON.parse(reader.result);
-          if (!parsed.accounts || !parsed.transactions) throw new Error("Invalid structure");
-          this.#store.replaceState(parsed);
+          if (!Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
+            throw new Error("Invalid structure");
+          }
+          this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
+          this.#ensureUserDefaults();
+          this.#accounts.recompute();
           this.#store.persist();
           this.closeModal();
           this.#render();
@@ -10575,6 +13503,30 @@ create trigger family_shares_updated_at
         }
       };
       reader.readAsText(file);
+    }
+    /** Conflict-backup recovery (SyncService keeps timestamped copies). */
+    conflictBackups() {
+      return this.#sync.conflictBackups?.() || [];
+    }
+    restoreConflictBackup(key) {
+      const parsed = this.#sync.readConflictBackup?.(key);
+      if (!parsed || !Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
+        this.#toast.show("That backup is missing or unreadable");
+        return;
+      }
+      if (!confirm("Restore this saved copy? It replaces the data currently on this device.")) return;
+      this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
+      this.#ensureUserDefaults();
+      this.#accounts.recompute();
+      this.#store.persist();
+      this.#sync.discardConflictBackup?.(key);
+      this.closeModal();
+      this.#render();
+      this.#toast.show("Backup restored");
+    }
+    discardConflictBackup(key) {
+      this.#sync.discardConflictBackup?.(key);
+      this.#render();
     }
     exportCsv(range) {
       const state = this.#store.getState();
@@ -10796,11 +13748,13 @@ create trigger family_shares_updated_at
       state.accounts.forEach((a) => {
         accMap[norm(a.name)] = a.id;
       });
+      const createdAccountIds = /* @__PURE__ */ new Set();
       plan.newAccounts.forEach((na) => {
         if (!accMap[norm(na.name)]) {
           const id = IdGenerator.generate("acc");
           state.accounts.push({ id, name: na.name, type: na.type, currency: na.currency, color: na.color, icon: na.icon || "wallet", archived: false, balance: 0 });
           accMap[norm(na.name)] = id;
+          createdAccountIds.add(id);
         }
       });
       const currencyVotes = {};
@@ -10810,6 +13764,7 @@ create trigger family_shares_updated_at
         if (d.currency) currencyVotes[key][d.currency] = (currencyVotes[key][d.currency] || 0) + 1;
       });
       state.accounts.forEach((a) => {
+        if (!createdAccountIds.has(a.id)) return;
         const votes = currencyVotes[norm(a.name)];
         if (!votes) return;
         const dominant = Object.entries(votes).sort((x, y) => y[1] - x[1])[0]?.[0];
@@ -10877,7 +13832,9 @@ create trigger family_shares_updated_at
     }
     resetData() {
       if (!confirm("Reset ALL data? This cannot be undone.")) return;
-      this.#store.replaceState(SeedFactory.create());
+      this.#store.replaceState(SeedFactory.create(), (s) => StateMigrator.migrate(s));
+      this.#ensureUserDefaults();
+      this.#accounts.recompute();
       this.#store.persist();
       this.#render();
       this.#toast.show("Data reset");
@@ -11001,6 +13958,7 @@ create trigger family_shares_updated_at
       if (!state.merchantCategories) state.merchantCategories = {};
       if (typeof state.user.hijriOffset !== "number") state.user.hijriOffset = 0;
       if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
+      if (!Array.isArray(state.user.hiddenPaymentTypes)) state.user.hiddenPaymentTypes = [];
       if (!Array.isArray(state.user.collapsedCategories)) state.user.collapsedCategories = [];
       if (Array.isArray(state.regularItems)) {
         state.regularItems.forEach((it) => {
@@ -11086,19 +14044,19 @@ create trigger family_shares_updated_at
     // ──────────────────────────────────────────────────────────────────────────
     // Private: account group helper
     // ──────────────────────────────────────────────────────────────────────────
-    #resolveAccountGroupId(data, state) {
-      let { groupId } = data;
+    /**
+     * Resolve the account form's group field. '__new__' means "create the group
+     * named in newGroupName"; AccountGroupService.create() owns the naming rules
+     * (trimmed, case-insensitively unique) so the form and the manage sheet
+     * cannot drift apart.
+     */
+    #resolveAccountGroupId(data, _state) {
+      const { groupId } = data;
       if (!groupId) return { groupId: null };
       if (groupId === "__new__") {
-        const name = (data.newGroupName || "").trim();
-        if (!name) return { error: "New group name is required" };
-        const norm = (s) => s.toLowerCase().trim();
-        const exists = (state.accountGroups || []).find((g) => norm(g.name) === norm(name));
-        if (exists) return { groupId: exists.id };
-        const id = IdGenerator.generate("grp");
-        if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
-        state.accountGroups.push({ id, name, color: this.#deterministicColor(name) });
-        return { groupId: id };
+        const res = this.#accountGroups.create(data.newGroupName || "");
+        if (!res.ok) return { error: res.reason };
+        return { groupId: res.group.id };
       }
       return { groupId };
     }
@@ -11208,7 +14166,10 @@ create trigger family_shares_updated_at
         if (splitOf) {
           if (!splitGroups[splitOf]) {
             splitGroups[splitOf] = {
-              type: "split-group",
+              // Real ledger type (expense/income) — NOT a phantom 'split-group',
+              // which LedgerMath scores as zero, making the whole split invisible
+              // to account balances. All legs of a group share the parent type.
+              type: type === "income" ? "income" : "expense",
               date,
               accountName: acctName,
               payee: (r.payee || "").trim(),
@@ -11216,6 +14177,7 @@ create trigger family_shares_updated_at
               currency,
               paymentType,
               tags,
+              isDuplicate: false,
               createdAt: r.createdat || "",
               addedBy: r.addedby || "",
               amount: 0,
@@ -11247,6 +14209,18 @@ create trigger family_shares_updated_at
         }
         txDrafts.push({ type, date, accountName: acctName, payee: (r.payee || "").trim(), note: (r.note || "").trim(), amount, currency, paymentType, catName: catName || null, subName: subName || null, tags, isDuplicate: false, createdAt: r.createdat || "", addedBy: r.addedby || "" });
       });
+      const dupKey = (accId, d) => `${d.date}|${accId}|${d.type}|${d.amount}|${d.currency}|${norm(d.payee || "")}`;
+      const seenKeys = new Set(
+        state.transactions.filter((t) => t.type !== "transfer").map((t) => `${t.date}|${t.accountId}|${t.type}|${t.amount}|${t.currency}|${norm(t.payee || "")}`)
+      );
+      for (const d of txDrafts) {
+        if (d.type === "transfer") continue;
+        const existAcc = accByName(d.accountName);
+        if (!existAcc) continue;
+        const key = dupKey(existAcc.id, d);
+        if (seenKeys.has(key)) d.isDuplicate = true;
+        else seenKeys.add(key);
+      }
       return {
         txDrafts,
         newAccounts: Object.values(newAccs),
@@ -11351,19 +14325,10 @@ create trigger family_shares_updated_at
       return "bank";
     }
     #deterministicColor(name) {
-      const palette = ["#0ea5e9", "#22c55e", "#a855f7", "#f97316", "#14b8a6", "#ec4899", "#ef4444", "#0891b2", "#8b5cf6", "#f59e0b"];
-      let h = 0;
-      for (const c of name) h = h * 31 + c.charCodeAt(0) >>> 0;
-      return palette[h % palette.length];
+      return CategoryService.colorForName(name);
     }
     #guessCatDefaults(name, type) {
-      const n = name.toLowerCase();
-      for (const def of CATEGORY_KEYWORD_DEFAULTS) {
-        if (def.keys.some((k) => n.includes(k))) return { icon: def.icon, color: def.color };
-      }
-      if (type === "income") return { icon: "banknote", color: "#22c55e" };
-      if (type === "transfer") return { icon: "arrow-right-left", color: "#737373" };
-      return { icon: "tag", color: this.#deterministicColor(name) };
+      return this.#categories.guessAppearance(name, type);
     }
     #defaultAccIcon(type) {
       return ACCOUNT_TYPE_ICONS[type] || "wallet";
@@ -11382,7 +14347,9 @@ create trigger family_shares_updated_at
   window.currencySetupNext = () => window.__app.currencySetupNext();
   window.setHijriOffset = (v) => window.__app.setHijriOffset(v);
   window.setTheme = (m) => window.__app.setTheme(m);
-  window.addCustomPaymentType = (s) => window.__app.addCustomPaymentType(s);
+  window.addCustomPaymentType = () => window.__app.addCustomPaymentType();
+  window.pickPaymentType = (v) => window.__app.pickPaymentType(v);
+  window.onTransferSourceChange = (v) => window.__app.onTransferSourceChange(v);
   window.submitRegularLog = (e, d) => window.__app.submitRegularLog(e, d);
   window.deleteRegularLog = (id, d) => window.__app.deleteRegularLog(id, d);
   window.prefillRegularLog = (s) => window.__app.prefillRegularLog(s);

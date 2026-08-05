@@ -58,7 +58,7 @@ export class AccountModal {
         <div class="grid grid-cols-2 gap-3 mb-1">
           <div>
             <label class="text-xs text-zinc-500">${editing ? 'Current balance' : 'Starting balance'}</label>
-            <input class="input" name="balance" type="number" step="0.01" value="${balanceDisplay}">
+            <input class="input" name="balance" type="number" step="${CurrencyService.stepFor(a.currency)}" value="${balanceDisplay}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">Colour</label>

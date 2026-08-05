@@ -73,11 +73,25 @@ fl_chart, intl, path, path_provider.
 ## 4. ACTIVE BUG — fix this first
 
 **Symptom:** data added in the app shows in-session but **disappears on browser
-refresh.** Cause: on web, PowerSync's local DB only persists with its WASM +
-worker assets present; without them it runs non-persistent. **Fix:** run
-`dart run powersync:setup_web` in `apps/pocket_app` (adds `sqlite3.wasm`,
-`powersync_db.worker.js`, `powersync_sync.worker.js` to `web/`), then a **full**
-restart (`flutter run -d chrome --web-port=5000`).
+refresh** / never reaches Supabase.
+
+**Root causes found 2026-06-11 (all fixed in code):**
+1. `openPowerSyncDatabase` used `path_provider`, which **throws on web** → the
+   DB never opened and the app silently ran on in-memory sample data (that's
+   why the sample 'salary' transaction was visible). Now uses a bare
+   `'pocket.db'` path on web, and the sidebar shows a **sync status tile**
+   (red "SAMPLE DATA — sync failed" when the DB fails to open).
+2. The connector uploaded raw SQLite values: CSV string into `tags text[]`,
+   `0/1` into boolean columns → PostgREST rejected the row and, with no error
+   handling, **one bad row jammed the upload queue forever**. The connector
+   now type-coerces per table (`RowUploadTransformer`) and logs+skips
+   unrecoverable rejections instead of blocking.
+
+**Still required on the user's machine:** run `dart run powersync:setup_web`
+in `apps/pocket_app` (adds `sqlite3.wasm`, `powersync_db.worker.js`,
+`powersync_sync.worker.js` to `web/`) — without these the web DB opens but is
+**non-persistent across refreshes**. Then a **full** restart
+(`flutter run -d chrome --web-port=5000`).
 
 **Then verify cloud upload** (Supabase → Table Editor). Likely follow-up: the
 `transactions.tags` column is Postgres `text[]` but the app stores tags as a CSV
@@ -175,14 +189,142 @@ sends; if PostgREST rejects them, convert in the connector or make them int.
    pill shows on its transactions; switch date format in Settings → lists
    update; check Reports ranges.
 
-**Still open:** splits UI + reconcile + CSV import/export + receipt scan
-(Gemini) + recurring generation; account colors/icons picker (categories
-done); inbound-share owner email (needs an email mirror column readable via
-PostgREST); archived accounts list view (archived accounts currently just
-disappear from pickers); a scheduled FX refresher writing into `fx_rates`
-(table is now synced + seeded); shared-account PowerSync sync stream; GitHub
-Actions deploy for Flutter Web (`--base-href`, SPA 404); one-time blob→rows
-migration of existing users at cutover.
+### Update 2026-06-11 (third pass) — sync fixes + splits/reconcile/accounts
+
+- **Sync root causes fixed:** `path_provider` throws on web → DB never opened
+  → silent sample mode (now web-safe path + sidebar sync-status tile);
+  connector now type-coerces uploads (`tags` CSV→array, 0/1→bool, ''→null for
+  uuid cols) and logs+skips rejected rows instead of jamming the queue.
+- **Dropdown hardening:** every dialog sanitizes stored ids against the
+  actual dropdown items (fixes the "exactly one item with value: salary"
+  assertion); sample-data category ids fixed.
+- **Splits UI:** expense transactions can be split across categories (rows
+  must sum to the total; validated in dialog AND controller; split row ids
+  generated at insert — PowerSync requires them).
+- **Accounts:** icon + colour pickers, pills in the list, Archived section
+  (repos now return archived rows; pickers/totals use `activeAccountsProvider`).
+- **Reconcile:** enter the account's actual balance → difference booked as an
+  `adjustment` transaction (the legacy modal's compensating-entry path; the
+  "overwrite stored balance" path is obsolete in the derived-balance model).
+
+### Update 2026-06-11 (fourth pass) — recurring transactions
+
+- **Recurring:** `RecurringSpec` on `LedgerTransaction` (template = has spec;
+  instance = has `recurringSourceId`), pure `RecurringGenerator` ports the
+  legacy `RecurringService.process()` with its hardening (transfer skip B5,
+  day-of-month anchoring I4, 500-instance safety) and is unit-tested
+  (`recurring_generator_test.dart`). Instance ids are **UUIDv5 of
+  (template, date)** so multi-device backfill collides instead of
+  duplicating. `RecurringProcessor` runs on every ledger emission from
+  AppShell (idempotent). "Repeat" picker in the transaction dialog
+  (daily/weekly/monthly/yearly). Local schema: `recurring` (JSON text) +
+  `recurring_source_id` columns on transactions; jsonb upload as Map.
+  Requires a **full restart** (local schema change). `SELECT *` sync streams
+  pick the columns up automatically.
+- Sidebar: live sync status moved below the account row (static "Synced"
+  label removed).
+
+### Update 2026-06-11 (fifth pass) — CSV export + FX refresher
+
+- **CSV export:** `CsvExportService` is a faithful port of legacy
+  `exportCsv` — same column set as the import template; transfers emit one
+  row from the out-leg (To* columns, cross-currency aware); debt initial
+  rows carry borrowed/lent + DueDate + DebtRef; splits emit one row per
+  split keyed by SplitOf; RFC-4180 quoting. Buttons in Settings → Data
+  (30/90 days, all time). Platform-aware saver: browser download on web
+  (conditional import), documents folder on mobile.
+- **FX refresher:** `FxRefreshService` ports `ExchangeRateService` —
+  open.er-api.com USD base, refreshes at most every 6 h based on the table's
+  newest `updated_at` (first device of the day refreshes for the family),
+  upserts into `fx_rates`, non-fatal on failure. Fired once per session from
+  AppShell. **Requires migration 0004** (authenticated write policy on
+  fx_rates) and `flutter pub get` (new dep: `http`).
+
+### Update 2026-06-11 (sixth pass) — CSV import
+
+- **CSV import** (Settings → Data → Import CSV, web-first): faithful port of
+  legacy `#parseCsv`/`#parseImportDate`/`#buildImportPlan`/`commitImport`.
+  RFC-4180 parser (BOM/quotes/CRLF), normalized headers, type aliases
+  (debit/credit/borrow/lend), date preference for ambiguous slash dates,
+  account auto-create (type/icon/colour guessed, currency by majority vote
+  of rows), categories parents-before-children, SplitOf rows merged into one
+  split transaction, transfers via the FK-safe controller, borrowed/lent
+  rows via DebtController (debt row + principal posting), duplicate
+  fingerprinting (date|amount|currency|account|payee) with an "include
+  duplicates" toggle in the preview dialog. Template download button
+  included. Pure planning in `CsvImportService`; commits in
+  `CsvImportController`. NOTE: file picking is web-only for now (mobile
+  needs the file_picker plugin); legacy's "replace all data" option was
+  intentionally dropped (destructive + sync-hostile).
+- **Fix (same day):** the web file reader had a subscribe-after-read race —
+  a fast read completed before the load listener attached, the picker
+  returned an empty string, and import reported "no importable rows".
+  Reader now subscribes to `onLoadEnd` BEFORE `readAsText` and surfaces
+  reader errors. Import failures are now diagnosable: the snackbar reports
+  parsed-row count, characters read, and a per-reason skip tally (parser
+  verified by simulation against CRLF/BOM/semicolon/empty inputs).
+
+### Update 2026-06-11 (seventh pass) — AI receipt scan
+
+- **Receipt scan** ported from legacy `ReceiptScanService` (gemini-2.5-flash-
+  lite): prompt injects REAL category ids (no fuzzy matching), image part
+  first, temperature 0.1, response sanitised (first-JSON extraction, id
+  validation, ISO-date check, total falls back to item sum). Key lives in
+  Settings → AI Receipt Scanner and is **device-local only**
+  (shared_preferences / localStorage — never synced, legacy parity). Scan
+  button in Add transaction (scanner icon in the title) prefills payee, date,
+  per-item note, amount and per-category splits. Web-first (uses the browser
+  picker); mobile needs image_picker. New dep: `shared_preferences` →
+  `flutter pub get`.
+- Deviation noted: the dialog's amount fields are denominated in the chosen
+  account's currency; the receipt's detected currency is shown in the
+  confirmation snackbar + note rather than forcing an FX panel (legacy had a
+  full multi-currency transaction modal — port that when the FX panel comes).
+
+### Update 2026-06-11 (eighth pass) — FX panel, mobile pickers, deploy
+
+- **FX panel:** expense/income can be entered in ANY currency — picker next
+  to the amount, live "≈ X in account currency" hint; on save the account
+  impact is rate-frozen into `acctMinor` and `exchangeRate`/
+  `refAmountMinor` snapshot the tx→home conversion (legacy semantics).
+  Splits follow the tx currency. Transfers stay in the source account's
+  currency by design.
+- **Mobile pickers:** CSV import + receipt scan now work on Android/iOS via
+  `file_picker` (new dep → `flutter pub get`); web keeps the dependency-free
+  browser paths. Cancel is silent on all platforms.
+- **Deploy:** `.github/workflows/deploy-web.yml` — builds with
+  `--base-href /<repo>/` (auto-derived), runs domain+data tests, runs
+  `powersync:setup_web`, copies `index.html`→`404.html` for SPA deep links,
+  publishes via GitHub Pages actions. One-time: repo Settings → Pages →
+  Source = GitHub Actions; add the Pages URL to Supabase Auth redirect URLs
+  for Google sign-in.
+
+### Update 2026-06-11 (ninth pass) — migration tool, audit, B1, Calendar
+
+- **Migration tool:** `tools/migrate_legacy_blob.dart` converts the legacy
+  Settings → Export JSON into idempotent SQL (deterministic UUIDv5 ids,
+  `opening_balance` back-computed from the stored balance, `__USER_ID__`
+  placeholder, warnings for cross-currency impacts). Usage at the top of
+  the file.
+- **Parity audit:** `docs/06-parity-audit.md` — full discrepancy/bug/
+  improvement list. Fixed from it already: **B1** (dashboard + reports now
+  aggregate via `LedgerMath.homeAmount`, preferring the frozen
+  `refAmountMinor` snapshot; report splits scale the snapshot
+  proportionally) and **A2-12** (receipt scan activates the FX panel with
+  the detected currency).
+- **Calendar view:** month grid (Sunday-first) with Gregorian+Hijri day
+  labels per the calendarMode setting, miqaat stars (bundled
+  `assets/miqaats.json`, ported from the Mumineen calendar; year-specific
+  entries skipped), per-day spend, and a day sheet with miqaats, that day's
+  transactions, and quick-log chips that book regular items onto that date.
+  New nav entry after Transactions. `flutter pub get` not needed; full
+  restart recommended (new asset).
+
+**Still open (see audit §A/§C for the full list):** AccountDetail page,
+onboarding/seed categories, payment-type picker + custom types, merchant
+auto-categorization, transaction search/filters, inbound-share owner email,
+shared-account sync stream, `LedgerTransaction.copyWith` refactor, repo
+contract tests, CI analyze workflow.
 
 ## 7. Roadmap (suggested order)
 

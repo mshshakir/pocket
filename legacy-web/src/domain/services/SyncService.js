@@ -10,6 +10,7 @@
  *   'sync:user'      { user: object|null }
  */
 import { Store }          from '../../core/Store.js';
+import { Repository }     from '../../core/Repository.js';
 import { EventBus }       from '../../core/EventBus.js';
 import { SeedFactory }    from '../../data/seed.js';
 import { StateMigrator }  from '../../data/StateMigrator.js';
@@ -26,7 +27,18 @@ export class SyncService {
   // Supabase SDK client (null until sbInit() succeeds)
   #sb = null;
   #user = null;
-  #cloudVersion = 0;
+  /**
+   * Version of the cloud row this device last saw.
+   *   null → UNKNOWN: no pull has succeeded this session.
+   *   0    → confirmed no row exists yet (genuine first sign-in).
+   *   >0   → the row's version.
+   * The null/0 distinction is load-bearing: #commitState treats 0 as "insert
+   * the first row" and upserts without a CAS guard, so conflating "we never
+   * managed to read the cloud" with "the cloud is empty" let a device that
+   * failed its pull overwrite the entire remote history — with seed data, if
+   * localStorage happened to be empty too.
+   */
+  #cloudVersion = null;
   // The version THIS device last wrote. Realtime UPDATE events carrying this
   // version are our own echo and are ignored, so a local push no longer triggers
   // a redundant self-pull (replaceState + re-render + recurring re-scan).
@@ -45,6 +57,13 @@ export class SyncService {
   #pendingRemovals  = new Set();
   #pendingAdditions = new Map();
   #sharedData       = [];
+
+  /** True when local edits have not yet been committed to the cloud. */
+  #dirty = false;
+  /** Re-entrancy guard for the flush-before-pull path. */
+  #flushing = false;
+  /** True only for a user-initiated sign-out (not a failed token refresh). */
+  #explicitSignOut = false;
 
   constructor() {
     this.#store = Store.getInstance();
@@ -102,8 +121,12 @@ export class SyncService {
     // becomes a no-op because #user is already null. Both delegate to the single
     // #resetToGuest() so the reset logic — including channel teardown — lives in
     // exactly one place.
+    // Mark this as deliberate so the SIGNED_OUT handler knows it may wipe local
+    // data. A SIGNED_OUT arriving WITHOUT this flag is a failed token refresh,
+    // where wiping would destroy work the user never chose to discard.
+    this.#explicitSignOut = true;
     this.#sb.auth.signOut().catch(() => {});
-    if (this.#user) this.#resetToGuest(true);
+    if (this.#user) this.#resetToGuest(true, { wipeLocal: true });
   }
 
   /** Remove all realtime channels so they don't leak across sessions/users. */
@@ -127,7 +150,10 @@ export class SyncService {
       if (event === 'SIGNED_IN' && session?.user) {
         if (!this.#user) this.#adoptSession(session.user);
       } else if (event === 'SIGNED_OUT' && this.#user) {
-        this.#resetToGuest(true);
+        // Supabase fires SIGNED_OUT for an expired/failed token refresh too, not
+        // only for a deliberate sign-out. Only the deliberate case may clear
+        // local data.
+        this.#resetToGuest(true, { wipeLocal: this.#explicitSignOut });
       }
     });
 
@@ -169,18 +195,41 @@ export class SyncService {
   }
 
   /**
-   * Drop back to local/guest state, wiping cloud-derived data so the next user
-   * never sees the previous one's records.
-   * @param {boolean} showSignIn  prompt the sign-in modal (true after sign-out)
+   * Drop back to local/guest state.
+   *
+   * @param {boolean} showSignIn  prompt the sign-in modal
+   * @param {object}  [opts]
+   * @param {boolean} [opts.wipeLocal=false]
+   *   true  — deliberate sign-out: reset to seed so the next user at this
+   *           browser never sees the previous one's records.
+   *   false — the session merely lapsed (failed token refresh, offline). Keep
+   *           every local record: the user didn't ask to discard anything, and
+   *           any un-pushed edit still lives only here.
    */
-  #resetToGuest(showSignIn) {
+  #resetToGuest(showSignIn, { wipeLocal = false } = {}) {
     this.#teardownChannels();
     this.#user = null;
-    this.#cloudVersion = 0;
+    this.#cloudVersion = null; // unknown again until the next successful pull
     this.#sharedData = [];
     this.#pendingRemovals.clear();
     this.#pendingAdditions.clear();
-    this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+
+    if (wipeLocal) {
+      this.#dirty = false;
+      this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+    } else {
+      // Keep local data; only drop the cloud-derived slice that belonged to the
+      // session that just ended. #dirty stays set so the edit is pushed once
+      // the user signs back in.
+      const state = this.#store.getState();
+      state._sharedData       = [];
+      state._currentUserEmail = null;
+      // Nothing to push: the session just ended.
+      this.#store.withoutLocalChange(() => this.#store.persist());
+      this.#bus.emit('state:changed', state);
+    }
+
+    this.#explicitSignOut = false;
     this.#emitStatus('local');
     this.#emitUser(null);
     this.#bus.emit('auth:changed', { user: null, showSignIn });
@@ -192,6 +241,19 @@ export class SyncService {
 
   get sharedData() {
     return this.#sharedData;
+  }
+
+  /**
+   * Resolve a share by its stable owner id.
+   *
+   * Prefer this over indexing into sharedData: the array is rebuilt on every
+   * pull, so a positional index captured when a sheet opened can point at a
+   * different owner by the time the user submits.
+   * @param {string} ownerId
+   * @returns {object|null}
+   */
+  shareByOwner(ownerId) {
+    return this.#sharedData.find((s) => s._ownerId === ownerId) || null;
   }
 
   /**
@@ -209,6 +271,9 @@ export class SyncService {
   /** Debounced cloud push — called after every local save. */
   schedulePush() {
     if (!this.#sb || !this.#user) return;
+    // Mark dirty BEFORE the debounce so a pull landing inside the window knows
+    // there is an uncommitted local edit to flush first.
+    this.#dirty = true;
     clearTimeout(this.#saveTimer);
     // push() already serialises through #syncing, so a push never overlaps an
     // in-flight push/pull.
@@ -232,8 +297,17 @@ export class SyncService {
    * @param {object} state  the state snapshot to persist
    * @returns {Promise<boolean>} true on success, false if a newer version won
    */
-  async #commitState(state) {
+  async #commitState(rawState) {
+    // Never upload the transient render-time keys (notably `_sharedData`, a full
+    // copy of other users' snapshots) — see Repository.stripTransient().
+    const state    = Repository.stripTransient(rawState);
     const expected = this.#cloudVersion;
+
+    // Never write on an unknown baseline — see the #cloudVersion doc comment.
+    if (expected === null) {
+      throw new Error('Cloud state not loaded yet — skipping upload to avoid overwriting it');
+    }
+
     if (expected > 0) {
       const { data: rows, error } = await this.#sb
         .from('user_data')
@@ -247,14 +321,19 @@ export class SyncService {
       this.#lastSelfVersion = this.#cloudVersion; // mark our own write to ignore its echo
       return true;
     }
-    // First write for this user (no row yet) — insert via upsert.
-    const { error } = await this.#sb.from('user_data').upsert({
+    // First write for this user (no row yet). Use INSERT … ON CONFLICT DO
+    // NOTHING (ignoreDuplicates) so a simultaneous first sign-in on another
+    // device can't be clobbered: if the row already exists we lost the race and
+    // return false, letting #doPush stash + pull the winner instead of
+    // overwriting it.
+    const { data: rows, error } = await this.#sb.from('user_data').upsert({
       id:         this.#user.id,
       data:       state,
       version:    1,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' });
+    }, { onConflict: 'id', ignoreDuplicates: true }).select('version');
     if (error) throw error;
+    if (!rows || !rows.length) return false; // another device created it first
     this.#cloudVersion = 1;
     this.#lastSelfVersion = this.#cloudVersion;
     return true;
@@ -262,14 +341,34 @@ export class SyncService {
 
   async #doPush() {
     if (!this.#sb || !this.#user) return;
+
+    // No successful pull yet this session (offline sign-in, transient 5xx).
+    // Uploading now would overwrite the cloud from an unknown baseline, so hold
+    // the change instead — #dirty stays set and the next pull unblocks it.
+    if (this.#cloudVersion === null) {
+      console.warn('[SyncService] Skipping push: cloud state not loaded yet');
+      this.#emitStatus('error');
+      return;
+    }
+
     this.#emitStatus('syncing');
     try {
       const ok = await this.#commitState(this.#store.getState());
       if (!ok) {
-        this.#toast('Another device saved first — merging…');
+        // Genuine conflict: another device advanced the version, so our
+        // baseline is stale and this state cannot be committed as-is. There is
+        // no field-level merge, so keep a recovery copy before the pull
+        // overwrites local state — silently discarding the user's work is not
+        // an acceptable outcome, and the old "merging…" toast was a lie.
+        this.#stashConflict();
+        this.#toast('Another device saved first — your local copy was kept as a backup');
         await this.#doPull();
+        // The pull replaced local state with the cloud's, so there is nothing
+        // left to flush; the losing copy lives under pocket.v1.conflict.
+        this.#dirty = false;
         return;
       }
+      this.#dirty = false;
       this.#emitStatus('synced');
       await this.#pushFamilyShares();
       await this.#pullMemberContributions();
@@ -292,9 +391,64 @@ export class SyncService {
     return this.#syncing;
   }
 
+  /**
+   * Persist the current state under a recovery key so a pull can never destroy
+   * work outright. Best-effort: a full quota must not break sync.
+   */
+  #stashConflict() {
+    try {
+      const savedAt = new Date().toISOString();
+      const key = `pocket.v1.conflict.${Date.now()}`;
+      localStorage.setItem(key, JSON.stringify({ savedAt, state: this.#store.getState() }));
+      // Maintain a capped index (newest first, keep 5) so successive conflicts
+      // don't overwrite each other and stay recoverable from Settings.
+      const idx = this.conflictBackups();
+      idx.unshift({ key, savedAt });
+      for (const stale of idx.slice(5)) { try { localStorage.removeItem(stale.key); } catch (_) {} }
+      localStorage.setItem('pocket.v1.conflicts', JSON.stringify(idx.slice(0, 5)));
+    } catch (_) { /* quota / private mode — nothing we can do */ }
+  }
+
+  /** @returns {{key:string, savedAt:string}[]} recoverable conflict copies, newest first */
+  conflictBackups() {
+    try { return JSON.parse(localStorage.getItem('pocket.v1.conflicts') || '[]'); }
+    catch (_) { return []; }
+  }
+
+  /** @param {string} key @returns {object|null} the stashed state, or null */
+  readConflictBackup(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw).state ?? null) : null;
+    } catch (_) { return null; }
+  }
+
+  /** Forget one backup (after restore, or on user discard). @param {string} key */
+  discardConflictBackup(key) {
+    try { localStorage.removeItem(key); } catch (_) {}
+    try {
+      localStorage.setItem('pocket.v1.conflicts',
+        JSON.stringify(this.conflictBackups().filter((b) => b.key !== key)));
+    } catch (_) {}
+  }
+
   /** @returns {boolean} isFirstSignIn */
   async #doPull() {
     if (!this.#sb || !this.#user) return false;
+
+    // Commit any pending local edit BEFORE overwriting local state. Without
+    // this, a realtime UPDATE arriving inside schedulePush()'s 1s debounce
+    // window wiped the just-saved transaction from memory AND localStorage,
+    // and the queued push then uploaded the clobbered result.
+    if (this.#dirty && !this.#flushing) {
+      this.#flushing = true;
+      clearTimeout(this.#saveTimer);
+      try { await this.#doPush(); } catch (_) { /* handled inside #doPush */ }
+      finally { this.#flushing = false; }
+      // #doPush pulls on conflict, so state may already be current.
+      if (!this.#dirty && this.#cloudVersion !== null) return false;
+    }
+
     this.#emitStatus('syncing');
     try {
       const { data, error } = await this.#sb
@@ -308,6 +462,8 @@ export class SyncService {
         // active state (older snapshots may miss newer arrays / openingBalance).
         this.#store.replaceState(data.data, (s) => this.#migrateDefaults(s));
         this.#cloudVersion = data.version ?? 0;
+        // Local state now mirrors the cloud — nothing outstanding to push.
+        this.#dirty = false;
         new RecurringService().process();
         await this.#pullFamilyShares();
         await this.#pullMemberContributions();
@@ -483,6 +639,58 @@ export class SyncService {
   }
 
   /**
+   * Edit a transaction the member previously contributed to a shared account.
+   *
+   * An edit is a REPLACE, not a second add: the owner is sent a `_replace`
+   * marker for the old row plus an add carrying the SAME transaction id. The
+   * owner applies deletes before computing which adds are new, so the pair
+   * lands as an in-place update. Sending only the add would be skipped as a
+   * duplicate id; minting a fresh id (the old behaviour) left the original in
+   * the owner's ledger and the account was double-charged.
+   *
+   * `_replace` also tells the owner this needs EDIT rights rather than DELETE
+   * rights, so a member with 'edit' can still correct their own entry.
+   *
+   * @param {string} ownerId
+   * @param {string} txId     the id being replaced (kept on the new row)
+   * @param {object} txData   the updated transaction
+   */
+  async updateContribution(ownerId, txId, txData) {
+    if (!this.#sb || !this.#user) throw new Error('Not signed in');
+
+    const share = this.#sharedData.find((s) => s._ownerId === ownerId);
+    const next  = { ...txData, id: txId };
+    const accountId =
+      next.accountId ??
+      next.splits?.[0]?.accountId ??
+      share?.accounts?.[0]?.id ??
+      (share?.permission ? Object.keys(share.permission)[0] : null);
+    const email = this.#user.email.toLowerCase();
+
+    const { error: delErr } = await this.#sb.from('family_contributions').upsert({
+      owner_id: ownerId, member_email: email, account_id: accountId,
+      tx_data: { _delete: true, _replace: true, id: `rep_${txId}`, targetId: txId },
+      synced: false,
+    }, { onConflict: 'id', ignoreDuplicates: true });
+    if (delErr) throw delErr;
+
+    const { error: addErr } = await this.#sb.from('family_contributions').upsert({
+      owner_id: ownerId, member_email: email, account_id: accountId,
+      tx_data: next, synced: false,
+    }, { onConflict: 'id', ignoreDuplicates: true });
+    if (addErr) throw addErr;
+
+    // Optimistic: swap the row in place so the list doesn't flicker through an
+    // empty state, and keep it pinned until the owner's snapshot confirms.
+    if (share) {
+      share.transactions = (share.transactions || []).map((t) => (t.id === txId ? next : t));
+      this.#deriveShareBalances(share);
+      this.#pendingAdditions.set(txId, { tx: next, ownerId });
+      this.#bus.emit('state:changed', this.#store.getState());
+    }
+  }
+
+  /**
    * Schedule a pullFamilyShares + state:changed after a delay.
    * Called after shared tx submit/delete to get the owner's confirmed snapshot.
    * @param {number} delayMs
@@ -512,15 +720,43 @@ export class SyncService {
     for (const a of share.accounts) a.balance = balances.get(a.id) ?? a.balance ?? 0;
   }
 
+  /**
+   * Revoke a member's access: delete their family_shares row and tell their
+   * client to refresh.
+   *
+   * Removing someone from state.family alone was not enough — the row survived,
+   * so their #pullFamilyShares() kept returning the last snapshot (every shared
+   * account, its transactions, and ALL of the owner's categories) indefinitely.
+   *
+   * @param {string} email
+   */
+  async revokeMemberShare(email) {
+    if (!this.#sb || !this.#user || !email) return;
+    const addr = email.toLowerCase().trim();
+    try {
+      await this.#sb.from('family_shares')
+        .delete()
+        .eq('owner_id', this.#user.id)
+        .eq('member_email', addr);
+      // Nudge their client so the snapshot disappears immediately rather than
+      // at their next cold start.
+      this.#broadcastToMember(addr);
+    } catch (e) {
+      console.warn('[SyncService] revokeMemberShare error:', e);
+    }
+  }
+
   async #pushFamilyShares() {
     const state = this.#store.getState();
-    if (!this.#sb || !this.#user || !state.family?.length) return;
-    for (const member of state.family) {
+    if (!this.#sb || !this.#user) return;
+    for (const member of state.family || []) {
       if (!member.email) continue;
       const permMap  = {};
       (member.permissions || []).forEach((p) => { permMap[p.accountId] = p.access; });
       const sharedIds = Object.keys(permMap);
-      if (!sharedIds.length) continue;
+      // Un-sharing every account is a revocation, not a no-op: leaving the row
+      // in place would keep the member's stale snapshot alive forever.
+      if (!sharedIds.length) { await this.revokeMemberShare(member.email); continue; }
       const snapshot = {
         sharedBy:     state.user.name || this.#user.email,
         // Owner's home currency so members can embed correct exchangeRate /
@@ -562,14 +798,20 @@ export class SyncService {
       const { data, error } = await this.#sb
         .from('family_shares')
         .select('owner_id, snapshot')
-        .eq('member_email', this.#user.email.toLowerCase());
+        .eq('member_email', this.#user.email.toLowerCase())
+        // Deterministic order: the UI still passes positional shareIndex values
+        // captured at render time, and an unordered select made those indices
+        // shift between opening a sheet and submitting it.
+        .order('owner_id');
       if (error) { console.warn('[SyncService] pullFamilyShares error:', error); return; }
 
       const rawIds = new Set((data || []).flatMap((r) => (r.snapshot?.transactions || []).map((t) => t.id)));
 
       this.#sharedData = (data || [])
         .filter((r) => r.snapshot && r.owner_id !== this.#user.id)
-        .map((r) => ({ ...r.snapshot, _ownerId: r.owner_id }));
+        .map((r) => ({ ...r.snapshot, _ownerId: r.owner_id }))
+        // Sort locally too — .order() only helps if the backend honours it.
+        .sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)));
 
       // Re-apply pending removals — clean up once the server confirms removal
       for (const txId of [...this.#pendingRemovals]) {
@@ -600,19 +842,105 @@ export class SyncService {
     } catch (e) { console.warn('[SyncService] pullFamilyShares error:', e); }
   }
 
+  /**
+   * Current access level a member holds on each of the owner's accounts.
+   * @param {string} email
+   * @returns {Record<string,string>} accountId → 'view'|'add'|'edit'|'full'
+   */
+  #memberPermissions(email) {
+    const key    = (email || '').toLowerCase().trim();
+    const member = (this.#store.getState().family || [])
+      .find((m) => (m.email || '').toLowerCase().trim() === key);
+    const map = {};
+    for (const p of (member?.permissions || [])) map[p.accountId] = p.access;
+    return map;
+  }
+
+  /**
+   * Decide whether an incoming contribution is allowed, against the CURRENT
+   * permission map rather than whatever the member's cached snapshot claimed.
+   *
+   * This is the owner's only enforcement point: permissions are otherwise
+   * checked in render code, which a stale or hostile client never runs. Access
+   * levels follow FAMILY_ACCESS_LEVELS — add ≤ edit ≤ full.
+   *
+   * @param {object} row  a family_contributions row
+   * @returns {{ok:true}|{ok:false, reason:string}}
+   */
+  #authoriseContribution(row) {
+    const perms = this.#memberPermissions(row.member_email);
+    const tx    = row.tx_data || {};
+    const level = (accId) => perms[accId] || null;
+
+    if (tx._delete === true) {
+      const targetId = tx.targetId || tx.id;
+      const target   = (this.#store.getState().transactions || []).find((t) => t.id === targetId);
+      // Already gone — treat as satisfied so the row doesn't retry forever.
+      if (!target) return { ok: true };
+      const access = level(target.accountId);
+      // A replace marker is the delete half of an edit, so it needs edit rights,
+      // not delete rights. A standalone delete needs 'full'.
+      const allowed = tx._replace
+        ? ['edit', 'full'].includes(access)
+        : access === 'full';
+      return allowed
+        ? { ok: true }
+        : { ok: false, reason: `no ${tx._replace ? 'edit' : 'delete'} access on ${target.accountId}` };
+    }
+
+    // An add touches its own account plus every split account.
+    const touched = new Set([tx.accountId, ...(tx.splits || []).map((s) => s.accountId || tx.accountId)]
+      .filter(Boolean));
+    if (!touched.size) return { ok: false, reason: 'no account on the contribution' };
+    for (const accId of touched) {
+      if (!['add', 'edit', 'full'].includes(level(accId))) {
+        return { ok: false, reason: `no write access on ${accId}` };
+      }
+    }
+    return { ok: true };
+  }
+
   async #pullMemberContributions() {
     if (!this.#sb || !this.#user) return;
     try {
       const { data, error } = await this.#sb
         .from('family_contributions')
-        .select('id, tx_data')
+        .select('id, tx_data, member_email, account_id')
         .eq('owner_id', this.#user.id)
         .eq('synced', false);
       if (error || !data?.length) return;
 
-      const state      = this.#store.getState();
-      const deleteRows = data.filter((r) => r.tx_data?._delete === true);
-      const addRows    = data.filter((r) => !r.tx_data?._delete && r.tx_data?.id);
+      const state = this.#store.getState();
+
+      // Authorise BEFORE applying. A member whose access was downgraded or
+      // revoked may still hold a stale snapshot and keep submitting; without
+      // this the owner applied whatever arrived, including deletes targeting
+      // arbitrary transactions.
+      const rejected = [];
+      const rows     = [];
+      for (const row of data) {
+        const verdict = this.#authoriseContribution(row);
+        if (verdict.ok) rows.push(row);
+        else {
+          rejected.push(row);
+          console.warn('[SyncService] Rejected contribution from',
+            row.member_email, '—', verdict.reason);
+        }
+      }
+
+      // Rejected rows are consumed, not left pending, or they would be retried
+      // on every pull forever.
+      if (rejected.length) {
+        try {
+          await this.#sb.from('family_contributions')
+            .update({ synced: true }).in('id', rejected.map((r) => r.id));
+        } catch (_) { /* best effort */ }
+        this.#toast(`${rejected.length} family change${rejected.length > 1 ? 's' : ''} blocked — permission removed`);
+      }
+      if (!rows.length) return;
+
+      const deleteRows = rows.filter((r) => r.tx_data?._delete === true);
+      const addRows    = rows.filter((r) => !r.tx_data?._delete && r.tx_data?.id);
 
       if (deleteRows.length) {
         const deleteIds = new Set(deleteRows.map((r) => r.tx_data.targetId || r.tx_data.id));
@@ -621,6 +949,8 @@ export class SyncService {
         state.transactions = state.transactions.filter((t) => !deleteIds.has(t.id));
       }
 
+      // Computed AFTER the deletes so an edit (delete marker + add carrying the
+      // same id) lands as a replacement rather than being skipped as a duplicate.
       const existingIds = new Set(state.transactions.map((t) => t.id));
       const newRows     = addRows.filter((r) => r.tx_data?.id && !existingIds.has(r.tx_data.id));
 
@@ -630,13 +960,17 @@ export class SyncService {
       });
 
       if (newRows.length || deleteRows.length) {
-        this.#store.persist();
+        // This state came FROM the cloud (member contributions) and is committed
+        // explicitly two lines down, so suppress the local-change hook — letting
+        // it schedule a push would re-upload what we just wrote and bump the
+        // version again for every other device.
+        this.#store.withoutLocalChange(() => this.#store.persist());
         // Version-guarded write (NOT a blind upsert) so a concurrent device's
         // newer snapshot is never clobbered. On a lost race we pull the winner;
         // the contributions stay synced=false and are re-applied next pull.
         const committed = await this.#commitState(state);
         if (committed) {
-          const ids = data.map((r) => r.id);
+          const ids = rows.map((r) => r.id);
           await this.#sb.from('family_contributions').update({ synced: true }).in('id', ids);
           await this.#pushFamilyShares();
           this.#bus.emit('state:changed', state);

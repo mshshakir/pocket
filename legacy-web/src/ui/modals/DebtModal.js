@@ -89,7 +89,7 @@ export class DebtModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Principal</label>
-            <input class="input" name="principal" type="number" step="0.01" required
+            <input class="input" name="principal" type="number" step="${CurrencyService.stepFor(d.currency)}" required
                    value="${principalDisp}" ${editing ? 'readonly' : ''}>
           </div>
           <div>
@@ -192,7 +192,7 @@ export class DebtModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Amount</label>
-            <input class="input" name="amount" type="number" step="0.01" required
+            <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(debt.currency)}" required
                    value="${remDisp}" max="${remDisp}" autofocus>
           </div>
           <div>

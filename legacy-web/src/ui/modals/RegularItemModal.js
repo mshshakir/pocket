@@ -10,6 +10,7 @@
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
+import { CategoryField }   from '../components/CategoryField.js';
 
 const ITEM_ICONS = [
   'coffee','shopping-basket','bus','dumbbell','utensils','heart-pulse',
@@ -51,8 +52,6 @@ export class RegularItemModal {
       ? this.#fx.fromMinor(editing.defaultAmount, editing.currency)
       : 0;
 
-    const expenseCats = state.categories.filter((c) => c.type === 'expense' || !c.type);
-
     return `
       <form id="regularItemForm"
             onsubmit="window.__app.submitRegularItem(event,'${editing?.id || ''}')"
@@ -76,7 +75,7 @@ export class RegularItemModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Default amount</label>
-            <input class="input" name="defaultAmount" type="number" step="0.01" min="0"
+            <input class="input" name="defaultAmount" type="number" step="${CurrencyService.stepFor(data.currency)}" min="0"
                    placeholder="0.00" value="${amountVal || ''}">
           </div>
           <div>
@@ -99,10 +98,14 @@ export class RegularItemModal {
         <!-- Category -->
         <div class="mb-4">
           <label class="text-xs text-zinc-500">Default category</label>
-          <select class="select" name="categoryId">
-            <option value="">— Uncategorised —</option>
-            ${expenseCats.map((c) => `<option value="${c.id}" ${data.categoryId === c.id ? 'selected' : ''}>${this.#esc(c.name)}</option>`).join('')}
-          </select>
+          ${CategoryField.render({
+            id:         'regularItemCategory',
+            name:       'categoryId',
+            value:      data.categoryId,
+            type:       'expense',
+            title:      'Default category',
+            categories: state.categories,
+          })}
         </div>
 
         <!-- Frequency -->

@@ -1,0 +1,48 @@
+# Static analysis + tests on every pull request (and manual runs). The deploy
+# workflow only gates tests at deploy time; this catches problems on the PR.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Pure Dart packages: analyze + test (fast, no Flutter engine needed).
+      - name: domain — analyze + test
+        run: |
+          cd packages/domain
+          dart pub get
+          dart analyze
+          dart test
+
+      - name: data — analyze + test
+        run: |
+          cd packages/data
+          dart pub get
+          dart analyze
+          dart test
+
+      # Flutter app: analyze + widget/unit tests.
+      - name: app — pub get
+        working-directory: apps/pocket_app
+        run: flutter pub get
+
+      - name: app — analyze
+        working-directory: apps/pocket_app
+        run: flutter analyze
+
+      - name: app — test
+        working-directory: apps/pocket_app
+        run: flutter test

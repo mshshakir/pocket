@@ -171,7 +171,7 @@ export class DashboardView extends BaseView {
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${i.cat.color}"></span>
-          <span class="text-zinc-700 dark:text-zinc-300">${i.cat.name}</span>
+          <span class="text-zinc-700 dark:text-zinc-300">${this.escapeHtml(i.cat.name)}</span>
         </div>
         <div class="text-zinc-500">${Math.round((100 * i.amount) / total)}%</div>
       </div>`).join('');

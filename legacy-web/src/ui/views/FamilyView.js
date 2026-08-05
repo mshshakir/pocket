@@ -90,7 +90,7 @@ export class FamilyView extends BaseView {
       return { acc, lvl };
     }).filter(Boolean);
 
-    const initial = m.initials || m.name.slice(0, 2).toUpperCase();
+    const initial = (m.initials || (m.name || m.email || '?').slice(0, 2)).toUpperCase();
 
     return `
       <div class="card p-4">
@@ -160,14 +160,14 @@ export class FamilyView extends BaseView {
           <div class="space-y-2">
             ${sharedAccs.map(({ a, lvl }) => `
               <div class="flex items-center gap-2 cursor-pointer hover:opacity-80"
-                   onclick="window.__app.openAccountDetail('${a.id}',{shareIndex:${shareIndex}})">
+                   onclick="window.__app.openAccountDetail('${this.jsArg(a.id)}',{shareIndex:${Number(shareIndex) || 0}})">
                 <div class="icon-pill w-7 h-7 rounded-lg flex-shrink-0"
-                     style="background:${a.color || '#818cf8'}22;color:${a.color || '#818cf8'}">
-                  <i data-lucide="${a.icon || 'wallet'}" style="width:13px;height:13px"></i>
+                     style="background:${this.safeColor(a.color, '#818cf8')}22;color:${this.safeColor(a.color, '#818cf8')}">
+                  <i data-lucide="${this.safeIcon(a.icon, 'wallet')}" style="width:13px;height:13px"></i>
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="text-sm truncate font-medium">${this.escapeHtml(a.name)}</div>
-                  <div class="text-xs text-zinc-500">${a.currency} · ${this.formatMoney(a.balance, a.currency)}</div>
+                  <div class="text-xs text-zinc-500">${this.escapeHtml(a.currency)} · ${this.formatMoney(a.balance, a.currency)}</div>
                 </div>
                 <span class="chip text-xs" style="background:${lvl.color}18;color:${lvl.color}">
                   <i data-lucide="${lvl.icon}" style="width:10px;height:10px;display:inline"></i> ${lvl.label}

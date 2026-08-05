@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Pocket",
+    "slug": "pocket-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "scheme": "pocket",
+    "runtimeVersion": { "policy": "appVersion" },
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#09090b"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.mufaddal.pocket"
+    },
+    "android": {
+      "package": "com.mufaddal.pocket",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#09090b"
+      }
+    },
+    "plugins": [
+      "@react-native-google-signin/google-signin"
+    ],
+    "sdkVersion": "54.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "dadeae8e-1317-46ca-81eb-14e6475c42b0"
+      }
+    }
+  }
+}

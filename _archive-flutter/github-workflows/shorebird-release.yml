@@ -1,0 +1,44 @@
+# Cuts a Shorebird RELEASE (a new, patchable build) when you push a v* tag,
+# e.g. `git tag v1.2.0 && git push --tags`. A release is required before any
+# `shorebird patch` can target it. Distribute the produced artifact (APK for
+# sideloading, AAB for Play).
+#
+# One-time: create a CI token in the Shorebird console and add it as the repo
+# secret SHOREBIRD_TOKEN. `shorebird init` must have been run once (commits
+# shorebird.yaml with the app_id).
+
+name: Shorebird Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      # APK for sideloading (patchable). For Play, drop `--artifact apk` to get
+      # the default AAB.
+      - name: Shorebird release (Android)
+        working-directory: apps/pocket_app
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: shorebird release android --artifact apk --no-confirm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-app-apk
+          path: apps/pocket_app/build/**/outputs/**/*.apk
+          if-no-files-found: warn

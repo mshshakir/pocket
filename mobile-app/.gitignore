@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# Expo / native build output
+.expo/
+dist/
+android/
+ios/
+*.apk
+*.aab
+
+# local env (real values live here; keep out of git — use `.env.example` as the template)
+.env
+.env.local

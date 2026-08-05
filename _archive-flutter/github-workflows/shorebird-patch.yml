@@ -1,0 +1,37 @@
+# Pushes an over-the-air Dart PATCH to users running the latest release.
+# Triggered manually (Actions → Run workflow) or by a `patch-*` tag, so patches
+# are deliberate rather than firing on every commit.
+#
+# Only Dart code changes can be patched — changing native code, dependencies or
+# assets needs a new release (shorebird-release.yml). The patch targets the most
+# recent release of the matching version.
+#
+# Requires the SHOREBIRD_TOKEN repo secret (same as the release workflow).
+
+name: Shorebird Patch
+
+on:
+  push:
+    tags: ['patch-*']
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: Shorebird patch (Android)
+        working-directory: apps/pocket_app
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: shorebird patch android --artifact apk --no-confirm

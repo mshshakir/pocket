@@ -124,12 +124,61 @@ export class BaseView {
   }
 
   /**
-   * Escape HTML special characters.
+   * Escape HTML special characters — safe for text and quoted attribute values.
+   * NOT safe for values interpolated into an inline event handler; use jsArg().
    * @param {string|any} s
    * @returns {string}
    */
   escapeHtml(s) {
     return Html.escape(s);
+  }
+
+  /**
+   * Escape a value that lands inside a single-quoted JS string in an inline
+   * handler, e.g. onclick="fn('${this.jsArg(id)}')".
+   *
+   * escapeHtml() is not sufficient here: the HTML parser decodes character
+   * references in attribute values BEFORE the value becomes the handler body,
+   * so an escaped &#39; turns back into a real quote and ends the string early.
+   * @param {string|any} s
+   * @returns {string}
+   */
+  jsArg(s) {
+    return Html.js(s);
+  }
+
+  /**
+   * Validate a CSS hex colour, falling back to a neutral grey. Use for any
+   * colour that came from outside this device — notably family-share snapshots,
+   * which are another user's data interpolated into a style attribute.
+   * @param {string|any} c
+   * @param {string} [fallback]
+   * @returns {string}
+   */
+  safeColor(c, fallback = '#71717a') {
+    return Html.color(c, fallback);
+  }
+
+  /**
+   * Validate a Lucide icon slug, falling back to a safe default.
+   * @param {string|any} name
+   * @param {string} [fallback]
+   * @returns {string}
+   */
+  safeIcon(name, fallback = 'circle') {
+    return Html.icon(name, fallback);
+  }
+
+  /**
+   * `step` for a money <input type="number">, derived from the currency's minor
+   * unit. A hard-coded 0.01 makes the third decimal unreachable in KWD, BHD,
+   * OMR, TND, JOD, IQD and LYD — the browser rejects 1.234 with a step mismatch
+   * and refuses to submit — and needlessly allows fractions of a yen.
+   * @param {string} currency
+   * @returns {string} e.g. '1' (JPY), '0.01' (USD), '0.001' (KWD)
+   */
+  amountStep(currency) {
+    return CurrencyService.stepFor(currency);
   }
 
   /**

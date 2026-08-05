@@ -194,11 +194,16 @@ export class TransactionsView extends BaseView {
       value: p, label: p.charAt(0).toUpperCase() + p.slice(1),
     }));
 
+    // The chip VALUE is interpolated into an inline handler, so it needs jsArg()
+    // rather than escapeHtml(): payment-method names are free text (and can also
+    // arrive from a CSV column), so an unescaped value both broke the handler and
+    // let a crafted name break out of the attribute.
+    const capitalise = (v) => this.escapeHtml(String(v).charAt(0).toUpperCase() + String(v).slice(1));
     const allActiveChips = [
-      ...f.accountIds.map((v)  => `<span class="chip">${this.escapeHtml(accountOpts.find((o)=>o.value===v)?.label||v)} <button onclick="window.__app.txFilterToggle('accountIds','${v}')">×</button></span>`),
-      ...f.categoryIds.map((v) => `<span class="chip">${this.escapeHtml(categoryOpts.find((o)=>o.value===v)?.label||v)} <button onclick="window.__app.txFilterToggle('categoryIds','${v}')">×</button></span>`),
-      ...f.types.map((v)       => `<span class="chip">${v.charAt(0).toUpperCase()+v.slice(1)} <button onclick="window.__app.txFilterToggle('types','${v}')">×</button></span>`),
-      ...f.paymentTypes.map((v)=> `<span class="chip">${v.charAt(0).toUpperCase()+v.slice(1)} <button onclick="window.__app.txFilterToggle('paymentTypes','${v}')">×</button></span>`),
+      ...f.accountIds.map((v)  => `<span class="chip">${this.escapeHtml(accountOpts.find((o)=>o.value===v)?.label||v)} <button onclick="window.__app.txFilterToggle('accountIds','${this.jsArg(v)}')">×</button></span>`),
+      ...f.categoryIds.map((v) => `<span class="chip">${this.escapeHtml(categoryOpts.find((o)=>o.value===v)?.label||v)} <button onclick="window.__app.txFilterToggle('categoryIds','${this.jsArg(v)}')">×</button></span>`),
+      ...f.types.map((v)       => `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('types','${this.jsArg(v)}')">×</button></span>`),
+      ...f.paymentTypes.map((v)=> `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('paymentTypes','${this.jsArg(v)}')">×</button></span>`),
       f.dateFrom||f.dateTo ? `<span class="chip">${f.dateFrom||'…'} → ${f.dateTo||'…'} <button onclick="window.__app.txFilterClear('dates')">×</button></span>` : '',
       f.range!=='30'&&!f.dateFrom&&!f.dateTo ? `<span class="chip">${f.range==='all'?'All time':'Last '+f.range+'d'} <button onclick="window.__app.txFilterSet('range','30')">×</button></span>` : '',
       f.amountMin||f.amountMax ? `<span class="chip">${f.amountMin||'0'}–${f.amountMax||'∞'} ${cur} <button onclick="window.__app.txFilterClear('amounts')">×</button></span>` : '',
@@ -212,7 +217,7 @@ export class TransactionsView extends BaseView {
             <input class="input pl-9" placeholder="Search payee, note or category…"
                    value="${this.escapeHtml(f.search)}"
                    data-focus-key="txSearch"
-                   oninput="window.__app.txFilterSet('search',this.value)" />
+                   oninput="window.__app.txFilterSetDebounced('search',this.value)" />
           </div>
           <button class="btn ${this.#filterOpen ? 'btn-primary' : 'btn-outline'} relative shrink-0"
                   onclick="window.__app.toggleTxFilterPanel()" title="Advanced filters">
@@ -273,11 +278,15 @@ export class TransactionsView extends BaseView {
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Min amount (${cur})</label>
-          <input class="input" type="number" min="0" step="0.01" placeholder="0.00" value="${f.amountMin}" oninput="window.__app.txFilterSet('amountMin',this.value)">
+          <input class="input" type="number" min="0" step="${this.amountStep(cur)}" placeholder="0.00"
+                 value="${f.amountMin}" data-focus-key="txAmountMin"
+                 oninput="window.__app.txFilterSet('amountMin',this.value)">
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Max amount (${cur})</label>
-          <input class="input" type="number" min="0" step="0.01" placeholder="No limit" value="${f.amountMax}" oninput="window.__app.txFilterSet('amountMax',this.value)">
+          <input class="input" type="number" min="0" step="${this.amountStep(cur)}" placeholder="No limit"
+                 value="${f.amountMax}" data-focus-key="txAmountMax"
+                 oninput="window.__app.txFilterSet('amountMax',this.value)">
         </div>
         ${activeCount ? `
           <div class="md:col-span-2 pt-1 border-t border-zinc-100 dark:border-zinc-800">
@@ -292,10 +301,10 @@ export class TransactionsView extends BaseView {
     const remaining = options.filter((o) => !selected.includes(o.value));
     const chips = selected.map((v) => {
       const lbl = options.find((o) => o.value === v)?.label || v;
-      return `<span class="chip" style="background:#f4f4f5">${this.escapeHtml(lbl)}<button type="button" onclick="window.__app.txFilterToggle('${field}','${v}')" style="margin-left:4px;opacity:.6" title="Remove">×</button></span>`;
+      return `<span class="chip" style="background:#f4f4f5">${this.escapeHtml(lbl)}<button type="button" onclick="window.__app.txFilterToggle('${this.jsArg(field)}','${this.jsArg(v)}')" style="margin-left:4px;opacity:.6" title="Remove">×</button></span>`;
     }).join('');
     const dropdown = remaining.length
-      ? `<select class="select text-sm mt-1" onchange="if(this.value){window.__app.txFilterToggle('${field}',this.value);this.value=''}">
+      ? `<select class="select text-sm mt-1" onchange="if(this.value){window.__app.txFilterToggle('${this.jsArg(field)}',this.value);this.value=''}">
            <option value="">${placeholder}</option>
            ${remaining.map((o) => `<option value="${this.escapeHtml(o.value)}">${this.escapeHtml(o.label)}</option>`).join('')}
          </select>`
