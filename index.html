@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pocket</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  GitHub Pages is serving this repo from a branch at the site root, and the web
+  app lives in /legacy-web/. This root index forwards visitors there so
+  https://<user>.github.io/pocket/ isn't a 404. It preserves any #hash so app
+  deep links keep working.
+
+  For a clean URL (marketing page AT /pocket/ with no /legacy-web/ segment),
+  switch Settings → Pages → Source to "GitHub Actions"; the deploy-web workflow
+  then publishes /legacy-web as the site root and this file is ignored.
+-->
+<meta http-equiv="refresh" content="0; url=./legacy-web/">
+<script>location.replace('./legacy-web/' + (location.search || '') + (location.hash || ''));</script>
+</head>
+<body>
+<p style="font-family:system-ui,sans-serif;padding:2rem">
+  Redirecting to <a href="./legacy-web/">Pocket</a>…
+</p>
+</body>
+</html>
