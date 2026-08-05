@@ -19,9 +19,6 @@ name: Deploy web
 on:
   push:
     branches: [main]
-    paths:
-      - 'legacy-web/**'
-      - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
 
 permissions:
