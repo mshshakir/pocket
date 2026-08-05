@@ -17,13 +17,13 @@ var _PocketApp = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // src/app.js
+  // legacy-web/src/app.js
   var app_exports = {};
   __export(app_exports, {
     Application: () => Application
   });
 
-  // src/core/EventBus.js
+  // legacy-web/src/core/EventBus.js
   var EventBus = class _EventBus {
     /** @type {EventBus|null} */
     static #instance = null;
@@ -96,7 +96,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/core/Repository.js
+  // legacy-web/src/core/Repository.js
   var Repository = class _Repository {
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
@@ -161,7 +161,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/core/Store.js
+  // legacy-web/src/core/Store.js
   var Store = class _Store {
     /** @type {Store|null} */
     static #instance = null;
@@ -367,7 +367,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/core/Router.js
+  // legacy-web/src/core/Router.js
   var Router = class _Router {
     /** @type {Router|null} */
     static #instance = null;
@@ -431,7 +431,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/constants.js
+  // legacy-web/src/data/constants.js
   var FX = Object.freeze({
     // Majors
     USD: 1,
@@ -898,7 +898,7 @@ var _PocketApp = (() => {
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
 
-  // src/domain/services/IdGenerator.js
+  // legacy-web/src/domain/services/IdGenerator.js
   var IdGenerator = class {
     /**
      * Generate a prefixed pseudo-random ID.
@@ -914,7 +914,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/DateService.js
+  // legacy-web/src/domain/services/DateService.js
   var DateService = class {
     /**
      * Format a Date as a local 'YYYY-MM-DD' string. Pass-through for strings.
@@ -937,7 +937,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/seed.js
+  // legacy-web/src/data/seed.js
   var SeedFactory = class {
     /**
      * Build and return a complete initial state object.
@@ -1057,7 +1057,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/LedgerMath.js
+  // legacy-web/src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
      * Sign multiplier for a non-transfer transaction type.
@@ -1244,10 +1244,10 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/FxRates.js
+  // legacy-web/src/domain/services/FxRates.js
   var RATES = { ...FX };
 
-  // src/domain/services/CurrencyService.js
+  // legacy-web/src/domain/services/CurrencyService.js
   var CurrencyService = class _CurrencyService {
     /**
      * Process-wide label cache. Static (not per-instance) because the app creates
@@ -1429,7 +1429,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/data/StateMigrator.js
+  // legacy-web/src/data/StateMigrator.js
   var StateMigrator = class {
     /**
      * Mutate `state` in place, back-filling any missing fields. Safe to run
@@ -1486,7 +1486,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/HijriCalendarService.js
+  // legacy-web/src/domain/services/HijriCalendarService.js
   var HijriCalendarService = class {
     /** @type {Store} */
     #store;
@@ -1696,7 +1696,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/AccountService.js
+  // legacy-web/src/domain/services/AccountService.js
   var AccountService = class {
     /** @type {Store} */
     #store;
@@ -1826,7 +1826,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/CategoryService.js
+  // legacy-web/src/domain/services/CategoryService.js
   var CategoryService = class _CategoryService {
     /** @type {Store} */
     #store;
@@ -2087,7 +2087,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/RecurringService.js
+  // legacy-web/src/domain/services/RecurringService.js
   var RecurringService = class {
     /** @type {Store} */
     #store;
@@ -2218,7 +2218,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/TransactionService.js
+  // legacy-web/src/domain/services/TransactionService.js
   var TransactionService = class {
     /** @type {Store} */
     #store;
@@ -2418,7 +2418,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/BudgetService.js
+  // legacy-web/src/domain/services/BudgetService.js
   var BudgetService = class {
     /** @type {Store} */
     #store;
@@ -2653,7 +2653,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // src/domain/services/ReceiptScanService.js
+  // legacy-web/src/domain/services/ReceiptScanService.js
   var GEMINI_MODEL = "gemini-2.5-flash-lite";
   var GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   var ReceiptScanService = class {
@@ -2974,7 +2974,7 @@ RULES:
     }
   };
 
-  // src/domain/services/SyncService.js
+  // legacy-web/src/domain/services/SyncService.js
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -3769,7 +3769,7 @@ RULES:
     }
   };
 
-  // src/domain/services/ThemeService.js
+  // legacy-web/src/domain/services/ThemeService.js
   var ThemeService = class {
     #store;
     constructor(store) {
@@ -3798,7 +3798,7 @@ RULES:
     }
   };
 
-  // src/domain/services/PaymentTypeService.js
+  // legacy-web/src/domain/services/PaymentTypeService.js
   var BASE_TYPES = ["card", "cash", "transfer", "cheque", "online"];
   var PaymentTypeService = class {
     #store;
@@ -3939,7 +3939,7 @@ RULES:
     }
   };
 
-  // src/domain/services/AccountGroupService.js
+  // legacy-web/src/domain/services/AccountGroupService.js
   var AccountGroupService = class {
     /** @type {Store} */
     #store;
@@ -4131,7 +4131,7 @@ RULES:
     }
   };
 
-  // src/domain/services/FamilyShareService.js
+  // legacy-web/src/domain/services/FamilyShareService.js
   var LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
   var FamilyShareService = class {
     /** @type {Store} */
@@ -4230,7 +4230,7 @@ RULES:
     }
   };
 
-  // src/domain/services/ExchangeRateService.js
+  // legacy-web/src/domain/services/ExchangeRateService.js
   var ENDPOINT = "https://open.er-api.com/v6/latest/USD";
   var REFRESH_MS = 6 * 60 * 60 * 1e3;
   var ExchangeRateService = class {
@@ -4290,7 +4290,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Toast.js
+  // legacy-web/src/ui/components/Toast.js
   var Toast = class {
     /** @type {HTMLElement|null} */
     #el = null;
@@ -4335,7 +4335,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Modal.js
+  // legacy-web/src/ui/components/Modal.js
   var Modal = class {
     /** @type {HTMLElement|null} */
     #backdrop = null;
@@ -4452,7 +4452,7 @@ RULES:
     }
   };
 
-  // src/core/Html.js
+  // legacy-web/src/core/Html.js
   var Html = class {
     /**
      * Escape text / double-quoted attribute content.
@@ -4496,7 +4496,7 @@ RULES:
     }
   };
 
-  // src/ui/components/Navigation.js
+  // legacy-web/src/ui/components/Navigation.js
   var Navigation = class _Navigation {
     /** @type {HTMLElement|null} */
     #sidebar = null;
@@ -4640,7 +4640,7 @@ RULES:
     }
   };
 
-  // src/ui/components/OverlaySheet.js
+  // legacy-web/src/ui/components/OverlaySheet.js
   var SHEET_CSS = `
 .sheet-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); z-index:70; display:none; }
 .sheet-backdrop.open { display:flex; align-items:flex-end; justify-content:center; }
@@ -4821,7 +4821,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // src/ui/components/CategoryPickerSheet.js
+  // legacy-web/src/ui/components/CategoryPickerSheet.js
   var CategoryPickerSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5160,7 +5160,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // src/ui/components/AccountGroupSheet.js
+  // legacy-web/src/ui/components/AccountGroupSheet.js
   var AccountGroupSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5489,7 +5489,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/components/AccountShareSheet.js
+  // legacy-web/src/ui/components/AccountShareSheet.js
   var AccountShareSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5689,7 +5689,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/components/PaymentMethodSheet.js
+  // legacy-web/src/ui/components/PaymentMethodSheet.js
   var PaymentMethodSheet = class extends OverlaySheet {
     /** @type {import('../../domain/services/PaymentTypeService.js').PaymentTypeService} */
     #service;
@@ -5892,7 +5892,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/components/CategoryField.js
+  // legacy-web/src/ui/components/CategoryField.js
   var CategoryField = class _CategoryField {
     /**
      * @param {object}   cfg
@@ -6018,7 +6018,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/components/VoiceRecorder.js
+  // legacy-web/src/ui/components/VoiceRecorder.js
   var VoiceRecorder = class _VoiceRecorder {
     /** @type {MediaStream|null} */
     #stream = null;
@@ -6026,6 +6026,12 @@ This replaces your current grouping.`
     #rec = null;
     /** @type {Blob[]} */
     #chunks = [];
+    /** @type {AudioContext|null} */
+    #ctx = null;
+    /** @type {AnalyserNode|null} */
+    #analyser = null;
+    /** @type {Uint8Array|null} */
+    #timeData = null;
     /** True while actively capturing audio. */
     get recording() {
       return !!this.#rec && this.#rec.state === "recording";
@@ -6049,6 +6055,24 @@ This replaces your current grouping.`
       }
       this.#stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.#chunks = [];
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          this.#ctx = new AC();
+          if (this.#ctx.state === "suspended") {
+            try {
+              await this.#ctx.resume();
+            } catch (_) {
+            }
+          }
+          this.#analyser = this.#ctx.createAnalyser();
+          this.#analyser.fftSize = 512;
+          this.#analyser.smoothingTimeConstant = 0.7;
+          this.#ctx.createMediaStreamSource(this.#stream).connect(this.#analyser);
+          this.#timeData = new Uint8Array(this.#analyser.fftSize);
+        }
+      } catch (_) {
+      }
       const mimeType = _VoiceRecorder.#pickMime();
       this.#rec = mimeType ? new MediaRecorder(this.#stream, { mimeType }) : new MediaRecorder(this.#stream);
       this.#rec.ondataavailable = (e) => {
@@ -6082,6 +6106,23 @@ This replaces your current grouping.`
         }
       });
     }
+    /**
+     * Current microphone loudness as a normalised 0..1 value (RMS of the
+     * time-domain waveform, amplified into a useful visual range). Returns 0
+     * when metering is unavailable. Cheap enough to call every animation frame.
+     * @returns {number}
+     */
+    getLevel() {
+      if (!this.#analyser || !this.#timeData) return 0;
+      this.#analyser.getByteTimeDomainData(this.#timeData);
+      let sum = 0;
+      for (let i = 0; i < this.#timeData.length; i++) {
+        const v = (this.#timeData[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / this.#timeData.length);
+      return Math.max(0, Math.min(1, rms * 3.2));
+    }
     /** Abort recording and release the microphone without producing a Blob. */
     cancel() {
       try {
@@ -6098,12 +6139,155 @@ This replaces your current grouping.`
         } catch (_) {
         }
       }
+      if (this.#ctx) {
+        try {
+          this.#ctx.close();
+        } catch (_) {
+        }
+      }
       this.#stream = null;
       this.#rec = null;
+      this.#ctx = null;
+      this.#analyser = null;
+      this.#timeData = null;
     }
   };
 
-  // src/ui/views/BaseView.js
+  // legacy-web/src/ui/components/VoiceOverlay.js
+  var VoiceOverlay = class _VoiceOverlay {
+    #el = null;
+    #barsEl = null;
+    #timerEl = null;
+    #titleEl = null;
+    #subEl = null;
+    #stopBtn = null;
+    #ring = null;
+    #raf = 0;
+    #startTs = 0;
+    #getLevel = () => 0;
+    onStop = () => {
+    };
+    onCancel = () => {
+    };
+    static #BAR_COUNT = 13;
+    static #styleInjected = false;
+    /** Inject the keyframes/spinner CSS once per page. */
+    static #injectStyle() {
+      if (_VoiceOverlay.#styleInjected) return;
+      _VoiceOverlay.#styleInjected = true;
+      const s = document.createElement("style");
+      s.textContent = `
+      @keyframes pv-fade-in { from { opacity: 0 } to { opacity: 1 } }
+      @keyframes pv-pop { from { transform: scale(.94); opacity: 0 } to { transform: scale(1); opacity: 1 } }
+      @keyframes pv-spin { to { transform: rotate(360deg) } }
+      @keyframes pv-dot { 0%,80%,100% { opacity:.25 } 40% { opacity:1 } }
+      .pv-ov { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center;
+               justify-content: center; background: rgba(0,0,0,.62); backdrop-filter: blur(6px);
+               -webkit-backdrop-filter: blur(6px); animation: pv-fade-in .16s ease-out; }
+      .pv-card { width: min(88vw, 340px); background: #18181b; border: 1px solid #27272a;
+                 border-radius: 22px; padding: 26px 22px 22px; text-align: center; color: #fafafa;
+                 box-shadow: 0 24px 60px rgba(0,0,0,.5); animation: pv-pop .18s ease-out; position: relative; }
+      .pv-x { position: absolute; top: 12px; right: 14px; width: 30px; height: 30px; border: none;
+              background: transparent; color: #a1a1aa; font-size: 22px; line-height: 1; cursor: pointer;
+              border-radius: 8px; }
+      .pv-x:hover { background: #27272a; color: #fafafa; }
+      .pv-title { font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+      .pv-sub { font-size: 12.5px; color: #a1a1aa; margin-top: 4px; min-height: 17px; }
+      .pv-bars { display: flex; align-items: center; justify-content: center; gap: 4px;
+                 height: 84px; margin: 20px 0 14px; }
+      .pv-bar { width: 6px; height: 8px; border-radius: 4px;
+                background: linear-gradient(#34d399, #10b981); transition: height .07s linear; }
+      .pv-timer { font-variant-numeric: tabular-nums; font-size: 13px; color: #d4d4d8; letter-spacing: .5px; }
+      .pv-stop { margin-top: 16px; width: 100%; padding: 12px; border: none; border-radius: 14px;
+                 background: #10b981; color: #052e22; font-weight: 700; font-size: 15px; cursor: pointer; }
+      .pv-stop:hover { background: #34d399; }
+      .pv-proc { height: 84px; margin: 20px 0 14px; display: flex; align-items: center; justify-content: center; }
+      .pv-ring { width: 48px; height: 48px; border-radius: 50%; border: 4px solid #27272a;
+                 border-top-color: #10b981; animation: pv-spin .8s linear infinite; }
+      .pv-dots span { animation: pv-dot 1.2s infinite both; }
+      .pv-dots span:nth-child(2) { animation-delay: .2s }
+      .pv-dots span:nth-child(3) { animation-delay: .4s }
+    `;
+      document.head.appendChild(s);
+    }
+    /** Build and show the overlay in the "listening" state. */
+    open(getLevel) {
+      _VoiceOverlay.#injectStyle();
+      this.#getLevel = typeof getLevel === "function" ? getLevel : () => 0;
+      const bars = Array.from({ length: _VoiceOverlay.#BAR_COUNT }).map(() => '<span class="pv-bar"></span>').join("");
+      this.#el = document.createElement("div");
+      this.#el.className = "pv-ov";
+      this.#el.innerHTML = `
+      <div class="pv-card" role="dialog" aria-label="Voice entry">
+        <button class="pv-x" aria-label="Cancel">&times;</button>
+        <div class="pv-title">Listening\u2026</div>
+        <div class="pv-sub">Say the transaction, then tap Stop</div>
+        <div class="pv-bars">${bars}</div>
+        <div class="pv-proc" style="display:none"><div class="pv-ring"></div></div>
+        <div class="pv-timer">0:00</div>
+        <button class="pv-stop">\u25A0 Stop &amp; read</button>
+      </div>`;
+      this.#barsEl = this.#el.querySelector(".pv-bars");
+      this.#timerEl = this.#el.querySelector(".pv-timer");
+      this.#titleEl = this.#el.querySelector(".pv-title");
+      this.#subEl = this.#el.querySelector(".pv-sub");
+      this.#stopBtn = this.#el.querySelector(".pv-stop");
+      this.#ring = this.#el.querySelector(".pv-proc");
+      this.#stopBtn.addEventListener("click", () => this.onStop());
+      this.#el.querySelector(".pv-x").addEventListener("click", () => this.onCancel());
+      this.#el.addEventListener("click", (e) => {
+        if (e.target === this.#el) this.onCancel();
+      });
+      this.#el.querySelector(".pv-card").addEventListener("click", (e) => e.stopPropagation());
+      document.body.appendChild(this.#el);
+      this.#startTs = Date.now();
+      this.#startMeter();
+    }
+    /** Drive the bars from the live level + a travelling wave, and tick the timer. */
+    #startMeter() {
+      const bars = this.#barsEl ? Array.from(this.#barsEl.children) : [];
+      const n = bars.length;
+      const tick = () => {
+        const level = this.#getLevel();
+        const now = Date.now();
+        for (let i = 0; i < n; i++) {
+          const centre = 1 - Math.abs(i - (n - 1) / 2) / ((n - 1) / 2);
+          const wave = 0.5 + 0.5 * Math.sin(now / 130 + i * 0.7);
+          const h = 6 + 6 * wave + level * 60 * (0.35 + 0.65 * centre) * (0.5 + 0.5 * wave);
+          bars[i].style.height = h.toFixed(1) + "px";
+        }
+        const secs = Math.floor((now - this.#startTs) / 1e3);
+        if (this.#timerEl) this.#timerEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+        this.#raf = requestAnimationFrame(tick);
+      };
+      this.#raf = requestAnimationFrame(tick);
+    }
+    /** Switch to the "processing / transcribing" state. */
+    setProcessing() {
+      cancelAnimationFrame(this.#raf);
+      this.#raf = 0;
+      if (!this.#el) return;
+      if (this.#barsEl) this.#barsEl.style.display = "none";
+      if (this.#ring) this.#ring.style.display = "flex";
+      if (this.#stopBtn) this.#stopBtn.style.display = "none";
+      if (this.#timerEl) this.#timerEl.style.display = "none";
+      if (this.#titleEl) this.#titleEl.textContent = "Transcribing\u2026";
+      if (this.#subEl) this.#subEl.innerHTML = 'Reading your transaction<span class="pv-dots"><span>.</span><span>.</span><span>.</span></span>';
+      const x = this.#el.querySelector(".pv-x");
+      if (x) x.style.display = "none";
+    }
+    /** Tear down: stop the loop and remove the DOM. Safe to call repeatedly. */
+    close() {
+      if (this.#raf) {
+        cancelAnimationFrame(this.#raf);
+        this.#raf = 0;
+      }
+      if (this.#el && this.#el.parentNode) this.#el.parentNode.removeChild(this.#el);
+      this.#el = null;
+    }
+  };
+
+  // legacy-web/src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
     #store;
@@ -6287,7 +6471,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/domain/services/ReportService.js
+  // legacy-web/src/domain/services/ReportService.js
   var ReportService = class {
     /** @type {Store} */
     #store;
@@ -6435,7 +6619,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/TransactionRowRenderer.js
+  // legacy-web/src/ui/views/TransactionRowRenderer.js
   var TransactionRowRenderer = class {
     /** @type {Store} */
     #store;
@@ -6638,7 +6822,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/DashboardView.js
+  // legacy-web/src/ui/views/DashboardView.js
   var DashboardView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -6788,7 +6972,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/TransactionsView.js
+  // legacy-web/src/ui/views/TransactionsView.js
   var TransactionsView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -7167,7 +7351,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/AccountsView.js
+  // legacy-web/src/ui/views/AccountsView.js
   var AccountsView = class extends BaseView {
     constructor() {
       super();
@@ -7353,7 +7537,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/AccountDetailView.js
+  // legacy-web/src/ui/views/AccountDetailView.js
   var AccountDetailView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -7766,7 +7950,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/BudgetsView.js
+  // legacy-web/src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -7863,7 +8047,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/BudgetDetailView.js
+  // legacy-web/src/ui/views/BudgetDetailView.js
   var BudgetDetailView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -7977,7 +8161,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/CategoriesView.js
+  // legacy-web/src/ui/views/CategoriesView.js
   var CategoriesView = class extends BaseView {
     constructor() {
       super();
@@ -8064,7 +8248,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/ReportsView.js
+  // legacy-web/src/ui/views/ReportsView.js
   var ReportsView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -8300,7 +8484,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/DebtsView.js
+  // legacy-web/src/ui/views/DebtsView.js
   var DebtsView = class extends BaseView {
     constructor() {
       super();
@@ -8415,7 +8599,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/CalendarView.js
+  // legacy-web/src/ui/views/CalendarView.js
   var CalendarView = class extends BaseView {
     /** @type {HijriCalendarService} */
     #hijri;
@@ -8734,7 +8918,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/views/FamilyView.js
+  // legacy-web/src/ui/views/FamilyView.js
   var ACCOUNT_TYPE_ICONS2 = {
     cash: "wallet",
     bank: "landmark",
@@ -8899,7 +9083,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/TransactionModal.js
+  // legacy-web/src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class {
     /** @type {Store} */
@@ -9484,7 +9668,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/AccountModal.js
+  // legacy-web/src/ui/modals/AccountModal.js
   var AccountModal = class {
     /** @type {Store} */
     #store;
@@ -9584,7 +9768,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/CategoryModal.js
+  // legacy-web/src/ui/modals/CategoryModal.js
   var ICONS = [
     "tag",
     "utensils",
@@ -9679,7 +9863,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/BudgetModal.js
+  // legacy-web/src/ui/modals/BudgetModal.js
   var BudgetModal = class {
     /** @type {Store} */
     #store;
@@ -9780,7 +9964,7 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/SettingsModal.js
+  // legacy-web/src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
     #store;
@@ -10184,7 +10368,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/CsvModal.js
+  // legacy-web/src/ui/modals/CsvModal.js
   var CsvModal = class {
     render() {
       return `
@@ -10251,7 +10435,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/DebtModal.js
+  // legacy-web/src/ui/modals/DebtModal.js
   var DebtModal = class {
     /** @type {Store} */
     #store;
@@ -10472,7 +10656,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/FamilyModal.js
+  // legacy-web/src/ui/modals/FamilyModal.js
   var FamilyModal = class {
     /** @type {Store} */
     #store;
@@ -10676,7 +10860,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/ReconcileModal.js
+  // legacy-web/src/ui/modals/ReconcileModal.js
   var ReconcileModal = class {
     /** @type {Store}          */
     #store;
@@ -10807,7 +10991,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/AuthModal.js
+  // legacy-web/src/ui/modals/AuthModal.js
   var AuthModal = class {
     /** @type {Store} */
     #store;
@@ -10858,7 +11042,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/RegularItemModal.js
+  // legacy-web/src/ui/modals/RegularItemModal.js
   var ITEM_ICONS = [
     "coffee",
     "shopping-basket",
@@ -11033,7 +11217,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/DayLogsModal.js
+  // legacy-web/src/ui/modals/DayLogsModal.js
   var DayLogsModal = class {
     #store;
     #hijriService;
@@ -11128,7 +11312,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/ui/modals/CurrencySetupModal.js
+  // legacy-web/src/ui/modals/CurrencySetupModal.js
   var CurrencySetupModal = class {
     #store;
     #hijri;
@@ -11250,7 +11434,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // src/app.js
+  // legacy-web/src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
     card: ["credit", "card", "visa", "mastercard", "amex", "american express", "discover", "platinum"],
@@ -11351,7 +11535,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     #filterRenderTimer = null;
     // debounce for the transaction search box
     #voice = null;
-    // active VoiceRecorder while a voice entry is in progress
+    // { recorder, overlay, done } while a voice entry is in progress
     // ── Private constructor (use getInstance()) ────────────────────────────────
     constructor() {
       if (_Application.#instance) throw new Error("Use Application.getInstance()");
@@ -12771,68 +12955,67 @@ alter publication supabase_realtime add table public.family_contributions;</div>
      *
      * @param {HTMLElement} btn  the button the user tapped (label is mutated)
      */
-    async voiceEntry(btn) {
-      const label = btn?.querySelector?.(".voice-label-text") || btn;
-      const setLabel = (t) => {
-        if (label) label.textContent = t;
-      };
+    async voiceEntry() {
+      if (this.#voice) return;
       if (!this.#store.getState().user.geminiApiKey?.trim()) {
         this.#toast.show("Add your free Google AI key in Settings first");
         this.openModal("settings");
         return;
       }
-      if (this.#voice && this.#voice.recording) {
-        const rec = this.#voice;
+      const recorder = new VoiceRecorder();
+      const overlay = new VoiceOverlay();
+      this.#voice = { recorder, overlay, done: false };
+      const finish = () => {
+        overlay.close();
         this.#voice = null;
-        setLabel("\u23F3 Transcribing\u2026");
+      };
+      overlay.onCancel = () => {
+        try {
+          recorder.cancel();
+        } catch (_) {
+        }
+        finish();
+      };
+      overlay.onStop = async () => {
+        if (!this.#voice || this.#voice.done) return;
+        this.#voice.done = true;
+        overlay.setProcessing();
         let blob;
         try {
-          blob = await rec.stop();
+          blob = await recorder.stop();
         } catch (_) {
+          finish();
           this.#toast.show("Recording failed \u2014 please try again");
-          this.#resetVoiceBtn(btn);
           return;
         }
         if (!blob || !blob.size) {
+          finish();
           this.#toast.show("No audio captured \u2014 please try again");
-          this.#resetVoiceBtn(btn);
           return;
         }
         try {
-          const scanner = new ReceiptScanService();
-          const prefill = await scanner.parseVoice(blob);
+          const prefill = await new ReceiptScanService().parseVoice(blob);
+          finish();
           this.closeModal();
           this.openModal("transaction", { prefill });
           this.#toast.show("Heard it \xB7 review and save");
         } catch (e) {
+          finish();
           if (e.message === "NO_API_KEY") {
             this.#toast.show("Add your free Google AI key in Settings first");
             this.openModal("settings");
           } else {
             this.#toast.show("Voice failed: " + (e.message || "Unknown error"));
           }
-          this.#resetVoiceBtn(btn);
         }
-        return;
-      }
+      };
       try {
-        this.#voice = new VoiceRecorder();
-        await this.#voice.start();
-        setLabel("\u23F9 Stop & read");
-        if (btn?.dataset) btn.dataset.recording = "1";
-        this.#toast.show("Listening\u2026 tap again when you finish speaking");
+        await recorder.start();
+        overlay.open(() => recorder.getLevel());
       } catch (e) {
         this.#voice = null;
         this.#toast.show("Microphone unavailable: " + (e.message || "permission denied"));
-        this.#resetVoiceBtn(btn);
       }
-    }
-    /** Restore the voice button to its idle label. */
-    #resetVoiceBtn(btn) {
-      if (!btn) return;
-      const label = btn.querySelector?.(".voice-label-text") || btn;
-      if (label) label.textContent = "\u{1F3A4} Speak the transaction";
-      if (btn.dataset) delete btn.dataset.recording;
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Account CRUD

@@ -8,8 +8,9 @@
  *   - split rows each get their own picker + amount; the running remainder is
  *     shown and submit is blocked until it is exactly zero (L1)
  */
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import { ScrollView, View, Text, Alert, TouchableOpacity } from 'react-native';
+import VoiceOverlay from '../ui/VoiceOverlay.js';
 // expo-image-picker / -document-picker / -file-system are required lazily inside
 // the scan handlers so a missing native module can't fail the whole bundle.
 import { useAppState } from '../state/AppContext.js';
@@ -60,6 +61,12 @@ export default function TransactionFormScreen({ navigation, route }) {
   const seed = sharedSeed || editBase;
 
   const [busy, setBusy] = useState(false);
+  // Voice entry overlay: phase is null | 'listening' | 'processing'.
+  const [voicePhase, setVoicePhase] = useState(null);
+  const [voiceLevel, setVoiceLevel] = useState(0);
+  const [voiceSecs,  setVoiceSecs]  = useState(0);
+  const recRef = useRef(null);   // active expo-av Recording
+  const fsRef  = useRef(null);   // expo-file-system module (lazy-required)
 
   const [type, setType]           = useState(seed?.type || 'expense');
   const [amount, setAmount]       = useState(
@@ -284,15 +291,23 @@ export default function TransactionFormScreen({ navigation, route }) {
   };
 
   /**
-   * Voice entry: record a short clip, hand it to ReceiptScanService.parseVoice,
-   * and pre-fill the form. Capture uses expo-av (lazy-required so a build
-   * without it can't fail the bundle); interpretation is the shared service.
+   * Voice entry: record a short clip with a live level meter, hand it to
+   * ReceiptScanService.parseVoice, and pre-fill the form. Capture uses expo-av
+   * (lazy-required so a build without it can't fail the bundle); interpretation
+   * is the shared service. Android records AAC/ADTS (.aac) — a Gemini-supported
+   * format — rather than the default .m4a, so the model reads it reliably.
    *
-   * Android records AAC/ADTS (.aac) — a Gemini-supported audio format — rather
-   * than the default .m4a, so the model reads it reliably. The recording runs
-   * while a non-blocking "Listening…" alert is shown; "Done" stops and parses.
+   * The VoiceOverlay shows the live meter ('listening') then a spinner
+   * ('processing'); metering values arrive via the recording status callback.
    */
-  const voiceEntry = () => {
+  const mimeForUri = (uri) =>
+    uri.endsWith('.aac') ? 'audio/aac'
+      : uri.endsWith('.m4a') ? 'audio/mp4'
+      : uri.endsWith('.3gp') ? 'audio/3gpp'
+      : 'audio/aac';
+
+  const startVoice = () => {
+    if (voicePhase) return; // already recording
     if (!state.user.geminiApiKey?.trim()) {
       Alert.alert('No AI key', 'Add a Google AI (Gemini) key in Settings → Receipt scanning first.');
       return;
@@ -302,11 +317,11 @@ export default function TransactionFormScreen({ navigation, route }) {
     catch { Alert.alert('Not available', 'Voice entry needs expo-av. Run:\n\nnpx expo install expo-av\n\nthen rebuild the dev client.'); return; }
     try { FileSystem = require('expo-file-system'); }
     catch { Alert.alert('Not available', 'Voice entry needs expo-file-system.'); return; }
+    fsRef.current = FileSystem;
 
     const { Audio, AndroidOutputFormat, AndroidAudioEncoder, IOSOutputFormat, IOSAudioQuality } = AV;
-    // AAC in an ADTS container → mime audio/aac, which Gemini supports directly.
     const recOptions = {
-      isMeteringEnabled: false,
+      isMeteringEnabled: true, // drives the live level meter
       android: {
         extension: '.aac',
         outputFormat: AndroidOutputFormat?.AAC_ADTS ?? 6,
@@ -322,51 +337,61 @@ export default function TransactionFormScreen({ navigation, route }) {
       },
       web: { mimeType: 'audio/webm', bitsPerSecond: 128000 },
     };
-    const mimeFor = (uri) =>
-      uri.endsWith('.aac') ? 'audio/aac'
-        : uri.endsWith('.m4a') ? 'audio/mp4'
-        : uri.endsWith('.3gp') ? 'audio/3gpp'
-        : 'audio/aac';
+
+    const onStatus = (st) => {
+      if (!st) return;
+      if (typeof st.metering === 'number') {
+        // metering is dBFS (~-160..0); map the useful speech band -50..0 → 0..1
+        setVoiceLevel(Math.max(0, Math.min(1, (st.metering + 50) / 50)));
+      }
+      if (typeof st.durationMillis === 'number') setVoiceSecs(Math.floor(st.durationMillis / 1000));
+    };
 
     (async () => {
       try {
         const perm = await Audio.requestPermissionsAsync();
         if (!perm.granted) { Alert.alert('Permission needed', 'Allow microphone access to use voice entry.'); return; }
         await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-
-        let recording;
-        try {
-          const r = await Audio.Recording.createAsync(recOptions);
-          recording = r.recording;
-        } catch (e) {
-          Alert.alert('Could not start recording', String(e?.message || e));
-          return;
-        }
-
-        // Non-blocking alert; recording continues until the user chooses.
-        Alert.alert('Listening…', 'Say the transaction (e.g. “spent 40 dirhams on groceries at Carrefour yesterday”), then tap Done.', [
-          { text: 'Cancel', style: 'cancel', onPress: async () => { try { await recording.stopAndUnloadAsync(); } catch (_) {} } },
-          { text: 'Done', onPress: async () => {
-              setBusy(true);
-              try {
-                await recording.stopAndUnloadAsync();
-                const uri = recording.getURI();
-                if (!uri) throw new Error('No audio captured.');
-                const base64 = await FileSystem.readAsStringAsync(uri, {
-                  encoding: FileSystem.EncodingType?.Base64 || 'base64',
-                });
-                const prefill = await receipts.parseVoice({ base64, mimeType: mimeFor(uri) });
-                applyPrefill(prefill, { title: 'Heard it', message: 'Review the pre-filled fields, then save.' });
-              } catch (e) {
-                const m = String(e?.message || e);
-                Alert.alert('Voice failed', m === 'NO_API_KEY' ? 'Add a Gemini key in Settings.' : m);
-              } finally { setBusy(false); }
-            } },
-        ]);
+        const r = await Audio.Recording.createAsync(recOptions, onStatus, 90);
+        recRef.current = r.recording;
+        setVoiceLevel(0); setVoiceSecs(0); setVoicePhase('listening');
       } catch (e) {
-        Alert.alert('Voice failed', String(e?.message || e));
+        Alert.alert('Could not start recording', String(e?.message || e));
       }
     })();
+  };
+
+  const stopVoice = async () => {
+    const recording = recRef.current;
+    if (!recording) { setVoicePhase(null); return; }
+    setVoicePhase('processing');
+    try {
+      try { recording.setOnRecordingStatusUpdate(null); } catch (_) {}
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      recRef.current = null;
+      if (!uri) throw new Error('No audio captured.');
+      const FileSystem = fsRef.current;
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType?.Base64 || 'base64',
+      });
+      const prefill = await receipts.parseVoice({ base64, mimeType: mimeForUri(uri) });
+      setVoicePhase(null);
+      applyPrefill(prefill, { title: 'Heard it', message: 'Review the pre-filled fields, then save.' });
+    } catch (e) {
+      setVoicePhase(null);
+      const m = String(e?.message || e);
+      Alert.alert('Voice failed', m === 'NO_API_KEY' ? 'Add a Gemini key in Settings.' : m);
+    }
+  };
+
+  const cancelVoice = async () => {
+    const recording = recRef.current;
+    recRef.current = null;
+    setVoicePhase(null);
+    if (recording) {
+      try { recording.setOnRecordingStatusUpdate(null); await recording.stopAndUnloadAsync(); } catch (_) {}
+    }
   };
 
   const confirmDelete = () => {
@@ -395,6 +420,14 @@ export default function TransactionFormScreen({ navigation, route }) {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
+      <VoiceOverlay
+        visible={!!voicePhase}
+        phase={voicePhase || 'listening'}
+        level={voiceLevel}
+        seconds={voiceSecs}
+        onStop={stopVoice}
+        onCancel={cancelVoice}
+      />
       {sharedMode ? (
         <Card style={{ backgroundColor: colors.card, borderColor: colors.indigo, borderWidth: 1 }}>
           <Text style={{ color: colors.indigo, fontWeight: '600' }}>
@@ -411,7 +444,7 @@ export default function TransactionFormScreen({ navigation, route }) {
         <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
           <Button title={busy ? 'Scanning…' : '📷 Scan a receipt'} kind="ghost" onPress={scanReceipt}
             disabled={busy} style={{ flex: 1 }} />
-          <Button title={busy ? '…' : '🎤 Voice'} kind="ghost" onPress={voiceEntry}
+          <Button title={busy ? '…' : '🎤 Voice'} kind="ghost" onPress={startVoice}
             disabled={busy} style={{ flex: 1 }} />
         </View>
       ) : null}

@@ -47,6 +47,7 @@ import { AccountShareSheet }   from './ui/components/AccountShareSheet.js';
 import { PaymentMethodSheet }  from './ui/components/PaymentMethodSheet.js';
 import { CategoryField }       from './ui/components/CategoryField.js';
 import { VoiceRecorder }       from './ui/components/VoiceRecorder.js';
+import { VoiceOverlay }        from './ui/components/VoiceOverlay.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -152,7 +153,7 @@ export class Application {
   #swipeIsOwnContrib  = false;
   #swipeWrapper       = null;   // the .tx-swipe-wrapper element, stored on start
   #filterRenderTimer  = null;   // debounce for the transaction search box
-  #voice              = null;   // active VoiceRecorder while a voice entry is in progress
+  #voice              = null;   // { recorder, overlay, done } while a voice entry is in progress
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -1774,10 +1775,8 @@ export class Application {
    *
    * @param {HTMLElement} btn  the button the user tapped (label is mutated)
    */
-  async voiceEntry(btn) {
-    // Mutate a dedicated label span (if present) so the button's icon/layout survive.
-    const label = btn?.querySelector?.('.voice-label-text') || btn;
-    const setLabel = (t) => { if (label) label.textContent = t; };
+  async voiceEntry() {
+    if (this.#voice) return;   // a recording is already in progress
 
     // ── No API key → open Settings (mirror scanReceipt) ──
     if (!this.#store.getState().user.geminiApiKey?.trim()) {
@@ -1786,62 +1785,52 @@ export class Application {
       return;
     }
 
-    // ── Second tap: stop and transcribe ──
-    if (this.#voice && this.#voice.recording) {
-      const rec = this.#voice;
-      this.#voice = null;
-      setLabel('⏳ Transcribing…');
+    const recorder = new VoiceRecorder();
+    const overlay  = new VoiceOverlay();
+    this.#voice = { recorder, overlay, done: false };
+
+    const finish = () => { overlay.close(); this.#voice = null; };
+
+    // X / backdrop → discard the clip, no API call.
+    overlay.onCancel = () => { try { recorder.cancel(); } catch (_) {} finish(); };
+
+    // Stop → freeze the meter, transcribe, then open the pre-filled form.
+    overlay.onStop = async () => {
+      if (!this.#voice || this.#voice.done) return;
+      this.#voice.done = true;
+      overlay.setProcessing();
+
       let blob;
+      try { blob = await recorder.stop(); }
+      catch (_) { finish(); this.#toast.show('Recording failed — please try again'); return; }
+      if (!blob || !blob.size) { finish(); this.#toast.show('No audio captured — please try again'); return; }
+
       try {
-        blob = await rec.stop();
-      } catch (_) {
-        this.#toast.show('Recording failed — please try again');
-        this.#resetVoiceBtn(btn);
-        return;
-      }
-      if (!blob || !blob.size) {
-        this.#toast.show('No audio captured — please try again');
-        this.#resetVoiceBtn(btn);
-        return;
-      }
-      try {
-        const scanner = new ReceiptScanService();
-        const prefill = await scanner.parseVoice(blob);
+        const prefill = await new ReceiptScanService().parseVoice(blob);
+        finish();
         this.closeModal();
         this.openModal('transaction', { prefill });
         this.#toast.show('Heard it · review and save');
       } catch (e) {
+        finish();
         if (e.message === 'NO_API_KEY') {
           this.#toast.show('Add your free Google AI key in Settings first');
           this.openModal('settings');
         } else {
           this.#toast.show('Voice failed: ' + (e.message || 'Unknown error'));
         }
-        this.#resetVoiceBtn(btn);
       }
-      return;
-    }
+    };
 
-    // ── First tap: start recording ──
+    // Request the mic FIRST; only show the overlay once recording is live, so a
+    // denied-permission prompt doesn't leave an empty meter on screen.
     try {
-      this.#voice = new VoiceRecorder();
-      await this.#voice.start();
-      setLabel('⏹ Stop & read');
-      if (btn?.dataset) btn.dataset.recording = '1';
-      this.#toast.show('Listening… tap again when you finish speaking');
+      await recorder.start();
+      overlay.open(() => recorder.getLevel());
     } catch (e) {
       this.#voice = null;
       this.#toast.show('Microphone unavailable: ' + (e.message || 'permission denied'));
-      this.#resetVoiceBtn(btn);
     }
-  }
-
-  /** Restore the voice button to its idle label. */
-  #resetVoiceBtn(btn) {
-    if (!btn) return;
-    const label = btn.querySelector?.('.voice-label-text') || btn;
-    if (label) label.textContent = '🎤 Speak the transaction';
-    if (btn.dataset) delete btn.dataset.recording;
   }
 
   // ──────────────────────────────────────────────────────────────────────────

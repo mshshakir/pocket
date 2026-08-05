@@ -19,6 +19,9 @@ export class VoiceRecorder {
   /** @type {MediaStream|null} */    #stream = null;
   /** @type {MediaRecorder|null} */  #rec    = null;
   /** @type {Blob[]} */              #chunks = [];
+  /** @type {AudioContext|null} */   #ctx      = null;
+  /** @type {AnalyserNode|null} */   #analyser = null;
+  /** @type {Uint8Array|null} */     #timeData = null;
 
   /** True while actively capturing audio. */
   get recording() {
@@ -46,6 +49,23 @@ export class VoiceRecorder {
     }
     this.#stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.#chunks = [];
+
+    // Tap the stream with a Web Audio AnalyserNode so the UI can show a live
+    // level meter. Purely for visual feedback — it is NOT connected to the
+    // audio destination, so nothing is played back (no echo).
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        this.#ctx = new AC();
+        if (this.#ctx.state === 'suspended') { try { await this.#ctx.resume(); } catch (_) {} }
+        this.#analyser = this.#ctx.createAnalyser();
+        this.#analyser.fftSize = 512;
+        this.#analyser.smoothingTimeConstant = 0.7;
+        this.#ctx.createMediaStreamSource(this.#stream).connect(this.#analyser);
+        this.#timeData = new Uint8Array(this.#analyser.fftSize);
+      }
+    } catch (_) { /* metering is best-effort; recording still works without it */ }
+
     const mimeType = VoiceRecorder.#pickMime();
     this.#rec = mimeType
       ? new MediaRecorder(this.#stream, { mimeType })
@@ -74,6 +94,24 @@ export class VoiceRecorder {
     });
   }
 
+  /**
+   * Current microphone loudness as a normalised 0..1 value (RMS of the
+   * time-domain waveform, amplified into a useful visual range). Returns 0
+   * when metering is unavailable. Cheap enough to call every animation frame.
+   * @returns {number}
+   */
+  getLevel() {
+    if (!this.#analyser || !this.#timeData) return 0;
+    this.#analyser.getByteTimeDomainData(this.#timeData);
+    let sum = 0;
+    for (let i = 0; i < this.#timeData.length; i++) {
+      const v = (this.#timeData[i] - 128) / 128; // -1..1
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / this.#timeData.length); // 0..~1
+    return Math.max(0, Math.min(1, rms * 3.2));         // amplify quiet speech
+  }
+
   /** Abort recording and release the microphone without producing a Blob. */
   cancel() {
     try { if (this.#rec && this.#rec.state !== 'inactive') this.#rec.stop(); } catch (_) {}
@@ -83,7 +121,11 @@ export class VoiceRecorder {
   /** Stop all media tracks and reset state. */
   #cleanup() {
     if (this.#stream) { try { this.#stream.getTracks().forEach((t) => t.stop()); } catch (_) {} }
+    if (this.#ctx)    { try { this.#ctx.close(); } catch (_) {} }
     this.#stream = null;
     this.#rec = null;
+    this.#ctx = null;
+    this.#analyser = null;
+    this.#timeData = null;
   }
 }
