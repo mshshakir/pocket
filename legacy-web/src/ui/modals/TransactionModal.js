@@ -259,9 +259,13 @@ export class TransactionModal {
     // "12." or "0.5" reappears exactly as the user left it.
     const amountValue = this.#draft.amountRaw !== undefined
       ? this.#draft.amountRaw
+      // A stored transaction holds amount in MINOR units → convert to major for
+      // the input. A prefill (receipt scan / voice) or the empty default already
+      // carries amount in MAJOR units, so it must NOT be divided again — doing so
+      // turned "200" into "2.00".
       : (editing || sharedEditTx)
         ? this.#fx.fromMinor(data.amount, data.currency)
-        : (data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0);
+        : (data.amount || 0);
     const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
 

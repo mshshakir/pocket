@@ -9080,7 +9080,7 @@ This replaces your current grouping.`
         this.#splitsSeeded = true;
       }
       const type = this.#currentType || data.type || "expense";
-      const amountValue = this.#draft.amountRaw !== void 0 ? this.#draft.amountRaw : editing || sharedEditTx ? this.#fx.fromMinor(data.amount, data.currency) : data.amount ? this.#fx.fromMinor(data.amount, data.currency) : 0;
+      const amountValue = this.#draft.amountRaw !== void 0 ? this.#draft.amountRaw : editing || sharedEditTx ? this.#fx.fromMinor(data.amount, data.currency) : data.amount || 0;
       const cats = state.categories;
       const isSharedMode = !!this.#sharedTxMode;
       const sharedAccObj = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || []).find((a) => a.id === this.#sharedTxMode.accountId) : null;
