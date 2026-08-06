@@ -44,9 +44,8 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   **Correction (2026-08-06): the jsdom smoke suites DO run in the sandbox.** `npm i -D jsdom`,
   `npm run build`, then `node src/__smoke__/<name>.smoke.mjs`. They boot `bundle.js` inside jsdom
   with `runScripts:'outside-only'` and stub `fetch`, so nothing is fetched from a CDN. Full suite
-  takes ~2 min. Note two **pre-existing** failures, confirmed identical on an untouched tree —
-  do not attribute them to your change: `payment` (3 ✗ "dropdown lists built-ins + custom" etc.)
-  and `fx` (1 ✗ "H5 booked at the exact rate").
+  takes ~2 min. **All 8 suites are green: 305 assertions.** Keep it that way — a red suite now
+  means something real.
 - **Mobile:** esbuild transpile screens with `--loader:.js=jsx --packages=external`; domain suites
   `node test/domain.test.mjs` (30) + `node test/family.test.mjs` (10).
 - **Domain logic** can be node-tested: boot the Store (`Repository.setBackend` in-memory →
@@ -81,6 +80,23 @@ still needs the shared-account half — see _Pending_.
 - New suite `src/__smoke__/shared-regulars.smoke.mjs` (53 assertions, added to `npm run smoke`),
   mutation-verified: reverting the picker fix, the modal's category list, the account-change
   re-home, the contribution path, or the log merge each turns it red.
+
+**Two stale smoke suites repaired (2026-08-06) — tests only, no app change.**
+Both had been failing for a while and were mistaken for app bugs. Neither was.
+- `payment.smoke.mjs` queried `select[name=paymentType] option`, but that control became
+  **chips** (`[data-pay-chip]` buttons + hidden `#paymentTypeInput`). The selector matched
+  nothing, and the suite then *died* on `sel.value` of null — so sections 2–14 never ran at all
+  and only 4 of 37 assertions were executing. Rewritten against the chips; `onPaymentTypeChange`
+  (gone) → `pickPaymentType`, and `openPaymentTypeManager()` now takes no element.
+- `fx.smoke.mjs` H5 set the To-account `.value` then called `updateTransferFxPanel()`. The real
+  `<select>` fires **`resetTransferFx()`**, which re-quotes the rate for the new pair;
+  `updateTransferFxPanel` deliberately *preserves* a non-empty rate so editing the amount can't
+  wipe a hand-typed one. The field therefore kept the previous pair's rate and a 100,000,000 LBP
+  → USD transfer booked $92,900 (the LBP→**INR** rate) instead of $1,117.32. **The app is
+  correct** — driven through `resetTransferFx()` it books the exact full-precision rate, and the
+  H5 recovery in `submitTx` (`rate === Number(autoRate.toFixed(6)) → rate = autoRate`) works.
+- Both rewrites were mutation-verified, so they still bite: breaking the chip write-through, the
+  Manage chip, or rename-follows-selection each turns `payment` red.
 
 **Voice entry (2026-08-06) — both platforms.**
 - Shared: `ReceiptScanService.parseVoice(audio)` (added to **both** copies, identical logic) sends the

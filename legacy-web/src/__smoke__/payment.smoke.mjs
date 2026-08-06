@@ -63,21 +63,35 @@ const sheetRows = () => [...doc.querySelectorAll('#paymentSheetRoot .sheet-row-n
 console.log('\npayment method smoke test');
 ok('app booted', !!app);
 
-// ── 1. Dropdown exposes both commands ──────────────────────────────────────
+// ── 1. The chip row exposes every method plus both commands ────────────────
+// NB: this section used to query `select[name=paymentType] option`. The control
+// became a row of chips (buttons carrying data-pay-chip, plus a hidden input),
+// so the old selector matched nothing and these assertions failed against a
+// perfectly healthy app — then the suite died on `sel.value` of null, taking
+// sections 2-8 with it.
 app.openModal('transaction', {});
 await wait(20);
-const optVals = [...doc.querySelectorAll('#txForm select[name=paymentType] option')].map((o) => o.value);
-ok('dropdown lists built-ins + custom', ['card','cash','transfer','cheque','online','amex'].every((v) => optVals.includes(v)), optVals.join(','));
-ok('dropdown offers Add custom',    optVals.includes('__add_payment__'));
-ok('dropdown offers Manage methods', optVals.includes('__manage_payment__'));
+const chipVals = [...doc.querySelectorAll('#txForm [data-pay-chip]')]
+  .map((el) => el.getAttribute('data-pay-chip'));
+ok('chips list built-ins + custom',
+   ['card','cash','transfer','cheque','online','amex'].every((v) => chipVals.includes(v)),
+   chipVals.join(','));
+
+const cmdHandlers = [...doc.querySelectorAll('#txForm button[onclick*="pickPaymentType"]')]
+  .map((b) => b.getAttribute('onclick'));
+ok('chip row offers Add custom',     cmdHandlers.some((h) => h.includes('__add_payment__')));
+ok('chip row offers Manage methods', cmdHandlers.some((h) => h.includes('__manage_payment__')));
 
 // ── 2. Choosing "Manage" opens the sheet and never leaks into the form ─────
-const sel = $('#txForm select[name=paymentType]');
 $('#txForm [name=amount]').value = '31.50';
-sel.value = '__manage_payment__';
-app.onPaymentTypeChange(sel);
+app.pickPaymentType('__manage_payment__');
 await wait(30);
 ok('manage sheet opened', $('#paymentSheetRoot')?.classList.contains('open'));
+// The command chips are actions, not selections — neither may end up stored on
+// the transaction as if it were a payment method.
+ok('the command never leaks into the form value',
+   $('#txForm [name=paymentType]')?.value !== '__manage_payment__',
+   $('#txForm [name=paymentType]')?.value);
 ok('sheet lists every method',
    ['Card','Cash','Transfer','Cheque','Online','Amex'].every((n) => sheetRows().includes(n)),
    sheetRows().join(' | '));
@@ -162,9 +176,15 @@ ok('a renamed built-in does NOT come back as a duplicate',
 app.paymentSheet.close();
 await wait(30);
 ok('sheet closed', !$('#paymentSheetRoot').classList.contains('open'));
+// Same stale selector as section 1: the value now lives in the hidden input the
+// chips write to, not a <select>. (Section 12 below already proved the rename
+// was followed — it saves a transaction carrying 'Credit card'.)
 ok('selection followed the rename card → Credit card',
-   $('#txForm select[name=paymentType]')?.value === 'Credit card',
-   $('#txForm select[name=paymentType]')?.value);
+   $('#txForm [name=paymentType]')?.value === 'Credit card',
+   $('#txForm [name=paymentType]')?.value);
+ok('…and the matching chip is the active one',
+   $('#txForm [data-pay-chip="Credit card"]')?.className.includes('bg-zinc-900'),
+   $('#txForm [data-pay-chip="Credit card"]')?.className);
 ok('typed amount survived the sheet', $('#txForm [name=amount]')?.value === '31.50',
    $('#txForm [name=amount]')?.value);
 
@@ -177,17 +197,22 @@ ok('new transaction saved with the renamed method', newest?.paymentType === 'Cre
 // ── 13. A method deleted while selected falls back safely ──────────────────
 app.openModal('transaction', {});
 await wait(20);
-const sel2 = $('#txForm select[name=paymentType]');
-sel2.value = 'Apple Pay';
-sel2.dataset.prev = 'Apple Pay';
-app.openPaymentTypeManager(sel2);
+// Chips again: select by tapping, and openPaymentTypeManager() now reads the
+// current value from the hidden input itself rather than taking an element.
+app.pickPaymentType('Apple Pay');
+await wait(10);
+ok('chip selection wrote through to the form', $('#txForm [name=paymentType]')?.value === 'Apple Pay',
+   $('#txForm [name=paymentType]')?.value);
+app.openPaymentTypeManager();
 await wait(30);
-ok('command value never reaches the form', sel2.value !== '__manage_payment__', sel2.value);
+ok('command value never reaches the form',
+   $('#txForm [name=paymentType]')?.value !== '__manage_payment__',
+   $('#txForm [name=paymentType]')?.value);
 app.paymentSheet.remove('Apple Pay');
 await wait(20);
 app.paymentSheet.close();
 await wait(30);
-const fallback = $('#txForm select[name=paymentType]')?.value;
+const fallback = $('#txForm [name=paymentType]')?.value;
 ok('selection falls back to a live method',
    !!fallback && svc.allTypes().includes(fallback), fallback);
 app.closeModal();
@@ -202,10 +227,11 @@ app.openModal('transaction', {
   },
 });
 await wait(20);
-const legacyOpts = [...doc.querySelectorAll('#txForm select[name=paymentType] option')].map((o) => o.value);
+const legacyChips = [...doc.querySelectorAll('#txForm [data-pay-chip]')]
+  .map((el) => el.getAttribute('data-pay-chip'));
 ok('legacy method kept in the list so editing does not silently change it',
-   legacyOpts.includes('bank-transfer') && $('#txForm select[name=paymentType]')?.value === 'bank-transfer',
-   `${$('#txForm select[name=paymentType]')?.value} in ${legacyOpts.join(',')}`);
+   legacyChips.includes('bank-transfer') && $('#txForm [name=paymentType]')?.value === 'bank-transfer',
+   `${$('#txForm [name=paymentType]')?.value} in ${legacyChips.join(',')}`);
 app.closeModal();
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

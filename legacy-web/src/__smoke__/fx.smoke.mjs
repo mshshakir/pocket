@@ -142,7 +142,13 @@ console.log('\nFX correctness suite');
   app.onTransferSourceChange('lbp');
   await wait(20);
   $('#txForm [name=transferToAccountId]').value = 'usd';
-  app.updateTransferFxPanel(false);
+  // Drive it as the markup does: the To <select> fires resetTransferFx(), which
+  // re-quotes the rate for the NEW pair. Calling updateTransferFxPanel() here
+  // instead left the field holding the PREVIOUS pair's rate — that panel
+  // deliberately preserves a non-empty rate so editing the amount can't wipe a
+  // hand-typed one — so the leg booked LBP→INR on an LBP→USD transfer and the
+  // assertion below failed against the app rather than against a real defect.
+  app.resetTransferFx();
   await wait(20);
   $('#txForm [name=amount]').value = '100000000';   // 100,000,000 LBP
   app.updateTransferFxPanel(false);
