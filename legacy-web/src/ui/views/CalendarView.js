@@ -313,21 +313,34 @@ export class CalendarView extends BaseView {
   // by a day in non-UTC timezones, mismatching stored local 'YYYY-MM-DD' dates.
   #isoDate(d) { return DateService.toIso(d); }
 
+  /**
+   * Every regular-item log the user can see, in BOTH books.
+   *
+   * An item whose default account was shared by a family member logs into that
+   * owner's book, so it is absent from `state.transactions` and only comes back
+   * inside the share snapshot. Reading `state` alone made those entries — and
+   * the money they represent — invisible on the calendar.
+   * @returns {object[]}
+   */
+  #allLogs(state) {
+    const svc = window.__app?.regularLogs;
+    if (svc) return svc.all();
+    return (state.transactions || []).filter((t) => t.regularItemId);
+  }
+
   #logsForDate(iso, state) {
-    return (state.transactions || []).filter((t) => t.regularItemId && t.date === iso);
+    return this.#allLogs(state).filter((t) => t.date === iso);
   }
 
   #logsForMonth(year, monthIdx, state) {
-    return (state.transactions || []).filter((t) => {
-      if (!t.regularItemId) return false;
+    return this.#allLogs(state).filter((t) => {
       const d = new Date(t.date + 'T12:00:00');
       return d.getFullYear() === year && d.getMonth() === monthIdx;
     });
   }
 
   #logsForHijriMonth(year, monthIdx, state) {
-    return (state.transactions || []).filter((t) => {
-      if (!t.regularItemId) return false;
+    return this.#allLogs(state).filter((t) => {
       const h = this.#hijri.toHijri(t.date);
       return h.year === year && h.month === monthIdx;
     });

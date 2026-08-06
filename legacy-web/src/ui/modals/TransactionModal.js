@@ -266,8 +266,30 @@ export class TransactionModal {
       : (editing || sharedEditTx)
         ? this.#fx.fromMinor(data.amount, data.currency)
         : (data.amount || 0);
-    const cats        = state.categories;
     const isSharedMode= !!this.#sharedTxMode;
+
+    // ── Which book does this row land in? ────────────────────────────────
+    // Either the modal was opened in shared mode from a shared account view, OR
+    // the user picked a shared account from the Account dropdown. Both end up in
+    // the OWNER's book (submitTx routes them to family_contributions), so the
+    // category must be one of the OWNER's — including their subcategories.
+    // Picking from the local book is what made the owner see "Uncategorised".
+    const catOwnerId  = isSharedMode
+      ? (this.#sharedTxMode.ownerId
+         || state._sharedData?.[this.#sharedTxMode.shareIndex]?._ownerId
+         || null)
+      : ((state._sharedData || []).find((s) =>
+          (s.accounts || []).some((a) => a.id === data.accountId))?._ownerId || null);
+
+    const ownerShare  = catOwnerId
+      ? (state._sharedData || []).find((s) => s._ownerId === catOwnerId)
+      : null;
+    // Fall back to the local list only when the snapshot genuinely has none, so
+    // the picker is never empty for a share that predates category syncing.
+    const cats        = ownerShare ? (ownerShare.categories || []) : state.categories;
+    // A contribution is a single row in someone else's book — submitTx ignores
+    // splits on that path, so offering Split there would silently drop them.
+    const sharedBook  = !!catOwnerId;
 
     // Resolve the shared account object so we can show its name
     const sharedAccObj = isSharedMode
@@ -336,8 +358,10 @@ export class TransactionModal {
         </div>
 
         ${type === 'transfer' ? this.#transferFields(data, state) : ''}
-        ${type !== 'transfer' && this.#splitsEnabled ? this.#splitsArea(data, cats, type, state.accounts, amountValue) : ''}
-        ${type !== 'transfer' && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode) : ''}
+        <!-- Split legs always target LOCAL accounts, so they label from the
+             local book even when cats has been pointed at an owner's. -->
+        ${type !== 'transfer' && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ''}
+        ${type !== 'transfer' && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ''}
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
@@ -518,7 +542,7 @@ export class TransactionModal {
       </div>`;
   }
 
-  #accountCategoryFields(data, state, cats, type, isSharedMode) {
+  #accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId = null, sharedBook = false) {
     const sharedOpts = (state._sharedData || []).flatMap((share) =>
       (share.accounts || [])
         .filter((a) => (share.permission || {})[a.id] !== 'view')
@@ -549,8 +573,9 @@ export class TransactionModal {
         <div>
           <div class="flex items-center justify-between">
             <label class="text-xs text-zinc-500">Category</label>
-            <button type="button" onclick="window.__app.toggleSplits()"
-                    class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+            <button type="button" onclick="window.__app.toggleSplits()" data-split-toggle
+                    class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    style="${sharedBook ? 'display:none' : ''}">
               <i data-lucide="split" style="width:11px;height:11px;display:inline"></i> Split
             </button>
           </div>
@@ -559,9 +584,12 @@ export class TransactionModal {
             name:       'categoryId',
             value:      data.categoryId,
             type,
-            title:      'Choose category',
+            title:      sharedBook ? 'Choose a category from their book' : 'Choose category',
             categories: cats,
+            ownerId:    catOwnerId || '',
           })}
+          <div class="text-[11px] text-zinc-500 mt-1" data-shared-cat-note
+               style="${sharedBook ? '' : 'display:none'}">Their categories — subcategories included</div>
         </div>
       </div>
 

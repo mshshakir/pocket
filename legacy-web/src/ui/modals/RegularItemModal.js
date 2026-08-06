@@ -5,12 +5,19 @@
  * that the user can quick-log from the Calendar view. Each log creates a
  * real transaction linked to the item via regularItemId.
  *
- * Fields: name, defaultAmount, currency, accountId, categoryId, icon, color
+ * The default account may be one a family member has shared. That is stored as
+ * accountId + sharedOwnerId (see AccountRef); logging such an item submits a
+ * contribution to the OWNER's book instead of writing locally, so the default
+ * category has to come from the owner's tree too.
+ *
+ * Fields: name, defaultAmount, currency, accountId, sharedOwnerId, categoryId,
+ *         frequency, icon, color
  */
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
 import { CategoryField }   from '../components/CategoryField.js';
+import { AccountRef }      from '../../domain/services/AccountRef.js';
 
 const ITEM_ICONS = [
   'coffee','shopping-basket','bus','dumbbell','utensils','heart-pulse',
@@ -43,6 +50,7 @@ export class RegularItemModal {
       defaultAmount: 0,
       currency:      home,
       accountId:     state.accounts[0]?.id || '',
+      sharedOwnerId: null,
       categoryId:    '',
       icon:          'coffee',
       color:         ITEM_COLORS[0],
@@ -51,6 +59,34 @@ export class RegularItemModal {
     const amountVal = editing
       ? this.#fx.fromMinor(editing.defaultAmount, editing.currency)
       : 0;
+
+    // The <select> value encodes which book the account lives in, so submit can
+    // tell a shared account apart from a local one with the same-shaped id.
+    const accRef  = AccountRef.fromRecord(data);
+    const accValue= accRef.toValue();
+
+    // Shared accounts you can actually write to. A 'view' grant is read-only, so
+    // offering it here would only produce a rejected contribution later.
+    const shares  = (state._sharedData || []).filter((s) =>
+      (s.accounts || []).some((a) => (s.permission || {})[a.id] !== 'view'));
+
+    const sharedGroups = shares.map((share) => {
+      const opts = (share.accounts || [])
+        .filter((a) => (share.permission || {})[a.id] !== 'view')
+        .map((a) => {
+          const val = new AccountRef(a.id, share._ownerId).toValue();
+          return `<option value="${this.#esc(val)}" ${accValue === val ? 'selected' : ''}>${this.#esc(a.name)}</option>`;
+        }).join('');
+      const who = share.sharedBy || 'Family';
+      return opts ? `<optgroup label="Shared by ${this.#esc(who)}">${opts}</optgroup>` : '';
+    }).join('');
+
+    // A shared default account means the log lands in the owner's book, so the
+    // default category must be one of THEIR categories — subcategories included.
+    const ownerShare = accRef.isShared
+      ? shares.find((s) => s._ownerId === accRef.ownerId)
+      : null;
+    const catList    = ownerShare ? (ownerShare.categories || []) : state.categories;
 
     return `
       <form id="regularItemForm"
@@ -89,10 +125,18 @@ export class RegularItemModal {
         <!-- Account -->
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Default account</label>
-          <select class="select" name="accountId">
+          <select class="select" name="accountId"
+                  onchange="window.__app.onRegularAccountChange(this.value)">
             <option value="">— None —</option>
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId === a.id ? 'selected' : ''}>${this.#esc(a.name)}</option>`).join('')}
+            <optgroup label="My accounts">
+              ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${accValue === a.id ? 'selected' : ''}>${this.#esc(a.name)}</option>`).join('')}
+            </optgroup>
+            ${sharedGroups}
           </select>
+          <div class="text-[11px] text-zinc-500 mt-1" data-regular-shared-note
+               style="${accRef.isShared ? '' : 'display:none'}">
+            Entries logged from this item go to the owner's book for approval.
+          </div>
         </div>
 
         <!-- Category -->
@@ -103,8 +147,9 @@ export class RegularItemModal {
             name:       'categoryId',
             value:      data.categoryId,
             type:       'expense',
-            title:      'Default category',
-            categories: state.categories,
+            title:      accRef.isShared ? 'Choose a category from their book' : 'Default category',
+            categories: catList,
+            ownerId:    accRef.ownerId || '',
           })}
         </div>
 

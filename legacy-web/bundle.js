@@ -17,13 +17,13 @@ var _PocketApp = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // legacy-web/src/app.js
+  // src/app.js
   var app_exports = {};
   __export(app_exports, {
     Application: () => Application
   });
 
-  // legacy-web/src/core/EventBus.js
+  // src/core/EventBus.js
   var EventBus = class _EventBus {
     /** @type {EventBus|null} */
     static #instance = null;
@@ -96,7 +96,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/core/Repository.js
+  // src/core/Repository.js
   var Repository = class _Repository {
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
@@ -161,7 +161,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/core/Store.js
+  // src/core/Store.js
   var Store = class _Store {
     /** @type {Store|null} */
     static #instance = null;
@@ -367,7 +367,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/core/Router.js
+  // src/core/Router.js
   var Router = class _Router {
     /** @type {Router|null} */
     static #instance = null;
@@ -431,7 +431,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/data/constants.js
+  // src/data/constants.js
   var FX = Object.freeze({
     // Majors
     USD: 1,
@@ -898,7 +898,7 @@ var _PocketApp = (() => {
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
 
-  // legacy-web/src/domain/services/IdGenerator.js
+  // src/domain/services/IdGenerator.js
   var IdGenerator = class {
     /**
      * Generate a prefixed pseudo-random ID.
@@ -914,7 +914,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/DateService.js
+  // src/domain/services/DateService.js
   var DateService = class {
     /**
      * Format a Date as a local 'YYYY-MM-DD' string. Pass-through for strings.
@@ -937,7 +937,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/data/seed.js
+  // src/data/seed.js
   var SeedFactory = class {
     /**
      * Build and return a complete initial state object.
@@ -1057,7 +1057,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/LedgerMath.js
+  // src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
      * Sign multiplier for a non-transfer transaction type.
@@ -1244,10 +1244,10 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/FxRates.js
+  // src/domain/services/FxRates.js
   var RATES = { ...FX };
 
-  // legacy-web/src/domain/services/CurrencyService.js
+  // src/domain/services/CurrencyService.js
   var CurrencyService = class _CurrencyService {
     /**
      * Process-wide label cache. Static (not per-instance) because the app creates
@@ -1429,7 +1429,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/data/StateMigrator.js
+  // src/data/StateMigrator.js
   var StateMigrator = class {
     /**
      * Mutate `state` in place, back-filling any missing fields. Safe to run
@@ -1486,7 +1486,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/HijriCalendarService.js
+  // src/domain/services/HijriCalendarService.js
   var HijriCalendarService = class {
     /** @type {Store} */
     #store;
@@ -1696,7 +1696,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/AccountService.js
+  // src/domain/services/AccountService.js
   var AccountService = class {
     /** @type {Store} */
     #store;
@@ -1826,7 +1826,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/CategoryService.js
+  // src/domain/services/CategoryService.js
   var CategoryService = class _CategoryService {
     /** @type {Store} */
     #store;
@@ -2087,7 +2087,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/RecurringService.js
+  // src/domain/services/RecurringService.js
   var RecurringService = class {
     /** @type {Store} */
     #store;
@@ -2218,7 +2218,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/TransactionService.js
+  // src/domain/services/TransactionService.js
   var TransactionService = class {
     /** @type {Store} */
     #store;
@@ -2418,7 +2418,7 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/BudgetService.js
+  // src/domain/services/BudgetService.js
   var BudgetService = class {
     /** @type {Store} */
     #store;
@@ -2653,7 +2653,111 @@ var _PocketApp = (() => {
     }
   };
 
-  // legacy-web/src/domain/services/ReceiptScanService.js
+  // src/domain/services/AccountRef.js
+  var AccountRef = class _AccountRef {
+    /** @type {string} */
+    #accountId;
+    /** @type {string|null} */
+    #ownerId;
+    /**
+     * @param {string} accountId
+     * @param {string|null} [ownerId=null]  null → the local book
+     */
+    constructor(accountId, ownerId = null) {
+      this.#accountId = accountId || "";
+      this.#ownerId = ownerId || null;
+    }
+    get accountId() {
+      return this.#accountId;
+    }
+    get ownerId() {
+      return this.#ownerId;
+    }
+    get isShared() {
+      return !!this.#ownerId && !!this.#accountId;
+    }
+    /** The string a <select> / hidden input carries. @returns {string} */
+    toValue() {
+      if (!this.#accountId) return "";
+      return this.#ownerId ? `shared:${this.#ownerId}:${this.#accountId}` : this.#accountId;
+    }
+    /**
+     * Parse a form value back into a ref. Anything that isn't the shared form is
+     * treated as a plain local account id, so existing saved values keep working.
+     * @param {string} value
+     * @returns {AccountRef}
+     */
+    static parse(value) {
+      const raw = (value ?? "").toString();
+      if (!raw.startsWith("shared:")) return new _AccountRef(raw, null);
+      const rest = raw.slice("shared:".length);
+      const sep = rest.indexOf(":");
+      if (sep < 0) return new _AccountRef(rest, null);
+      return new _AccountRef(rest.slice(sep + 1), rest.slice(0, sep));
+    }
+    /**
+     * Build a ref from a stored record that carries `accountId` + `sharedOwnerId`
+     * (regular items, and anything else that persists the pair).
+     * @param {{accountId?:string, sharedOwnerId?:string|null}} record
+     * @returns {AccountRef}
+     */
+    static fromRecord(record) {
+      return new _AccountRef(record?.accountId || "", record?.sharedOwnerId || null);
+    }
+  };
+
+  // src/domain/services/RegularLogService.js
+  var RegularLogService = class {
+    /** @type {Store} */
+    #store;
+    /** @param {object} [deps] @param {Store} [deps.store] */
+    constructor({ store } = {}) {
+      this.#store = store || Store.getInstance();
+    }
+    /**
+     * Every visible regular-item log — local rows first, then contributions.
+     * @returns {object[]}
+     */
+    all() {
+      const state = this.#store.getState();
+      const local = (state.transactions || []).filter((t) => t.regularItemId);
+      const mine = new Set((state.regularItems || []).map((i) => i.id));
+      if (!mine.size) return local;
+      const shared = (state._sharedData || []).flatMap(
+        (share) => (share.transactions || []).filter((t) => t.regularItemId && mine.has(t.regularItemId)).map((t) => ({ ...t, _shared: true, _ownerId: share._ownerId }))
+      );
+      return local.concat(shared);
+    }
+    /**
+     * Logs on one ISO date.
+     * @param {string} iso
+     * @returns {object[]}
+     */
+    onDate(iso) {
+      return this.all().filter((t) => t.date === iso);
+    }
+    /**
+     * Logs whose date falls in [startIso, endIso] — ISO dates compare correctly
+     * as strings, which is what the calendar's week/month tallies rely on.
+     * @param {string} startIso
+     * @param {string} endIso
+     * @returns {object[]}
+     */
+    inRange(startIso, endIso) {
+      return this.all().filter((t) => t.date >= startIso && t.date <= endIso);
+    }
+    /**
+     * Resolve a single log by id, so a delete knows whether to remove a local row
+     * or submit a delete-contribution to the owner.
+     * @param {string} logId
+     * @returns {object|undefined}
+     */
+    find(logId) {
+      return this.all().find((t) => t.id === logId);
+    }
+  };
+
+  // src/domain/services/ReceiptScanService.js
   var GEMINI_MODEL = "gemini-2.5-flash-lite";
   var GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   var ReceiptScanService = class {
@@ -2974,7 +3078,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/SyncService.js
+  // src/domain/services/SyncService.js
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -3769,7 +3873,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/ThemeService.js
+  // src/domain/services/ThemeService.js
   var ThemeService = class {
     #store;
     constructor(store) {
@@ -3798,7 +3902,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/PaymentTypeService.js
+  // src/domain/services/PaymentTypeService.js
   var BASE_TYPES = ["card", "cash", "transfer", "cheque", "online"];
   var PaymentTypeService = class {
     #store;
@@ -3939,7 +4043,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/AccountGroupService.js
+  // src/domain/services/AccountGroupService.js
   var AccountGroupService = class {
     /** @type {Store} */
     #store;
@@ -4131,7 +4235,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/FamilyShareService.js
+  // src/domain/services/FamilyShareService.js
   var LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
   var FamilyShareService = class {
     /** @type {Store} */
@@ -4230,7 +4334,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/domain/services/ExchangeRateService.js
+  // src/domain/services/ExchangeRateService.js
   var ENDPOINT = "https://open.er-api.com/v6/latest/USD";
   var REFRESH_MS = 6 * 60 * 60 * 1e3;
   var ExchangeRateService = class {
@@ -4290,7 +4394,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/ui/components/Toast.js
+  // src/ui/components/Toast.js
   var Toast = class {
     /** @type {HTMLElement|null} */
     #el = null;
@@ -4335,7 +4439,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/ui/components/Modal.js
+  // src/ui/components/Modal.js
   var Modal = class {
     /** @type {HTMLElement|null} */
     #backdrop = null;
@@ -4452,7 +4556,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/core/Html.js
+  // src/core/Html.js
   var Html = class {
     /**
      * Escape text / double-quoted attribute content.
@@ -4496,7 +4600,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/ui/components/Navigation.js
+  // src/ui/components/Navigation.js
   var Navigation = class _Navigation {
     /** @type {HTMLElement|null} */
     #sidebar = null;
@@ -4640,7 +4744,7 @@ RULES:
     }
   };
 
-  // legacy-web/src/ui/components/OverlaySheet.js
+  // src/ui/components/OverlaySheet.js
   var SHEET_CSS = `
 .sheet-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(2px); z-index:70; display:none; }
 .sheet-backdrop.open { display:flex; align-items:flex-end; justify-content:center; }
@@ -4821,12 +4925,106 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // legacy-web/src/ui/components/CategoryPickerSheet.js
+  // src/domain/services/SharedCategorySource.js
+  var SharedCategorySource = class {
+    /** @type {object[]} */
+    #cats;
+    /** @param {object[]} list  the owner's categories, from the share snapshot */
+    constructor(list) {
+      this.#cats = Array.isArray(list) ? list : [];
+    }
+    /** The wrapped list — callers pass it to CategoryField for labelling. */
+    get all() {
+      return this.#cats;
+    }
+    /** @param {object} c @param {string|null} type */
+    #match(c, type) {
+      return !type || c.type === type;
+    }
+    // ── Queries (same signatures as CategoryService) ──────────────────────
+    /** @param {string} id @returns {object|undefined} */
+    find(id) {
+      return this.#cats.find((c) => c.id === id);
+    }
+    /** @param {string} parentId @returns {object[]} */
+    children(parentId) {
+      return this.#cats.filter((c) => c.parentId === parentId);
+    }
+    /**
+     * @param {string} parentId
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]}
+     */
+    visibleChildren(parentId, type = null) {
+      return this.children(parentId).filter((c) => this.#match(c, type)).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /** @param {string} id @param {string|null} [type] @returns {boolean} */
+    hasChildren(id, type = null) {
+      return this.visibleChildren(id, type).length > 0;
+    }
+    /**
+     * Roots that are reachable for a type — the root itself matches, or it owns
+     * at least one matching child.
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]}
+     */
+    visibleRoots(type = null) {
+      return this.#cats.filter((c) => !c.parentId).filter((root) => this.#match(root, type) || this.#cats.some((c) => c.parentId === root.id && this.#match(c, type))).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /**
+     * Subcategories whose parent is missing from the snapshot — surfaced under
+     * "Ungrouped" so they stay reachable.
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @returns {object[]}
+     */
+    orphans(type = null) {
+      const ids = new Set(this.#cats.map((c) => c.id));
+      return this.#cats.filter((c) => c.parentId && !ids.has(c.parentId) && this.#match(c, type)).sort((a, b) => a.name.localeCompare(b.name));
+    }
+    /** @param {string} id @returns {string} "Parent / Child" */
+    fullName(id) {
+      const c = this.find(id);
+      if (!c) return "";
+      if (c.parentId) {
+        const p = this.find(c.parentId);
+        if (p) return `${p.name} / ${c.name}`;
+      }
+      return c.name;
+    }
+    /**
+     * @param {string} query
+     * @param {'expense'|'income'|'transfer'|null} [type]
+     * @param {number} [limit=60]
+     * @returns {object[]}
+     */
+    search(query, type = null, limit = 60) {
+      const q = (query || "").trim().toLowerCase();
+      if (!q) return [];
+      return this.#cats.filter((c) => this.#match(c, type)).filter((c) => this.fullName(c.id).toLowerCase().includes(q)).sort((a, b) => {
+        const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return ap - bp || this.fullName(a.id).localeCompare(this.fullName(b.id));
+      }).slice(0, limit);
+    }
+    // ── Mutations — refused ───────────────────────────────────────────────
+    /** @returns {{ok:false, reason:string}} */
+    quickCreate() {
+      return { ok: false, reason: "You can\u2019t add categories to a shared account" };
+    }
+  };
+
+  // src/ui/components/CategoryPickerSheet.js
   var CategoryPickerSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
     /** @type {CategoryService} */
     #categories;
+    // The tree currently being browsed. Normally the local CategoryService; when
+    // contributing to an account someone shared with you it is a read-only
+    // SharedCategorySource over the OWNER's categories, so the id picked here is
+    // meaningful in the book the transaction actually lands in.
+    /** @type {CategoryService|SharedCategorySource} */
+    #source;
     // ── Per-open session state ────────────────────────────────────────────
     #mode = "single";
     // 'single' | 'multi'
@@ -4854,6 +5052,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
       super({ id: "catPickerRoot" });
       this.#store = store || Store.getInstance();
       this.#categories = categoryService || new CategoryService();
+      this.#source = this.#categories;
     }
     // ── Public API ────────────────────────────────────────────────────────
     /**
@@ -4865,13 +5064,17 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
      * @param {string[]}         [cfg.selected=[]]      pre-selected category IDs
      * @param {string}           [cfg.title]
      * @param {boolean}          [cfg.allowAdd=true]    show the inline add rows
+     * @param {object[]|null}    [cfg.categories=null]  browse THIS list instead of
+     *   the local book — the owner's categories when contributing to a shared
+     *   account. Implies allowAdd:false (you can't create in someone else's book).
      * @param {(ids:string[]) => void} cfg.onSelect     called with the chosen IDs
      */
-    open({ mode = "single", type = null, selected = [], title, allowAdd = true, onSelect } = {}) {
+    open({ mode = "single", type = null, selected = [], title, allowAdd = true, categories = null, onSelect } = {}) {
+      this.#source = categories ? new SharedCategorySource(categories) : this.#categories;
       this.#mode = mode === "multi" ? "multi" : "single";
       this.#type = type || null;
       this.#title = title || (this.#mode === "multi" ? "Choose categories" : "Choose category");
-      this.#allowAdd = allowAdd !== false;
+      this.#allowAdd = allowAdd !== false && !categories;
       this.#onSelect = typeof onSelect === "function" ? onSelect : null;
       this.#selected = new Set((selected || []).filter(Boolean));
       this.#query = "";
@@ -4879,15 +5082,20 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
       this.#parentId = null;
       const first = [...this.#selected][0];
       if (first) {
-        const cat = this.#categories.find(first);
+        const cat = this.#source.find(first);
         if (cat?.parentId && (!this.#type || cat.type === this.#type)) this.#parentId = cat.parentId;
       }
       this.show();
       this.focusLater("[data-cat-search]", 30);
     }
-    /** @override — drop the callback so a stray close can't fire it later. */
+    /**
+     * @override — drop the callback so a stray close can't fire it later, and
+     * fall back to the local book so the next open can't inherit a stale owner's
+     * tree if it forgets to pass one.
+     */
     onClosed() {
       this.#onSelect = null;
+      this.#source = this.#categories;
     }
     // ── Interaction handlers (called from inline onclick in the sheet) ─────
     /** Drill into a parent's subcategories. @param {string} id */
@@ -4962,7 +5170,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
       const input = this.find("[data-cat-new]");
       const name = input?.value || "";
       const type = this.#type || "expense";
-      const res = this.#categories.quickCreate(name, { parentId: this.#parentId, type });
+      const res = this.#source.quickCreate(name, { parentId: this.#parentId, type });
       if (!res.ok) {
         const err = this.find("[data-cat-add-error]");
         if (err) err.textContent = res.reason;
@@ -4995,7 +5203,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     // ── Rendering ─────────────────────────────────────────────────────────
     /** @override */
     renderContent() {
-      const parent = this.#parentId ? this.#categories.find(this.#parentId) : null;
+      const parent = this.#parentId ? this.#source.find(this.#parentId) : null;
       return `
       <div class="sheet-head">
         <div class="flex items-center gap-2 mb-2">
@@ -5046,10 +5254,10 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
     // ── Step 1: parents ───────────────────────────────────────────────────
     #parentsHtml() {
-      const roots = this.#categories.visibleRoots(this.#type);
-      const orphans = this.#categories.orphans(this.#type);
+      const roots = this.#source.visibleRoots(this.#type);
+      const orphans = this.#source.orphans(this.#type);
       const rows = roots.map((root) => {
-        const kids = this.#categories.visibleChildren(root.id, this.#type);
+        const kids = this.#source.visibleChildren(root.id, this.#type);
         const action = kids.length ? `window.__app.catPicker.openParent('${this.js(root.id)}')` : `window.__app.catPicker.choose('${this.js(root.id)}')`;
         const selectedHere = kids.length ? kids.some((k) => this.#selected.has(k.id)) || this.#selected.has(root.id) : this.#selected.has(root.id);
         const pickedCount = kids.filter((k) => this.#selected.has(k.id)).length;
@@ -5073,12 +5281,12 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
     // ── Step 2: subcategories ─────────────────────────────────────────────
     #childrenHtml() {
-      const parent = this.#categories.find(this.#parentId);
+      const parent = this.#source.find(this.#parentId);
       if (!parent) {
         this.#parentId = null;
         return this.#parentsHtml();
       }
-      const kids = this.#categories.visibleChildren(this.#parentId, this.#type);
+      const kids = this.#source.visibleChildren(this.#parentId, this.#type);
       const wholeGroup = this.#mode === "multi" ? `<button type="button" class="sheet-row ${this.#selected.has(parent.id) ? "is-selected" : ""}"
                  onclick="window.__app.catPicker.choose('${this.js(parent.id)}')">
            <span class="sheet-dot" style="background:${this.esc(parent.color || "#a1a1aa")}"></span>
@@ -5091,12 +5299,12 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
     // ── Search results ────────────────────────────────────────────────────
     #searchHtml() {
-      const hits = this.#categories.search(this.#query, this.#type);
+      const hits = this.#source.search(this.#query, this.#type);
       if (!hits.length) {
         return `<div class="sheet-empty">Nothing matches \u201C${this.esc(this.#query.trim())}\u201D.</div>`;
       }
       return hits.map((c) => {
-        const isGroup = !c.parentId && this.#categories.hasChildren(c.id, this.#type);
+        const isGroup = !c.parentId && this.#source.hasChildren(c.id, this.#type);
         if (isGroup && this.#mode === "single") {
           return `
           <button type="button" class="sheet-row" onclick="window.__app.catPicker.openParent('${this.js(c.id)}')">
@@ -5116,7 +5324,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
      * @param {boolean} showPath  prefix with the parent name (search results)
      */
     #leafRow(c, showPath) {
-      const parent = c.parentId ? this.#categories.find(c.parentId) : null;
+      const parent = c.parentId ? this.#source.find(c.parentId) : null;
       const label = showPath && parent ? `<span class="text-zinc-500">${this.esc(parent.name)} / </span>${this.esc(c.name)}` : this.esc(c.name);
       return `
       <button type="button" class="sheet-row ${this.#selected.has(c.id) ? "is-selected" : ""}"
@@ -5160,7 +5368,7 @@ html.dark .sheet-row.is-selected { background:#1c1c20; }
     }
   };
 
-  // legacy-web/src/ui/components/AccountGroupSheet.js
+  // src/ui/components/AccountGroupSheet.js
   var AccountGroupSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5489,7 +5697,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/components/AccountShareSheet.js
+  // src/ui/components/AccountShareSheet.js
   var AccountShareSheet = class extends OverlaySheet {
     /** @type {Store} */
     #store;
@@ -5689,7 +5897,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/components/PaymentMethodSheet.js
+  // src/ui/components/PaymentMethodSheet.js
   var PaymentMethodSheet = class extends OverlaySheet {
     /** @type {import('../../domain/services/PaymentTypeService.js').PaymentTypeService} */
     #service;
@@ -5892,7 +6100,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/components/CategoryField.js
+  // src/ui/components/CategoryField.js
   var CategoryField = class _CategoryField {
     /**
      * @param {object}   cfg
@@ -5906,6 +6114,10 @@ This replaces your current grouping.`
      * @param {string}   [cfg.onPick]                 optional window.__app method
      *                                                called as (fieldId, ids) after a pick
      * @param {object[]} cfg.categories               full category list (for labelling)
+     * @param {string}   [cfg.ownerId='']             owner id of the shared account this
+     *   field belongs to. When set, openCategoryPicker browses THAT user's categories
+     *   instead of the local book, so the chosen id is valid in the book the row
+     *   actually lands in (otherwise the owner sees "Uncategorised").
      * @returns {string} HTML
      */
     static render({
@@ -5917,7 +6129,8 @@ This replaces your current grouping.`
       title = "",
       placeholder = "\u2014 Uncategorised \u2014",
       onPick = "",
-      categories = []
+      categories = [],
+      ownerId = ""
     }) {
       const ids = _CategoryField.#toIds(value);
       const esc = _CategoryField.#esc;
@@ -5931,6 +6144,7 @@ This replaces your current grouping.`
            data-type="${esc(type || "")}"
            data-title="${esc(title)}"
            data-placeholder="${esc(placeholder)}"
+           data-ownerid="${esc(ownerId || "")}"
            data-onpick="${esc(onPick)}">
         ${_CategoryField.#hiddenInputs(name, ids)}
         <button type="button" class="select flex items-center gap-2 text-left"
@@ -5940,6 +6154,23 @@ This replaces your current grouping.`
           <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px;flex-shrink:0"></i>
         </button>
       </div>`;
+    }
+    /**
+     * Repoint a live field at a different book and clear its selection.
+     *
+     * Called when the account dropdown moves between "my accounts" and a shared
+     * one: the previously-picked category id belongs to the old book and would be
+     * meaningless in the new one, so it is dropped rather than carried over.
+     *
+     * @param {HTMLElement} el
+     * @param {string|null} ownerId    '' / null → back to the local book
+     * @param {object[]}    categories the new book's categories (for labelling)
+     */
+    static setOwner(el, ownerId, categories = []) {
+      if (!el) return;
+      if (el.dataset.ownerid === (ownerId || "")) return;
+      el.dataset.ownerid = ownerId || "";
+      _CategoryField.setValue(el, [], categories);
     }
     /**
      * Read the currently-selected ids out of a rendered field.
@@ -6018,7 +6249,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/components/VoiceRecorder.js
+  // src/ui/components/VoiceRecorder.js
   var VoiceRecorder = class _VoiceRecorder {
     /** @type {MediaStream|null} */
     #stream = null;
@@ -6153,7 +6384,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/components/VoiceOverlay.js
+  // src/ui/components/VoiceOverlay.js
   var VoiceOverlay = class _VoiceOverlay {
     #el = null;
     #barsEl = null;
@@ -6287,7 +6518,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/BaseView.js
+  // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
     #store;
@@ -6471,7 +6702,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/domain/services/ReportService.js
+  // src/domain/services/ReportService.js
   var ReportService = class {
     /** @type {Store} */
     #store;
@@ -6619,7 +6850,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/TransactionRowRenderer.js
+  // src/ui/views/TransactionRowRenderer.js
   var TransactionRowRenderer = class {
     /** @type {Store} */
     #store;
@@ -6822,7 +7053,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/DashboardView.js
+  // src/ui/views/DashboardView.js
   var DashboardView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -6972,7 +7203,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/TransactionsView.js
+  // src/ui/views/TransactionsView.js
   var TransactionsView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -7351,7 +7582,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/AccountsView.js
+  // src/ui/views/AccountsView.js
   var AccountsView = class extends BaseView {
     constructor() {
       super();
@@ -7537,7 +7768,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/AccountDetailView.js
+  // src/ui/views/AccountDetailView.js
   var AccountDetailView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
@@ -7950,7 +8181,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/BudgetsView.js
+  // src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -8047,7 +8278,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/BudgetDetailView.js
+  // src/ui/views/BudgetDetailView.js
   var BudgetDetailView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
@@ -8161,7 +8392,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/CategoriesView.js
+  // src/ui/views/CategoriesView.js
   var CategoriesView = class extends BaseView {
     constructor() {
       super();
@@ -8248,7 +8479,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/ReportsView.js
+  // src/ui/views/ReportsView.js
   var ReportsView = class extends BaseView {
     /** @type {ReportService} */
     #reports;
@@ -8484,7 +8715,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/DebtsView.js
+  // src/ui/views/DebtsView.js
   var DebtsView = class extends BaseView {
     constructor() {
       super();
@@ -8599,7 +8830,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/views/CalendarView.js
+  // src/ui/views/CalendarView.js
   var CalendarView = class extends BaseView {
     /** @type {HijriCalendarService} */
     #hijri;
@@ -8899,26 +9130,38 @@ This replaces your current grouping.`
     #isoDate(d) {
       return DateService.toIso(d);
     }
+    /**
+     * Every regular-item log the user can see, in BOTH books.
+     *
+     * An item whose default account was shared by a family member logs into that
+     * owner's book, so it is absent from `state.transactions` and only comes back
+     * inside the share snapshot. Reading `state` alone made those entries — and
+     * the money they represent — invisible on the calendar.
+     * @returns {object[]}
+     */
+    #allLogs(state) {
+      const svc = window.__app?.regularLogs;
+      if (svc) return svc.all();
+      return (state.transactions || []).filter((t) => t.regularItemId);
+    }
     #logsForDate(iso, state) {
-      return (state.transactions || []).filter((t) => t.regularItemId && t.date === iso);
+      return this.#allLogs(state).filter((t) => t.date === iso);
     }
     #logsForMonth(year, monthIdx, state) {
-      return (state.transactions || []).filter((t) => {
-        if (!t.regularItemId) return false;
+      return this.#allLogs(state).filter((t) => {
         const d = /* @__PURE__ */ new Date(t.date + "T12:00:00");
         return d.getFullYear() === year && d.getMonth() === monthIdx;
       });
     }
     #logsForHijriMonth(year, monthIdx, state) {
-      return (state.transactions || []).filter((t) => {
-        if (!t.regularItemId) return false;
+      return this.#allLogs(state).filter((t) => {
         const h = this.#hijri.toHijri(t.date);
         return h.year === year && h.month === monthIdx;
       });
     }
   };
 
-  // legacy-web/src/ui/views/FamilyView.js
+  // src/ui/views/FamilyView.js
   var ACCOUNT_TYPE_ICONS2 = {
     cash: "wallet",
     bank: "landmark",
@@ -9083,7 +9326,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/modals/TransactionModal.js
+  // src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class {
     /** @type {Store} */
@@ -9265,8 +9508,11 @@ This replaces your current grouping.`
       }
       const type = this.#currentType || data.type || "expense";
       const amountValue = this.#draft.amountRaw !== void 0 ? this.#draft.amountRaw : editing || sharedEditTx ? this.#fx.fromMinor(data.amount, data.currency) : data.amount || 0;
-      const cats = state.categories;
       const isSharedMode = !!this.#sharedTxMode;
+      const catOwnerId = isSharedMode ? this.#sharedTxMode.ownerId || state._sharedData?.[this.#sharedTxMode.shareIndex]?._ownerId || null : (state._sharedData || []).find((s) => (s.accounts || []).some((a) => a.id === data.accountId))?._ownerId || null;
+      const ownerShare = catOwnerId ? (state._sharedData || []).find((s) => s._ownerId === catOwnerId) : null;
+      const cats = ownerShare ? ownerShare.categories || [] : state.categories;
+      const sharedBook = !!catOwnerId;
       const sharedAccObj = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || []).find((a) => a.id === this.#sharedTxMode.accountId) : null;
       const sharedPerm = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.permission || {})[this.#sharedTxMode.accountId] : null;
       const canDeleteShared = isSharedMode && sharedEditTx && ["full", "edit", "owner"].includes(sharedPerm);
@@ -9312,8 +9558,10 @@ This replaces your current grouping.`
         </div>
 
         ${type === "transfer" ? this.#transferFields(data, state) : ""}
-        ${type !== "transfer" && this.#splitsEnabled ? this.#splitsArea(data, cats, type, state.accounts, amountValue) : ""}
-        ${type !== "transfer" && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode) : ""}
+        <!-- Split legs always target LOCAL accounts, so they label from the
+             local book even when cats has been pointed at an owner's. -->
+        ${type !== "transfer" && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ""}
+        ${type !== "transfer" && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ""}
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
@@ -9478,7 +9726,7 @@ This replaces your current grouping.`
         </div>
       </div>`;
     }
-    #accountCategoryFields(data, state, cats, type, isSharedMode) {
+    #accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId = null, sharedBook = false) {
       const sharedOpts = (state._sharedData || []).flatMap(
         (share) => (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} (shared)</option>`)
       ).join("");
@@ -9499,8 +9747,9 @@ This replaces your current grouping.`
         <div>
           <div class="flex items-center justify-between">
             <label class="text-xs text-zinc-500">Category</label>
-            <button type="button" onclick="window.__app.toggleSplits()"
-                    class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+            <button type="button" onclick="window.__app.toggleSplits()" data-split-toggle
+                    class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    style="${sharedBook ? "display:none" : ""}">
               <i data-lucide="split" style="width:11px;height:11px;display:inline"></i> Split
             </button>
           </div>
@@ -9509,9 +9758,12 @@ This replaces your current grouping.`
         name: "categoryId",
         value: data.categoryId,
         type,
-        title: "Choose category",
-        categories: cats
+        title: sharedBook ? "Choose a category from their book" : "Choose category",
+        categories: cats,
+        ownerId: catOwnerId || ""
       })}
+          <div class="text-[11px] text-zinc-500 mt-1" data-shared-cat-note
+               style="${sharedBook ? "" : "display:none"}">Their categories \u2014 subcategories included</div>
         </div>
       </div>
 
@@ -9668,7 +9920,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/modals/AccountModal.js
+  // src/ui/modals/AccountModal.js
   var AccountModal = class {
     /** @type {Store} */
     #store;
@@ -9768,7 +10020,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/modals/CategoryModal.js
+  // src/ui/modals/CategoryModal.js
   var ICONS = [
     "tag",
     "utensils",
@@ -9863,7 +10115,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/modals/BudgetModal.js
+  // src/ui/modals/BudgetModal.js
   var BudgetModal = class {
     /** @type {Store} */
     #store;
@@ -9964,7 +10216,7 @@ This replaces your current grouping.`
     }
   };
 
-  // legacy-web/src/ui/modals/SettingsModal.js
+  // src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
     #store;
@@ -10368,7 +10620,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/CsvModal.js
+  // src/ui/modals/CsvModal.js
   var CsvModal = class {
     render() {
       return `
@@ -10435,7 +10687,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/DebtModal.js
+  // src/ui/modals/DebtModal.js
   var DebtModal = class {
     /** @type {Store} */
     #store;
@@ -10656,7 +10908,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/FamilyModal.js
+  // src/ui/modals/FamilyModal.js
   var FamilyModal = class {
     /** @type {Store} */
     #store;
@@ -10860,7 +11112,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/ReconcileModal.js
+  // src/ui/modals/ReconcileModal.js
   var ReconcileModal = class {
     /** @type {Store}          */
     #store;
@@ -10991,7 +11243,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/AuthModal.js
+  // src/ui/modals/AuthModal.js
   var AuthModal = class {
     /** @type {Store} */
     #store;
@@ -11042,7 +11294,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/RegularItemModal.js
+  // src/ui/modals/RegularItemModal.js
   var ITEM_ICONS = [
     "coffee",
     "shopping-basket",
@@ -11095,11 +11347,25 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         defaultAmount: 0,
         currency: home,
         accountId: state.accounts[0]?.id || "",
+        sharedOwnerId: null,
         categoryId: "",
         icon: "coffee",
         color: ITEM_COLORS[0]
       };
       const amountVal = editing ? this.#fx.fromMinor(editing.defaultAmount, editing.currency) : 0;
+      const accRef = AccountRef.fromRecord(data);
+      const accValue = accRef.toValue();
+      const shares = (state._sharedData || []).filter((s) => (s.accounts || []).some((a) => (s.permission || {})[a.id] !== "view"));
+      const sharedGroups = shares.map((share) => {
+        const opts2 = (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => {
+          const val = new AccountRef(a.id, share._ownerId).toValue();
+          return `<option value="${this.#esc(val)}" ${accValue === val ? "selected" : ""}>${this.#esc(a.name)}</option>`;
+        }).join("");
+        const who = share.sharedBy || "Family";
+        return opts2 ? `<optgroup label="Shared by ${this.#esc(who)}">${opts2}</optgroup>` : "";
+      }).join("");
+      const ownerShare = accRef.isShared ? shares.find((s) => s._ownerId === accRef.ownerId) : null;
+      const catList = ownerShare ? ownerShare.categories || [] : state.categories;
       return `
       <form id="regularItemForm"
             onsubmit="window.__app.submitRegularItem(event,'${editing?.id || ""}')"
@@ -11137,10 +11403,18 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         <!-- Account -->
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Default account</label>
-          <select class="select" name="accountId">
+          <select class="select" name="accountId"
+                  onchange="window.__app.onRegularAccountChange(this.value)">
             <option value="">\u2014 None \u2014</option>
-            ${state.accounts.map((a) => `<option value="${a.id}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
+            <optgroup label="My accounts">
+              ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${accValue === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
+            </optgroup>
+            ${sharedGroups}
           </select>
+          <div class="text-[11px] text-zinc-500 mt-1" data-regular-shared-note
+               style="${accRef.isShared ? "" : "display:none"}">
+            Entries logged from this item go to the owner's book for approval.
+          </div>
         </div>
 
         <!-- Category -->
@@ -11151,8 +11425,9 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         name: "categoryId",
         value: data.categoryId,
         type: "expense",
-        title: "Default category",
-        categories: state.categories
+        title: accRef.isShared ? "Choose a category from their book" : "Default category",
+        categories: catList,
+        ownerId: accRef.ownerId || ""
       })}
         </div>
 
@@ -11217,21 +11492,23 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/DayLogsModal.js
+  // src/ui/modals/DayLogsModal.js
   var DayLogsModal = class {
     #store;
     #hijriService;
     #currencyService;
-    constructor({ store, hijriService, currencyService }) {
+    #regularLogs;
+    constructor({ store, hijriService, currencyService, regularLogService }) {
       this.#store = store;
       this.#hijriService = hijriService;
       this.#currencyService = currencyService;
+      this.#regularLogs = regularLogService || null;
     }
     render({ date } = {}) {
       if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
       const s = this.#store.getState();
       const items = s.regularItems || [];
-      const logs = (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
+      const logs = this.#regularLogs ? this.#regularLogs.onDate(date) : (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
       const hijriStr = (() => {
         try {
           return this.#hijriService.format(date);
@@ -11244,10 +11521,14 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         const cur = log.currency || s.user.homeCurrency;
         const qty = log.qty ?? 1;
         const unitAmt = log.unitAmount != null ? log.unitAmount : log.amount;
+        const sharedTag = log._shared ? `<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700
+                       dark:bg-indigo-500/15 dark:text-indigo-300">shared</span>` : "";
         return `
         <div class="flex items-center justify-between p-3 card mb-2">
           <div>
-            <div class="text-sm font-medium">${this.#esc(item?.name || "Item")}</div>
+            <div class="text-sm font-medium flex items-center gap-1.5">
+              ${this.#esc(item?.name || "Item")}${sharedTag}
+            </div>
             <div class="text-xs text-zinc-500">Qty ${qty} \xD7 ${this.#currencyService.formatMoney(unitAmt, cur)}</div>
           </div>
           <div class="flex items-center gap-2">
@@ -11312,7 +11593,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/ui/modals/CurrencySetupModal.js
+  // src/ui/modals/CurrencySetupModal.js
   var CurrencySetupModal = class {
     #store;
     #hijri;
@@ -11434,7 +11715,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
-  // legacy-web/src/app.js
+  // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
     card: ["credit", "card", "visa", "mastercard", "amex", "american express", "discover", "platinum"],
@@ -11471,6 +11752,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     #budgets;
     /** @type {RecurringService}     */
     #recurring;
+    /** @type {RegularLogService}    */
+    #regularLogs;
     /** @type {SyncService}          */
     #sync;
     /** @type {ThemeService}         */
@@ -11549,6 +11832,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#transactions = new TransactionService();
       this.#budgets = new BudgetService();
       this.#recurring = new RecurringService();
+      this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#sync = new SyncService();
       this.#themeService = new ThemeService(this.#store);
       this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -11618,7 +11902,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#dayLogsModal = new DayLogsModal({
         store: this.#store,
         hijriService: this.#hijri,
-        currencyService: this.#fx
+        currencyService: this.#fx,
+        regularLogService: this.#regularLogs
       });
       this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
       this.#modal.register("transaction", this.#txModal);
@@ -11751,12 +12036,54 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       return this.#catPicker;
     }
     /**
+     * Regular-item logs across both books (local + contributions to shared
+     * accounts). CalendarView and DayLogsModal read through this so an entry
+     * logged against a shared account doesn't disappear from the calendar.
+     * @returns {RegularLogService}
+     */
+    get regularLogs() {
+      return this.#regularLogs;
+    }
+    /**
+     * The category list a field should browse.
+     *
+     * A row destined for someone else's book must carry one of THEIR category
+     * ids — a local id is meaningless there and the owner sees the transaction as
+     * "Uncategorised". The owner's whole tree (parents AND subcategories) travels
+     * in the family-share snapshot, so resolve it by stable owner id.
+     *
+     * @param {string|null} ownerId  '' / null → the local book
+     * @returns {object[]}
+     */
+    categoriesForOwner(ownerId) {
+      if (!ownerId) return this.#store.getState().categories;
+      const share = this.#sync.shareByOwner?.(ownerId) || (this.#sync.sharedData || []).find((s) => s._ownerId === ownerId);
+      return share?.categories || [];
+    }
+    /**
+     * Owner id of the share that holds `accountId`, or null when the account is
+     * one of the user's own (or unknown).
+     * @param {string} accountId
+     * @returns {string|null}
+     */
+    ownerIdForAccount(accountId) {
+      if (!accountId) return null;
+      if (this.#store.getState().accounts.some((a) => a.id === accountId)) return null;
+      const share = (this.#sync.sharedData || []).find(
+        (s) => (s.accounts || []).some((a) => a.id === accountId)
+      );
+      return share?._ownerId || null;
+    }
+    /**
      * Open the two-step category picker for a CategoryField.
      *
      * Everything the picker needs is read from the field's data-* attributes, so
      * any modal can drop in a field without adding a bespoke handler here. The
      * result is written straight back into the field's hidden inputs — no modal
      * refresh, so a half-filled transaction form survives the round trip.
+     *
+     * When the field carries data-ownerid it belongs to a shared account, so the
+     * sheet browses that owner's categories (read-only) rather than the local book.
      *
      * @param {string} fieldId
      */
@@ -11767,14 +12094,18 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       const type = field.dataset.type || null;
       const title = field.dataset.title || "";
       const onPick = field.dataset.onpick || "";
+      const ownerId = field.dataset.ownerid || "";
+      const catList = this.categoriesForOwner(ownerId);
       this.#catPicker.open({
         mode,
         type,
         title,
         selected: CategoryField.getValue(field),
+        // null → local book (the picker keeps its own CategoryService and can add)
+        categories: ownerId ? catList : null,
         onSelect: (ids) => {
           const live = document.getElementById(fieldId) || field;
-          CategoryField.setValue(live, ids, this.#store.getState().categories);
+          CategoryField.setValue(live, ids, ownerId ? catList : this.#store.getState().categories);
           lucide?.createIcons?.();
           if (onPick && typeof this[onPick] === "function") this[onPick](fieldId, ids);
         }
@@ -12836,6 +13167,22 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       const acc = state.accounts.find((a) => a.id === accId) || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
       const curEl = document.querySelector("[name=currency]");
       if (curEl && acc?.currency) curEl.value = acc.currency;
+      const ownerId = this.ownerIdForAccount(accId);
+      const catEl = document.getElementById("txCategory");
+      if (catEl) {
+        CategoryField.setOwner(catEl, ownerId, this.categoriesForOwner(ownerId));
+        const note = catEl.parentElement?.querySelector("[data-shared-cat-note]");
+        if (note) note.style.display = ownerId ? "" : "none";
+        lucide?.createIcons?.();
+      }
+      const splitBtn = document.querySelector("[data-split-toggle]");
+      if (splitBtn) splitBtn.style.display = ownerId ? "none" : "";
+      if (ownerId && this.#txModal?.splitsEnabled) {
+        this.#txModal.toggleSplits?.();
+        this.#toast.show("Splits removed \u2014 a shared-account entry is a single row");
+        this.#refreshModal();
+        return;
+      }
       this.updateTxFxPanel(false);
     }
     /**
@@ -13696,6 +14043,27 @@ They stay in your ledger as ordinary transactions and your balances do not chang
     // ──────────────────────────────────────────────────────────────────────────
     // Regular items CRUD
     // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * The regular-item form's account moved between books: re-home the default
+     * category field (the old id means nothing in the new book) and snap the
+     * currency to the chosen account.
+     * @param {string} value  raw <select> value — see AccountRef
+     */
+    onRegularAccountChange(value) {
+      const ref = AccountRef.parse(value);
+      const ownerId = ref.ownerId;
+      const state = this.#store.getState();
+      const catEl = document.getElementById("regularItemCategory");
+      if (catEl) {
+        CategoryField.setOwner(catEl, ownerId, this.categoriesForOwner(ownerId));
+        lucide?.createIcons?.();
+      }
+      const note = document.querySelector("[data-regular-shared-note]");
+      if (note) note.style.display = ref.isShared ? "" : "none";
+      const acc = ownerId ? (this.#sync.shareByOwner?.(ownerId)?.accounts || []).find((a) => a.id === ref.accountId) : state.accounts.find((a) => a.id === ref.accountId);
+      const curEl = document.querySelector("#regularItemForm [name=currency]");
+      if (curEl && acc?.currency) curEl.value = acc.currency;
+    }
     submitRegularItem(event, id) {
       event.preventDefault();
       const fd = new FormData(event.target);
@@ -13703,11 +14071,13 @@ They stay in your ledger as ordinary transactions and your balances do not chang
       const state = this.#store.getState();
       if (!Array.isArray(state.regularItems)) state.regularItems = [];
       const currency = data.currency || state.user.homeCurrency;
+      const accRef = AccountRef.parse(data.accountId);
       const payload = {
         name: (data.name || "").trim(),
         defaultAmount: this.#fx.toMinor(parseFloat(data.defaultAmount) || 0, currency),
         currency,
-        accountId: data.accountId || null,
+        accountId: accRef.accountId || null,
+        sharedOwnerId: accRef.ownerId || null,
         categoryId: data.categoryId || null,
         icon: data.icon || "coffee",
         color: data.color || "#f97316",
@@ -13728,7 +14098,7 @@ They stay in your ledger as ordinary transactions and your balances do not chang
     }
     deleteRegularItem(id) {
       const s = this.#store.getState();
-      const logged = (s.transactions || []).filter((t) => t.regularItemId === id).length;
+      const logged = this.#regularLogs.all().filter((t) => t.regularItemId === id).length;
       const msg = logged ? `Delete this regular item?
 
 The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay in your ledger.` : "Delete this regular item?";
@@ -13746,7 +14116,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     // ──────────────────────────────────────────────────────────────────────────
     // Regular item log methods (DayLogsModal handlers)
     // ──────────────────────────────────────────────────────────────────────────
-    submitRegularLog(e, date) {
+    async submitRegularLog(e, date) {
       e.preventDefault();
       const fd = new FormData(e.target);
       const itemId = fd.get("itemId");
@@ -13758,6 +14128,46 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       const currency = item.currency || s.user.homeCurrency;
       const unitMinor = this.#fx.toMinor(unitPrice, currency);
       const totalMinor = Math.round(unitMinor * qty);
+      const ref = AccountRef.fromRecord(item);
+      if (ref.isShared) {
+        const share = this.#sync.shareByOwner?.(ref.ownerId);
+        if (!share?._ownerId) return this.#toast.show("Shared account not found");
+        const ownerHome = share.homeCurrency || s.user.homeCurrency;
+        const tx2 = {
+          id: IdGenerator.generate("tx"),
+          regularItemId: itemId,
+          accountId: ref.accountId,
+          date,
+          hijriDate: this.#hijri.toHijri(date),
+          amount: totalMinor,
+          unitAmount: unitMinor,
+          qty,
+          currency,
+          exchangeRate: (RATES[currency] || 1) / (RATES[ownerHome] || 1),
+          refAmount: this.#fx.convert(totalMinor, currency, ownerHome),
+          description: item.name,
+          payee: item.name,
+          note: "",
+          type: "expense",
+          categoryId: item.categoryId || null,
+          splits: null,
+          paymentType: "cash",
+          recurring: null,
+          recordState: "cleared",
+          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+          addedBy: this.#sync.currentUser?.email || null
+        };
+        try {
+          await this.#sync.submitContribution(share._ownerId, tx2);
+          this.#toast.show("Entry submitted to the shared account");
+          this.#sync.scheduleSharesRefresh?.(3e3);
+          this.#sync.scheduleSharesRefresh?.(8e3);
+        } catch (err) {
+          return this.#toast.show("Failed to submit: " + (err.message || err));
+        }
+        this.openModal("dayLogs", { date });
+        return;
+      }
       const accountId = item.accountId || s.accounts[0]?.id;
       const exRate3 = (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1);
       const tx = {
@@ -13788,13 +14198,25 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#sync.schedulePush?.();
       this.openModal("dayLogs", { date });
     }
-    deleteRegularLog(logId, date) {
+    async deleteRegularLog(logId, date) {
       const s = this.#store.getState();
       const tx = s.transactions.find((t) => t.id === logId);
       if (tx) {
         s.transactions = s.transactions.filter((t) => t.id !== logId);
         this.#store.flush();
         this.#sync.schedulePush?.();
+        this.openModal("dayLogs", { date });
+        return;
+      }
+      const shared = this.#regularLogs.find(logId);
+      if (shared?._shared) {
+        try {
+          await this.#sync.deleteContribution(shared._ownerId, logId);
+          this.#toast.show("Delete request submitted to owner");
+          this.#sync.scheduleSharesRefresh?.(3e3);
+        } catch (err) {
+          this.#toast.show("Failed: " + (err.message || err));
+        }
       }
       this.openModal("dayLogs", { date });
     }

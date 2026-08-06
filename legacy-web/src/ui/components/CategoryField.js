@@ -31,11 +31,16 @@ export class CategoryField {
    * @param {string}   [cfg.onPick]                 optional window.__app method
    *                                                called as (fieldId, ids) after a pick
    * @param {object[]} cfg.categories               full category list (for labelling)
+   * @param {string}   [cfg.ownerId='']             owner id of the shared account this
+   *   field belongs to. When set, openCategoryPicker browses THAT user's categories
+   *   instead of the local book, so the chosen id is valid in the book the row
+   *   actually lands in (otherwise the owner sees "Uncategorised").
    * @returns {string} HTML
    */
   static render({
     id, name, value = null, mode = 'single', type = null,
     title = '', placeholder = '— Uncategorised —', onPick = '', categories = [],
+    ownerId = '',
   }) {
     const ids   = CategoryField.#toIds(value);
     const esc   = CategoryField.#esc;
@@ -50,6 +55,7 @@ export class CategoryField {
            data-type="${esc(type || '')}"
            data-title="${esc(title)}"
            data-placeholder="${esc(placeholder)}"
+           data-ownerid="${esc(ownerId || '')}"
            data-onpick="${esc(onPick)}">
         ${CategoryField.#hiddenInputs(name, ids)}
         <button type="button" class="select flex items-center gap-2 text-left"
@@ -59,6 +65,24 @@ export class CategoryField {
           <i data-lucide="chevron-right" class="text-zinc-400" style="width:15px;height:15px;flex-shrink:0"></i>
         </button>
       </div>`;
+  }
+
+  /**
+   * Repoint a live field at a different book and clear its selection.
+   *
+   * Called when the account dropdown moves between "my accounts" and a shared
+   * one: the previously-picked category id belongs to the old book and would be
+   * meaningless in the new one, so it is dropped rather than carried over.
+   *
+   * @param {HTMLElement} el
+   * @param {string|null} ownerId    '' / null → back to the local book
+   * @param {object[]}    categories the new book's categories (for labelling)
+   */
+  static setOwner(el, ownerId, categories = []) {
+    if (!el) return;
+    if (el.dataset.ownerid === (ownerId || '')) return; // same book — keep the pick
+    el.dataset.ownerid = ownerId || '';
+    CategoryField.setValue(el, [], categories);
   }
 
   /**

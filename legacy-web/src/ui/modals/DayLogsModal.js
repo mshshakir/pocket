@@ -1,22 +1,31 @@
 /**
  * DayLogsModal — Shows and allows entry of regular-item logs for a calendar day.
+ *
+ * An item whose default account was shared by a family member logs into THAT
+ * user's book, so its entries never reach `state.transactions`. Reading through
+ * RegularLogService merges both books, which is what stops such an entry from
+ * vanishing the moment it is saved.
  */
 export class DayLogsModal {
   #store;
   #hijriService;
   #currencyService;
+  #regularLogs;
 
-  constructor({ store, hijriService, currencyService }) {
+  constructor({ store, hijriService, currencyService, regularLogService }) {
     this.#store = store;
     this.#hijriService = hijriService;
     this.#currencyService = currencyService;
+    this.#regularLogs = regularLogService || null;
   }
 
   render({ date } = {}) {
     if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
     const s = this.#store.getState();
     const items = s.regularItems || [];
-    const logs = (s.transactions || []).filter(t => t.regularItemId && t.date === date);
+    const logs = this.#regularLogs
+      ? this.#regularLogs.onDate(date)
+      : (s.transactions || []).filter(t => t.regularItemId && t.date === date);
     const hijriStr = (() => {
       try { return this.#hijriService.format(date); } catch { return ''; }
     })();
@@ -26,10 +35,16 @@ export class DayLogsModal {
       const cur = log.currency || s.user.homeCurrency;
       const qty = log.qty ?? 1;
       const unitAmt = log.unitAmount != null ? log.unitAmount : log.amount;
+      const sharedTag = log._shared
+        ? `<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700
+                       dark:bg-indigo-500/15 dark:text-indigo-300">shared</span>`
+        : '';
       return `
         <div class="flex items-center justify-between p-3 card mb-2">
           <div>
-            <div class="text-sm font-medium">${this.#esc(item?.name || 'Item')}</div>
+            <div class="text-sm font-medium flex items-center gap-1.5">
+              ${this.#esc(item?.name || 'Item')}${sharedTag}
+            </div>
             <div class="text-xs text-zinc-500">Qty ${qty} × ${this.#currencyService.formatMoney(unitAmt, cur)}</div>
           </div>
           <div class="flex items-center gap-2">

@@ -24,13 +24,20 @@
  * Extends OverlaySheet, so it renders above the open modal and the half-filled
  * transaction form underneath keeps every value the user has typed.
  */
-import { OverlaySheet }    from './OverlaySheet.js';
-import { Store }           from '../../core/Store.js';
-import { CategoryService } from '../../domain/services/CategoryService.js';
+import { OverlaySheet }         from './OverlaySheet.js';
+import { Store }                from '../../core/Store.js';
+import { CategoryService }      from '../../domain/services/CategoryService.js';
+import { SharedCategorySource } from '../../domain/services/SharedCategorySource.js';
 
 export class CategoryPickerSheet extends OverlaySheet {
   /** @type {Store} */           #store;
   /** @type {CategoryService} */ #categories;
+
+  // The tree currently being browsed. Normally the local CategoryService; when
+  // contributing to an account someone shared with you it is a read-only
+  // SharedCategorySource over the OWNER's categories, so the id picked here is
+  // meaningful in the book the transaction actually lands in.
+  /** @type {CategoryService|SharedCategorySource} */ #source;
 
   // ── Per-open session state ────────────────────────────────────────────
   #mode      = 'single';              // 'single' | 'multi'
@@ -52,6 +59,7 @@ export class CategoryPickerSheet extends OverlaySheet {
     super({ id: 'catPickerRoot' });
     this.#store      = store           || Store.getInstance();
     this.#categories = categoryService || new CategoryService();
+    this.#source     = this.#categories;
   }
 
   // ── Public API ────────────────────────────────────────────────────────
@@ -65,13 +73,18 @@ export class CategoryPickerSheet extends OverlaySheet {
    * @param {string[]}         [cfg.selected=[]]      pre-selected category IDs
    * @param {string}           [cfg.title]
    * @param {boolean}          [cfg.allowAdd=true]    show the inline add rows
+   * @param {object[]|null}    [cfg.categories=null]  browse THIS list instead of
+   *   the local book — the owner's categories when contributing to a shared
+   *   account. Implies allowAdd:false (you can't create in someone else's book).
    * @param {(ids:string[]) => void} cfg.onSelect     called with the chosen IDs
    */
-  open({ mode = 'single', type = null, selected = [], title, allowAdd = true, onSelect } = {}) {
+  open({ mode = 'single', type = null, selected = [], title, allowAdd = true, categories = null, onSelect } = {}) {
+    // Point the sheet at the right tree BEFORE anything reads from it.
+    this.#source   = categories ? new SharedCategorySource(categories) : this.#categories;
     this.#mode     = mode === 'multi' ? 'multi' : 'single';
     this.#type     = type || null;
     this.#title    = title || (this.#mode === 'multi' ? 'Choose categories' : 'Choose category');
-    this.#allowAdd = allowAdd !== false;
+    this.#allowAdd = allowAdd !== false && !categories;
     this.#onSelect = typeof onSelect === 'function' ? onSelect : null;
     this.#selected = new Set((selected || []).filter(Boolean));
     this.#query    = '';
@@ -84,7 +97,7 @@ export class CategoryPickerSheet extends OverlaySheet {
     this.#parentId = null;
     const first = [...this.#selected][0];
     if (first) {
-      const cat = this.#categories.find(first);
+      const cat = this.#source.find(first);
       if (cat?.parentId && (!this.#type || cat.type === this.#type)) this.#parentId = cat.parentId;
     }
 
@@ -92,8 +105,12 @@ export class CategoryPickerSheet extends OverlaySheet {
     this.focusLater('[data-cat-search]', 30);
   }
 
-  /** @override — drop the callback so a stray close can't fire it later. */
-  onClosed() { this.#onSelect = null; }
+  /**
+   * @override — drop the callback so a stray close can't fire it later, and
+   * fall back to the local book so the next open can't inherit a stale owner's
+   * tree if it forgets to pass one.
+   */
+  onClosed() { this.#onSelect = null; this.#source = this.#categories; }
 
   // ── Interaction handlers (called from inline onclick in the sheet) ─────
 
@@ -163,7 +180,7 @@ export class CategoryPickerSheet extends OverlaySheet {
     const input = this.find('[data-cat-new]');
     const name  = input?.value || '';
     const type  = this.#type || 'expense';
-    const res   = this.#categories.quickCreate(name, { parentId: this.#parentId, type });
+    const res   = this.#source.quickCreate(name, { parentId: this.#parentId, type });
 
     if (!res.ok) {
       const err = this.find('[data-cat-add-error]');
@@ -199,7 +216,7 @@ export class CategoryPickerSheet extends OverlaySheet {
 
   /** @override */
   renderContent() {
-    const parent = this.#parentId ? this.#categories.find(this.#parentId) : null;
+    const parent = this.#parentId ? this.#source.find(this.#parentId) : null;
 
     return `
       <div class="sheet-head">
@@ -262,11 +279,11 @@ export class CategoryPickerSheet extends OverlaySheet {
   // ── Step 1: parents ───────────────────────────────────────────────────
 
   #parentsHtml() {
-    const roots   = this.#categories.visibleRoots(this.#type);
-    const orphans = this.#categories.orphans(this.#type);
+    const roots   = this.#source.visibleRoots(this.#type);
+    const orphans = this.#source.orphans(this.#type);
 
     const rows = roots.map((root) => {
-      const kids = this.#categories.visibleChildren(root.id, this.#type);
+      const kids = this.#source.visibleChildren(root.id, this.#type);
       // A parent that owns subcategories is a group header — drill in.
       // A childless parent is directly selectable.
       const action = kids.length
@@ -313,10 +330,10 @@ export class CategoryPickerSheet extends OverlaySheet {
   // ── Step 2: subcategories ─────────────────────────────────────────────
 
   #childrenHtml() {
-    const parent = this.#categories.find(this.#parentId);
+    const parent = this.#source.find(this.#parentId);
     if (!parent) { this.#parentId = null; return this.#parentsHtml(); }
 
-    const kids = this.#categories.visibleChildren(this.#parentId, this.#type);
+    const kids = this.#source.visibleChildren(this.#parentId, this.#type);
 
     // Multi-select (budgets) keeps the "whole group" option, because a budget
     // on a parent is meant to cover its entire subtree. Single-select does not:
@@ -340,14 +357,14 @@ export class CategoryPickerSheet extends OverlaySheet {
   // ── Search results ────────────────────────────────────────────────────
 
   #searchHtml() {
-    const hits = this.#categories.search(this.#query, this.#type);
+    const hits = this.#source.search(this.#query, this.#type);
     if (!hits.length) {
       return `<div class="sheet-empty">Nothing matches “${this.esc(this.#query.trim())}”.</div>`;
     }
     // A parent with children is not directly assignable in single mode — offer
     // it as a shortcut into its subcategory list instead.
     return hits.map((c) => {
-      const isGroup = !c.parentId && this.#categories.hasChildren(c.id, this.#type);
+      const isGroup = !c.parentId && this.#source.hasChildren(c.id, this.#type);
       if (isGroup && this.#mode === 'single') {
         return `
           <button type="button" class="sheet-row" onclick="window.__app.catPicker.openParent('${this.js(c.id)}')">
@@ -369,7 +386,7 @@ export class CategoryPickerSheet extends OverlaySheet {
    * @param {boolean} showPath  prefix with the parent name (search results)
    */
   #leafRow(c, showPath) {
-    const parent = c.parentId ? this.#categories.find(c.parentId) : null;
+    const parent = c.parentId ? this.#source.find(c.parentId) : null;
     const label  = showPath && parent
       ? `<span class="text-zinc-500">${this.esc(parent.name)} / </span>${this.esc(c.name)}`
       : this.esc(c.name);

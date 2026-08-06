@@ -28,6 +28,8 @@ import { CategoryService }     from './domain/services/CategoryService.js';
 import { TransactionService }  from './domain/services/TransactionService.js';
 import { BudgetService }       from './domain/services/BudgetService.js';
 import { RecurringService }    from './domain/services/RecurringService.js';
+import { AccountRef }          from './domain/services/AccountRef.js';
+import { RegularLogService }   from './domain/services/RegularLogService.js';
 import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
@@ -112,6 +114,7 @@ export class Application {
   /** @type {TransactionService}   */ #transactions;
   /** @type {BudgetService}        */ #budgets;
   /** @type {RecurringService}     */ #recurring;
+  /** @type {RegularLogService}    */ #regularLogs;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
@@ -168,6 +171,7 @@ export class Application {
     this.#transactions= new TransactionService();
     this.#budgets     = new BudgetService();
     this.#recurring   = new RecurringService();
+    this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
     this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -263,9 +267,10 @@ export class Application {
     this.#debtModal      = new DebtModal();
     this.#reconcileModal = new ReconcileModal();
     this.#dayLogsModal   = new DayLogsModal({
-      store:           this.#store,
-      hijriService:    this.#hijri,
-      currencyService: this.#fx,
+      store:              this.#store,
+      hijriService:       this.#hijri,
+      currencyService:    this.#fx,
+      regularLogService:  this.#regularLogs,
     });
     this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
     this.#modal.register('transaction',  this.#txModal);
@@ -431,6 +436,47 @@ export class Application {
   get catPicker() { return this.#catPicker; }
 
   /**
+   * Regular-item logs across both books (local + contributions to shared
+   * accounts). CalendarView and DayLogsModal read through this so an entry
+   * logged against a shared account doesn't disappear from the calendar.
+   * @returns {RegularLogService}
+   */
+  get regularLogs() { return this.#regularLogs; }
+
+  /**
+   * The category list a field should browse.
+   *
+   * A row destined for someone else's book must carry one of THEIR category
+   * ids — a local id is meaningless there and the owner sees the transaction as
+   * "Uncategorised". The owner's whole tree (parents AND subcategories) travels
+   * in the family-share snapshot, so resolve it by stable owner id.
+   *
+   * @param {string|null} ownerId  '' / null → the local book
+   * @returns {object[]}
+   */
+  categoriesForOwner(ownerId) {
+    if (!ownerId) return this.#store.getState().categories;
+    const share = this.#sync.shareByOwner?.(ownerId)
+      || (this.#sync.sharedData || []).find((s) => s._ownerId === ownerId);
+    return share?.categories || [];
+  }
+
+  /**
+   * Owner id of the share that holds `accountId`, or null when the account is
+   * one of the user's own (or unknown).
+   * @param {string} accountId
+   * @returns {string|null}
+   */
+  ownerIdForAccount(accountId) {
+    if (!accountId) return null;
+    if (this.#store.getState().accounts.some((a) => a.id === accountId)) return null;
+    const share = (this.#sync.sharedData || []).find((s) =>
+      (s.accounts || []).some((a) => a.id === accountId),
+    );
+    return share?._ownerId || null;
+  }
+
+  /**
    * Open the two-step category picker for a CategoryField.
    *
    * Everything the picker needs is read from the field's data-* attributes, so
@@ -438,27 +484,36 @@ export class Application {
    * result is written straight back into the field's hidden inputs — no modal
    * refresh, so a half-filled transaction form survives the round trip.
    *
+   * When the field carries data-ownerid it belongs to a shared account, so the
+   * sheet browses that owner's categories (read-only) rather than the local book.
+   *
    * @param {string} fieldId
    */
   openCategoryPicker(fieldId) {
     const field = document.getElementById(fieldId);
     if (!field) return;
 
-    const mode   = field.dataset.mode === 'multi' ? 'multi' : 'single';
-    const type   = field.dataset.type || null;
-    const title  = field.dataset.title || '';
-    const onPick = field.dataset.onpick || '';
+    const mode    = field.dataset.mode === 'multi' ? 'multi' : 'single';
+    const type    = field.dataset.type || null;
+    const title   = field.dataset.title || '';
+    const onPick  = field.dataset.onpick || '';
+    const ownerId = field.dataset.ownerid || '';
+    const catList = this.categoriesForOwner(ownerId);
 
     this.#catPicker.open({
       mode,
       type,
       title,
       selected: CategoryField.getValue(field),
+      // null → local book (the picker keeps its own CategoryService and can add)
+      categories: ownerId ? catList : null,
       onSelect: (ids) => {
         // Re-resolve the element: the sheet may have created a category, which
         // flushes the store and re-renders the background view.
         const live = document.getElementById(fieldId) || field;
-        CategoryField.setValue(live, ids, this.#store.getState().categories);
+        // Label from the SAME book the ids came from, so a shared pick doesn't
+        // fall back to the "Uncategorised" placeholder.
+        CategoryField.setValue(live, ids, ownerId ? catList : this.#store.getState().categories);
         lucide?.createIcons?.();
         if (onPick && typeof this[onPick] === 'function') this[onPick](fieldId, ids);
       },
@@ -1632,6 +1687,30 @@ export class Application {
       || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
     const curEl = document.querySelector('[name=currency]');
     if (curEl && acc?.currency) curEl.value = acc.currency;
+
+    // Moving between books re-homes the category field. The previously-picked
+    // id belongs to the old book, so CategoryField.setOwner clears it rather
+    // than sending an id the destination book has never heard of.
+    const ownerId = this.ownerIdForAccount(accId);
+    const catEl   = document.getElementById('txCategory');
+    if (catEl) {
+      CategoryField.setOwner(catEl, ownerId, this.categoriesForOwner(ownerId));
+      const note = catEl.parentElement?.querySelector('[data-shared-cat-note]');
+      if (note) note.style.display = ownerId ? '' : 'none';
+      lucide?.createIcons?.();
+    }
+
+    // A contribution is one row in someone else's book — submitTx has no split
+    // path there, so splits must not survive the switch.
+    const splitBtn = document.querySelector('[data-split-toggle]');
+    if (splitBtn) splitBtn.style.display = ownerId ? 'none' : '';
+    if (ownerId && this.#txModal?.splitsEnabled) {
+      this.#txModal.toggleSplits?.();
+      this.#toast.show('Splits removed — a shared-account entry is a single row');
+      this.#refreshModal();
+      return;
+    }
+
     // Account changed → currency snapped to it (they now match), so refresh the
     // single-account FX panel (it will hide itself).
     this.updateTxFxPanel(false);
@@ -2558,6 +2637,33 @@ export class Application {
   // Regular items CRUD
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * The regular-item form's account moved between books: re-home the default
+   * category field (the old id means nothing in the new book) and snap the
+   * currency to the chosen account.
+   * @param {string} value  raw <select> value — see AccountRef
+   */
+  onRegularAccountChange(value) {
+    const ref     = AccountRef.parse(value);
+    const ownerId = ref.ownerId;
+    const state   = this.#store.getState();
+
+    const catEl = document.getElementById('regularItemCategory');
+    if (catEl) {
+      CategoryField.setOwner(catEl, ownerId, this.categoriesForOwner(ownerId));
+      lucide?.createIcons?.();
+    }
+
+    const note = document.querySelector('[data-regular-shared-note]');
+    if (note) note.style.display = ref.isShared ? '' : 'none';
+
+    const acc = ownerId
+      ? ((this.#sync.shareByOwner?.(ownerId)?.accounts) || []).find((a) => a.id === ref.accountId)
+      : state.accounts.find((a) => a.id === ref.accountId);
+    const curEl = document.querySelector('#regularItemForm [name=currency]');
+    if (curEl && acc?.currency) curEl.value = acc.currency;
+  }
+
   submitRegularItem(event, id) {
     event.preventDefault();
     const fd    = new FormData(event.target);
@@ -2566,11 +2672,15 @@ export class Application {
     if (!Array.isArray(state.regularItems)) state.regularItems = [];
 
     const currency = data.currency || state.user.homeCurrency;
+    // The select carries "shared:<ownerId>:<accountId>" for a family member's
+    // account, so the id and the book it belongs to are stored separately.
+    const accRef   = AccountRef.parse(data.accountId);
     const payload = {
       name:          (data.name || '').trim(),
       defaultAmount: this.#fx.toMinor(parseFloat(data.defaultAmount) || 0, currency),
       currency,
-      accountId:     data.accountId  || null,
+      accountId:     accRef.accountId || null,
+      sharedOwnerId: accRef.ownerId   || null,
       categoryId:    data.categoryId || null,
       icon:          data.icon  || 'coffee',
       color:         data.color || '#f97316',
@@ -2595,7 +2705,9 @@ export class Application {
 
   deleteRegularItem(id) {
     const s      = this.#store.getState();
-    const logged = (s.transactions || []).filter((t) => t.regularItemId === id).length;
+    // Count across both books — an item on a shared account has all of its
+    // entries in the owner's, so a local-only count read as "0 logged".
+    const logged = this.#regularLogs.all().filter((t) => t.regularItemId === id).length;
 
     // Deleting the template used to destroy every transaction ever logged from
     // it, while the prompt only said "Delete this regular item?" — real spending
@@ -2622,7 +2734,7 @@ export class Application {
   // Regular item log methods (DayLogsModal handlers)
   // ──────────────────────────────────────────────────────────────────────────
 
-  submitRegularLog(e, date) {
+  async submitRegularLog(e, date) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const itemId = fd.get('itemId');
@@ -2634,6 +2746,52 @@ export class Application {
     const currency = item.currency || s.user.homeCurrency;
     const unitMinor = this.#fx.toMinor(unitPrice, currency);
     const totalMinor = Math.round(unitMinor * qty);
+    const ref = AccountRef.fromRecord(item);
+
+    // ── Shared default account → contribute to the OWNER's book ───────────
+    // The account doesn't exist locally, so a local row would be orphaned. The
+    // rate/refAmount must also be relative to the OWNER's home currency, since
+    // that is the book the row is reported in (same rule as submitTx).
+    if (ref.isShared) {
+      const share = this.#sync.shareByOwner?.(ref.ownerId);
+      if (!share?._ownerId) return this.#toast.show('Shared account not found');
+      const ownerHome = share.homeCurrency || s.user.homeCurrency;
+      const tx = {
+        id:            IdGenerator.generate('tx'),
+        regularItemId: itemId,
+        accountId:     ref.accountId,
+        date,
+        hijriDate:     this.#hijri.toHijri(date),
+        amount:        totalMinor,
+        unitAmount:    unitMinor,
+        qty,
+        currency,
+        exchangeRate:  (RATES[currency] || 1) / (RATES[ownerHome] || 1),
+        refAmount:     this.#fx.convert(totalMinor, currency, ownerHome),
+        description:   item.name,
+        payee:         item.name,
+        note:          '',
+        type:          'expense',
+        categoryId:    item.categoryId || null,
+        splits:        null,
+        paymentType:   'cash',
+        recurring:     null,
+        recordState:   'cleared',
+        createdAt:     new Date().toISOString(),
+        addedBy:       this.#sync.currentUser?.email || null,
+      };
+      try {
+        await this.#sync.submitContribution(share._ownerId, tx);
+        this.#toast.show('Entry submitted to the shared account');
+        this.#sync.scheduleSharesRefresh?.(3000);
+        this.#sync.scheduleSharesRefresh?.(8000);
+      } catch (err) {
+        return this.#toast.show('Failed to submit: ' + (err.message || err));
+      }
+      this.openModal('dayLogs', { date });
+      return;
+    }
+
     const accountId = item.accountId || s.accounts[0]?.id;
     const exRate3  = (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1);
     const tx = {
@@ -2665,13 +2823,28 @@ export class Application {
     this.openModal('dayLogs', { date });
   }
 
-  deleteRegularLog(logId, date) {
+  async deleteRegularLog(logId, date) {
     const s = this.#store.getState();
     const tx = s.transactions.find(t => t.id === logId);
     if (tx) {
       s.transactions = s.transactions.filter(t => t.id !== logId);
       this.#store.flush();  // flush() so other views reflect the reverted balance
       this.#sync.schedulePush?.();
+      this.openModal('dayLogs', { date });
+      return;
+    }
+
+    // Not local → it was contributed to a shared account, so the removal has to
+    // travel back through the same channel rather than being dropped silently.
+    const shared = this.#regularLogs.find(logId);
+    if (shared?._shared) {
+      try {
+        await this.#sync.deleteContribution(shared._ownerId, logId);
+        this.#toast.show('Delete request submitted to owner');
+        this.#sync.scheduleSharesRefresh?.(3000);
+      } catch (err) {
+        this.#toast.show('Failed: ' + (err.message || err));
+      }
     }
     this.openModal('dayLogs', { date });
   }
