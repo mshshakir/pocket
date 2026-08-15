@@ -206,12 +206,14 @@ export class TransactionModal {
             type:               'expense',
             amount:             0,
             currency:           state.user.defaultCurrency || state.user.homeCurrency,
-            accountId:          state.accounts[0]?.id,
+            // Settings preference, falling back to the first account when it is
+            // unset or points at an account that was deleted/archived.
+            accountId:          window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id,
             categoryId:         '',
             payee:              '',
             note:               '',
             date:               DateService.todayIso(),
-            paymentType:        'card',
+            paymentType:        window.__app?.paymentTypeService?.defaultType?.() || 'card',
             transferToAccountId:'',
           });
 
@@ -309,7 +311,9 @@ export class TransactionModal {
 
     // Pre-compute payment type options to avoid triple-nested template literals
     // which cause a parse error in some V8/Node versions (Bug #Bug).
-    const current      = data.paymentType || 'card';
+    const current      = data.paymentType
+      || window.__app?.paymentTypeService?.defaultType?.()
+      || 'card';
     const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
     // A transaction may carry a method that is no longer offered — imported from
     // CSV, or deleted since. Keep it in the list so simply opening the record

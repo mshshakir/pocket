@@ -132,14 +132,16 @@ export class ReceiptScanService {
     }
 
     // ── Step 6: sanitise and build prefill ───────────────────────────
-    return this.#buildPrefill(receipt, cats, defaultCcy, today, state.accounts[0]?.id);
+    return this.#buildPrefill(receipt, cats, defaultCcy, today, this.#defaultAccountId(state));
   }
 
   /**
    * Parse a spoken transaction from an audio clip with Gemini.
    * Same endpoint/model/key as receipt scan, but the audio is a person
-   * describing ONE transaction ("spent 40 dirhams on groceries at Carrefour
-   * yesterday"). Returns the same prefill shape as scan(), minus splits.
+   * describing ONE spending event ("spent 40 dirhams on groceries at Carrefour
+   * yesterday"). Returns the same prefill shape as scan(), INCLUDING `splits`
+   * when the speaker described several amounts falling under different
+   * categories ("sixty on groceries and forty on petrol").
    *
    * @param {File|Blob|{base64:string, mimeType:string}} audio
    * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
@@ -177,7 +179,9 @@ export class ReceiptScanService {
             { inline_data: { mime_type: mediaType, data: base64 } },
             { text: prompt },
           ] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 512 },
+          // 512 was enough for a single flat object; an itemised response with
+          // several categories needs the same headroom the receipt path has.
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
         }),
       });
     } catch (_) {
@@ -196,55 +200,154 @@ export class ReceiptScanService {
     let obj;
     try { obj = JSON.parse(m[0]); } catch (_) { throw new Error('Could not parse the AI response. Please try again.'); }
 
-    return this.#buildVoicePrefill(obj, cats, defaultCcy, today, state.accounts[0]?.id);
+    return this.#buildVoicePrefill(obj, cats, defaultCcy, today, this.#defaultAccountId(state));
   }
 
   /** Prompt for a single spoken transaction. */
   #buildVoicePrompt(defaultCurrency, catLines, today) {
-    return `You are a personal-finance voice parser. The attached audio is a person describing ONE transaction out loud. Transcribe it, then return ONLY a single valid JSON object — no markdown, no code fences, no explanation.
+    return `You are a personal-finance voice parser. The attached audio is a person describing ONE spending event out loud — which may cover SEVERAL things bought at once. Transcribe it, then return ONLY a single valid JSON object — no markdown, no code fences, no explanation.
 
 REQUIRED JSON SHAPE:
 {
   "type": "expense" | "income" | "transfer",
-  "amount": 0.00,
+  "total": 0.00,
   "currency": "${defaultCurrency}",
   "date": "YYYY-MM-DD",
   "payee": "merchant, person, or source (may be empty)",
   "note": "short verbatim-ish description of what was said",
-  "categoryId": "EXACT_ID_FROM_LIST or empty string"
+  "items": [
+    { "description": "what this part of the spend was", "amount": 0.00, "categoryId": "EXACT_ID_FROM_LIST or empty string" }
+  ]
 }
 
-CATEGORY ID LIST — set categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
+CATEGORY ID LIST — set each item's categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
 ${catLines}
 
 RULES:
 1. "type": default to "expense"; "income" for money received (salary, refund, got paid); "transfer" only if clearly moving between own accounts.
-2. "amount": the number spoken, major units, no currency symbol.
-3. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
-4. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
-5. "categoryId": pick the best match for expenses/income; "" if unclear or a transfer.
-6. If you cannot make out an amount, set "amount" to 0.`;
+2. "items": ONE entry per separately-priced thing the speaker mentioned.
+   - If only one thing is described, return exactly ONE item carrying the whole amount.
+   - Group things that share the same best-fit categoryId into a SINGLE item, summing their amounts.
+   - Return several items ONLY when the speaker gave separate amounts, e.g. "sixty on groceries and forty on petrol" → two items.
+   - Never invent an amount to split a total the speaker gave as one figure.
+3. "total": the sum of every item amount. If the speaker also said an overall total, it must agree with that sum.
+4. Amounts are in major units, no currency symbols.
+5. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
+6. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
+7. "categoryId": pick the best match for expenses/income; "" if unclear, and always "" for a transfer.
+8. If you cannot make out any amount, set "total" to 0 and "items" to [].`;
   }
 
-  /** Validate a parsed voice transaction into a prefill. */
+  /**
+   * Validate a parsed voice transaction into a prefill.
+   *
+   * A single spoken sentence can cover several categories ("sixty on groceries
+   * and forty on petrol"). When it does, this returns `splits` in the same
+   * shape the receipt scanner produces — TransactionModal already seeds and
+   * auto-enables its split editor from that key, so no UI change is needed.
+   *
+   * Splitting only happens when the items genuinely differ by category: two
+   * items that both resolve to Groceries are one line, not a split of one
+   * category against itself.
+   */
   #buildVoicePrefill(obj, cats, defaultCcy, today, defaultAccId) {
     const validCatIds = new Set(cats.map((c) => c.id));
     const type     = ['expense', 'income', 'transfer'].includes(obj.type) ? obj.type : 'expense';
     const currency = (obj.currency || defaultCcy).toUpperCase();
     const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
     const date     = (obj.date && ISO_DATE.test(obj.date)) ? obj.date : today;
-    const categoryId = (type !== 'transfer' && validCatIds.has(obj.categoryId)) ? obj.categoryId : '';
-    return {
+
+    // Accept the older single-transaction shape too, so a model that ignores
+    // the items[] instruction still produces a usable entry.
+    const rawItems = Array.isArray(obj.items) && obj.items.length
+      ? obj.items
+      : [{ amount: obj.total ?? obj.amount, categoryId: obj.categoryId }];
+
+    // Drop hallucinated ids before they can reach the ledger, and never carry a
+    // category on a transfer.
+    const items = rawItems
+      .map((it) => ({
+        amount:     Number(it?.amount) || 0,
+        categoryId: (type !== 'transfer' && validCatIds.has(it?.categoryId)) ? it.categoryId : '',
+      }))
+      .filter((it) => it.amount > 0);
+
+    const statedTotal = Number(obj.total ?? obj.amount) || 0;
+    const prefill = {
       type,
-      amount:      Number(obj.amount) || 0,   // major units — modal converts
       currency,
       accountId:   defaultAccId || '',
       payee:       (obj.payee || '').toString().slice(0, 120),
       note:        (obj.note  || 'Voice entry').toString().slice(0, 300),
       date,
-      paymentType: 'card',
-      categoryId,
+      paymentType: this.#defaultPaymentType(),
+      categoryId:  '',
+      amount:      statedTotal,   // major units — the modal converts
     };
+
+    if (!items.length) return prefill;
+
+    const distinctCats = new Set(items.map((it) => it.categoryId));
+    const shouldSplit  = type !== 'transfer' && items.length > 1 && distinctCats.size > 1;
+
+    if (!shouldSplit) {
+      const sum = items.reduce((s, it) => s + it.amount, 0);
+      prefill.amount     = statedTotal > 0 ? statedTotal : sum;
+      prefill.categoryId = items.find((it) => it.categoryId)?.categoryId || '';
+      return prefill;
+    }
+
+    const { splits, total } = this.#reconcileSplits(items, currency, statedTotal, defaultAccId);
+    prefill.splits     = splits;
+    prefill.amount     = total;
+    prefill.categoryId = '';
+    return prefill;
+  }
+
+  /**
+   * Turn parsed line items into split legs whose minor-unit amounts sum to the
+   * parent EXACTLY.
+   *
+   * submitTx refuses to save when they disagree by even one minor unit
+   * ("Splits must add up to …"), and both a spoken total and per-item rounding
+   * can drift. Rather than hand the user a pre-filled form that cannot be
+   * saved, the residue is absorbed by the largest leg — proportionally the
+   * least distorting place to put a sub-unit difference.
+   *
+   * @param {{amount: number, categoryId: string}[]} items  amounts in MAJOR units
+   * @param {string} currency
+   * @param {number} statedTotal  the total the model reported, MAJOR units
+   * @param {string} defaultAccId
+   * @returns {{splits: object[], total: number}}  total in MAJOR units
+   */
+  #reconcileSplits(items, currency, statedTotal, defaultAccId) {
+    const legs = items.map((it) => ({
+      categoryId: it.categoryId || null,
+      accountId:  defaultAccId || '',
+      // Splits are stored in MINOR units, unlike prefill.amount.
+      amount:     this.#fx.toMinor(it.amount, currency),
+    })).filter((l) => l.amount > 0);
+
+    const legSum      = legs.reduce((s, l) => s + l.amount, 0);
+    const statedMinor = this.#fx.toMinor(statedTotal, currency);
+    // Trust a stated total only when it is within a rounding hair of the parts.
+    // A mis-heard total ("forty" for "fourteen") must not silently inflate the
+    // transaction — the itemised amounts are the more reliable signal.
+    const tolerance   = Math.max(2, Math.round(legSum * 0.02));
+    let   target      = (statedMinor > 0 && Math.abs(statedMinor - legSum) <= tolerance)
+      ? statedMinor : legSum;
+
+    const residue = target - legSum;
+    if (residue !== 0) {
+      let big = 0;
+      legs.forEach((l, i) => { if (l.amount > legs[big].amount) big = i; });
+      // Never let the adjustment zero out or invert a leg; fall back to the
+      // itemised sum instead, which is always internally consistent.
+      if (legs[big].amount + residue > 0) legs[big].amount += residue;
+      else target = legSum;
+    }
+
+    return { splits: legs, total: this.#fx.fromMinor(target, currency) };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
@@ -273,6 +376,23 @@ RULES:
    * @param {object[]} cats  Full category array from state.
    * @returns {string}
    */
+  /**
+   * The account a scan/voice prefill should target.
+   *
+   * Honours the Settings preference, but resolves through AccountService so a
+   * preference naming a deleted or archived account still yields a usable id.
+   * @param {object} state
+   * @returns {string|undefined}
+   */
+  #defaultAccountId(state) {
+    return window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id;
+  }
+
+  /** @returns {string} the Settings default payment method */
+  #defaultPaymentType() {
+    return window.__app?.paymentTypeService?.defaultType?.() || 'card';
+  }
+
   #buildCategoryLines(cats) {
     return cats.map((c) => {
       if (c.parentId) {
@@ -366,7 +486,7 @@ RULES:
       payee:       receipt.merchant || '',
       note:        itemNote || receipt.note || 'Scanned from receipt',
       date,
-      paymentType: 'card',
+      paymentType: this.#defaultPaymentType(),
     };
 
     if (items.length > 1) {

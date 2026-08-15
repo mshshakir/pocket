@@ -231,9 +231,16 @@ export class Store {
       this.#saveWarned = false;
     }
 
-    // Fire AFTER the write so a push can never be scheduled for state that
-    // failed to persist locally.
-    if (local && ok && !this.#suppressLocalChange) {
+    // Fire AFTER the write, but fire it even when the write FAILED.
+    //
+    // The mutation has already been applied to `this.#state`, so what a push
+    // uploads is current and correct either way — the failure is in the local
+    // copy, not the in-memory one. Skipping the push on failure meant that when
+    // localStorage was unavailable (quota exceeded, or a private/InPrivate
+    // window) the app had no durable copy AT ALL: not on disk, because the
+    // write failed, and not in the cloud, because we declined to try. The cloud
+    // is precisely the fallback that situation needs.
+    if (local && !this.#suppressLocalChange) {
       try { this.#onLocalChange?.(); } catch (e) {
         console.error('[Store] local-change hook failed:', e);
       }

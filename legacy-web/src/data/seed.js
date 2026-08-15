@@ -114,6 +114,10 @@ export class SeedFactory {
         showHijri:       true,
         calendarMode:    'both',
         dateFormat:      'auto',
+        // Pre-selected on every new entry form. '' = fall back to the first
+        // account (AccountService.defaultId resolves it).
+        defaultAccountId:   '',
+        defaultPaymentType: 'card',
         geminiApiKey:    '',
         supabaseUrl:     '',
         supabaseKey:     '',

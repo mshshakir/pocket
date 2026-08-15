@@ -49,6 +49,27 @@ export class SettingsModal {
           </select>
         </div>
 
+        <!-- Default account -->
+        <div class="card-muted p-3 mb-3">
+          <label class="text-xs text-zinc-500">Default account</label>
+          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, debt, or regular item.</div>
+          <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
+            <option value="" ${!u.defaultAccountId ? 'selected' : ''}>First account in the list</option>
+            ${state.accounts.filter((a) => !a.archived).map((a) =>
+              `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? 'selected' : ''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
+          </select>
+        </div>
+
+        <!-- Default payment method -->
+        <div class="card-muted p-3 mb-3">
+          <label class="text-xs text-zinc-500">Default payment method</label>
+          <div class="text-xs text-zinc-500 mb-1">Pre-selected on the payment chips when adding a transaction.</div>
+          <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
+            ${this.#paymentTypes().map((p) =>
+              `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? 'selected' : ''}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join('')}
+          </select>
+        </div>
+
         <!-- Date format -->
         <div class="card-muted p-3 mb-3">
           <label class="text-xs text-zinc-500">Date format</label>
@@ -419,5 +440,23 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       /[&<>"']/g,
       (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]),
     );
+  }
+
+  /** Same escaping, named for the attribute-value context it is used in. */
+  #escAttr(s) { return this.#esc(s); }
+
+  /**
+   * The payment methods offered in the default-method picker.
+   *
+   * Reads through the live service so a renamed or deleted method never lingers
+   * here; falls back to the built-ins only if the service is somehow absent.
+   * @returns {string[]}
+   */
+  #paymentTypes() {
+    const offered = window.__app?.paymentTypeService?.allTypes?.() || ['card', 'cash', 'transfer', 'cheque', 'online'];
+    const current = this.#store.getState().user?.defaultPaymentType;
+    // Keep an out-of-list current value visible rather than silently showing
+    // the user a different method as "selected".
+    return (current && !offered.includes(current)) ? [current, ...offered] : offered;
   }
 }

@@ -234,12 +234,20 @@ export class TransactionRowRenderer {
       ? `<button onclick="${clickFn}" class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900 transition">${rowBody}</button>`
       : `<div class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5">${rowBody}</div>`;
 
+    // Swipe reveals this button; it is not a passive backdrop. Nothing is
+    // destroyed until it is deliberately tapped, which is what stops a curved
+    // scroll gesture from ever reaching a delete.
     return canDeleteRow
       ? `<div class="tx-swipe-wrapper"
              ontouchstart="window.__app.onTxSwipeStart(event,'${jsId}',${shareIndex !== null ? idxNum : -1},${isOwnContrib})"
              ontouchmove="window.__app.onTxSwipeMove(event)"
-             ontouchend="window.__app.onTxSwipeEnd()">
-           <div class="tx-delete-bg"><i data-lucide="trash-2" style="color:white;width:18px;height:18px"></i></div>
+             ontouchend="window.__app.onTxSwipeEnd()"
+             ontouchcancel="window.__app.onTxSwipeCancel()">
+           <button type="button" class="tx-delete-bg" data-swipe-delete
+                   aria-label="Delete transaction"
+                   onclick="window.__app.commitSwipeDelete()">
+             <i data-lucide="trash-2" style="color:white;width:18px;height:18px"></i>
+           </button>
            ${inner}
          </div>`
       : inner;

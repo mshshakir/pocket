@@ -356,7 +356,7 @@ var _PocketApp = (() => {
       } else if (ok) {
         this.#saveWarned = false;
       }
-      if (local && ok && !this.#suppressLocalChange) {
+      if (local && !this.#suppressLocalChange) {
         try {
           this.#onLocalChange?.();
         } catch (e) {
@@ -1036,6 +1036,10 @@ var _PocketApp = (() => {
           showHijri: true,
           calendarMode: "both",
           dateFormat: "auto",
+          // Pre-selected on every new entry form. '' = fall back to the first
+          // account (AccountService.defaultId resolves it).
+          defaultAccountId: "",
+          defaultPaymentType: "card",
           geminiApiKey: "",
           supabaseUrl: "",
           supabaseKey: "",
@@ -1451,6 +1455,8 @@ var _PocketApp = (() => {
         supabaseUrl: "",
         supabaseKey: "",
         hijriOffset: 0,
+        defaultAccountId: "",
+        defaultPaymentType: "card",
         customPaymentTypes: [],
         hiddenPaymentTypes: [],
         collapsedAccountGroups: [],
@@ -1458,6 +1464,8 @@ var _PocketApp = (() => {
       }, state.user || {});
       if (typeof state.user.hijriOffset !== "number") state.user.hijriOffset = 0;
       if (!state.user.defaultCurrency) state.user.defaultCurrency = state.user.homeCurrency;
+      if (typeof state.user.defaultAccountId !== "string") state.user.defaultAccountId = "";
+      if (typeof state.user.defaultPaymentType !== "string") state.user.defaultPaymentType = "card";
       if (!Array.isArray(state.accounts)) state.accounts = [];
       if (!Array.isArray(state.transactions)) state.transactions = [];
       if (!Array.isArray(state.categories)) state.categories = [];
@@ -1721,6 +1729,22 @@ var _PocketApp = (() => {
       return this.#store.getState().accounts.filter((a) => !a.archived);
     }
     /**
+     * The account a new entry form should start on.
+     *
+     * `user.defaultAccountId` is only a preference, never a guarantee: the
+     * account it names can be deleted or archived long after it was chosen. Both
+     * cases fall through to the first usable account rather than leaving a form
+     * bound to an id that no longer resolves — a `<select>` with no matching
+     * option silently reports whichever entry happens to sit first anyway.
+     * @returns {string|undefined}
+     */
+    defaultId() {
+      const state = this.#store.getState();
+      const preferred = state.user?.defaultAccountId;
+      if (preferred && state.accounts.some((a) => a.id === preferred && !a.archived)) return preferred;
+      return (this.active()[0] || state.accounts[0])?.id;
+    }
+    /**
      * Total balance of all non-archived accounts in the user's home currency.
      * Reads the derived `balance` cache (kept fresh by recompute()), so this is
      * O(accounts), not O(accounts × transactions).
@@ -1822,6 +1846,7 @@ var _PocketApp = (() => {
         (t) => Array.isArray(t.splits) ? { ...t, splits: t.splits.filter((s) => (s.accountId || t.accountId) !== id) } : t
       );
       state.accounts = state.accounts.filter((a) => a.id !== id);
+      if (state.user?.defaultAccountId === id) state.user.defaultAccountId = "";
       this.#store.flush();
     }
   };
@@ -2844,13 +2869,15 @@ var _PocketApp = (() => {
       } catch (_) {
         throw new Error("Could not parse the AI response as JSON. Please try again.");
       }
-      return this.#buildPrefill(receipt, cats, defaultCcy, today, state.accounts[0]?.id);
+      return this.#buildPrefill(receipt, cats, defaultCcy, today, this.#defaultAccountId(state));
     }
     /**
      * Parse a spoken transaction from an audio clip with Gemini.
      * Same endpoint/model/key as receipt scan, but the audio is a person
-     * describing ONE transaction ("spent 40 dirhams on groceries at Carrefour
-     * yesterday"). Returns the same prefill shape as scan(), minus splits.
+     * describing ONE spending event ("spent 40 dirhams on groceries at Carrefour
+     * yesterday"). Returns the same prefill shape as scan(), INCLUDING `splits`
+     * when the speaker described several amounts falling under different
+     * categories ("sixty on groceries and forty on petrol").
      *
      * @param {File|Blob|{base64:string, mimeType:string}} audio
      * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
@@ -2887,7 +2914,9 @@ var _PocketApp = (() => {
               { inline_data: { mime_type: mediaType, data: base64 } },
               { text: prompt2 }
             ] }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+            // 512 was enough for a single flat object; an itemised response with
+            // several categories needs the same headroom the receipt path has.
+            generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
           })
         });
       } catch (_) {
@@ -2911,54 +2940,130 @@ var _PocketApp = (() => {
       } catch (_) {
         throw new Error("Could not parse the AI response. Please try again.");
       }
-      return this.#buildVoicePrefill(obj, cats, defaultCcy, today, state.accounts[0]?.id);
+      return this.#buildVoicePrefill(obj, cats, defaultCcy, today, this.#defaultAccountId(state));
     }
     /** Prompt for a single spoken transaction. */
     #buildVoicePrompt(defaultCurrency, catLines, today) {
-      return `You are a personal-finance voice parser. The attached audio is a person describing ONE transaction out loud. Transcribe it, then return ONLY a single valid JSON object \u2014 no markdown, no code fences, no explanation.
+      return `You are a personal-finance voice parser. The attached audio is a person describing ONE spending event out loud \u2014 which may cover SEVERAL things bought at once. Transcribe it, then return ONLY a single valid JSON object \u2014 no markdown, no code fences, no explanation.
 
 REQUIRED JSON SHAPE:
 {
   "type": "expense" | "income" | "transfer",
-  "amount": 0.00,
+  "total": 0.00,
   "currency": "${defaultCurrency}",
   "date": "YYYY-MM-DD",
   "payee": "merchant, person, or source (may be empty)",
   "note": "short verbatim-ish description of what was said",
-  "categoryId": "EXACT_ID_FROM_LIST or empty string"
+  "items": [
+    { "description": "what this part of the spend was", "amount": 0.00, "categoryId": "EXACT_ID_FROM_LIST or empty string" }
+  ]
 }
 
-CATEGORY ID LIST \u2014 set categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
+CATEGORY ID LIST \u2014 set each item's categoryId to one of these exact ID strings (copy character-for-character) or "" if none fits:
 ${catLines}
 
 RULES:
 1. "type": default to "expense"; "income" for money received (salary, refund, got paid); "transfer" only if clearly moving between own accounts.
-2. "amount": the number spoken, major units, no currency symbol.
-3. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
-4. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
-5. "categoryId": pick the best match for expenses/income; "" if unclear or a transfer.
-6. If you cannot make out an amount, set "amount" to 0.`;
+2. "items": ONE entry per separately-priced thing the speaker mentioned.
+   - If only one thing is described, return exactly ONE item carrying the whole amount.
+   - Group things that share the same best-fit categoryId into a SINGLE item, summing their amounts.
+   - Return several items ONLY when the speaker gave separate amounts, e.g. "sixty on groceries and forty on petrol" \u2192 two items.
+   - Never invent an amount to split a total the speaker gave as one figure.
+3. "total": the sum of every item amount. If the speaker also said an overall total, it must agree with that sum.
+4. Amounts are in major units, no currency symbols.
+5. "currency": detect from words like "dollars", "dirhams" (AED), "rupees" (INR), "pounds" (GBP), "euros" (EUR); else "${defaultCurrency}". Always an ISO 4217 code.
+6. "date": resolve relative dates ("today", "yesterday", "last Friday") against TODAY=${today}. Use ${today} if unspecified. Format YYYY-MM-DD.
+7. "categoryId": pick the best match for expenses/income; "" if unclear, and always "" for a transfer.
+8. If you cannot make out any amount, set "total" to 0 and "items" to [].`;
     }
-    /** Validate a parsed voice transaction into a prefill. */
+    /**
+     * Validate a parsed voice transaction into a prefill.
+     *
+     * A single spoken sentence can cover several categories ("sixty on groceries
+     * and forty on petrol"). When it does, this returns `splits` in the same
+     * shape the receipt scanner produces — TransactionModal already seeds and
+     * auto-enables its split editor from that key, so no UI change is needed.
+     *
+     * Splitting only happens when the items genuinely differ by category: two
+     * items that both resolve to Groceries are one line, not a split of one
+     * category against itself.
+     */
     #buildVoicePrefill(obj, cats, defaultCcy, today, defaultAccId) {
       const validCatIds = new Set(cats.map((c) => c.id));
       const type = ["expense", "income", "transfer"].includes(obj.type) ? obj.type : "expense";
       const currency = (obj.currency || defaultCcy).toUpperCase();
       const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
       const date = obj.date && ISO_DATE.test(obj.date) ? obj.date : today;
-      const categoryId = type !== "transfer" && validCatIds.has(obj.categoryId) ? obj.categoryId : "";
-      return {
+      const rawItems = Array.isArray(obj.items) && obj.items.length ? obj.items : [{ amount: obj.total ?? obj.amount, categoryId: obj.categoryId }];
+      const items = rawItems.map((it) => ({
+        amount: Number(it?.amount) || 0,
+        categoryId: type !== "transfer" && validCatIds.has(it?.categoryId) ? it.categoryId : ""
+      })).filter((it) => it.amount > 0);
+      const statedTotal = Number(obj.total ?? obj.amount) || 0;
+      const prefill = {
         type,
-        amount: Number(obj.amount) || 0,
-        // major units — modal converts
         currency,
         accountId: defaultAccId || "",
         payee: (obj.payee || "").toString().slice(0, 120),
         note: (obj.note || "Voice entry").toString().slice(0, 300),
         date,
-        paymentType: "card",
-        categoryId
+        paymentType: this.#defaultPaymentType(),
+        categoryId: "",
+        amount: statedTotal
+        // major units — the modal converts
       };
+      if (!items.length) return prefill;
+      const distinctCats = new Set(items.map((it) => it.categoryId));
+      const shouldSplit = type !== "transfer" && items.length > 1 && distinctCats.size > 1;
+      if (!shouldSplit) {
+        const sum = items.reduce((s, it) => s + it.amount, 0);
+        prefill.amount = statedTotal > 0 ? statedTotal : sum;
+        prefill.categoryId = items.find((it) => it.categoryId)?.categoryId || "";
+        return prefill;
+      }
+      const { splits, total } = this.#reconcileSplits(items, currency, statedTotal, defaultAccId);
+      prefill.splits = splits;
+      prefill.amount = total;
+      prefill.categoryId = "";
+      return prefill;
+    }
+    /**
+     * Turn parsed line items into split legs whose minor-unit amounts sum to the
+     * parent EXACTLY.
+     *
+     * submitTx refuses to save when they disagree by even one minor unit
+     * ("Splits must add up to …"), and both a spoken total and per-item rounding
+     * can drift. Rather than hand the user a pre-filled form that cannot be
+     * saved, the residue is absorbed by the largest leg — proportionally the
+     * least distorting place to put a sub-unit difference.
+     *
+     * @param {{amount: number, categoryId: string}[]} items  amounts in MAJOR units
+     * @param {string} currency
+     * @param {number} statedTotal  the total the model reported, MAJOR units
+     * @param {string} defaultAccId
+     * @returns {{splits: object[], total: number}}  total in MAJOR units
+     */
+    #reconcileSplits(items, currency, statedTotal, defaultAccId) {
+      const legs = items.map((it) => ({
+        categoryId: it.categoryId || null,
+        accountId: defaultAccId || "",
+        // Splits are stored in MINOR units, unlike prefill.amount.
+        amount: this.#fx.toMinor(it.amount, currency)
+      })).filter((l) => l.amount > 0);
+      const legSum = legs.reduce((s, l) => s + l.amount, 0);
+      const statedMinor = this.#fx.toMinor(statedTotal, currency);
+      const tolerance = Math.max(2, Math.round(legSum * 0.02));
+      let target = statedMinor > 0 && Math.abs(statedMinor - legSum) <= tolerance ? statedMinor : legSum;
+      const residue = target - legSum;
+      if (residue !== 0) {
+        let big = 0;
+        legs.forEach((l, i) => {
+          if (l.amount > legs[big].amount) big = i;
+        });
+        if (legs[big].amount + residue > 0) legs[big].amount += residue;
+        else target = legSum;
+      }
+      return { splits: legs, total: this.#fx.fromMinor(target, currency) };
     }
     // ── Private helpers ───────────────────────────────────────────────────
     /**
@@ -2984,6 +3089,21 @@ RULES:
      * @param {object[]} cats  Full category array from state.
      * @returns {string}
      */
+    /**
+     * The account a scan/voice prefill should target.
+     *
+     * Honours the Settings preference, but resolves through AccountService so a
+     * preference naming a deleted or archived account still yields a usable id.
+     * @param {object} state
+     * @returns {string|undefined}
+     */
+    #defaultAccountId(state) {
+      return window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id;
+    }
+    /** @returns {string} the Settings default payment method */
+    #defaultPaymentType() {
+      return window.__app?.paymentTypeService?.defaultType?.() || "card";
+    }
     #buildCategoryLines(cats) {
       return cats.map((c) => {
         if (c.parentId) {
@@ -3061,7 +3181,7 @@ RULES:
         payee: receipt.merchant || "",
         note: itemNote || receipt.note || "Scanned from receipt",
         date,
-        paymentType: "card"
+        paymentType: this.#defaultPaymentType()
       };
       if (items.length > 1) {
         prefill.splits = items.map((item) => ({
@@ -3078,7 +3198,76 @@ RULES:
     }
   };
 
+  // src/core/SyncJournal.js
+  var SyncJournal = class _SyncJournal {
+    static #KEY = "pocket.v1.pending";
+    /**
+     * Record that local state has edits which have not been committed to the
+     * cloud. Cheap and idempotent — called on every local save, so it must stay
+     * a single small synchronous write.
+     *
+     * `baseVersion` is the cloud row version those edits were made ON TOP OF, and
+     * it is what makes recovery safe in both directions. On the next boot:
+     *   row.version === baseVersion  → nobody else wrote; local is strictly ahead
+     *                                  and may be committed over the row.
+     *   row.version !== baseVersion  → another device wrote while this one was
+     *                                  away; overwriting would destroy THEIR work,
+     *                                  so the local copy is stashed instead.
+     * Without it, "recover my unsynced edits" degenerates into "last device to
+     * open the app wins", which just moves the data loss somewhere else.
+     *
+     * @param {string} userId        the signed-in user the pending edits belong to
+     * @param {number|null} baseVersion  cloud version the edits were made against
+     */
+    mark(userId, baseVersion = null) {
+      if (!userId) return;
+      const existing = this.read();
+      const since = existing?.userId === userId ? existing.since : (/* @__PURE__ */ new Date()).toISOString();
+      this.#write({ userId, since, baseVersion });
+    }
+    /** Record that local state matches the cloud — nothing outstanding. */
+    clear() {
+      try {
+        localStorage.removeItem(_SyncJournal.#KEY);
+      } catch (_) {
+      }
+    }
+    /**
+     * @returns {{userId: string, since: string, baseVersion: number|null}|null}
+     */
+    read() {
+      try {
+        const raw = localStorage.getItem(_SyncJournal.#KEY);
+        if (!raw) return null;
+        const rec = JSON.parse(raw);
+        return rec && rec.userId ? rec : null;
+      } catch (_) {
+        return null;
+      }
+    }
+    /**
+     * True when THIS user left uncommitted work behind.
+     * @param {string} userId
+     * @returns {boolean}
+     */
+    isPendingFor(userId) {
+      if (!userId) return false;
+      return this.read()?.userId === userId;
+    }
+    /** @param {{userId: string, since: string}} rec */
+    #write(rec) {
+      try {
+        localStorage.setItem(_SyncJournal.#KEY, JSON.stringify(rec));
+      } catch (_) {
+      }
+    }
+  };
+
   // src/domain/services/SyncService.js
+  var PUSH_DEBOUNCE_MS = 1e3;
+  var MAX_PUSH_WAIT_MS = 3e3;
+  var RETRY_BASE_MS = 4e3;
+  var MAX_PUSH_RETRIES = 4;
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -3119,14 +3308,24 @@ RULES:
     #sharedData = [];
     /** True when local edits have not yet been committed to the cloud. */
     #dirty = false;
+    /** Timestamp of the edit that started the current uncommitted run. */
+    #dirtySince = 0;
+    /** Consecutive failed pushes, for the backoff in #retryPushLater(). */
+    #pushRetries = 0;
     /** Re-entrancy guard for the flush-before-pull path. */
     #flushing = false;
+    /** True once the page-hide flush listeners are attached. */
+    #lifecycleBound = false;
+    /** Durable "there are uncommitted local edits" marker — survives a reload. */
+    /** @type {SyncJournal} */
+    #journal;
     /** True only for a user-initiated sign-out (not a failed token refresh). */
     #explicitSignOut = false;
     constructor() {
       this.#store = Store.getInstance();
       this.#bus = EventBus.getInstance();
       this.#fx = new CurrencyService();
+      this.#journal = new SyncJournal();
     }
     // ── Init ─────────────────────────────────────────────────────────────
     /** @returns {boolean} true if Supabase is configured */
@@ -3146,11 +3345,37 @@ RULES:
         this.#sb = supabase.createClient(url, key, {
           auth: { persistSession: true, autoRefreshToken: true }
         });
+        this.#bindLifecycleFlush();
         return true;
       } catch (e) {
         console.error("[SyncService] Supabase init error:", e);
         return false;
       }
+    }
+    /**
+     * Flush any pending push the moment the page stops being visible.
+     *
+     * `visibilitychange → hidden` is the last event a mobile browser reliably
+     * delivers: switching apps, locking the screen or changing tab all fire it,
+     * and the OS may then discard the tab without ever running `unload` or
+     * `beforeunload`. `pagehide` covers the navigation/refresh case. Between them
+     * the 1s debounce can no longer swallow a save just because the user put the
+     * phone down.
+     */
+    #bindLifecycleFlush() {
+      if (this.#lifecycleBound) return;
+      if (typeof document === "undefined" || typeof window === "undefined") return;
+      this.#lifecycleBound = true;
+      const flush = () => {
+        if (!this.#dirty || !this.#sb || !this.#user) return;
+        clearTimeout(this.#saveTimer);
+        this.#saveTimer = null;
+        this.push();
+      };
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flush();
+      });
+      window.addEventListener("pagehide", flush);
     }
     // ── Auth ──────────────────────────────────────────────────────────────
     async signInWithGoogle() {
@@ -3245,7 +3470,7 @@ RULES:
       this.#pendingRemovals.clear();
       this.#pendingAdditions.clear();
       if (wipeLocal) {
-        this.#dirty = false;
+        this.#markClean();
         this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
       } else {
         const state = this.#store.getState();
@@ -3291,8 +3516,36 @@ RULES:
     schedulePush() {
       if (!this.#sb || !this.#user) return;
       this.#dirty = true;
+      this.#journal.mark(this.#user.id, this.#cloudVersion);
+      const now = Date.now();
+      if (!this.#dirtySince) this.#dirtySince = now;
+      const wait = Math.max(0, Math.min(
+        PUSH_DEBOUNCE_MS,
+        this.#dirtySince + MAX_PUSH_WAIT_MS - now
+      ));
       clearTimeout(this.#saveTimer);
-      this.#saveTimer = setTimeout(() => this.push(), 1e3);
+      this.#saveTimer = setTimeout(() => this.push(), wait);
+    }
+    /** Mark local state as fully committed. */
+    #markClean() {
+      this.#dirty = false;
+      this.#dirtySince = 0;
+      this.#pushRetries = 0;
+      this.#journal.clear();
+    }
+    /**
+     * Re-arm a failed push with exponential backoff.
+     *
+     * Previously a failed push was simply dropped: one flaky request and the edit
+     * stayed local forever with no further attempt, which is how a transient
+     * mobile-network blip turned into permanent divergence.
+     */
+    #retryPushLater() {
+      if (this.#pushRetries >= MAX_PUSH_RETRIES) return;
+      const delay = RETRY_BASE_MS * 2 ** this.#pushRetries;
+      this.#pushRetries++;
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = setTimeout(() => this.push(), delay);
     }
     /** Public push — serialised through the sync queue. */
     push() {
@@ -3342,6 +3595,7 @@ RULES:
       if (this.#cloudVersion === null) {
         console.warn("[SyncService] Skipping push: cloud state not loaded yet");
         this.#emitStatus("error");
+        this.#retryPushLater();
         return;
       }
       this.#emitStatus("syncing");
@@ -3351,10 +3605,10 @@ RULES:
           this.#stashConflict();
           this.#toast("Another device saved first \u2014 your local copy was kept as a backup");
           await this.#doPull();
-          this.#dirty = false;
+          this.#markClean();
           return;
         }
-        this.#dirty = false;
+        this.#markClean();
         this.#emitStatus("synced");
         await this.#pushFamilyShares();
         await this.#pullMemberContributions();
@@ -3362,6 +3616,7 @@ RULES:
         console.error("[SyncService] Cloud save error:", e);
         this.#emitStatus("error");
         this.#toast("Sync error: " + (e.message || e));
+        this.#retryPushLater();
       }
     }
     // ── Pull ──────────────────────────────────────────────────────────────
@@ -3426,10 +3681,69 @@ RULES:
       } catch (_) {
       }
     }
+    /**
+     * Cold-start recovery for edits that never reached the cloud.
+     *
+     * The failure this exists to prevent: three transactions entered back-to-back
+     * collapse into ONE debounced push; the tab is refreshed before it fires; the
+     * next boot reads the cloud row — which predates all three — and
+     * replaceState()s it over both memory AND localStorage. All three vanish, the
+     * first one included, with no recovery copy anywhere.
+     *
+     * The durable SyncJournal marker makes that situation detectable. Once it is,
+     * the row's own version is a valid CAS baseline, so the correct move is to
+     * commit local state OVER the stale row. If another device legitimately wrote
+     * while this one was away the compare-and-swap fails, and we fall back to
+     * adopting the cloud — but only after stashing a restorable backup.
+     *
+     * @param {{data: object, version: number}} row  the cloud row just read
+     * @returns {Promise<boolean>} true when the caller must NOT adopt the snapshot
+     */
+    async #recoverPendingLocalEdits(row) {
+      if (this.#flushing) return false;
+      if (this.#cloudVersion !== null) return false;
+      const pending = this.#journal.read();
+      if (!pending || pending.userId !== this.#user.id) return false;
+      const rowVersion = row.version ?? 0;
+      if (pending.baseVersion == null || pending.baseVersion !== rowVersion) {
+        this.#stashConflict();
+        this.#markClean();
+        this.#toast("Another device saved while you were away \u2014 your unsynced copy was kept as a backup");
+        return false;
+      }
+      this.#flushing = true;
+      this.#cloudVersion = rowVersion;
+      this.#dirty = true;
+      try {
+        const ok = await this.#commitState(this.#store.getState());
+        if (ok) {
+          this.#markClean();
+          this.#emitStatus("synced");
+          this.#toast("Recovered changes that had not finished syncing");
+          await this.#pushFamilyShares();
+          await this.#pullMemberContributions();
+          await this.#pullFamilyShares();
+          this.#bus.emit("state:changed", this.#store.getState());
+          return true;
+        }
+        this.#stashConflict();
+        this.#markClean();
+        this.#toast("Another device saved first \u2014 your unsynced copy was kept as a backup");
+        return false;
+      } catch (e) {
+        console.error("[SyncService] Pending-edit recovery failed:", e);
+        this.#emitStatus("error");
+        this.#toast("Could not sync your unsaved changes yet \u2014 they are safe on this device");
+        this.#retryPushLater();
+        return true;
+      } finally {
+        this.#flushing = false;
+      }
+    }
     /** @returns {boolean} isFirstSignIn */
     async #doPull() {
       if (!this.#sb || !this.#user) return false;
-      if (this.#dirty && !this.#flushing) {
+      if (this.#dirty && !this.#flushing && this.#cloudVersion !== null) {
         this.#flushing = true;
         clearTimeout(this.#saveTimer);
         try {
@@ -3445,9 +3759,10 @@ RULES:
         const { data, error } = await this.#sb.from("user_data").select("data, version, updated_at").eq("id", this.#user.id).single();
         if (error && error.code !== "PGRST116") throw error;
         if (data?.data) {
+          if (await this.#recoverPendingLocalEdits(data)) return false;
           this.#store.replaceState(data.data, (s) => this.#migrateDefaults(s));
           this.#cloudVersion = data.version ?? 0;
-          this.#dirty = false;
+          this.#markClean();
           new RecurringService().process();
           await this.#pullFamilyShares();
           await this.#pullMemberContributions();
@@ -3917,6 +4232,19 @@ RULES:
       const custom = user.customPaymentTypes || [];
       return [...BASE_TYPES.filter((t) => !hidden.has(t)), ...custom];
     }
+    /**
+     * The payment method a new entry form should start on.
+     *
+     * The stored preference can name a method the user has since deleted or
+     * hidden, so it is validated against the live list before being trusted.
+     * @returns {string}
+     */
+    defaultType() {
+      const offered = this.allTypes();
+      const preferred = this.#store.getState().user?.defaultPaymentType;
+      if (preferred && offered.includes(preferred)) return preferred;
+      return offered[0] || "card";
+    }
     /** @returns {string[]} the unmodified built-in list */
     static get baseTypes() {
       return [...BASE_TYPES];
@@ -3997,6 +4325,7 @@ RULES:
       for (const item of state.regularItems || []) {
         if (item.paymentType === oldName) item.paymentType = next;
       }
+      if (state.user.defaultPaymentType === oldName) state.user.defaultPaymentType = next;
       this.#store.flush();
       return { ok: true, name: next, migrated };
     }
@@ -4027,6 +4356,9 @@ RULES:
         const i = (state.user.customPaymentTypes || []).indexOf(name);
         if (i < 0) return { ok: false, reason: "That method no longer exists" };
         state.user.customPaymentTypes.splice(i, 1);
+      }
+      if (state.user.defaultPaymentType === name) {
+        state.user.defaultPaymentType = this.allTypes()[0] || "card";
       }
       this.#store.flush();
       return { ok: true };
@@ -6518,6 +6850,192 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/SwipeRowController.js
+  var AXIS_LOCK_PX = 8;
+  var OPEN_PX = 45;
+  var REVEAL_PX = 80;
+  var SwipeRowController = class {
+    /** @type {(row: {id: string, shareIndex: number, isOwnContrib: boolean}) => void} */
+    #onDelete;
+    /**
+     * The currently revealed row, if any.
+     * @type {{id: string, shareIndex: number, isOwnContrib: boolean, wrapper: HTMLElement}|null}
+     */
+    #open = null;
+    /**
+     * State for the touch currently in flight.
+     * @type {{id: string, shareIndex: number, isOwnContrib: boolean, wrapper: HTMLElement,
+     *         startX: number, startY: number, dx: number, axis: ('x'|'y'|null)}|null}
+     */
+    #touch = null;
+    #documentBound = false;
+    /** @param {{onDelete: Function}} deps */
+    constructor({ onDelete }) {
+      this.#onDelete = onDelete;
+    }
+    /** @returns {string|null} id of the revealed row, for renderers that care */
+    get openId() {
+      return this.#open?.id ?? null;
+    }
+    // ── Gesture ──────────────────────────────────────────────────────────
+    /**
+     * @param {TouchEvent} event
+     * @param {string}  id            transaction id
+     * @param {number}  shareIndex    index into _sharedData, -1 for an owned row
+     * @param {boolean} isOwnContrib  true when this is the member's own contribution
+     */
+    start(event, id, shareIndex = -1, isOwnContrib = false) {
+      this.#bindDocument();
+      if (event.touches.length !== 1) {
+        this.#touch = null;
+        return;
+      }
+      if (this.#open && this.#open.id !== id) this.closeOpen();
+      const t = event.touches[0];
+      this.#touch = {
+        id,
+        shareIndex,
+        isOwnContrib: !!isOwnContrib,
+        wrapper: event.currentTarget,
+        startX: t.clientX,
+        startY: t.clientY,
+        dx: 0,
+        axis: null
+      };
+    }
+    /** @param {TouchEvent} event */
+    move(event) {
+      const g = this.#touch;
+      if (!g || event.touches.length !== 1) return;
+      const t = event.touches[0];
+      const dx = t.clientX - g.startX;
+      const dy = t.clientY - g.startY;
+      if (!g.axis) {
+        if (Math.abs(dx) > AXIS_LOCK_PX || Math.abs(dy) > AXIS_LOCK_PX) {
+          g.axis = Math.abs(dx) >= Math.abs(dy) ? "x" : "y";
+        }
+        return;
+      }
+      if (g.axis !== "x") return;
+      g.dx = dx;
+      if (dx < 0) {
+        event.preventDefault();
+        this.#slide(g.wrapper, Math.max(dx, -REVEAL_PX), { animate: false });
+      } else if (this.#open?.id === g.id) {
+        this.#slide(g.wrapper, Math.min(0, -REVEAL_PX + dx), { animate: false });
+      }
+    }
+    /** Finger lifted. */
+    end() {
+      const g = this.#touch;
+      this.#touch = null;
+      if (!g) return;
+      if (g.axis !== "x") {
+        this.#restore(g);
+        return;
+      }
+      if (this.#open?.id === g.id) {
+        if (g.dx > REVEAL_PX / 2) this.closeOpen();
+        else this.#slide(g.wrapper, -REVEAL_PX, { animate: true });
+        return;
+      }
+      if (g.dx <= -OPEN_PX) {
+        this.closeOpen();
+        this.#open = { id: g.id, shareIndex: g.shareIndex, isOwnContrib: g.isOwnContrib, wrapper: g.wrapper };
+        this.#slide(g.wrapper, -REVEAL_PX, { animate: true });
+        g.wrapper?.classList?.add("is-open");
+      } else {
+        this.#slide(g.wrapper, 0, { animate: true });
+      }
+    }
+    /**
+     * The browser took the touch away (system back-gesture from the screen edge,
+     * notification shade, a second finger). Without this the old code left
+     * `#swipeTxId` and the wrapper reference dangling at a DOM node a later
+     * re-render had already replaced.
+     */
+    cancel() {
+      const g = this.#touch;
+      this.#touch = null;
+      if (g) this.#restore(g);
+    }
+    // ── Reveal state ─────────────────────────────────────────────────────
+    /** Slide the revealed row shut, if there is one. */
+    closeOpen() {
+      const open = this.#open;
+      this.#open = null;
+      if (!open) return;
+      open.wrapper?.classList?.remove("is-open");
+      this.#slide(open.wrapper, 0, { animate: true });
+    }
+    /**
+     * Forget any revealed row without animating. Called after a re-render, when
+     * the wrapper element this controller is holding no longer exists.
+     */
+    reset() {
+      this.#open = null;
+      this.#touch = null;
+    }
+    /**
+     * Delete the revealed row. Reachable only from the button the swipe exposes,
+     * so the tap IS the confirmation — no dialog.
+     */
+    commitDelete() {
+      const open = this.#open;
+      if (!open) return;
+      this.#open = null;
+      const content = open.wrapper?.querySelector(".tx-row-content");
+      if (content) {
+        content.style.transition = "transform .15s ease, opacity .18s ease";
+        content.style.transform = `translateX(-${REVEAL_PX}px)`;
+        content.style.opacity = "0";
+      }
+      this.#onDelete({ id: open.id, shareIndex: open.shareIndex, isOwnContrib: open.isOwnContrib });
+    }
+    // ── Internals ────────────────────────────────────────────────────────
+    /** @param {{wrapper: HTMLElement, id: string}} g */
+    #restore(g) {
+      if (this.#open?.id === g.id) this.#slide(g.wrapper, -REVEAL_PX, { animate: true });
+      else this.#slide(g.wrapper, 0, { animate: true });
+    }
+    /**
+     * @param {HTMLElement|null} wrapper
+     * @param {number} px           translateX offset, 0 for closed
+     * @param {{animate: boolean}} opts
+     */
+    #slide(wrapper, px, { animate }) {
+      const content = wrapper?.querySelector?.(".tx-row-content");
+      if (!content) return;
+      content.style.transition = animate ? "" : "none";
+      content.style.transform = px ? `translateX(${px}px)` : "";
+    }
+    /**
+     * A revealed row must not swallow the rest of the UI. One capture-phase pair
+     * of document listeners closes it on the next interaction anywhere else, and
+     * cancels a tap that lands on the row body while it is open — otherwise
+     * reaching for Delete and missing would open the edit modal instead.
+     */
+    #bindDocument() {
+      if (this.#documentBound) return;
+      if (typeof document === "undefined") return;
+      this.#documentBound = true;
+      document.addEventListener("touchstart", (e) => {
+        if (!this.#open) return;
+        if (this.#open.wrapper?.contains?.(e.target)) return;
+        this.closeOpen();
+      }, { capture: true, passive: true });
+      document.addEventListener("click", (e) => {
+        if (!this.#open) return;
+        if (e.target?.closest?.("[data-swipe-delete]")) return;
+        if (this.#open.wrapper?.contains?.(e.target)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        this.closeOpen();
+      }, { capture: true });
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -7030,8 +7548,13 @@ This replaces your current grouping.`
       return canDeleteRow ? `<div class="tx-swipe-wrapper"
              ontouchstart="window.__app.onTxSwipeStart(event,'${jsId}',${shareIndex !== null ? idxNum : -1},${isOwnContrib})"
              ontouchmove="window.__app.onTxSwipeMove(event)"
-             ontouchend="window.__app.onTxSwipeEnd()">
-           <div class="tx-delete-bg"><i data-lucide="trash-2" style="color:white;width:18px;height:18px"></i></div>
+             ontouchend="window.__app.onTxSwipeEnd()"
+             ontouchcancel="window.__app.onTxSwipeCancel()">
+           <button type="button" class="tx-delete-bg" data-swipe-delete
+                   aria-label="Delete transaction"
+                   onclick="window.__app.commitSwipeDelete()">
+             <i data-lucide="trash-2" style="color:white;width:18px;height:18px"></i>
+           </button>
            ${inner}
          </div>` : inner;
     }
@@ -7906,7 +8429,7 @@ This replaces your current grouping.`
         accountId: a.id,
         currency: a.currency,
         date: DateService.todayIso(),
-        paymentType: "card"
+        paymentType: window.__app?.paymentTypeService?.defaultType?.() || "card"
       }).replace(/'/g, "&#39;");
       const newTxBtn = "";
       const permLabel = this.#accessLabel(perm);
@@ -9476,12 +9999,14 @@ This replaces your current grouping.`
         type: "expense",
         amount: 0,
         currency: state.user.defaultCurrency || state.user.homeCurrency,
-        accountId: state.accounts[0]?.id,
+        // Settings preference, falling back to the first account when it is
+        // unset or points at an account that was deleted/archived.
+        accountId: window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id,
         categoryId: "",
         payee: "",
         note: "",
         date: DateService.todayIso(),
-        paymentType: "card",
+        paymentType: window.__app?.paymentTypeService?.defaultType?.() || "card",
         transferToAccountId: ""
       };
       if (editing?.type === "transfer" && editing.transferPairId) {
@@ -9520,7 +10045,7 @@ This replaces your current grouping.`
       const miqaat = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
       const hijriLabel = this.#hijri.format(data.date, { long: true });
       const hijriPreview = `${hijriLabel}${miqaat ? ` \xB7 <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ""}`;
-      const current = data.paymentType || "card";
+      const current = data.paymentType || window.__app?.paymentTypeService?.defaultType?.() || "card";
       const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
       const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
       const payChipCls = (on) => "px-3 py-1.5 rounded-full border text-sm " + (on ? "bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800");
@@ -10259,6 +10784,25 @@ This replaces your current grouping.`
           </select>
         </div>
 
+        <!-- Default account -->
+        <div class="card-muted p-3 mb-3">
+          <label class="text-xs text-zinc-500">Default account</label>
+          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, debt, or regular item.</div>
+          <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
+            <option value="" ${!u.defaultAccountId ? "selected" : ""}>First account in the list</option>
+            ${state.accounts.filter((a) => !a.archived).map((a) => `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
+          </select>
+        </div>
+
+        <!-- Default payment method -->
+        <div class="card-muted p-3 mb-3">
+          <label class="text-xs text-zinc-500">Default payment method</label>
+          <div class="text-xs text-zinc-500 mb-1">Pre-selected on the payment chips when adding a transaction.</div>
+          <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
+            ${this.#paymentTypes().map((p) => `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? "selected" : ""}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join("")}
+          </select>
+        </div>
+
         <!-- Date format -->
         <div class="card-muted p-3 mb-3">
           <label class="text-xs text-zinc-500">Date format</label>
@@ -10618,6 +11162,22 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]
       );
     }
+    /** Same escaping, named for the attribute-value context it is used in. */
+    #escAttr(s) {
+      return this.#esc(s);
+    }
+    /**
+     * The payment methods offered in the default-method picker.
+     *
+     * Reads through the live service so a renamed or deleted method never lingers
+     * here; falls back to the built-ins only if the service is somehow absent.
+     * @returns {string[]}
+     */
+    #paymentTypes() {
+      const offered = window.__app?.paymentTypeService?.allTypes?.() || ["card", "cash", "transfer", "cheque", "online"];
+      const current = this.#store.getState().user?.defaultPaymentType;
+      return current && !offered.includes(current) ? [current, ...offered] : offered;
+    }
   };
 
   // src/ui/modals/CsvModal.js
@@ -10711,7 +11271,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         counterparty: "",
         principal: 0,
         currency: state.user.defaultCurrency || state.user.homeCurrency,
-        accountId: state.accounts[0]?.id,
+        accountId: window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id,
         dateTaken: DateService.todayIso(),
         dueDate: "",
         note: "",
@@ -11346,7 +11906,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         name: "",
         defaultAmount: 0,
         currency: home,
-        accountId: state.accounts[0]?.id || "",
+        accountId: window.__app?.accountService?.defaultId?.() || state.accounts[0]?.id || "",
         sharedOwnerId: null,
         categoryId: "",
         icon: "coffee",
@@ -11802,23 +12362,14 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     // ── Per-session UI state ──────────────────────────────────────────────────
     #reportRange = "30";
     #importPlan = null;
-    #swipeTxId = null;
-    #swipeStartX = 0;
-    #swipeStartY = 0;
-    #swipeLastX = 0;
-    // updated on every move; used by swipeEnd (no event arg needed)
-    #swipeDeltaX = 0;
-    #swipeAxis = null;
-    // 'x' | 'y' | null
-    #swipeTriggered = false;
-    #swipeShareIndex = -1;
-    #swipeIsOwnContrib = false;
-    #swipeWrapper = null;
-    // the .tx-swipe-wrapper element, stored on start
+    /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
+    #swipe = null;
     #filterRenderTimer = null;
     // debounce for the transaction search box
     #voice = null;
     // { recorder, overlay, done } while a voice entry is in progress
+    /** @type {ReceiptScanService|null} lazily built — see get receiptScanner() */
+    #receipts = null;
     // ── Private constructor (use getInstance()) ────────────────────────────────
     constructor() {
       if (_Application.#instance) throw new Error("Use Application.getInstance()");
@@ -11858,6 +12409,13 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         store: this.#store,
         familyShareService: this.#familyShares,
         syncService: this.#sync
+      });
+      this.#swipe = new SwipeRowController({
+        onDelete: ({ id, shareIndex, isOwnContrib }) => {
+          if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
+          else if (shareIndex >= 0) this.deleteSharedTx(shareIndex, id, { confirm: false });
+          else this.deleteTx(id, { confirm: false });
+        }
       });
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -12186,6 +12744,26 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#render();
       this.#toast.show("Default currency: " + v);
     }
+    /**
+     * Preferred account for new entry forms. '' means "no preference — use the
+     * first account", which is what the app did unconditionally before.
+     * @param {string} v  account id, or '' to clear the preference
+     */
+    setDefaultAccount(v) {
+      const state = this.#store.getState();
+      state.user.defaultAccountId = v || "";
+      this.#store.persist();
+      this.#refreshModal();
+      const acc = state.accounts.find((a) => a.id === v);
+      this.#toast.show(acc ? `Default account: ${acc.name}` : "Default account: first in list");
+    }
+    /** @param {string} v  payment method name */
+    setDefaultPaymentType(v) {
+      this.#store.getState().user.defaultPaymentType = v || "card";
+      this.#store.persist();
+      this.#refreshModal();
+      this.#toast.show("Default payment: " + (v || "card"));
+    }
     setDateFormat(v) {
       this.#store.getState().user.dateFormat = v;
       this.#store.persist();
@@ -12206,6 +12784,19 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
     get paymentTypeService() {
       return this.#paymentTypeService;
+    }
+    /** Exposed so modals can resolve the Settings default-account preference. */
+    get accountService() {
+      return this.#accounts;
+    }
+    /**
+     * One scanner instance for both the receipt and voice paths, rather than a
+     * fresh object per invocation. Also gives the smoke suites a seam to drive
+     * parseVoice() directly instead of faking a microphone.
+     */
+    get receiptScanner() {
+      if (!this.#receipts) this.#receipts = new ReceiptScanService();
+      return this.#receipts;
     }
     /**
      * The manage sheet — inline handlers inside it dispatch through
@@ -12664,8 +13255,15 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         }
       ];
     }
-    deleteTx(id) {
-      if (!confirm("Delete this transaction?")) return;
+    /**
+     * @param {string} id
+     * @param {{confirm?: boolean}} [opts]
+     *   `confirm:false` is used by the swipe reveal, where the deliberate tap on
+     *   the exposed Delete button already IS the confirmation. Every other caller
+     *   keeps the dialog.
+     */
+    deleteTx(id, { confirm: ask = true } = {}) {
+      if (ask && !confirm("Delete this transaction?")) return;
       if (!this.#transactions.find(id)) return;
       this.#transactions.delete(id);
       this.closeModal();
@@ -12678,8 +13276,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
      * Sends a delete-marker contribution row to the owner and applies an
      * optimistic removal to the local shared view immediately.
      */
-    async deleteSharedContrib(shareIndex, txId) {
-      if (!confirm("Delete this transaction?")) return;
+    async deleteSharedContrib(shareIndex, txId, { confirm: ask = true } = {}) {
+      if (ask && !confirm("Delete this transaction?")) return;
       const state = this.#store.getState();
       const share = (state._sharedData || [])[shareIndex];
       if (!share?._ownerId) return this.#toast.show("Shared account not found");
@@ -12708,8 +13306,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     // Full-access members delete another member's tx by sending the owner a
     // delete-marker contribution (SyncService.deleteContribution), which also
     // applies an optimistic local revert.
-    async deleteSharedTx(shareIndex, txId) {
-      if (!confirm("Delete this transaction?")) return;
+    async deleteSharedTx(shareIndex, txId, { confirm: ask = true } = {}) {
+      if (ask && !confirm("Delete this transaction?")) return;
       const share = this.#sync.sharedData?.[shareIndex];
       if (!share?._ownerId) return this.#toast.show("Shared account not found");
       try {
@@ -13133,8 +13731,12 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       const fromAccId = document.querySelector("[name=accountId]")?.value;
       const fromAcc = state.accounts.find((a) => a.id === fromAccId);
       const toAcc = state.accounts.find((a) => a.id === toAccId);
-      if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) return;
       const rateInp = document.getElementById("fxRate");
+      if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) {
+        if (rateInp) rateInp.value = "";
+        this.updateTransferFxPanel(false);
+        return;
+      }
       if (rateInp) {
         rateInp.value = ((RATES[toAcc.currency] || 1) / (RATES[fromAcc.currency] || 1)).toFixed(6);
       }
@@ -13274,7 +13876,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       if (scanText) scanText.textContent = "Scanning\u2026";
       this.#toast.show("Scanning receipt with Gemini AI\u2026");
       try {
-        const scanner = new ReceiptScanService();
+        const scanner = this.receiptScanner;
         const prefill = await scanner.scan(file);
         this.closeModal();
         this.openModal("transaction", { prefill });
@@ -13341,7 +13943,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
           return;
         }
         try {
-          const prefill = await new ReceiptScanService().parseVoice(blob);
+          const prefill = await this.receiptScanner.parseVoice(blob);
           finish();
           this.closeModal();
           this.openModal("transaction", { prefill });
@@ -14289,7 +14891,11 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#render();
     }
     // ──────────────────────────────────────────────────────────────────────────
-    // Swipe-to-delete (touch)
+    // Swipe row actions (touch)
+    //
+    // Thin delegates for the inline ontouch* attributes in TransactionRowRenderer.
+    // All gesture state and the reveal lifecycle live in SwipeRowController; the
+    // app only supplies what "delete this row" means.
     // ──────────────────────────────────────────────────────────────────────────
     /**
      * @param {TouchEvent} event
@@ -14298,69 +14904,24 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
      * @param {boolean}    isOwnContrib  True if this is a member's own contribution
      */
     onTxSwipeStart(event, id, shareIndex = -1, isOwnContrib = false) {
-      if (event.touches.length !== 1) return;
-      this.#swipeTxId = id;
-      this.#swipeShareIndex = shareIndex;
-      this.#swipeIsOwnContrib = !!isOwnContrib;
-      this.#swipeStartX = event.touches[0].clientX;
-      this.#swipeStartY = event.touches[0].clientY;
-      this.#swipeLastX = this.#swipeStartX;
-      this.#swipeDeltaX = 0;
-      this.#swipeAxis = null;
-      this.#swipeTriggered = false;
-      this.#swipeWrapper = event.currentTarget;
+      this.#swipe.start(event, id, shareIndex, isOwnContrib);
     }
     onTxSwipeMove(event) {
-      if (!this.#swipeTxId || this.#swipeTriggered) return;
-      const touch = event.touches[0];
-      const dx = touch.clientX - this.#swipeStartX;
-      const dy = touch.clientY - this.#swipeStartY;
-      this.#swipeLastX = touch.clientX;
-      if (!this.#swipeAxis) {
-        if (Math.abs(dx) > 4 || Math.abs(dy) > 4)
-          this.#swipeAxis = Math.abs(dx) >= Math.abs(dy) ? "x" : "y";
-        return;
-      }
-      if (this.#swipeAxis !== "x") return;
-      this.#swipeDeltaX = dx;
-      if (dx < 0) {
-        event.preventDefault();
-        const c = this.#swipeWrapper?.querySelector(".tx-row-content");
-        if (c) c.style.transform = `translateX(${Math.max(dx, -80)}px)`;
-      }
+      this.#swipe.move(event);
     }
-    // Called from ontouchend with no arguments — uses stored state instead of event.
     onTxSwipeEnd() {
-      if (!this.#swipeTxId || this.#swipeTriggered) return;
-      const dx = this.#swipeLastX - this.#swipeStartX;
-      const c = this.#swipeWrapper?.querySelector(".tx-row-content");
-      if (dx < -55) {
-        this.#swipeTriggered = true;
-        if (c) {
-          c.style.transition = "transform .15s ease, opacity .18s ease";
-          c.style.transform = "translateX(-80px)";
-          c.style.opacity = "0";
-        }
-        const id = this.#swipeTxId;
-        const si = this.#swipeShareIndex;
-        const own = this.#swipeIsOwnContrib;
-        setTimeout(() => {
-          if (si >= 0 && own) this.deleteSharedContrib(si, id);
-          else if (si >= 0) this.deleteSharedTx(si, id);
-          else this.deleteTx(id);
-          this.#swipeTxId = null;
-        }, 200);
-      } else {
-        if (c) {
-          c.style.transition = "";
-          c.style.transform = "";
-        }
-        this.#swipeTxId = null;
-      }
-      this.#swipeDeltaX = 0;
-      this.#swipeAxis = null;
-      this.#swipeTriggered = false;
-      this.#swipeWrapper = null;
+      this.#swipe.end();
+    }
+    onTxSwipeCancel() {
+      this.#swipe.cancel();
+    }
+    /**
+     * The revealed Delete button was tapped. Reaching this point already required
+     * a deliberate swipe followed by a deliberate tap on an 80px target, so there
+     * is no confirm() dialog — the second tap IS the confirmation.
+     */
+    commitSwipeDelete() {
+      this.#swipe.commitDelete();
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Data: export / import / reset
@@ -14736,6 +15297,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     // Private: render
     // ──────────────────────────────────────────────────────────────────────────
     #render() {
+      this.#swipe?.reset();
       const state = this.#store.getState();
       state._sharedData = this.#sync.sharedData;
       state._currentUserEmail = this.#sync.currentUser?.email || null;
@@ -14850,6 +15412,8 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       if (!Array.isArray(state.user.collapsedAccountGroups)) state.user.collapsedAccountGroups = [];
       if (!state.merchantCategories) state.merchantCategories = {};
       if (typeof state.user.hijriOffset !== "number") state.user.hijriOffset = 0;
+      if (typeof state.user.defaultAccountId !== "string") state.user.defaultAccountId = "";
+      if (typeof state.user.defaultPaymentType !== "string") state.user.defaultPaymentType = "card";
       if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];
       if (!Array.isArray(state.user.hiddenPaymentTypes)) state.user.hiddenPaymentTypes = [];
       if (!Array.isArray(state.user.collapsedCategories)) state.user.collapsedCategories = [];
