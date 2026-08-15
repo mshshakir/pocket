@@ -6,7 +6,7 @@
 > Paste this whole file into a new chat to bring a fresh session up to speed.
 > It complements the auto-memory (see _Memory_ below) — this is the human-readable brief.
 
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-15
 
 ---
 
@@ -52,6 +52,70 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `store.init(seed)`) and stub `global.fetch`.
 
 ## Recent changes
+
+**Six-item fix pass (2026-08-15) — WEB ONLY. Mobile port pending (see _Pending_ 0).**
+New suite `src/__smoke__/session-2026-08.smoke.mjs` (57 assertions, added to `npm run smoke`).
+Seven mutations were tried against it and all seven turn it red.
+
+- **Lost transactions on refresh — the serious one.** Three entries made back-to-back
+  collapsed into ONE debounced push; the tab was refreshed before it fired; the next boot
+  read the cloud row (which predated all three) and `replaceState()`d it over memory AND
+  localStorage. `#dirty` was memory-only, so the existing flush-before-pull guard was dead
+  on the boot path, and nothing was stashed. Four changes:
+  - New `core/SyncJournal.js` — a durable `pocket.v1.pending` record `{userId, since,
+    baseVersion}`. `baseVersion` is load-bearing: on boot, `row.version === baseVersion`
+    proves nobody else wrote, so local may be committed OVER the row; any other value means
+    another device wrote while we were away and blindly pushing would destroy THEIR work, so
+    the local copy is stashed via the existing conflict-backup path instead.
+  - `SyncService.#recoverPendingLocalEdits()` runs inside `#doPull` before the snapshot is
+    adopted. A transient failure keeps local state and retries — it never adopts the cloud.
+  - `visibilitychange → hidden` + `pagehide` flush a pending push (`#bindLifecycleFlush`).
+    On mobile the OS can discard a backgrounded tab without ever firing `unload`.
+  - `MAX_PUSH_WAIT_MS = 3000` caps the trailing-edge debounce (it was re-armed by every
+    save, so a burst could postpone the only durable write indefinitely), and a failed push
+    now retries with backoff instead of being dropped.
+- **`Store.#persistState` fires the local-change hook even when the localStorage write
+  FAILED.** The mutation is already in memory, so a push uploads correct data; skipping it
+  meant a full quota / InPrivate window had no durable copy anywhere. NB jsdom's
+  `localStorage` is a Proxy — stubbing `setItem` silently does nothing, the suite uses a real
+  `storageQuota`.
+- **Transfer FX panel would not hide.** `resetTransferFx()` early-returned on a
+  same-currency pair, and `updateTransferFxPanel()` is the only thing that sets
+  `display:none` — hence "click Transfer again and it disappears". It now clears the stale
+  rate (still submitted while hidden, so it was stamping a bogus `transferRate` on
+  same-currency legs) and delegates the hide. The cross-currency re-quote that
+  `fx.smoke.mjs` H5 depends on is untouched.
+- **Swipe-to-delete → reveal-then-tap.** `onTxSwipeEnd()` never consulted the axis lock, and
+  `#swipeLastX` was updated BEFORE the axis check, so horizontal drift accumulated during a
+  vertical scroll and a curved thumb arc fired `confirm('Delete this transaction?')`. New
+  `ui/components/SwipeRowController.js` owns the gesture: 8px axis lock, 45px open
+  threshold, `touchcancel` handled, and the row now slides open and STAYS open exposing a
+  real `<button data-swipe-delete>`. Nothing is destroyed until it is tapped, so the
+  `confirm()` is gone from that path. `deleteTx` / `deleteSharedTx` / `deleteSharedContrib`
+  gained `{confirm:false}`; every other caller keeps the dialog.
+- **Settings: default account + payment method.** `user.defaultAccountId` /
+  `user.defaultPaymentType`, back-filled in all THREE places (`seed.js`,
+  `StateMigrator.js`, `app.#ensureUserDefaults`). Resolution lives on the services —
+  `AccountService.defaultId()` and `PaymentTypeService.defaultType()` — so a preference
+  naming a deleted or archived target degrades instead of dangling. `AccountService.delete`
+  clears it; `PaymentTypeService.rename`/`remove` migrate it. Consumed by TransactionModal,
+  DebtModal, RegularItemModal, AccountDetailView and ReceiptScanService.
+- **Voice entry splits by category.** `#buildVoicePrompt` now asks for `items[]` + `total`;
+  `#buildVoicePrefill` emits `prefill.splits` when >1 item resolves to >1 DISTINCT category
+  (same category twice stays one row). No UI change was needed — `TransactionModal` already
+  seeds its split editor from `prefill.splits`. New `#reconcileSplits()` forces the legs to
+  sum EXACTLY to the parent (submitTx rejects a one-minor-unit disagreement) and defers to
+  the itemised sum when a spoken total is implausible. `maxOutputTokens` 512 → 1024. The old
+  flat response shape is still accepted.
+- New `app.receiptScanner` getter (one instance, and a seam for the suite);
+  `app.accountService` getter.
+
+**Spaces design doc (2026-08-15).** `docs/SPACES-DESIGN.md` — the shared-account "space"
+switcher, written up for approval, NO code. Headline: the guest space already exists as the
+`family_shares` snapshot, so phase 1 is a UI + scoping change with no server work, hooked in
+at `BaseView.state` (one edit re-points the whole view layer). Member-created categories are
+phase 2 and need a new contribution payload, an `#authoriseContribution` branch, and audit
+**H1** fixed first — it is a blocking prerequisite, not a nice-to-have.
 
 **Shared accounts in categories + regular purchases (2026-08-06) — WEB ONLY so far.**
 Mobile already did the category half correctly (`src/state/categorySource.js`); mobile Regulars
@@ -120,6 +184,18 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
 
 ## Pending / action items
 
+0. **Port the 2026-08-15 web work to mobile** (user chose "web now, mobile after"):
+   - `ReceiptScanService.parseVoice` — the `items[]` prompt, `#buildVoicePrefill` and
+     `#reconcileSplits` must be copied VERBATIM into `mobile-app/src/domain/services/`.
+   - `TransactionFormScreen.applyPrefill` (`:221-237`) has **no `setSplits(prefill.splits)`**
+     line, so mobile silently drops splits — this is already true for receipt scan today.
+   - Settings defaults: `seed.js` + `StateMigrator.js` are byte-identical copies and need the
+     same two fields; `SettingsScreen`'s `Preferences` block (`:204-287`) is where the rows go;
+     `TransactionFormScreen:76,82` hardcodes `state.accounts[0]?.id` and `'card'`.
+   - Swipe and the FX panel are web-only — the RN app has no swipe-delete (deletion is an
+     explicit multi-select mode) and no browser refresh path.
+   - The SyncJournal work applies to `MobileSyncService` too, but AsyncStorage + RN app-state
+     lifecycle differ enough that it needs its own design pass.
 1. **Mobile: shared accounts in Regulars.** `RegularsScreen.js` still lists `state.accounts` only,
    and its log path writes locally. Port the web work: `AccountRef` equivalent, `sharedOwnerId` on
    the item, contribution submit, and a merged log source so shared entries stay visible.

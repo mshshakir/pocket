@@ -11,6 +11,7 @@
  */
 import { Store }          from '../../core/Store.js';
 import { Repository }     from '../../core/Repository.js';
+import { SyncJournal }    from '../../core/SyncJournal.js';
 import { EventBus }       from '../../core/EventBus.js';
 import { SeedFactory }    from '../../data/seed.js';
 import { StateMigrator }  from '../../data/StateMigrator.js';
@@ -18,6 +19,19 @@ import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../../data/constants.js';
 import { RecurringService }  from './RecurringService.js';
 import { CurrencyService }   from './CurrencyService.js';
 import { LedgerMath }        from './LedgerMath.js';
+
+/** Trailing-edge debounce applied after each local save. */
+const PUSH_DEBOUNCE_MS = 1000;
+/**
+ * Hard ceiling on how long an uncommitted edit may sit in the debounce window.
+ * A pure trailing-edge debounce is re-armed by every subsequent save, so
+ * entering transactions back-to-back could postpone the durable write
+ * indefinitely — exactly the window three entries were lost in.
+ */
+const MAX_PUSH_WAIT_MS = 3000;
+/** Backoff for retrying a push that failed on the network. */
+const RETRY_BASE_MS  = 4000;
+const MAX_PUSH_RETRIES = 4;
 
 export class SyncService {
   /** @type {Store} */           #store;
@@ -60,15 +74,24 @@ export class SyncService {
 
   /** True when local edits have not yet been committed to the cloud. */
   #dirty = false;
+  /** Timestamp of the edit that started the current uncommitted run. */
+  #dirtySince = 0;
+  /** Consecutive failed pushes, for the backoff in #retryPushLater(). */
+  #pushRetries = 0;
   /** Re-entrancy guard for the flush-before-pull path. */
   #flushing = false;
+  /** True once the page-hide flush listeners are attached. */
+  #lifecycleBound = false;
+  /** Durable "there are uncommitted local edits" marker — survives a reload. */
+  /** @type {SyncJournal} */ #journal;
   /** True only for a user-initiated sign-out (not a failed token refresh). */
   #explicitSignOut = false;
 
   constructor() {
-    this.#store = Store.getInstance();
-    this.#bus   = EventBus.getInstance();
-    this.#fx    = new CurrencyService();
+    this.#store   = Store.getInstance();
+    this.#bus     = EventBus.getInstance();
+    this.#fx      = new CurrencyService();
+    this.#journal = new SyncJournal();
   }
 
   // ── Init ─────────────────────────────────────────────────────────────
@@ -93,11 +116,43 @@ export class SyncService {
       this.#sb = supabase.createClient(url, key, {
         auth: { persistSession: true, autoRefreshToken: true },
       });
+      this.#bindLifecycleFlush();
       return true;
     } catch (e) {
       console.error('[SyncService] Supabase init error:', e);
       return false;
     }
+  }
+
+  /**
+   * Flush any pending push the moment the page stops being visible.
+   *
+   * `visibilitychange → hidden` is the last event a mobile browser reliably
+   * delivers: switching apps, locking the screen or changing tab all fire it,
+   * and the OS may then discard the tab without ever running `unload` or
+   * `beforeunload`. `pagehide` covers the navigation/refresh case. Between them
+   * the 1s debounce can no longer swallow a save just because the user put the
+   * phone down.
+   */
+  #bindLifecycleFlush() {
+    if (this.#lifecycleBound) return;
+    if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    this.#lifecycleBound = true;
+
+    const flush = () => {
+      if (!this.#dirty || !this.#sb || !this.#user) return;
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      // Fire-and-forget: the page may not live long enough to await this, but
+      // the durable SyncJournal marker means the next boot recovers whatever
+      // did not make it out.
+      this.push();
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush();
+    });
+    window.addEventListener('pagehide', flush);
   }
 
   // ── Auth ──────────────────────────────────────────────────────────────
@@ -215,7 +270,9 @@ export class SyncService {
     this.#pendingAdditions.clear();
 
     if (wipeLocal) {
-      this.#dirty = false;
+      // Deliberate sign-out discards local data, so any pending marker would be
+      // a lie to the next user of this browser.
+      this.#markClean();
       this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
     } else {
       // Keep local data; only drop the cloud-derived slice that belonged to the
@@ -274,10 +331,47 @@ export class SyncService {
     // Mark dirty BEFORE the debounce so a pull landing inside the window knows
     // there is an uncommitted local edit to flush first.
     this.#dirty = true;
+    // Durable twin of #dirty: a field dies with the page, this does not. It is
+    // what lets a cold start tell "the cloud row is current" apart from "the
+    // cloud row is behind because my last push never went out".
+    this.#journal.mark(this.#user.id, this.#cloudVersion);
+    const now = Date.now();
+    if (!this.#dirtySince) this.#dirtySince = now;
+    // A plain trailing-edge debounce is re-armed by every save, so entering
+    // transactions back-to-back kept postponing the only durable write. Cap the
+    // total wait: once work has been at risk for MAX_PUSH_WAIT_MS the next save
+    // commits immediately instead of resetting the clock again.
+    const wait = Math.max(0, Math.min(
+      PUSH_DEBOUNCE_MS,
+      this.#dirtySince + MAX_PUSH_WAIT_MS - now,
+    ));
     clearTimeout(this.#saveTimer);
     // push() already serialises through #syncing, so a push never overlaps an
     // in-flight push/pull.
-    this.#saveTimer = setTimeout(() => this.push(), 1000);
+    this.#saveTimer = setTimeout(() => this.push(), wait);
+  }
+
+  /** Mark local state as fully committed. */
+  #markClean() {
+    this.#dirty       = false;
+    this.#dirtySince  = 0;
+    this.#pushRetries = 0;
+    this.#journal.clear();
+  }
+
+  /**
+   * Re-arm a failed push with exponential backoff.
+   *
+   * Previously a failed push was simply dropped: one flaky request and the edit
+   * stayed local forever with no further attempt, which is how a transient
+   * mobile-network blip turned into permanent divergence.
+   */
+  #retryPushLater() {
+    if (this.#pushRetries >= MAX_PUSH_RETRIES) return;
+    const delay = RETRY_BASE_MS * (2 ** this.#pushRetries);
+    this.#pushRetries++;
+    clearTimeout(this.#saveTimer);
+    this.#saveTimer = setTimeout(() => this.push(), delay);
   }
 
   /** Public push — serialised through the sync queue. */
@@ -348,6 +442,9 @@ export class SyncService {
     if (this.#cloudVersion === null) {
       console.warn('[SyncService] Skipping push: cloud state not loaded yet');
       this.#emitStatus('error');
+      // Hold, but do NOT give up: the pull that unblocks this may land a second
+      // from now, and without a retry the edit would sit local-only forever.
+      this.#retryPushLater();
       return;
     }
 
@@ -365,10 +462,10 @@ export class SyncService {
         await this.#doPull();
         // The pull replaced local state with the cloud's, so there is nothing
         // left to flush; the losing copy lives under pocket.v1.conflict.
-        this.#dirty = false;
+        this.#markClean();
         return;
       }
-      this.#dirty = false;
+      this.#markClean();
       this.#emitStatus('synced');
       await this.#pushFamilyShares();
       await this.#pullMemberContributions();
@@ -376,6 +473,9 @@ export class SyncService {
       console.error('[SyncService] Cloud save error:', e);
       this.#emitStatus('error');
       this.#toast('Sync error: ' + (e.message || e));
+      // Keep #dirty and the journal set so both the backoff retry below and,
+      // failing that, the next cold start still know this edit is outstanding.
+      this.#retryPushLater();
     }
   }
 
@@ -432,6 +532,84 @@ export class SyncService {
     } catch (_) {}
   }
 
+  /**
+   * Cold-start recovery for edits that never reached the cloud.
+   *
+   * The failure this exists to prevent: three transactions entered back-to-back
+   * collapse into ONE debounced push; the tab is refreshed before it fires; the
+   * next boot reads the cloud row — which predates all three — and
+   * replaceState()s it over both memory AND localStorage. All three vanish, the
+   * first one included, with no recovery copy anywhere.
+   *
+   * The durable SyncJournal marker makes that situation detectable. Once it is,
+   * the row's own version is a valid CAS baseline, so the correct move is to
+   * commit local state OVER the stale row. If another device legitimately wrote
+   * while this one was away the compare-and-swap fails, and we fall back to
+   * adopting the cloud — but only after stashing a restorable backup.
+   *
+   * @param {{data: object, version: number}} row  the cloud row just read
+   * @returns {Promise<boolean>} true when the caller must NOT adopt the snapshot
+   */
+  async #recoverPendingLocalEdits(row) {
+    if (this.#flushing) return false;             // already inside a flush
+    if (this.#cloudVersion !== null) return false; // not a cold start
+
+    const pending = this.#journal.read();
+    if (!pending || pending.userId !== this.#user.id) return false;
+
+    const rowVersion = row.version ?? 0;
+    // Did anyone else write while this device was away? The journal recorded
+    // the version the local edits were made against; if the row has moved on,
+    // committing over it would destroy the OTHER device's work — the same
+    // failure this method exists to prevent, just pointed the other way. There
+    // is no field-level merge, so keep the local copy recoverable and let the
+    // caller adopt the cloud snapshot.
+    //
+    // A null baseline means the edits predate any successful pull, so nothing
+    // can be proven about them; treat that as a conflict too.
+    if (pending.baseVersion == null || pending.baseVersion !== rowVersion) {
+      this.#stashConflict();
+      this.#markClean();
+      this.#toast('Another device saved while you were away — your unsynced copy was kept as a backup');
+      return false;
+    }
+
+    this.#flushing     = true;
+    this.#cloudVersion = rowVersion;
+    this.#dirty        = true;
+    try {
+      const ok = await this.#commitState(this.#store.getState());
+      if (ok) {
+        this.#markClean();
+        this.#emitStatus('synced');
+        this.#toast('Recovered changes that had not finished syncing');
+        await this.#pushFamilyShares();
+        await this.#pullMemberContributions();
+        await this.#pullFamilyShares();
+        this.#bus.emit('state:changed', this.#store.getState());
+        return true;
+      }
+      // The row moved between our SELECT and our UPDATE — a genuine race with
+      // another device writing right now, rather than one that wrote while we
+      // were away (that case is caught by the baseline check above).
+      this.#stashConflict();
+      this.#markClean();
+      this.#toast('Another device saved first — your unsynced copy was kept as a backup');
+      return false;
+    } catch (e) {
+      // Transient failure (offline, 5xx). Adopting the cloud here would destroy
+      // exactly the data this method exists to protect, so keep local state,
+      // keep the journal, and let the backoff retry.
+      console.error('[SyncService] Pending-edit recovery failed:', e);
+      this.#emitStatus('error');
+      this.#toast('Could not sync your unsaved changes yet — they are safe on this device');
+      this.#retryPushLater();
+      return true;
+    } finally {
+      this.#flushing = false;
+    }
+  }
+
   /** @returns {boolean} isFirstSignIn */
   async #doPull() {
     if (!this.#sb || !this.#user) return false;
@@ -440,7 +618,11 @@ export class SyncService {
     // this, a realtime UPDATE arriving inside schedulePush()'s 1s debounce
     // window wiped the just-saved transaction from memory AND localStorage,
     // and the queued push then uploaded the clobbered result.
-    if (this.#dirty && !this.#flushing) {
+    //
+    // This branch needs a CAS baseline to push against, so it only covers the
+    // in-session case. A cold start has #cloudVersion === null and is handled
+    // by #recoverPendingLocalEdits() once the row has been read.
+    if (this.#dirty && !this.#flushing && this.#cloudVersion !== null) {
       this.#flushing = true;
       clearTimeout(this.#saveTimer);
       try { await this.#doPush(); } catch (_) { /* handled inside #doPush */ }
@@ -458,12 +640,17 @@ export class SyncService {
       if (error && error.code !== 'PGRST116') throw error;
 
       if (data?.data) {
+        // Cold start carrying work the cloud never received: the row we just
+        // read is BEHIND this device, so adopting it would delete real entries.
+        // Commit local over it first — see #recoverPendingLocalEdits().
+        if (await this.#recoverPendingLocalEdits(data)) return false;
+
         // Migrate the cloud snapshot to the current schema BEFORE it becomes
         // active state (older snapshots may miss newer arrays / openingBalance).
         this.#store.replaceState(data.data, (s) => this.#migrateDefaults(s));
         this.#cloudVersion = data.version ?? 0;
         // Local state now mirrors the cloud — nothing outstanding to push.
-        this.#dirty = false;
+        this.#markClean();
         new RecurringService().process();
         await this.#pullFamilyShares();
         await this.#pullMemberContributions();

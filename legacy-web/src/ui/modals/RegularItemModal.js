@@ -49,7 +49,7 @@ export class RegularItemModal {
       name:          '',
       defaultAmount: 0,
       currency:      home,
-      accountId:     state.accounts[0]?.id || '',
+      accountId:     window.__app?.accountService?.defaultId?.() || state.accounts[0]?.id || '',
       sharedOwnerId: null,
       categoryId:    '',
       icon:          'coffee',

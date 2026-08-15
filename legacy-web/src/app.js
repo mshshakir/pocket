@@ -50,6 +50,7 @@ import { PaymentMethodSheet }  from './ui/components/PaymentMethodSheet.js';
 import { CategoryField }       from './ui/components/CategoryField.js';
 import { VoiceRecorder }       from './ui/components/VoiceRecorder.js';
 import { VoiceOverlay }        from './ui/components/VoiceOverlay.js';
+import { SwipeRowController }  from './ui/components/SwipeRowController.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -145,18 +146,12 @@ export class Application {
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
   #importPlan     = null;
-  #swipeTxId          = null;
-  #swipeStartX        = 0;
-  #swipeStartY        = 0;
-  #swipeLastX         = 0;   // updated on every move; used by swipeEnd (no event arg needed)
-  #swipeDeltaX        = 0;
-  #swipeAxis          = null;   // 'x' | 'y' | null
-  #swipeTriggered     = false;
-  #swipeShareIndex    = -1;
-  #swipeIsOwnContrib  = false;
-  #swipeWrapper       = null;   // the .tx-swipe-wrapper element, stored on start
+  /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
+  #swipe              = null;
   #filterRenderTimer  = null;   // debounce for the transaction search box
   #voice              = null;   // { recorder, overlay, done } while a voice entry is in progress
+  /** @type {ReceiptScanService|null} lazily built — see get receiptScanner() */
+  #receipts           = null;
 
   // ── Private constructor (use getInstance()) ────────────────────────────────
   constructor() {
@@ -197,6 +192,16 @@ export class Application {
       store:              this.#store,
       familyShareService: this.#familyShares,
       syncService:        this.#sync,
+    });
+    // The controller owns the gesture; the app owns what deleting means. The
+    // revealed button is itself the confirmation, so these are the no-dialog
+    // variants of the delete methods.
+    this.#swipe = new SwipeRowController({
+      onDelete: ({ id, shareIndex, isOwnContrib }) => {
+        if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
+        else if (shareIndex >= 0)            this.deleteSharedTx(shareIndex, id, { confirm: false });
+        else                                 this.deleteTx(id, { confirm: false });
+      },
     });
   }
 
@@ -603,6 +608,30 @@ export class Application {
     this.#toast.show('Default currency: ' + v);
   }
 
+  /**
+   * Preferred account for new entry forms. '' means "no preference — use the
+   * first account", which is what the app did unconditionally before.
+   * @param {string} v  account id, or '' to clear the preference
+   */
+  setDefaultAccount(v) {
+    const state = this.#store.getState();
+    state.user.defaultAccountId = v || '';
+    this.#store.persist();
+    // Unlike the currency rows this keeps Settings open — the two default
+    // pickers sit next to each other and are usually set together.
+    this.#refreshModal();
+    const acc = state.accounts.find((a) => a.id === v);
+    this.#toast.show(acc ? `Default account: ${acc.name}` : 'Default account: first in list');
+  }
+
+  /** @param {string} v  payment method name */
+  setDefaultPaymentType(v) {
+    this.#store.getState().user.defaultPaymentType = v || 'card';
+    this.#store.persist();
+    this.#refreshModal();
+    this.#toast.show('Default payment: ' + (v || 'card'));
+  }
+
   setDateFormat(v) {
     this.#store.getState().user.dateFormat = v;
     this.#store.persist();
@@ -624,6 +653,17 @@ export class Application {
   }
 
   get paymentTypeService() { return this.#paymentTypeService; }
+  /** Exposed so modals can resolve the Settings default-account preference. */
+  get accountService() { return this.#accounts; }
+  /**
+   * One scanner instance for both the receipt and voice paths, rather than a
+   * fresh object per invocation. Also gives the smoke suites a seam to drive
+   * parseVoice() directly instead of faking a microphone.
+   */
+  get receiptScanner() {
+    if (!this.#receipts) this.#receipts = new ReceiptScanService();
+    return this.#receipts;
+  }
 
   /**
    * The manage sheet — inline handlers inside it dispatch through
@@ -1117,8 +1157,15 @@ export class Application {
     ];
   }
 
-  deleteTx(id) {
-    if (!confirm('Delete this transaction?')) return;
+  /**
+   * @param {string} id
+   * @param {{confirm?: boolean}} [opts]
+   *   `confirm:false` is used by the swipe reveal, where the deliberate tap on
+   *   the exposed Delete button already IS the confirmation. Every other caller
+   *   keeps the dialog.
+   */
+  deleteTx(id, { confirm: ask = true } = {}) {
+    if (ask && !confirm('Delete this transaction?')) return;
     if (!this.#transactions.find(id)) return;
     // TransactionService.delete reverts the leg (and its transfer pair) via the
     // shared balance engine, removes both rows, and persists+notifies.
@@ -1134,8 +1181,8 @@ export class Application {
    * Sends a delete-marker contribution row to the owner and applies an
    * optimistic removal to the local shared view immediately.
    */
-  async deleteSharedContrib(shareIndex, txId) {
-    if (!confirm('Delete this transaction?')) return;
+  async deleteSharedContrib(shareIndex, txId, { confirm: ask = true } = {}) {
+    if (ask && !confirm('Delete this transaction?')) return;
     const state = this.#store.getState();
     const share = (state._sharedData || [])[shareIndex];
     if (!share?._ownerId) return this.#toast.show('Shared account not found');
@@ -1168,8 +1215,8 @@ export class Application {
   // Full-access members delete another member's tx by sending the owner a
   // delete-marker contribution (SyncService.deleteContribution), which also
   // applies an optimistic local revert.
-  async deleteSharedTx(shareIndex, txId) {
-    if (!confirm('Delete this transaction?')) return;
+  async deleteSharedTx(shareIndex, txId, { confirm: ask = true } = {}) {
+    if (ask && !confirm('Delete this transaction?')) return;
     const share = this.#sync.sharedData?.[shareIndex];
     if (!share?._ownerId) return this.#toast.show('Shared account not found');
     try {
@@ -1646,8 +1693,26 @@ export class Application {
     const fromAccId = document.querySelector('[name=accountId]')?.value;
     const fromAcc  = state.accounts.find((a) => a.id === fromAccId);
     const toAcc    = state.accounts.find((a) => a.id === toAccId);
-    if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) return;
-    const rateInp = document.getElementById('fxRate');
+    const rateInp  = document.getElementById('fxRate');
+
+    // Nothing to convert: the pair is incomplete, or both legs are already in
+    // the same currency.
+    //
+    // This used to `return` outright, which was the bug. updateTransferFxPanel()
+    // is the ONLY code that sets display:none on #fxPanel, so skipping it left
+    // the panel on screen — still showing the previous pair's rate — until the
+    // next full modal re-render. Tapping "Transfer" a second time triggered
+    // that re-render, which is why a second click appeared to be the fix.
+    //
+    // The rate field is cleared too: it stays in the DOM and is still submitted
+    // even while hidden, so a leftover cross-rate would stamp a bogus
+    // transferRate onto a same-currency transfer.
+    if (!fromAcc || !toAcc || fromAcc.currency === toAcc.currency) {
+      if (rateInp) rateInp.value = '';
+      this.updateTransferFxPanel(false);
+      return;
+    }
+
     if (rateInp) {
       rateInp.value = ((RATES[toAcc.currency] || 1) / (RATES[fromAcc.currency] || 1)).toFixed(6);
     }
@@ -1821,7 +1886,7 @@ export class Application {
     this.#toast.show('Scanning receipt with Gemini AI…');
 
     try {
-      const scanner = new ReceiptScanService();
+      const scanner = this.receiptScanner;
       const prefill = await scanner.scan(file);
 
       // Close the current modal (if open) and open a fresh, fully pre-filled one
@@ -1885,7 +1950,7 @@ export class Application {
       if (!blob || !blob.size) { finish(); this.#toast.show('No audio captured — please try again'); return; }
 
       try {
-        const prefill = await new ReceiptScanService().parseVoice(blob);
+        const prefill = await this.receiptScanner.parseVoice(blob);
         finish();
         this.closeModal();
         this.openModal('transaction', { prefill });
@@ -2931,7 +2996,11 @@ export class Application {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Swipe-to-delete (touch)
+  // Swipe row actions (touch)
+  //
+  // Thin delegates for the inline ontouch* attributes in TransactionRowRenderer.
+  // All gesture state and the reveal lifecycle live in SwipeRowController; the
+  // app only supplies what "delete this row" means.
   // ──────────────────────────────────────────────────────────────────────────
 
   /**
@@ -2941,74 +3010,19 @@ export class Application {
    * @param {boolean}    isOwnContrib  True if this is a member's own contribution
    */
   onTxSwipeStart(event, id, shareIndex = -1, isOwnContrib = false) {
-    if (event.touches.length !== 1) return;
-    this.#swipeTxId         = id;
-    this.#swipeShareIndex   = shareIndex;
-    this.#swipeIsOwnContrib = !!isOwnContrib;
-    this.#swipeStartX       = event.touches[0].clientX;
-    this.#swipeStartY       = event.touches[0].clientY;
-    this.#swipeLastX        = this.#swipeStartX;
-    this.#swipeDeltaX       = 0;
-    this.#swipeAxis         = null;
-    this.#swipeTriggered    = false;
-    // Store the wrapper element so swipeEnd can find .tx-row-content without needing event.currentTarget
-    this.#swipeWrapper      = event.currentTarget;
+    this.#swipe.start(event, id, shareIndex, isOwnContrib);
   }
 
-  onTxSwipeMove(event) {
-    if (!this.#swipeTxId || this.#swipeTriggered) return;
-    const touch = event.touches[0];
-    const dx = touch.clientX - this.#swipeStartX;
-    const dy = touch.clientY - this.#swipeStartY;
-    this.#swipeLastX = touch.clientX;
+  onTxSwipeMove(event)   { this.#swipe.move(event); }
+  onTxSwipeEnd()         { this.#swipe.end(); }
+  onTxSwipeCancel()      { this.#swipe.cancel(); }
 
-    // Lock axis after 4 px of movement
-    if (!this.#swipeAxis) {
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4)
-        this.#swipeAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
-      return;
-    }
-    if (this.#swipeAxis !== 'x') return;
-
-    this.#swipeDeltaX = dx;
-    if (dx < 0) {
-      event.preventDefault();
-      const c = this.#swipeWrapper?.querySelector('.tx-row-content');
-      if (c) c.style.transform = `translateX(${Math.max(dx, -80)}px)`;
-    }
-  }
-
-  // Called from ontouchend with no arguments — uses stored state instead of event.
-  onTxSwipeEnd() {
-    if (!this.#swipeTxId || this.#swipeTriggered) return;
-    const dx = this.#swipeLastX - this.#swipeStartX;
-    const c  = this.#swipeWrapper?.querySelector('.tx-row-content');
-
-    if (dx < -55) {
-      this.#swipeTriggered = true;
-      if (c) {
-        c.style.transition = 'transform .15s ease, opacity .18s ease';
-        c.style.transform  = 'translateX(-80px)';
-        c.style.opacity    = '0';
-      }
-      const id  = this.#swipeTxId;
-      const si  = this.#swipeShareIndex;
-      const own = this.#swipeIsOwnContrib;
-      setTimeout(() => {
-        if (si >= 0 && own) this.deleteSharedContrib(si, id);
-        else if (si >= 0)   this.deleteSharedTx(si, id);
-        else                this.deleteTx(id);
-        this.#swipeTxId = null;
-      }, 200);
-    } else {
-      if (c) { c.style.transition = ''; c.style.transform = ''; }
-      this.#swipeTxId = null;
-    }
-    this.#swipeDeltaX    = 0;
-    this.#swipeAxis      = null;
-    this.#swipeTriggered = false;
-    this.#swipeWrapper   = null;
-  }
+  /**
+   * The revealed Delete button was tapped. Reaching this point already required
+   * a deliberate swipe followed by a deliberate tap on an 80px target, so there
+   * is no confirm() dialog — the second tap IS the confirmation.
+   */
+  commitSwipeDelete() { this.#swipe.commitDelete(); }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Data: export / import / reset
@@ -3373,6 +3387,9 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #render() {
+    // Any revealed swipe row is about to have its DOM node replaced, so drop
+    // the reference rather than leave the controller holding a detached node.
+    this.#swipe?.reset();
     // Inject live shared data so views can read state._sharedData
     const state = this.#store.getState();
     state._sharedData        = this.#sync.sharedData;
@@ -3468,6 +3485,12 @@ export class Application {
 
     // hijriOffset back-fill
     if (typeof state.user.hijriOffset !== 'number') state.user.hijriOffset = 0;
+
+    // new-entry defaults back-fill. Kept as strings so a preference pointing at
+    // a since-deleted account or payment method degrades to the service
+    // fallback (AccountService.defaultId / PaymentTypeService.defaultType).
+    if (typeof state.user.defaultAccountId !== 'string')   state.user.defaultAccountId = '';
+    if (typeof state.user.defaultPaymentType !== 'string') state.user.defaultPaymentType = 'card';
 
     // payment-method back-fill (added + deleted/renamed-away built-ins)
     if (!Array.isArray(state.user.customPaymentTypes)) state.user.customPaymentTypes = [];

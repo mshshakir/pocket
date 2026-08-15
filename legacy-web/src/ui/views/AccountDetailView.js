@@ -140,7 +140,8 @@ export class AccountDetailView extends BaseView {
     // ── New-tx prefill ─────────────────────────────────────────────────
     const newTxPrefill = JSON.stringify({
       type: 'expense', accountId: a.id, currency: a.currency,
-      date: DateService.todayIso(), paymentType: 'card',
+      date: DateService.todayIso(),
+      paymentType: window.__app?.paymentTypeService?.defaultType?.() || 'card',
     }).replace(/'/g, '&#39;');
 
     // "New transaction" button removed from header — use the FAB (bottom-right ＋) instead

@@ -7,7 +7,7 @@
     "serve": "npx esbuild --servedir=. --serve=5173",
     "build": "npx esbuild src/app.js --bundle --format=iife --global-name=_PocketApp --outfile=bundle.js --log-level=warning",
     "watch": "npx esbuild src/app.js --bundle --format=iife --global-name=_PocketApp --outfile=bundle.js --watch",
-    "smoke": "npm run build && node src/__smoke__/picker.smoke.mjs && node src/__smoke__/payment.smoke.mjs && node src/__smoke__/audit-fixes.smoke.mjs && node src/__smoke__/sharing.smoke.mjs && node src/__smoke__/shared-regulars.smoke.mjs && node src/__smoke__/groups.smoke.mjs && node src/__smoke__/fx.smoke.mjs && node src/__smoke__/polish.smoke.mjs"
+    "smoke": "npm run build && node src/__smoke__/picker.smoke.mjs && node src/__smoke__/payment.smoke.mjs && node src/__smoke__/audit-fixes.smoke.mjs && node src/__smoke__/sharing.smoke.mjs && node src/__smoke__/shared-regulars.smoke.mjs && node src/__smoke__/groups.smoke.mjs && node src/__smoke__/fx.smoke.mjs && node src/__smoke__/polish.smoke.mjs && node src/__smoke__/session-2026-08.smoke.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",

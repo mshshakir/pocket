@@ -109,11 +109,18 @@
   @media (min-width:768px) { .fab { display:none; } }
   [data-lucide] { width:18px; height:18px; stroke-width:1.75; }
 
-  /* ── Swipe-to-delete ── */
+  /* ── Swipe row actions (reveal, then tap Delete) ──
+     The swipe only slides .tx-row-content aside to expose .tx-delete-bg, which
+     is a real button. Nothing is destructive until that button is tapped. */
   .tx-swipe-wrapper { touch-action:pan-y; position:relative; overflow:hidden; }
-  .tx-row-content { background:#ffffff; transition:transform .18s ease; will-change:transform; }
+  .tx-row-content { background:#ffffff; transition:transform .18s ease; will-change:transform; position:relative; z-index:1; }
   html.dark .tx-row-content { background:#0c0c0f; }
-  .tx-delete-bg { position:absolute; right:0; top:0; bottom:0; width:80px; background:#ef4444; display:flex; align-items:center; justify-content:center; }
+  .tx-delete-bg { position:absolute; right:0; top:0; bottom:0; width:80px; background:#ef4444;
+                  display:flex; align-items:center; justify-content:center; border:0; padding:0;
+                  cursor:pointer; z-index:0; }
+  /* Only reachable once revealed — keeps it out of the tab order while hidden. */
+  .tx-swipe-wrapper:not(.is-open) .tx-delete-bg { pointer-events:none; }
+  .tx-swipe-wrapper.is-open .tx-delete-bg:active { background:#dc2626; }
 
   /* ── Month divider ── */
   .month-divider { display:flex; align-items:center; gap:.6rem; padding:.25rem; margin:.75rem 0 .5rem; }

@@ -34,7 +34,7 @@ export class DebtModal {
       counterparty: '',
       principal:    0,
       currency:     state.user.defaultCurrency || state.user.homeCurrency,
-      accountId:    state.accounts[0]?.id,
+      accountId:    window.__app?.accountService?.defaultId?.() ?? state.accounts[0]?.id,
       dateTaken:    DateService.todayIso(),
       dueDate:      '',
       note:         '',

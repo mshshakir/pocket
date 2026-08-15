@@ -43,6 +43,23 @@ export class AccountService {
   }
 
   /**
+   * The account a new entry form should start on.
+   *
+   * `user.defaultAccountId` is only a preference, never a guarantee: the
+   * account it names can be deleted or archived long after it was chosen. Both
+   * cases fall through to the first usable account rather than leaving a form
+   * bound to an id that no longer resolves — a `<select>` with no matching
+   * option silently reports whichever entry happens to sit first anyway.
+   * @returns {string|undefined}
+   */
+  defaultId() {
+    const state = this.#store.getState();
+    const preferred = state.user?.defaultAccountId;
+    if (preferred && state.accounts.some((a) => a.id === preferred && !a.archived)) return preferred;
+    return (this.active()[0] || state.accounts[0])?.id;
+  }
+
+  /**
    * Total balance of all non-archived accounts in the user's home currency.
    * Reads the derived `balance` cache (kept fresh by recompute()), so this is
    * O(accounts), not O(accounts × transactions).
@@ -167,6 +184,9 @@ export class AccountService {
           : t,
       );
     state.accounts = state.accounts.filter((a) => a.id !== id);
+    // Drop the Settings preference if it pointed here, so it can't linger as a
+    // dangling id in the saved (and uploaded) state.
+    if (state.user?.defaultAccountId === id) state.user.defaultAccountId = '';
     this.#store.flush();
   }
 }
