@@ -341,28 +341,36 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
 
 ## Pending / action items
 
-0. **Mobile voice + the sync fixes need a native rebuild before they can be tested**
-   (expo-av is already required for voice): `cd mobile-app && eas build --profile development
-   --platform android`. The sync work is plain JS and ships in the JS bundle, but there is no
-   way to exercise the AppState background flush without a device.
-0b. **Mobile has no UI to restore a conflict backup.** `conflictBackups()` /
-   `readConflictBackup()` now exist on `MobileSyncService` and the data is written under
-   `pocket.v1.conflict.<ts>`, but nothing surfaces it — web has this in Settings.
-1. **Mobile: shared accounts in Regulars.** `RegularsScreen.js` still lists `state.accounts` only,
-   and its log path writes locally. Port the web work: `AccountRef` equivalent, `sharedOwnerId` on
-   the item, contribution submit, and a merged log source so shared entries stay visible.
-   Mobile's category picker already handles shared accounts (`categorySource.js` + the
-   `categories: sharedMode ? ownerCats : undefined` hop in `TransactionFormScreen`) — no change there.
-2. **Mobile voice needs a native rebuild** before it works:
-   `cd mobile-app && npx expo install expo-av`, then
-   `eas build --profile development --platform android`, install the APK.
-   (`app.json` already has `RECORD_AUDIO` + the expo-av config plugin; `package.json` pins expo-av ~16.0.8.)
-3. **GitHub Pages:** Source is set to GitHub Actions; needs a successful "Deploy web" run.
-   `deploy-web.yml` publishes `legacy-web/` as the site root: `/pocket/` = marketing `index.html`,
-   `/pocket/app.html` = the app. After deploy, add Supabase → Auth → Redirect URLs:
-   `https://mshshakir.github.io/pocket/app.html` and `https://mshshakir.github.io/pocket/`
-   (otherwise Google sign-in bounces).
-4. Inert stray file to ignore/delete: `legacy-web/src/ui/components/VoiceRecorder.js.overlay-note`.
+**Yours (I can't do these):**
+
+1. **Native rebuild for mobile.** `cd mobile-app && eas build --profile development
+   --platform android`, install the APK. Voice needs it to work at all (expo-av); the sync
+   durability work ships in the JS bundle but the AppState background flush cannot be
+   exercised without a device.
+2. **GitHub Pages redirect URLs.** After a successful "Deploy web" run, add to
+   Supabase → Auth → Redirect URLs: `https://mshshakir.github.io/pocket/app.html` and
+   `https://mshshakir.github.io/pocket/` — otherwise Google sign-in bounces.
+3. **Try it on a real browser and phone.** Every check in this repo is jsdom or plain node:
+   no layout, no real touch, no actual Supabase. The swipe gesture and the space switcher are
+   the two things that verification can vouch for least.
+
+**Spaces, still to build:**
+
+4. **Phase 2 — editing inside a guest space.** Budgets, debts, regulars and member-created
+   categories each need a `_kind` contribution payload and an `#authoriseContribution` branch.
+   Budget is the first payload with no account, so it forces the
+   `family_contributions.account_id NOT NULL` decision. Touches the security boundary.
+5. **Spaces on mobile.** Entirely absent — `Space`, `SpaceRegistry`, the switcher and the
+   `BaseView` scoping are all web-only. Bigger than the sync port was.
+6. **Owner-created spaces** — `docs/OWNER-SPACES-DESIGN.md`, approved for a design doc only.
+   Steps 1-2 (multi-member named spaces) need NO schema change; step 3 onwards does.
+7. **Phase 1c remainder.** `sharedMatch` and the positional `shareIndex` addressing are NOT
+   dead code: the home-space account dropdown still offers a "Shared with me" group. Killing
+   them means deciding that contributing requires switching to the owner's space — a
+   behaviour change, not a cleanup. Decide it as part of the Spaces work.
+
+**Done this session** (was pending, now shipped): mobile shared accounts in Regulars; mobile
+conflict-backup restore UI; the stray `VoiceRecorder.js.overlay-note` file.
 
 ## Memory
 
