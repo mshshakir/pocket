@@ -53,6 +53,27 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Phase B of the multi-space migration (2026-08-15).** Client is ready; the flip is phase C.
+Web 475 assertions (spaces 106 → 113), 4 more mutations verified.
+- **Phase A ran** (Mufaddal): `family_shares` gained `space_id text not null default 'default'`
+  plus a unique index on `(owner_id, member_email, space_id)`. The two-column PK is STILL in
+  place, so an un-updated client keeps working — both ON CONFLICT targets are valid at once.
+  **Do NOT run phase C until the new client is on web AND the phone**: an old APK still
+  upserting on `(owner_id, member_email)` fails the instant the PK moves.
+- **Push writes `space_id`; pull reads it** as `_spaceId`, defaulting to `'default'`.
+  `revokeMemberShare(email, spaceId?)` can now drop one space's row instead of all of them.
+- **A guest space is addressed by owner+space** (`Space.keyFor`), because one owner will be
+  able to send several. `Space.ownerId` stays separate — the space is presentation, the owner
+  is where a contribution actually lands.
+- **The overlap rule — I got this wrong first.** I forbade an account being in two spaces at
+  all. That broke the single most ordinary case there is: sharing the joint account with two
+  different people, who are in different spaces. `sharing.smoke.mjs` caught it. The real
+  invariant is per-MEMBER: no one person may hold the same account through two spaces, because
+  `#commit()` writes `permissions` as a union and the same account at two levels resolves to
+  whichever loop ran last. Two people holding one account is normal.
+- **A mutation proved `Space.keyFor` was dead** — `SpaceRegistry` had a private copy of the
+  same rule and only the copy was live. It now delegates.
+
 **Owner-created spaces, steps 1-2 (2026-08-15).** Answers "what if I want to add more user
 emails to the space?" — which turned out to need no schema change at all. Web 468 assertions
 (spaces 89 → 106), 5 more mutations verified.

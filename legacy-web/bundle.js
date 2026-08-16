@@ -1523,6 +1523,10 @@ var _PocketApp = (() => {
     setAccount(spaceId, accountId, inSpace) {
       const space = this.find(spaceId);
       if (!space) return { ok: false, reason: "That space no longer exists" };
+      if (inSpace) {
+        const clash = this.#overlapConflict(space, "accountIds", accountId);
+        if (clash) return clash;
+      }
       if (!Array.isArray(space.accountIds)) space.accountIds = [];
       const has = space.accountIds.includes(accountId);
       if (inSpace && !has) space.accountIds.push(accountId);
@@ -1534,6 +1538,10 @@ var _PocketApp = (() => {
     setBudget(spaceId, budgetId, inSpace) {
       const space = this.find(spaceId);
       if (!space) return { ok: false, reason: "That space no longer exists" };
+      if (inSpace) {
+        const clash = this.#overlapConflict(space, "budgetIds", budgetId);
+        if (clash) return clash;
+      }
       if (!Array.isArray(space.budgetIds)) space.budgetIds = [];
       const has = space.budgetIds.includes(budgetId);
       if (inSpace && !has) space.budgetIds.push(budgetId);
@@ -1568,6 +1576,13 @@ var _PocketApp = (() => {
           reason: `${member.name || "They"} are already in "${existing.name}". Someone can only be in one space for now.`
         };
       }
+      for (const field of ["accountIds", "budgetIds"]) {
+        for (const itemId of space[field] || []) {
+          const probe = { id: space.id, name: space.name, members: [{ memberId }] };
+          const clash = this.#overlapConflict(probe, field, itemId);
+          if (clash) return clash;
+        }
+      }
       if (!Array.isArray(space.members)) space.members = [];
       const row = space.members.find((m) => m.memberId === memberId);
       if (row) {
@@ -1587,6 +1602,44 @@ var _PocketApp = (() => {
       space.members = (space.members || []).filter((m) => m.memberId !== memberId);
       const orphaned = this.#commit();
       return { ok: true, orphaned };
+    }
+    /**
+     * Would putting `itemId` in `space` give one PERSON the same item twice?
+     *
+     * The ambiguity to prevent is per-member, not global. `#commit()` writes
+     * `permissions` as the union across a member's spaces, so if ONE member is in
+     * two spaces that both hold account A — at 'edit' in one and 'view' in the
+     * other — the map keeps whichever loop iteration ran last.
+     * `#authoriseContribution` reads that map, so it is a silent permission bug.
+     *
+     * An earlier version of this check forbade an item from being in two spaces
+     * at all. That is far too strong and broke the most ordinary case there is:
+     * sharing the joint account with two different people, who are in different
+     * spaces. Two people holding the same account is normal; ONE person holding
+     * it twice at different levels is the problem.
+     *
+     * @param {object} space
+     * @param {'accountIds'|'budgetIds'} field
+     * @param {string} itemId
+     * @returns {{ok:false, reason:string}|null}
+     */
+    #overlapConflict(space, field, itemId) {
+      const memberIds = new Set((space.members || []).map((m) => m.memberId));
+      if (!memberIds.size) return null;
+      for (const other of this.spaces()) {
+        if (other.id === space.id) continue;
+        if (!(other[field] || []).includes(itemId)) continue;
+        const shared = (other.members || []).find((m) => memberIds.has(m.memberId));
+        if (shared) {
+          const name = (this.#store.getState().family || []).find((f) => f.id === shared.memberId)?.name || "Someone";
+          const what = field === "accountIds" ? "account" : "budget";
+          return {
+            ok: false,
+            reason: `${name} is in "${other.name}", which already holds that ${what} \u2014 one person can't hold it at two levels`
+          };
+        }
+      }
+      return null;
     }
     // ── Derivation ──────────────────────────────────────────────────────
     /**
@@ -4218,11 +4271,22 @@ RULES:
      *
      * @param {string} email
      */
-    async revokeMemberShare(email) {
+    /**
+     * Drop a member's share row so their device stops serving the snapshot.
+     *
+     * @param {string} email
+     * @param {string} [spaceId]  when given, revokes only that space's row.
+     *   Omitted revokes every space you share with them — which is what the old
+     *   single-row behaviour did, and still the right default for "remove this
+     *   person entirely".
+     */
+    async revokeMemberShare(email, spaceId = null) {
       if (!this.#sb || !this.#user || !email) return;
       const addr = email.toLowerCase().trim();
       try {
-        await this.#sb.from("family_shares").delete().eq("owner_id", this.#user.id).eq("member_email", addr);
+        let q = this.#sb.from("family_shares").delete().eq("owner_id", this.#user.id).eq("member_email", addr);
+        if (spaceId) q = q.eq("space_id", spaceId);
+        await q;
         this.#broadcastToMember(addr);
       } catch (e) {
         console.warn("[SyncService] revokeMemberShare error:", e);
@@ -4248,6 +4312,21 @@ RULES:
         }
         return { ...b, spent };
       });
+    }
+    /**
+     * The space id a member's snapshot is filed under.
+     *
+     * Until phase C of the family_shares migration the primary key is still
+     * (owner_id, member_email), so a member can only have ONE row — but writing
+     * the real space id from now on means the row is already correctly labelled
+     * when the key changes, rather than needing a backfill.
+     * @param {object} member
+     * @returns {string}
+     */
+    #spaceIdFor(member) {
+      const spaces = this.#store.getState().spaces || [];
+      const owning = spaces.find((sp) => (sp.members || []).some((m) => m.memberId === member.id));
+      return owning?.id || "default";
     }
     async #pushFamilyShares() {
       const state = this.#store.getState();
@@ -4305,8 +4384,12 @@ RULES:
           await this.#sb.from("family_shares").upsert({
             owner_id: this.#user.id,
             member_email: member.email.toLowerCase().trim(),
-            snapshot
-          }, { onConflict: "owner_id,member_email" });
+            snapshot,
+            space_id: this.#spaceIdFor(member)
+            // Targets the unique index added in phase A of the migration. While
+            // the old two-column primary key is still in place both targets are
+            // valid, which is what lets an un-updated client keep working.
+          }, { onConflict: "owner_id,member_email,space_id" });
           this.#broadcastToMember(member.email.toLowerCase().trim());
         } catch (e) {
           console.warn("[SyncService] pushFamilyShares error:", e);
@@ -4331,13 +4414,13 @@ RULES:
     async #pullFamilyShares() {
       if (!this.#sb || !this.#user?.email) return;
       try {
-        const { data, error } = await this.#sb.from("family_shares").select("owner_id, snapshot").eq("member_email", this.#user.email.toLowerCase()).order("owner_id");
+        const { data, error } = await this.#sb.from("family_shares").select("owner_id, space_id, snapshot").eq("member_email", this.#user.email.toLowerCase()).order("owner_id");
         if (error) {
           console.warn("[SyncService] pullFamilyShares error:", error);
           return;
         }
         const rawIds = new Set((data || []).flatMap((r) => (r.snapshot?.transactions || []).map((t) => t.id)));
-        this.#sharedData = (data || []).filter((r) => r.snapshot && r.owner_id !== this.#user.id).map((r) => ({ ...r.snapshot, _ownerId: r.owner_id })).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)));
+        this.#sharedData = (data || []).filter((r) => r.snapshot && r.owner_id !== this.#user.id).map((r) => ({ ...r.snapshot, _ownerId: r.owner_id, _spaceId: r.space_id || "default" })).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)) || String(a._spaceId).localeCompare(String(b._spaceId)));
         for (const txId of [...this.#pendingRemovals]) {
           if (!rawIds.has(txId)) this.#pendingRemovals.delete(txId);
         }
@@ -7525,14 +7608,38 @@ This replaces your current grouping.`
     static home(state) {
       return new _Space({ id: null, state });
     }
-    /** @param {object} share @param {object} state @returns {Space} */
+    /**
+     * @param {object} share @param {object} state @returns {Space}
+     *
+     * The id is owner + space, not owner alone: one person can send you several
+     * spaces once the family_shares key change lands, and they must be
+     * distinguishable. `ownerId` stays separate because that is what routes a
+     * contribution — the space is presentation, the owner is the destination.
+     */
     static guest(share, state) {
-      return new _Space({ id: share._ownerId, share, state });
+      return new _Space({ id: _Space.keyFor(share), share, state });
+    }
+    /**
+     * Stable id for a share snapshot.
+     * @param {object} share
+     * @returns {string}
+     */
+    static keyFor(share) {
+      const sp = share?._spaceId || "default";
+      return sp === "default" ? share._ownerId : `${share._ownerId}::${sp}`;
     }
     // ── Identity ─────────────────────────────────────────────────────────
-    /** @returns {string|null} null for home, owner id for a guest space */
+    /** @returns {string|null} null for home, owner+space key for a guest space */
     get id() {
       return this.#id;
+    }
+    /**
+     * The owner whose book a contribution from here lands in. Distinct from
+     * `id`, which also encodes WHICH of their spaces this is.
+     * @returns {string|null}
+     */
+    get ownerId() {
+      return this.#share?._ownerId ?? null;
     }
     /** @returns {boolean} */
     get isHome() {
@@ -7713,6 +7820,19 @@ This replaces your current grouping.`
       this.#activeId = this.#readPersisted();
     }
     // ── Query ────────────────────────────────────────────────────────────
+    /**
+     * The id a snapshot is addressed by.
+     *
+     * Delegates to Space.keyFor rather than repeating the rule. This started as a
+     * private copy here, and a mutation test proved the copy was the only live
+     * one — Space.keyFor could be broken with every assertion still green, which
+     * is precisely the drift two copies of a rule always end in.
+     * @param {object} share
+     * @returns {string}
+     */
+    #keyOf(share) {
+      return Space.keyFor(share);
+    }
     /** @returns {object[]} the shared snapshots currently available */
     #shares() {
       return this.#sync?.sharedData || [];
@@ -7725,7 +7845,7 @@ This replaces your current grouping.`
       const state = this.#store.getState();
       return [
         this.#spaceFactory({ id: null, share: null, state }),
-        ...this.#shares().map((share) => this.#spaceFactory({ id: share._ownerId, share, state }))
+        ...this.#shares().map((share) => this.#spaceFactory({ id: this.#keyOf(share), share, state }))
       ];
     }
     /**
@@ -7737,7 +7857,7 @@ This replaces your current grouping.`
     active() {
       const state = this.#store.getState();
       if (this.#activeId === null) return this.#spaceFactory({ id: null, share: null, state });
-      const share = this.#shares().find((s) => s._ownerId === this.#activeId);
+      const share = this.#shares().find((s) => this.#keyOf(s) === this.#activeId);
       if (share) {
         const space = this.#spaceFactory({ id: this.#activeId, share, state });
         this.#lastLabel = space.label;
@@ -7768,7 +7888,7 @@ This replaces your current grouping.`
      * @returns {boolean} true if the active space changed
      */
     activate(spaceId) {
-      const next = spaceId && this.#shares().some((s) => s._ownerId === spaceId) ? spaceId : null;
+      const next = spaceId && this.#shares().some((s) => this.#keyOf(s) === spaceId) ? spaceId : null;
       if (next === this.#activeId) return false;
       this.#activeId = next;
       this.#lastLabel = next ? this.labelFor(next) : null;
@@ -7793,7 +7913,7 @@ This replaces your current grouping.`
      */
     reconcile() {
       if (this.#activeId === null) return null;
-      if (this.#shares().some((s) => s._ownerId === this.#activeId)) return null;
+      if (this.#shares().some((s) => this.#keyOf(s) === this.#activeId)) return null;
       const label = this.#lastLabel || this.labelFor(this.#activeId);
       this.#activeId = null;
       this.#lastLabel = null;
@@ -7810,7 +7930,7 @@ This replaces your current grouping.`
       if (!spaceId) return this.#store.getState().user?.name || "My money";
       const override = (this.#store.getState().user?.spaceLabels || {})[spaceId];
       if (override) return override;
-      const share = this.#shares().find((s) => s._ownerId === spaceId);
+      const share = this.#shares().find((s) => this.#keyOf(s) === spaceId);
       return share?.sharedBy || "Shared with me";
     }
     /**

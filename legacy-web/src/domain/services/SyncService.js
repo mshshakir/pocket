@@ -918,14 +918,25 @@ export class SyncService {
    *
    * @param {string} email
    */
-  async revokeMemberShare(email) {
+  /**
+   * Drop a member's share row so their device stops serving the snapshot.
+   *
+   * @param {string} email
+   * @param {string} [spaceId]  when given, revokes only that space's row.
+   *   Omitted revokes every space you share with them — which is what the old
+   *   single-row behaviour did, and still the right default for "remove this
+   *   person entirely".
+   */
+  async revokeMemberShare(email, spaceId = null) {
     if (!this.#sb || !this.#user || !email) return;
     const addr = email.toLowerCase().trim();
     try {
-      await this.#sb.from('family_shares')
+      let q = this.#sb.from('family_shares')
         .delete()
         .eq('owner_id', this.#user.id)
         .eq('member_email', addr);
+      if (spaceId) q = q.eq('space_id', spaceId);
+      await q;
       // Nudge their client so the snapshot disappears immediately rather than
       // at their next cold start.
       this.#broadcastToMember(addr);
@@ -956,6 +967,22 @@ export class SyncService {
         }
         return { ...b, spent };
       });
+  }
+
+  /**
+   * The space id a member's snapshot is filed under.
+   *
+   * Until phase C of the family_shares migration the primary key is still
+   * (owner_id, member_email), so a member can only have ONE row — but writing
+   * the real space id from now on means the row is already correctly labelled
+   * when the key changes, rather than needing a backfill.
+   * @param {object} member
+   * @returns {string}
+   */
+  #spaceIdFor(member) {
+    const spaces = this.#store.getState().spaces || [];
+    const owning = spaces.find((sp) => (sp.members || []).some((m) => m.memberId === member.id));
+    return owning?.id || 'default';
   }
 
   async #pushFamilyShares() {
@@ -1015,7 +1042,11 @@ export class SyncService {
           owner_id:     this.#user.id,
           member_email: member.email.toLowerCase().trim(),
           snapshot,
-        }, { onConflict: 'owner_id,member_email' });
+          space_id:     this.#spaceIdFor(member),
+          // Targets the unique index added in phase A of the migration. While
+          // the old two-column primary key is still in place both targets are
+          // valid, which is what lets an un-updated client keep working.
+        }, { onConflict: 'owner_id,member_email,space_id' });
         this.#broadcastToMember(member.email.toLowerCase().trim());
       } catch (e) { console.warn('[SyncService] pushFamilyShares error:', e); }
     }
@@ -1037,11 +1068,12 @@ export class SyncService {
     try {
       const { data, error } = await this.#sb
         .from('family_shares')
-        .select('owner_id, snapshot')
+        .select('owner_id, space_id, snapshot')
         .eq('member_email', this.#user.email.toLowerCase())
         // Deterministic order: the UI still passes positional shareIndex values
         // captured at render time, and an unordered select made those indices
-        // shift between opening a sheet and submitting it.
+        // shift between opening a sheet and submitting it. Once one owner can
+        // send several spaces, owner_id alone no longer orders them.
         .order('owner_id');
       if (error) { console.warn('[SyncService] pullFamilyShares error:', error); return; }
 
@@ -1049,9 +1081,13 @@ export class SyncService {
 
       this.#sharedData = (data || [])
         .filter((r) => r.snapshot && r.owner_id !== this.#user.id)
-        .map((r) => ({ ...r.snapshot, _ownerId: r.owner_id }))
-        // Sort locally too — .order() only helps if the backend honours it.
-        .sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)));
+        // `_spaceId` distinguishes several spaces from ONE owner. It defaults
+        // to 'default' so a row written before the migration still resolves.
+        .map((r) => ({ ...r.snapshot, _ownerId: r.owner_id, _spaceId: r.space_id || 'default' }))
+        // Sort locally too — .order() only helps if the backend honours it, and
+        // it must now break ties on the space or the order is unstable.
+        .sort((a, b) => (String(a._ownerId).localeCompare(String(b._ownerId))
+          || String(a._spaceId).localeCompare(String(b._spaceId))));
 
       // Re-apply pending removals — clean up once the server confirms removal
       for (const txId of [...this.#pendingRemovals]) {

@@ -135,6 +135,11 @@ export class OwnerSpaceService {
   setAccount(spaceId, accountId, inSpace) {
     const space = this.find(spaceId);
     if (!space) return { ok: false, reason: 'That space no longer exists' };
+
+    if (inSpace) {
+      const clash = this.#overlapConflict(space, 'accountIds', accountId);
+      if (clash) return clash;
+    }
     if (!Array.isArray(space.accountIds)) space.accountIds = [];
     const has = space.accountIds.includes(accountId);
     if (inSpace && !has) space.accountIds.push(accountId);
@@ -147,6 +152,10 @@ export class OwnerSpaceService {
   setBudget(spaceId, budgetId, inSpace) {
     const space = this.find(spaceId);
     if (!space) return { ok: false, reason: 'That space no longer exists' };
+    if (inSpace) {
+      const clash = this.#overlapConflict(space, 'budgetIds', budgetId);
+      if (clash) return clash;
+    }
     if (!Array.isArray(space.budgetIds)) space.budgetIds = [];
     const has = space.budgetIds.includes(budgetId);
     if (inSpace && !has) space.budgetIds.push(budgetId);
@@ -187,6 +196,16 @@ export class OwnerSpaceService {
       };
     }
 
+    // Adding a person can create the same overlap from the other direction:
+    // they may already be in a space holding one of these items.
+    for (const field of ['accountIds', 'budgetIds']) {
+      for (const itemId of (space[field] || [])) {
+        const probe = { id: space.id, name: space.name, members: [{ memberId }] };
+        const clash = this.#overlapConflict(probe, field, itemId);
+        if (clash) return clash;
+      }
+    }
+
     if (!Array.isArray(space.members)) space.members = [];
     const row = space.members.find((m) => m.memberId === memberId);
     if (row) { row.access = access; row.budgetAccess = budgetAccess; }
@@ -205,6 +224,46 @@ export class OwnerSpaceService {
     space.members = (space.members || []).filter((m) => m.memberId !== memberId);
     const orphaned = this.#commit();
     return { ok: true, orphaned };
+  }
+
+  /**
+   * Would putting `itemId` in `space` give one PERSON the same item twice?
+   *
+   * The ambiguity to prevent is per-member, not global. `#commit()` writes
+   * `permissions` as the union across a member's spaces, so if ONE member is in
+   * two spaces that both hold account A — at 'edit' in one and 'view' in the
+   * other — the map keeps whichever loop iteration ran last.
+   * `#authoriseContribution` reads that map, so it is a silent permission bug.
+   *
+   * An earlier version of this check forbade an item from being in two spaces
+   * at all. That is far too strong and broke the most ordinary case there is:
+   * sharing the joint account with two different people, who are in different
+   * spaces. Two people holding the same account is normal; ONE person holding
+   * it twice at different levels is the problem.
+   *
+   * @param {object} space
+   * @param {'accountIds'|'budgetIds'} field
+   * @param {string} itemId
+   * @returns {{ok:false, reason:string}|null}
+   */
+  #overlapConflict(space, field, itemId) {
+    const memberIds = new Set((space.members || []).map((m) => m.memberId));
+    if (!memberIds.size) return null;
+    for (const other of this.spaces()) {
+      if (other.id === space.id) continue;
+      if (!(other[field] || []).includes(itemId)) continue;
+      const shared = (other.members || []).find((m) => memberIds.has(m.memberId));
+      if (shared) {
+        const name = (this.#store.getState().family || [])
+          .find((f) => f.id === shared.memberId)?.name || 'Someone';
+        const what = field === 'accountIds' ? 'account' : 'budget';
+        return {
+          ok: false,
+          reason: `${name} is in "${other.name}", which already holds that ${what} — one person can't hold it at two levels`,
+        };
+      }
+    }
+    return null;
   }
 
   // ── Derivation ──────────────────────────────────────────────────────

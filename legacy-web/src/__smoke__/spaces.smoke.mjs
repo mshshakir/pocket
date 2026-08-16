@@ -43,6 +43,12 @@
  *        (owner_id, member_email), so the second would overwrite the first.
  *        Refused with a reason rather than silently winning.
  *   SP22 Migrating old member-first grants must never WIDEN access.
+ *   SP23 Two DIFFERENT people may hold the same account through different
+ *        spaces — that is the ordinary case, not a conflict. What is forbidden
+ *        is ONE person holding it twice, which would make the derived
+ *        permission union order-dependent.
+ *   SP24 A snapshot is addressed by owner+space, so one owner can send several
+ *        spaces once the family_shares key change lands.
  *   SP19 FamilyView's hand-copied access table had drifted: it omitted 'add',
  *        so a member granted "Can add" was displayed to the owner as
  *        "View only" — told they had given LESS access than they had.
@@ -860,6 +866,85 @@ console.log('\nspaces suite');
   // which the owner can correct deliberately.
   ok('SP22 the WEAKEST level is kept, so migration cannot widen access',
      spaces[0].members[0].access === 'view', spaces[0].members[0].access);
+  w.close();
+}
+
+// ═══ SP23 — the overlap rule must not forbid ordinary sharing ══════════════
+{
+  console.log('\n SP23+ — overlap and addressing');
+  const owner = memberState();
+  owner.accounts = [acct('joint', 'Joint'), acct('solo', 'Solo')];
+  owner.family = [
+    { id: 'm1', name: 'Zahra',  email: 'z@x.com', initials: 'Z', color: '#8b5cf6', permissions: [], budgetPermissions: [] },
+    { id: 'm2', name: 'Husain', email: 'h@x.com', initials: 'H', color: '#10b981', permissions: [], budgetPermissions: [] },
+  ];
+  const w = boot(owner);
+  await wait(120);
+  await signIn(w);
+  const spaces = w.__app.ownerSpaces;
+
+  const A = spaces.create('Household').space;
+  const B = spaces.create('Business').space;
+  spaces.addMember(A.id, 'm1', 'edit', 'view');
+  spaces.addMember(B.id, 'm2', 'view', 'view');
+
+  // The ordinary case: the SAME account in two spaces, held by two DIFFERENT
+  // people. An earlier version of the rule forbade this outright and broke the
+  // most common thing anyone does with sharing.
+  const r1 = spaces.setAccount(A.id, 'joint', true);
+  const r2 = spaces.setAccount(B.id, 'joint', true);
+  ok('SP23 two different people may hold the same account', r1.ok && r2.ok,
+     JSON.stringify([r1, r2]));
+
+  const fam = () => JSON.parse(w.localStorage.getItem('pocket.v1')).family;
+  ok('SP23 …each at their own space\'s level',
+     fam().find((m) => m.id === 'm1').permissions[0].access === 'edit'
+       && fam().find((m) => m.id === 'm2').permissions[0].access === 'view',
+     JSON.stringify(fam().map((m) => m.permissions)));
+
+  // What IS forbidden: one person ending up with the account twice. Putting m1
+  // into Business — which already holds 'joint' that m1 holds via Household —
+  // would make their derived union order-dependent.
+  const clash = spaces.addMember(B.id, 'm1', 'view', 'view');
+  ok('SP23 one person cannot hold the same account through two spaces', !clash.ok,
+     JSON.stringify(clash));
+  w.close();
+}
+
+// ═══ SP24 — a snapshot is addressed by owner + space ═══════════════════════
+{
+  // Two spaces from ONE owner. The storage cannot deliver this until phase C of
+  // the migration, but the client must already address them distinctly or they
+  // collapse into one the moment it can.
+  const twoFromOne = [
+    { owner_id: 'abbas1', space_id: 'sp_home', snapshot: snapshot({ sharedBy: 'Household' }) },
+    { owner_id: 'abbas1', space_id: 'sp_biz',  snapshot: snapshot({
+        sharedBy: 'Business',
+        accounts: [{ ...acct('own2', 'Biz Wallet', 'AED') }],
+        permission: { own2: 'view' },
+      }) },
+  ];
+  const w = boot(memberState(), { shares: twoFromOne });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app;
+
+  const guests = app.spaces.all().filter((s) => !s.isHome);
+  ok('SP24 both spaces from one owner are offered', guests.length === 2,
+     JSON.stringify(guests.map((s) => s.label)));
+  ok('SP24 …with distinct ids', guests[0].id !== guests[1].id,
+     JSON.stringify(guests.map((s) => s.id)));
+  ok('SP24 …but the same owner, which is what routes a contribution',
+     guests.every((s) => s.ownerId === 'abbas1'),
+     JSON.stringify(guests.map((s) => s.ownerId)));
+
+  const biz = guests.find((s) => s.label === 'Business');
+  app.switchSpace(biz.id);
+  await wait(60);
+  ok('SP24 switching picks the right one of the two',
+     app.spaces.active().label === 'Business'
+       && app.spaces.active().accounts[0].id === 'own2',
+     JSON.stringify({ l: app.spaces.active().label, a: app.spaces.active().accounts.map((a) => a.id) }));
   w.close();
 }
 

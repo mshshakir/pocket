@@ -14,6 +14,8 @@
  * `sessionStorage` gives the right lifetime: a reload keeps you where you were,
  * a new tab or a new day starts at home.
  */
+import { Space } from './Space.js';
+
 const STORAGE_KEY = 'pocket.v1.space';
 
 export class SpaceRegistry {
@@ -52,6 +54,20 @@ export class SpaceRegistry {
 
   // ── Query ────────────────────────────────────────────────────────────
 
+  /**
+   * The id a snapshot is addressed by.
+   *
+   * Delegates to Space.keyFor rather than repeating the rule. This started as a
+   * private copy here, and a mutation test proved the copy was the only live
+   * one — Space.keyFor could be broken with every assertion still green, which
+   * is precisely the drift two copies of a rule always end in.
+   * @param {object} share
+   * @returns {string}
+   */
+  #keyOf(share) {
+    return Space.keyFor(share);
+  }
+
   /** @returns {object[]} the shared snapshots currently available */
   #shares() {
     return this.#sync?.sharedData || [];
@@ -65,7 +81,7 @@ export class SpaceRegistry {
     const state = this.#store.getState();
     return [
       this.#spaceFactory({ id: null, share: null, state }),
-      ...this.#shares().map((share) => this.#spaceFactory({ id: share._ownerId, share, state })),
+      ...this.#shares().map((share) => this.#spaceFactory({ id: this.#keyOf(share), share, state })),
     ];
   }
 
@@ -78,7 +94,7 @@ export class SpaceRegistry {
   active() {
     const state = this.#store.getState();
     if (this.#activeId === null) return this.#spaceFactory({ id: null, share: null, state });
-    const share = this.#shares().find((s) => s._ownerId === this.#activeId);
+    const share = this.#shares().find((s) => this.#keyOf(s) === this.#activeId);
     if (share) {
       const space = this.#spaceFactory({ id: this.#activeId, share, state });
       this.#lastLabel = space.label;
@@ -111,7 +127,7 @@ export class SpaceRegistry {
    * @returns {boolean} true if the active space changed
    */
   activate(spaceId) {
-    const next = spaceId && this.#shares().some((s) => s._ownerId === spaceId) ? spaceId : null;
+    const next = spaceId && this.#shares().some((s) => this.#keyOf(s) === spaceId) ? spaceId : null;
     if (next === this.#activeId) return false;
     this.#activeId  = next;
     this.#lastLabel = next ? this.labelFor(next) : null;
@@ -133,7 +149,7 @@ export class SpaceRegistry {
    */
   reconcile() {
     if (this.#activeId === null) return null;
-    if (this.#shares().some((s) => s._ownerId === this.#activeId)) return null;
+    if (this.#shares().some((s) => this.#keyOf(s) === this.#activeId)) return null;
     // Resolve the label BEFORE dropping the id, or the message has nothing to
     // name — the snapshot it came from is already gone.
     const label = this.#lastLabel || this.labelFor(this.#activeId);
@@ -153,7 +169,7 @@ export class SpaceRegistry {
     if (!spaceId) return this.#store.getState().user?.name || 'My money';
     const override = (this.#store.getState().user?.spaceLabels || {})[spaceId];
     if (override) return override;
-    const share = this.#shares().find((s) => s._ownerId === spaceId);
+    const share = this.#shares().find((s) => this.#keyOf(s) === spaceId);
     return share?.sharedBy || 'Shared with me';
   }
 

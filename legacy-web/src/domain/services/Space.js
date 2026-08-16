@@ -43,15 +43,39 @@ export class Space {
     return new Space({ id: null, state });
   }
 
-  /** @param {object} share @param {object} state @returns {Space} */
+  /**
+   * @param {object} share @param {object} state @returns {Space}
+   *
+   * The id is owner + space, not owner alone: one person can send you several
+   * spaces once the family_shares key change lands, and they must be
+   * distinguishable. `ownerId` stays separate because that is what routes a
+   * contribution — the space is presentation, the owner is the destination.
+   */
   static guest(share, state) {
-    return new Space({ id: share._ownerId, share, state });
+    return new Space({ id: Space.keyFor(share), share, state });
+  }
+
+  /**
+   * Stable id for a share snapshot.
+   * @param {object} share
+   * @returns {string}
+   */
+  static keyFor(share) {
+    const sp = share?._spaceId || 'default';
+    return sp === 'default' ? share._ownerId : `${share._ownerId}::${sp}`;
   }
 
   // ── Identity ─────────────────────────────────────────────────────────
 
-  /** @returns {string|null} null for home, owner id for a guest space */
+  /** @returns {string|null} null for home, owner+space key for a guest space */
   get id() { return this.#id; }
+
+  /**
+   * The owner whose book a contribution from here lands in. Distinct from
+   * `id`, which also encodes WHICH of their spaces this is.
+   * @returns {string|null}
+   */
+  get ownerId() { return this.#share?._ownerId ?? null; }
 
   /** @returns {boolean} */
   get isHome() { return this.#id === null; }
