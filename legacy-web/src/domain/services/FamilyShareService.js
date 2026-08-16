@@ -13,6 +13,7 @@
  * Absence of an entry means no access at all.
  */
 import { Store }                 from '../../core/Store.js';
+import { OwnerSpaceService }      from './OwnerSpaceService.js';
 import { FAMILY_ACCESS_LEVELS, FAMILY_BUDGET_ACCESS_LEVELS } from '../../data/constants.js';
 
 /** Valid access ids, cheapest lookup for validation. */
@@ -112,6 +113,9 @@ export class FamilyShareService {
     if (!this.#store.getState().budgets?.some((b) => b.id === budgetId)) {
       return { ok: false, reason: 'That budget no longer exists' };
     }
+    // Validated first — see the note in setAccess().
+    const viaSpace = this.#throughSpace(member, { budgetId, access });
+    if (viaSpace) return viaSpace;
 
     if (!Array.isArray(member.budgetPermissions)) member.budgetPermissions = [];
     const idx = member.budgetPermissions.findIndex((p) => p.budgetId === budgetId);
@@ -143,6 +147,54 @@ export class FamilyShareService {
     }
     if (affected.length) this.#store.flush();
     return affected;
+  }
+
+  /**
+   * Apply a grant through the member's space, when they are in one.
+   *
+   * Returns null when they are not, so the pre-spaces path still works for a
+   * book that has no spaces yet — the migration creates one on first load, so
+   * that is mostly a fresh install with nothing shared.
+   *
+   * @param {object} member
+   * @param {{accountId?:string, budgetId?:string, access:string|null}} grant
+   * @returns {object|null}
+   */
+  #throughSpace(member, grant) {
+    const spaces = new OwnerSpaceService(this.#store);
+    let space = spaces.spaceForMember(member.id);
+
+    if (!space) {
+      // Granting to someone with no space yet: make one named after them, which
+      // is exactly what the old member-first model expressed.
+      if (grant.access === null) return { ok: true, access: null, member, wasLast: true };
+      const created = spaces.create(member.spaceName || member.name || 'Shared');
+      if (!created.ok) return created;
+      space = created.space;
+      const added = spaces.addMember(space.id, member.id, 'view', 'view');
+      if (!added.ok) { spaces.remove(space.id); return added; }
+    }
+
+    if (grant.accountId) {
+      const res = spaces.setAccount(space.id, grant.accountId, grant.access !== null);
+      if (!res.ok) return res;
+      if (grant.access !== null) spaces.addMember(space.id, member.id, grant.access, this.#budgetLevelOf(space, member.id));
+    } else if (grant.budgetId) {
+      const res = spaces.setBudget(space.id, grant.budgetId, grant.access !== null);
+      if (!res.ok) return res;
+      if (grant.access !== null) spaces.addMember(space.id, member.id, this.#accountLevelOf(space, member.id), grant.access);
+    }
+
+    const wasLast = FamilyShareService.hasNothingShared(member);
+    return { ok: true, access: grant.access, member, wasLast };
+  }
+
+  #accountLevelOf(space, memberId) {
+    return (space.members || []).find((m) => m.memberId === memberId)?.access || 'view';
+  }
+
+  #budgetLevelOf(space, memberId) {
+    return (space.members || []).find((m) => m.memberId === memberId)?.budgetAccess || 'view';
   }
 
   /**
@@ -230,6 +282,12 @@ export class FamilyShareService {
     if (!this.#store.getState().accounts.some((a) => a.id === accountId)) {
       return { ok: false, reason: 'That account no longer exists' };
     }
+    // Validation runs BEFORE this: spaces own the grouping and re-derive
+    // `permissions` wholesale, so writing the array below would be reverted by
+    // the next composition change — but routing an unvalidated level through
+    // the space would smuggle it past the checks entirely.
+    const viaSpace = this.#throughSpace(member, { accountId, access });
+    if (viaSpace) return viaSpace;
 
     if (!Array.isArray(member.permissions)) member.permissions = [];
     const idx = member.permissions.findIndex((p) => p.accountId === accountId);

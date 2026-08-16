@@ -53,6 +53,29 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Owner-created spaces, steps 1-2 (2026-08-15).** Answers "what if I want to add more user
+emails to the space?" — which turned out to need no schema change at all. Web 468 assertions
+(spaces 89 → 106), 5 more mutations verified.
+- **`state.spaces`** = `{ id, name, accountIds, budgetIds, members:[{memberId, access,
+  budgetAccess}] }`, owned by `domain/services/OwnerSpaceService.js`. Compose the thing once
+  and put people in it, instead of N×M independent grants.
+- **`permissions` and `budgetPermissions` are DERIVED, not replaced.** `#commit()` rewrites
+  them from the spaces after every change. That is the whole safety argument: `permissions` is
+  read by `#authoriseContribution`, the owner's ONLY server-side check (audit H9), and it now
+  keeps exactly the shape it always had — so neither it nor `#pushFamilyShares` changed at all.
+- **`FamilyShareService.setAccess` / `setBudgetAccess` route through the space** — otherwise a
+  direct array write would be silently reverted by the next `#commit()`. Validation runs FIRST;
+  routing an unvalidated level through the space would smuggle it past the checks (a test
+  caught exactly that).
+- **One person, ONE space.** `family_shares` is keyed `(owner_id, member_email)`: several
+  people in one space is several rows and fine, the SAME person in two spaces collides.
+  `addMember()` refuses it by name rather than letting the second silently win.
+- **Migration never widens access.** A space carries one level per member; the old model
+  allowed per-account levels. `OwnerSpaceService.migrate()` keeps the WEAKEST granted — taking
+  the strongest would silently promote a 'view' account to 'full'.
+- **UI:** Family → "New space" + a card per space; `SpaceComposerSheet` with Accounts /
+  Budgets / People tabs. Members without an email are refused (a share is delivered by email).
+
 **Loose ends cleared (2026-08-15).** Web 451 assertions, mobile 88 (30+10+48).
 - **Mobile: shared accounts in Regular purchases** — the oldest outstanding item, now done.
   `AccountRef.js` copied verbatim; `RegularLogService.js` made portable by taking an optional
@@ -362,8 +385,10 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
    `family_contributions.account_id NOT NULL` decision. Touches the security boundary.
 5. **Spaces on mobile.** Entirely absent — `Space`, `SpaceRegistry`, the switcher and the
    `BaseView` scoping are all web-only. Bigger than the sync port was.
-6. **Owner-created spaces** — `docs/OWNER-SPACES-DESIGN.md`, approved for a design doc only.
-   Steps 1-2 (multi-member named spaces) need NO schema change; step 3 onwards does.
+6. **Owner-created spaces steps 3-5** — steps 1-2 shipped (multi-member named spaces).
+   What remains needs `space_id` in the `family_shares` primary key (a Supabase migration you
+   run) and `#authoriseContribution` resolving through space membership, and buys exactly one
+   thing: the same person in two of your spaces. See `docs/OWNER-SPACES-DESIGN.md` §8.
 7. **Phase 1c remainder.** `sharedMatch` and the positional `shareIndex` addressing are NOT
    dead code: the home-space account dropdown still offers a "Shared with me" group. Killing
    them means deciding that contributing requires switching to the owner's space — a

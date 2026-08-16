@@ -37,6 +37,12 @@
  *   SP18 The OWNER names the space each member sees, and sees their outbound
  *        shares as spaces — previously every space carried the owner's personal
  *        name whatever it held, and the owner had no view of it at all.
+ *   SP20 Owner-created spaces: compose accounts + budgets + SEVERAL people, with
+ *        permissions still DERIVED so #authoriseContribution never changes.
+ *   SP21 One person cannot be in two spaces — family_shares is keyed
+ *        (owner_id, member_email), so the second would overwrite the first.
+ *        Refused with a reason rather than silently winning.
+ *   SP22 Migrating old member-first grants must never WIDEN access.
  *   SP19 FamilyView's hand-copied access table had drifted: it omitted 'add',
  *        so a member granted "Can add" was displayed to the owner as
  *        "View only" — told they had given LESS access than they had.
@@ -742,6 +748,118 @@ console.log('\nspaces suite');
   const cleared = w.__cloud.pushedShares.filter((r) => r.member_email === 'z@x.com').at(-1)?.snapshot;
   ok('SP18 clearing it falls back to the owner\'s name',
      cleared?.sharedBy === 'Abbas', String(cleared?.sharedBy));
+  w.close();
+}
+
+// ═══ SP20-22 — owner-created spaces ════════════════════════════════════════
+{
+  console.log('\n SP20+ — owner-created spaces');
+  const owner = memberState();
+  owner.user.name = 'Abbas';
+  owner.accounts  = [acct('a1', 'Joint'), acct('a2', 'Business'), acct('a3', 'Savings')];
+  owner.budgets   = [{ id: 'bg1', categoryId: 'mycat', amount: 50000, currency: 'USD',
+                       period: 'gregorian', rollover: false }];
+  owner.family = [
+    { id: 'm1', name: 'Zahra',  email: 'z@x.com', initials: 'Z', color: '#8b5cf6', permissions: [], budgetPermissions: [] },
+    { id: 'm2', name: 'Husain', email: 'h@x.com', initials: 'H', color: '#10b981', permissions: [], budgetPermissions: [] },
+    { id: 'm3', name: 'NoEmail', initials: 'N', color: '#f59e0b', permissions: [], budgetPermissions: [] },
+  ];
+  const w = boot(owner);
+  await wait(120);
+  await signIn(w);
+  const app = w.__app;
+  const spaces = app.ownerSpaces;
+
+  const made = spaces.create('Household');
+  ok('SP20 a space can be created', made.ok && !!made.space.id, JSON.stringify(made));
+  const spId = made.space.id;
+
+  spaces.setAccount(spId, 'a1', true);
+  spaces.setAccount(spId, 'a3', true);
+  spaces.setBudget(spId, 'bg1', true);
+
+  // THE question that started this: more than one email in one space.
+  const r1 = spaces.addMember(spId, 'm1', 'edit', 'view');
+  const r2 = spaces.addMember(spId, 'm2', 'add', 'view');
+  ok('SP20 several people can be in one space', r1.ok && r2.ok,
+     JSON.stringify([r1, r2]));
+
+  // The whole safety argument: permissions keep the exact shape
+  // #authoriseContribution already reads, so it never had to change.
+  const fam = () => JSON.parse(w.localStorage.getItem('pocket.v1')).family;
+  const zahra = fam().find((m) => m.id === 'm1');
+  ok('SP20 permissions are DERIVED for each member',
+     zahra.permissions.length === 2
+       && zahra.permissions.every((p) => p.access === 'edit')
+       && zahra.permissions.map((p) => p.accountId).sort().join() === 'a1,a3',
+     JSON.stringify(zahra.permissions));
+  ok('SP20 …at that member\'s own level, not the space\'s',
+     fam().find((m) => m.id === 'm2').permissions.every((p) => p.access === 'add'),
+     JSON.stringify(fam().find((m) => m.id === 'm2').permissions));
+  ok('SP20 budget grants derive too',
+     zahra.budgetPermissions.length === 1 && zahra.budgetPermissions[0].budgetId === 'bg1',
+     JSON.stringify(zahra.budgetPermissions));
+  ok('SP20 the space name is what both members see',
+     fam().filter((m) => ['m1', 'm2'].includes(m.id)).every((m) => m.spaceName === 'Household'),
+     JSON.stringify(fam().map((m) => m.spaceName)));
+  ok('SP20 an account NOT in the space is not granted',
+     !zahra.permissions.some((p) => p.accountId === 'a2'));
+
+  // Adding an account to the space reaches everyone at once — the N×M fix.
+  spaces.setAccount(spId, 'a2', true);
+  ok('SP20 adding an account reaches every member at once',
+     fam().filter((m) => ['m1', 'm2'].includes(m.id)).every((m) => m.permissions.length === 3),
+     JSON.stringify(fam().map((m) => m.permissions.length)));
+
+  // SP21 — the limit the storage genuinely has, surfaced not hidden.
+  const other = spaces.create('Business');
+  const clash = spaces.addMember(other.space.id, 'm1', 'view', 'view');
+  ok('SP21 one person cannot be in two spaces', !clash.ok, JSON.stringify(clash));
+  ok('SP21 …and the reason names the space they are already in',
+     /Household/.test(clash.reason || ''), clash.reason);
+  ok('SP21 the first space is untouched',
+     fam().find((m) => m.id === 'm1').permissions.length === 3);
+
+  // A share is delivered by email, so a member without one cannot be added.
+  const noMail = spaces.addMember(other.space.id, 'm3', 'view', 'view');
+  ok('SP21 a member with no email is refused, with the reason', !noMail.ok
+     && /email/i.test(noMail.reason || ''), JSON.stringify(noMail));
+
+  // Removing everything leaves the member orphaned, which the caller must act on.
+  const gone = spaces.removeMember(spId, 'm2');
+  ok('SP20 removing someone clears their grants',
+     fam().find((m) => m.id === 'm2').permissions.length === 0);
+  ok('SP20 …and reports them as orphaned so the cloud row can be dropped',
+     (gone.orphaned || []).some((m) => m.id === 'm2'),
+     JSON.stringify((gone.orphaned || []).map((m) => m.id)));
+  w.close();
+}
+
+// ═══ SP22 — migrating old grants must never widen access ═══════════════════
+{
+  const legacy = memberState();
+  legacy.accounts = [acct('a1', 'One'), acct('a2', 'Two')];
+  legacy.family = [{
+    id: 'm1', name: 'Zahra', email: 'z@x.com', initials: 'Z', color: '#8b5cf6',
+    // Mixed levels — the old model allowed per-account granularity.
+    permissions: [{ accountId: 'a1', access: 'full' }, { accountId: 'a2', access: 'view' }],
+    budgetPermissions: [],
+  }];
+  const w = boot(legacy);
+  await wait(150);
+  const app = w.__app;
+  const spaces = app.ownerSpaces.spaces();
+
+  ok('SP22 a space is synthesised from the old grants', spaces.length === 1,
+     JSON.stringify(spaces.map((s) => s.name)));
+  ok('SP22 …holding both accounts',
+     (spaces[0].accountIds || []).sort().join() === 'a1,a2',
+     JSON.stringify(spaces[0].accountIds));
+  // A space carries ONE level per member. Taking the strongest would silently
+  // promote 'view' on a2 to 'full'; taking the weakest can only under-grant,
+  // which the owner can correct deliberately.
+  ok('SP22 the WEAKEST level is kept, so migration cannot widen access',
+     spaces[0].members[0].access === 'view', spaces[0].members[0].access);
   w.close();
 }
 

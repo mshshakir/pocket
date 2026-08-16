@@ -1438,6 +1438,228 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/OwnerSpaceService.js
+  var ACCOUNT_LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
+  var BUDGET_LEVELS = new Set(FAMILY_BUDGET_ACCESS_LEVELS.map((l) => l.id));
+  var OwnerSpaceService = class {
+    /** @type {Store} */
+    #store;
+    /** @param {Store} [store] */
+    constructor(store) {
+      this.#store = store || Store.getInstance();
+    }
+    // ── Queries ─────────────────────────────────────────────────────────
+    /** @returns {object[]} every space you share, lazily initialised */
+    spaces() {
+      const state = this.#store.getState();
+      if (!Array.isArray(state.spaces)) state.spaces = [];
+      return state.spaces;
+    }
+    /** @param {string} spaceId @returns {object|undefined} */
+    find(spaceId) {
+      return this.spaces().find((s) => s.id === spaceId);
+    }
+    /**
+     * The space a member belongs to, if any. At most one until the key change.
+     * @param {string} memberId
+     * @returns {object|null}
+     */
+    spaceForMember(memberId) {
+      return this.spaces().find((s) => (s.members || []).some((m) => m.memberId === memberId)) || null;
+    }
+    /** @param {string} spaceId @returns {object[]} the member records in it */
+    membersOf(spaceId) {
+      const space = this.find(spaceId);
+      if (!space) return [];
+      const family = this.#store.getState().family || [];
+      return (space.members || []).map((m) => ({ ...m, member: family.find((f) => f.id === m.memberId) })).filter((m) => m.member);
+    }
+    // ── Composition ─────────────────────────────────────────────────────
+    /**
+     * @param {string} name
+     * @returns {{ok:true, space:object}|{ok:false, reason:string}}
+     */
+    create(name) {
+      const trimmed = (name || "").trim().slice(0, 60);
+      if (!trimmed) return { ok: false, reason: "Give the space a name" };
+      const space = {
+        id: IdGenerator.generate("sp"),
+        name: trimmed,
+        accountIds: [],
+        budgetIds: [],
+        members: []
+      };
+      this.spaces().push(space);
+      this.#commit();
+      return { ok: true, space };
+    }
+    /** @param {string} spaceId @param {string} name */
+    rename(spaceId, name) {
+      const space = this.find(spaceId);
+      if (!space) return { ok: false, reason: "That space no longer exists" };
+      const trimmed = (name || "").trim().slice(0, 60);
+      if (!trimmed) return { ok: false, reason: "Give the space a name" };
+      space.name = trimmed;
+      this.#commit();
+      return { ok: true };
+    }
+    /**
+     * Delete a space. Everyone in it loses everything it held — the caller is
+     * expected to follow up with `revokeMemberShare` for any member left with
+     * nothing at all, or their device keeps serving the snapshot it already has.
+     * @param {string} spaceId
+     * @returns {{ok:true, orphaned:object[]}}
+     */
+    remove(spaceId) {
+      const state = this.#store.getState();
+      state.spaces = this.spaces().filter((s) => s.id !== spaceId);
+      const orphaned = this.#commit();
+      return { ok: true, orphaned };
+    }
+    /**
+     * Put an account in a space, or take it out.
+     * @param {string} spaceId @param {string} accountId @param {boolean} inSpace
+     */
+    setAccount(spaceId, accountId, inSpace) {
+      const space = this.find(spaceId);
+      if (!space) return { ok: false, reason: "That space no longer exists" };
+      if (!Array.isArray(space.accountIds)) space.accountIds = [];
+      const has = space.accountIds.includes(accountId);
+      if (inSpace && !has) space.accountIds.push(accountId);
+      if (!inSpace && has) space.accountIds = space.accountIds.filter((id) => id !== accountId);
+      const orphaned = this.#commit();
+      return { ok: true, orphaned };
+    }
+    /** @param {string} spaceId @param {string} budgetId @param {boolean} inSpace */
+    setBudget(spaceId, budgetId, inSpace) {
+      const space = this.find(spaceId);
+      if (!space) return { ok: false, reason: "That space no longer exists" };
+      if (!Array.isArray(space.budgetIds)) space.budgetIds = [];
+      const has = space.budgetIds.includes(budgetId);
+      if (inSpace && !has) space.budgetIds.push(budgetId);
+      if (!inSpace && has) space.budgetIds = space.budgetIds.filter((id) => id !== budgetId);
+      const orphaned = this.#commit();
+      return { ok: true, orphaned };
+    }
+    // ── Membership ──────────────────────────────────────────────────────
+    /**
+     * Add someone to a space.
+     *
+     * @param {string} spaceId
+     * @param {string} memberId
+     * @param {string} [access='view']
+     * @param {string} [budgetAccess='view']
+     * @returns {{ok:true}|{ok:false, reason:string}}
+     */
+    addMember(spaceId, memberId, access = "view", budgetAccess = "view") {
+      const space = this.find(spaceId);
+      if (!space) return { ok: false, reason: "That space no longer exists" };
+      const member = (this.#store.getState().family || []).find((m) => m.id === memberId);
+      if (!member) return { ok: false, reason: "That member no longer exists" };
+      if (!member.email) {
+        return { ok: false, reason: `Add an email to ${member.name || "them"} first \u2014 a share is delivered by email` };
+      }
+      if (!ACCOUNT_LEVELS.has(access)) return { ok: false, reason: `Unknown access level "${access}"` };
+      if (!BUDGET_LEVELS.has(budgetAccess)) return { ok: false, reason: `Unknown budget level "${budgetAccess}"` };
+      const existing = this.spaceForMember(memberId);
+      if (existing && existing.id !== spaceId) {
+        return {
+          ok: false,
+          reason: `${member.name || "They"} are already in "${existing.name}". Someone can only be in one space for now.`
+        };
+      }
+      if (!Array.isArray(space.members)) space.members = [];
+      const row = space.members.find((m) => m.memberId === memberId);
+      if (row) {
+        row.access = access;
+        row.budgetAccess = budgetAccess;
+      } else space.members.push({ memberId, access, budgetAccess });
+      this.#commit();
+      return { ok: true };
+    }
+    /**
+     * @param {string} spaceId @param {string} memberId
+     * @returns {{ok:true, orphaned:object[]}}
+     */
+    removeMember(spaceId, memberId) {
+      const space = this.find(spaceId);
+      if (!space) return { ok: false, reason: "That space no longer exists" };
+      space.members = (space.members || []).filter((m) => m.memberId !== memberId);
+      const orphaned = this.#commit();
+      return { ok: true, orphaned };
+    }
+    // ── Derivation ──────────────────────────────────────────────────────
+    /**
+     * Rewrite the member-first arrays from the spaces.
+     *
+     * This is the whole safety argument: `permissions` keeps exactly the shape
+     * `#authoriseContribution` and `#pushFamilyShares` already read, so neither
+     * has to change and neither can be broken by a composition bug.
+     *
+     * @returns {object[]} members left with nothing shared — the caller should
+     *   `revokeMemberShare` each, or their device keeps a stale snapshot alive.
+     */
+    #commit() {
+      const state = this.#store.getState();
+      const family = state.family || [];
+      const before = new Map(family.map((m) => [m.id, (m.permissions || []).length + (m.budgetPermissions || []).length > 0]));
+      for (const member of family) {
+        member.permissions = [];
+        member.budgetPermissions = [];
+        delete member.spaceName;
+      }
+      for (const space of this.spaces()) {
+        for (const row of space.members || []) {
+          const member = family.find((m) => m.id === row.memberId);
+          if (!member) continue;
+          member.spaceName = space.name;
+          for (const accountId of space.accountIds || []) {
+            member.permissions.push({ accountId, access: row.access });
+          }
+          for (const budgetId of space.budgetIds || []) {
+            member.budgetPermissions.push({ budgetId, access: row.budgetAccess || "view" });
+          }
+        }
+      }
+      const orphaned = family.filter((m) => before.get(m.id) && !m.permissions.length && !m.budgetPermissions.length);
+      this.#store.flush();
+      return orphaned;
+    }
+    /**
+     * Build spaces from the member-first grants that predate them.
+     *
+     * One space per member, which is exactly what the old model expressed — an
+     * account set per person. Merging members who happen to share an identical
+     * set would be tidier but guesses at intent, so it doesn't.
+     *
+     * Idempotent: does nothing once `state.spaces` is populated.
+     * @param {object} state
+     */
+    static migrate(state) {
+      if (!state || typeof state !== "object") return;
+      if (!Array.isArray(state.spaces)) state.spaces = [];
+      if (state.spaces.length) return;
+      for (const member of state.family || []) {
+        const accountIds = [...new Set((member.permissions || []).map((p) => p.accountId).filter(Boolean))];
+        const budgetIds = [...new Set((member.budgetPermissions || []).map((p) => p.budgetId).filter(Boolean))];
+        if (!accountIds.length && !budgetIds.length) continue;
+        const order = ["view", "add", "edit", "full"];
+        const weakest = (list, key, fallback) => list.map((p) => p[key]).filter((a) => order.includes(a)).sort((a, b) => order.indexOf(a) - order.indexOf(b))[0] || fallback;
+        state.spaces.push({
+          id: `sp_migrated_${member.id}`,
+          name: member.spaceName || state.user?.name || "Shared",
+          accountIds,
+          budgetIds,
+          members: [{
+            memberId: member.id,
+            access: weakest(member.permissions || [], "access", "view"),
+            budgetAccess: weakest(member.budgetPermissions || [], "access", "view")
+          }]
+        });
+      }
+    }
+  };
+
   // src/data/StateMigrator.js
   var StateMigrator = class {
     /**
@@ -1482,6 +1704,7 @@ var _PocketApp = (() => {
       }
       if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
       if (!Array.isArray(state.family)) state.family = [];
+      if (!Array.isArray(state.spaces)) state.spaces = [];
       for (const m of state.family) {
         if (!Array.isArray(m.budgetPermissions)) m.budgetPermissions = [];
       }
@@ -1501,6 +1724,7 @@ var _PocketApp = (() => {
           t.hijriDate.offset = currentOffset;
         }
       }
+      OwnerSpaceService.migrate(state);
       return state;
     }
   };
@@ -4726,6 +4950,8 @@ RULES:
       if (!this.#store.getState().budgets?.some((b) => b.id === budgetId)) {
         return { ok: false, reason: "That budget no longer exists" };
       }
+      const viaSpace = this.#throughSpace(member, { budgetId, access });
+      if (viaSpace) return viaSpace;
       if (!Array.isArray(member.budgetPermissions)) member.budgetPermissions = [];
       const idx = member.budgetPermissions.findIndex((p) => p.budgetId === budgetId);
       if (access === null) {
@@ -4753,6 +4979,49 @@ RULES:
       }
       if (affected.length) this.#store.flush();
       return affected;
+    }
+    /**
+     * Apply a grant through the member's space, when they are in one.
+     *
+     * Returns null when they are not, so the pre-spaces path still works for a
+     * book that has no spaces yet — the migration creates one on first load, so
+     * that is mostly a fresh install with nothing shared.
+     *
+     * @param {object} member
+     * @param {{accountId?:string, budgetId?:string, access:string|null}} grant
+     * @returns {object|null}
+     */
+    #throughSpace(member, grant) {
+      const spaces = new OwnerSpaceService(this.#store);
+      let space = spaces.spaceForMember(member.id);
+      if (!space) {
+        if (grant.access === null) return { ok: true, access: null, member, wasLast: true };
+        const created = spaces.create(member.spaceName || member.name || "Shared");
+        if (!created.ok) return created;
+        space = created.space;
+        const added = spaces.addMember(space.id, member.id, "view", "view");
+        if (!added.ok) {
+          spaces.remove(space.id);
+          return added;
+        }
+      }
+      if (grant.accountId) {
+        const res = spaces.setAccount(space.id, grant.accountId, grant.access !== null);
+        if (!res.ok) return res;
+        if (grant.access !== null) spaces.addMember(space.id, member.id, grant.access, this.#budgetLevelOf(space, member.id));
+      } else if (grant.budgetId) {
+        const res = spaces.setBudget(space.id, grant.budgetId, grant.access !== null);
+        if (!res.ok) return res;
+        if (grant.access !== null) spaces.addMember(space.id, member.id, this.#accountLevelOf(space, member.id), grant.access);
+      }
+      const wasLast = _FamilyShareService.hasNothingShared(member);
+      return { ok: true, access: grant.access, member, wasLast };
+    }
+    #accountLevelOf(space, memberId) {
+      return (space.members || []).find((m) => m.memberId === memberId)?.access || "view";
+    }
+    #budgetLevelOf(space, memberId) {
+      return (space.members || []).find((m) => m.memberId === memberId)?.budgetAccess || "view";
     }
     /**
      * Name the space this member sees.
@@ -4831,6 +5100,8 @@ RULES:
       if (!this.#store.getState().accounts.some((a) => a.id === accountId)) {
         return { ok: false, reason: "That account no longer exists" };
       }
+      const viaSpace = this.#throughSpace(member, { accountId, access });
+      if (viaSpace) return viaSpace;
       if (!Array.isArray(member.permissions)) member.permissions = [];
       const idx = member.permissions.findIndex((p) => p.accountId === accountId);
       if (access === null) {
@@ -7860,6 +8131,239 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/SpaceComposerSheet.js
+  var SpaceComposerSheet = class extends OverlaySheet {
+    /** @type {Store} */
+    #store;
+    /** @type {object} */
+    #spaces;
+    /** @type {object} */
+    #sync;
+    #spaceId = null;
+    #error = "";
+    #tab = "accounts";
+    // 'accounts' | 'budgets' | 'people'
+    /**
+     * @param {object} deps
+     * @param {Store}  [deps.store]
+     * @param {object} deps.ownerSpaceService
+     * @param {object} deps.syncService
+     */
+    constructor({ store, ownerSpaceService, syncService }) {
+      super({ id: "spaceComposerRoot" });
+      this.#store = store || Store.getInstance();
+      this.#spaces = ownerSpaceService;
+      this.#sync = syncService;
+    }
+    /** @param {string} spaceId */
+    open(spaceId) {
+      this.#spaceId = spaceId;
+      this.#error = "";
+      this.#tab = "accounts";
+      this.render();
+      this.show();
+    }
+    /** @param {string} tab */
+    setTab(tab) {
+      this.#tab = tab;
+      this.#error = "";
+      this.render();
+    }
+    // ── Mutations ────────────────────────────────────────────────────────
+    toggleAccount(accountId, on) {
+      this.#apply(this.#spaces.setAccount(this.#spaceId, accountId, on));
+    }
+    toggleBudget(budgetId, on) {
+      this.#apply(this.#spaces.setBudget(this.#spaceId, budgetId, on));
+    }
+    addMember(memberId) {
+      this.#apply(this.#spaces.addMember(this.#spaceId, memberId, "view", "view"));
+    }
+    removeMember(memberId) {
+      this.#apply(this.#spaces.removeMember(this.#spaceId, memberId));
+    }
+    setMemberAccess(memberId, access) {
+      const row = (this.#spaces.find(this.#spaceId)?.members || []).find((m) => m.memberId === memberId);
+      this.#apply(this.#spaces.addMember(this.#spaceId, memberId, access, row?.budgetAccess || "view"));
+    }
+    setMemberBudgetAccess(memberId, budgetAccess) {
+      const row = (this.#spaces.find(this.#spaceId)?.members || []).find((m) => m.memberId === memberId);
+      this.#apply(this.#spaces.addMember(this.#spaceId, memberId, row?.access || "view", budgetAccess));
+    }
+    renameSpace() {
+      const space = this.#spaces.find(this.#spaceId);
+      const next = prompt("Name this space", space?.name || "");
+      if (next === null) return;
+      this.#apply(this.#spaces.rename(this.#spaceId, next));
+    }
+    deleteSpace() {
+      const space = this.#spaces.find(this.#spaceId);
+      if (!confirm(`Delete "${space?.name || "this space"}"? Everyone in it loses access to everything it holds.`)) return;
+      const res = this.#spaces.remove(this.#spaceId);
+      this.#revokeOrphans(res.orphaned);
+      this.close();
+      window.__app?.refreshAfterSpaceChange?.();
+    }
+    /**
+     * @param {{ok:boolean, reason?:string, orphaned?:object[]}} res
+     */
+    #apply(res) {
+      if (!res?.ok) {
+        this.#error = res?.reason || "That did not work";
+        this.render();
+        return;
+      }
+      this.#error = "";
+      this.#revokeOrphans(res.orphaned);
+      this.render();
+      window.__app?.refreshAfterSpaceChange?.();
+    }
+    /**
+     * A member left with nothing keeps serving the snapshot their device already
+     * holds unless the cloud row is dropped too.
+     * @param {object[]} [orphaned]
+     */
+    #revokeOrphans(orphaned) {
+      for (const m of orphaned || []) {
+        if (m.email) this.#sync?.revokeMemberShare?.(m.email);
+      }
+    }
+    // ── Rendering ────────────────────────────────────────────────────────
+    renderContent() {
+      const space = this.#spaces.find(this.#spaceId);
+      if (!space) return this.#missing();
+      const state = this.#store.getState();
+      const tab = (id, label, n) => `
+      <button type="button" class="btn ${this.#tab === id ? "btn-primary" : "btn-outline"} justify-center flex-1"
+              onclick="window.__app.spaceComposer.setTab('${id}')">
+        ${this.esc(label)}${n ? ` \xB7 ${n}` : ""}
+      </button>`;
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <span class="sheet-dot" style="background:#8b5cf6"></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold truncate">${this.esc(space.name)}</div>
+            <div class="sheet-note">What the people in this space can see</div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" title="Rename"
+                  onclick="window.__app.spaceComposer.renameSpace()">
+            <i data-lucide="pencil" style="width:14px;height:14px"></i>
+          </button>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.spaceComposer.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="flex gap-2 mt-2">
+          ${tab("accounts", "Accounts", (space.accountIds || []).length)}
+          ${tab("budgets", "Budgets", (space.budgetIds || []).length)}
+          ${tab("people", "People", (space.members || []).length)}
+        </div>
+      </div>
+      <div class="sheet-body">
+        ${this.#error ? `<div class="sheet-note text-rose-500 px-2 pb-1">${this.esc(this.#error)}</div>` : ""}
+        ${this.#tab === "accounts" ? this.#accountsTab(space, state) : this.#tab === "budgets" ? this.#budgetsTab(space, state) : this.#peopleTab(space, state)}
+      </div>
+      <div class="sheet-foot">
+        <button type="button" class="btn btn-ghost text-rose-500"
+                onclick="window.__app.spaceComposer.deleteSpace()">Delete space</button>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-primary"
+                onclick="window.__app.spaceComposer.close()">Done</button>
+      </div>`;
+    }
+    #accountsTab(space, state) {
+      const inSpace = new Set(space.accountIds || []);
+      const rows = (state.accounts || []).filter((a) => !a.archived).map((a) => `
+      <button type="button" class="sheet-row ${inSpace.has(a.id) ? "is-selected" : ""}"
+              onclick="window.__app.spaceComposer.toggleAccount('${this.js(a.id)}',${!inSpace.has(a.id)})">
+        <span class="sheet-dot" style="background:${this.safeColor(a.color, "#71717a")}"></span>
+        <span class="sheet-row-name">${this.esc(a.name)}
+          <span class="sheet-row-meta"> \xB7 ${this.esc(a.currency)}</span>
+        </span>
+        ${inSpace.has(a.id) ? '<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>' : ""}
+      </button>`).join("");
+      return rows || '<div class="sheet-empty">No accounts yet.</div>';
+    }
+    #budgetsTab(space, state) {
+      const inSpace = new Set(space.budgetIds || []);
+      const rows = (state.budgets || []).map((b) => `
+      <button type="button" class="sheet-row ${inSpace.has(b.id) ? "is-selected" : ""}"
+              onclick="window.__app.spaceComposer.toggleBudget('${this.js(b.id)}',${!inSpace.has(b.id)})">
+        <span class="sheet-dot" style="background:#8b5cf6"></span>
+        <span class="sheet-row-name">${this.esc(this.#budgetLabel(b, state))}
+          <span class="sheet-row-meta"> \xB7 ${this.esc(b.currency)}</span>
+        </span>
+        ${inSpace.has(b.id) ? '<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>' : ""}
+      </button>`).join("");
+      return (rows || '<div class="sheet-empty">No budgets yet.</div>') + `<div class="sheet-note px-2 pt-2">
+           Sharing a budget also shows how much of it is spent, counted across
+           <strong>all</strong> your accounts \u2014 not only the ones in this space.
+         </div>`;
+    }
+    #peopleTab(space, state) {
+      const inSpace = new Map((space.members || []).map((m) => [m.memberId, m]));
+      const family = state.family || [];
+      const memberRows = family.map((m) => {
+        const row = inSpace.get(m.id);
+        const elsewhere = !row && this.#spaces.spaceForMember(m.id);
+        if (!row) {
+          return `
+          <button type="button" class="sheet-row" ${elsewhere ? 'disabled style="opacity:.5"' : ""}
+                  onclick="window.__app.spaceComposer.addMember('${this.js(m.id)}')">
+            <span class="sheet-dot" style="background:${this.safeColor(m.color, "#a1a1aa")}"></span>
+            <span class="sheet-row-name">${this.esc(m.name || m.email || "Member")}
+              <span class="sheet-row-meta"> \xB7 ${elsewhere ? `already in ${this.esc(elsewhere.name)}` : "tap to add"}</span>
+            </span>
+          </button>`;
+        }
+        const level = (name, id, current, setter) => `
+        <button type="button" class="btn ${current === id ? "btn-primary" : "btn-outline"} text-xs"
+                onclick="window.__app.spaceComposer.${setter}('${this.js(m.id)}','${id}')">${this.esc(name)}</button>`;
+        return `
+        <div class="p-2 rounded-xl" style="background:#8b5cf60d">
+          <div class="flex items-center gap-2">
+            <span class="sheet-dot" style="background:${this.safeColor(m.color, "#a1a1aa")}"></span>
+            <span class="flex-1 text-sm font-medium truncate">${this.esc(m.name || m.email || "Member")}</span>
+            <button type="button" class="btn btn-ghost text-rose-500 text-xs"
+                    onclick="window.__app.spaceComposer.removeMember('${this.js(m.id)}')">Remove</button>
+          </div>
+          <div class="text-xs text-zinc-500 mt-1">Transactions</div>
+          <div class="flex gap-1 flex-wrap mt-1">
+            ${FamilyShareService.levels.map((l) => level(l.label, l.id, row.access, "setMemberAccess")).join("")}
+          </div>
+          ${(space.budgetIds || []).length ? `
+            <div class="text-xs text-zinc-500 mt-2">Budgets</div>
+            <div class="flex gap-1 flex-wrap mt-1">
+              ${FamilyShareService.budgetLevels.map((l) => level(l.label, l.id, row.budgetAccess || "view", "setMemberBudgetAccess")).join("")}
+            </div>` : ""}
+        </div>`;
+      }).join("");
+      return (family.length ? memberRows : '<div class="sheet-empty">No family members yet.</div>') + `<div class="sheet-note px-2 pt-2">
+           Someone can be in only one space for now \u2014 a second would overwrite the first.
+         </div>`;
+    }
+    #budgetLabel(b, state) {
+      if (b.name) return b.name;
+      const ids = Array.isArray(b.categoryIds) && b.categoryIds.length ? b.categoryIds : b.categoryId ? [b.categoryId] : [];
+      const names = ids.map((id) => (state.categories || []).find((c) => c.id === id)?.name).filter(Boolean);
+      if (!names.length) return "Budget";
+      return names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", ");
+    }
+    #missing() {
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 text-base font-semibold">Space</div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.spaceComposer.close()"><i data-lucide="x"></i></button>
+        </div>
+      </div>
+      <div class="sheet-body"><div class="sheet-empty">That space no longer exists.</div></div>`;
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -10590,7 +11094,7 @@ This replaces your current grouping.`
     owner: { label: "Owner", icon: "shield", color: "#8b5cf6" },
     ...Object.fromEntries(FAMILY_ACCESS_LEVELS.map((l) => [l.id, l]))
   };
-  var BUDGET_LEVELS = Object.fromEntries(FAMILY_BUDGET_ACCESS_LEVELS.map((l) => [l.id, l]));
+  var BUDGET_LEVELS2 = Object.fromEntries(FAMILY_BUDGET_ACCESS_LEVELS.map((l) => [l.id, l]));
   var FamilyView = class extends BaseView {
     constructor() {
       super();
@@ -10603,12 +11107,18 @@ This replaces your current grouping.`
       <div class="flex items-center justify-between mb-6">
         <div>
           <h2 class="text-xl font-semibold">Family Sharing</h2>
-          <p class="text-sm text-zinc-500 mt-0.5">Share specific accounts with family members and control their access level.</p>
+          <p class="text-sm text-zinc-500 mt-0.5">Group accounts and budgets into a space, then put people in it.</p>
         </div>
-        <button class="btn btn-primary" onclick="window.__app.openModal('familyMember',{})">
-          <i data-lucide="user-plus"></i> Add member
-        </button>
+        <div class="flex gap-2">
+          <button class="btn btn-outline" onclick="window.__app.openModal('familyMember',{})">
+            <i data-lucide="user-plus"></i><span class="hidden md:inline ml-1">Add member</span>
+          </button>
+          <button class="btn btn-primary" onclick="window.__app.createOwnerSpace()">
+            <i data-lucide="plus"></i> New space
+          </button>
+        </div>
       </div>
+      ${this.#spacesSection(state)}
 
       ${members.length === 0 ? this.#emptyMembersCard() : this.#membersGrid(members, accounts)}
 
@@ -10663,7 +11173,7 @@ This replaces your current grouping.`
       const sharedBudgets = budgetPerms.map((p) => {
         const b = (state.budgets || []).find((x) => x.id === p.budgetId);
         if (!b) return null;
-        return { b, lvl: BUDGET_LEVELS[p.access] || BUDGET_LEVELS.view };
+        return { b, lvl: BUDGET_LEVELS2[p.access] || BUDGET_LEVELS2.view };
       }).filter(Boolean);
       const initial = (m.initials || (m.name || m.email || "?").slice(0, 2)).toUpperCase();
       const spaceName = m.spaceName || state.user?.name || "My money";
@@ -10729,6 +11239,49 @@ This replaces your current grouping.`
             <i data-lucide="trash-2" style="width:13px;height:13px"></i> Remove
           </button>
         </div>
+      </div>`;
+    }
+    /**
+     * The spaces YOU share — the composition view.
+     *
+     * The member cards below still show the same grants from the person's side;
+     * the two are one storage, so they cannot disagree.
+     */
+    #spacesSection(state) {
+      const spaces = state.spaces || [];
+      if (!spaces.length) return "";
+      const family = state.family || [];
+      const cards = spaces.map((sp) => {
+        const people = (sp.members || []).map((m) => family.find((f) => f.id === m.memberId)).filter(Boolean);
+        const accNames = (sp.accountIds || []).map((id) => (state.accounts || []).find((a) => a.id === id)?.name).filter(Boolean);
+        const nB = (sp.budgetIds || []).length;
+        return `
+        <div class="card p-4 cursor-pointer hover:shadow-md transition-shadow"
+             onclick="window.__app.openSpaceComposer('${this.jsArg(sp.id)}')">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="icon-pill" style="background:#8b5cf622;color:#8b5cf6">
+              <i data-lucide="users"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium truncate">${this.escapeHtml(sp.name)}</div>
+              <div class="text-xs text-zinc-500">
+                ${people.length} ${people.length === 1 ? "person" : "people"} \xB7
+                ${accNames.length} account${accNames.length === 1 ? "" : "s"}${nB ? ` \xB7 ${nB} budget${nB === 1 ? "" : "s"}` : ""}
+              </div>
+            </div>
+            <i data-lucide="chevron-right" class="text-zinc-400" style="width:16px;height:16px"></i>
+          </div>
+          ${people.length ? `<div class="flex flex-wrap gap-1">
+            ${people.map((p) => `<span class="chip text-xs"
+              style="background:${this.safeColor(p.color, "#a1a1aa")}18;color:${this.safeColor(p.color, "#a1a1aa")}">
+              ${this.escapeHtml(p.name || p.email || "Member")}</span>`).join("")}
+          </div>` : `<div class="text-xs text-zinc-400 italic">Nobody in this space yet</div>`}
+        </div>`;
+      }).join("");
+      return `
+      <div class="mb-6">
+        <h3 class="text-sm font-semibold uppercase tracking-wider text-zinc-500 mb-3">Spaces you share</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">${cards}</div>
       </div>`;
     }
     /** A budget has no name of its own — it is known by its categories. */
@@ -13341,6 +13894,10 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     #spaceSheet = null;
     /** @type {BudgetShareSheet} */
     #budgetShareSheet = null;
+    /** @type {OwnerSpaceService} */
+    #ownerSpaces = null;
+    /** @type {SpaceComposerSheet} */
+    #spaceComposer = null;
     #filterRenderTimer = null;
     // debounce for the transaction search box
     #voice = null;
@@ -13367,6 +13924,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#accountGroups = new AccountGroupService(this.#store);
       this.#familyShares = new FamilyShareService(this.#store);
       this.#fxRates = new ExchangeRateService();
+      this.#ownerSpaces = new OwnerSpaceService(this.#store);
       this.#spaces = new SpaceRegistry({
         store: this.#store,
         sync: this.#sync,
@@ -13393,6 +13951,11 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         syncService: this.#sync
       });
       this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
+      this.#spaceComposer = new SpaceComposerSheet({
+        store: this.#store,
+        ownerSpaceService: this.#ownerSpaces,
+        syncService: this.#sync
+      });
       this.#budgetShareSheet = new BudgetShareSheet({
         store: this.#store,
         familyShareService: this.#familyShares,
@@ -13437,6 +14000,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#accountShareSheet.mount(container);
       this.#spaceSheet.mount(container);
       this.#budgetShareSheet.mount(container);
+      this.#spaceComposer.mount(container);
       this.#nav.mount({
         onNavigate: (id) => this.navigate(id),
         onAdd: () => this.openModal("transaction", {}),
@@ -13612,6 +14176,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
       if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
       if (this.#budgetShareSheet?.isOpen) this.#budgetShareSheet.close();
+      if (this.#spaceComposer?.isOpen) this.#spaceComposer.close();
       this.#modal.close();
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -13827,6 +14392,26 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
     get budgetShareSheet() {
       return this.#budgetShareSheet;
+    }
+    get spaceComposer() {
+      return this.#spaceComposer;
+    }
+    /** The spaces YOU share — composition, not the ones shared WITH you. */
+    get ownerSpaces() {
+      return this.#ownerSpaces;
+    }
+    /** Open the composer for one of your spaces. @param {string} spaceId */
+    openSpaceComposer(spaceId) {
+      this.#spaceComposer?.open(spaceId);
+    }
+    /** Create a space and drop straight into composing it. */
+    createOwnerSpace() {
+      const name = prompt("Name this space\n\ne.g. Household, Business, Trip to Dubai");
+      if (name === null) return;
+      const res = this.#ownerSpaces.create(name);
+      if (!res.ok) return this.#toast.show(res.reason);
+      this.#render();
+      this.#spaceComposer?.open(res.space.id);
     }
     /**
      * Open the per-budget share sheet. Refused in a guest space for the same

@@ -48,12 +48,18 @@ export class FamilyView extends BaseView {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h2 class="text-xl font-semibold">Family Sharing</h2>
-          <p class="text-sm text-zinc-500 mt-0.5">Share specific accounts with family members and control their access level.</p>
+          <p class="text-sm text-zinc-500 mt-0.5">Group accounts and budgets into a space, then put people in it.</p>
         </div>
-        <button class="btn btn-primary" onclick="window.__app.openModal('familyMember',{})">
-          <i data-lucide="user-plus"></i> Add member
-        </button>
+        <div class="flex gap-2">
+          <button class="btn btn-outline" onclick="window.__app.openModal('familyMember',{})">
+            <i data-lucide="user-plus"></i><span class="hidden md:inline ml-1">Add member</span>
+          </button>
+          <button class="btn btn-primary" onclick="window.__app.createOwnerSpace()">
+            <i data-lucide="plus"></i> New space
+          </button>
+        </div>
       </div>
+      ${this.#spacesSection(state)}
 
       ${members.length === 0 ? this.#emptyMembersCard() : this.#membersGrid(members, accounts)}
 
@@ -185,6 +191,57 @@ export class FamilyView extends BaseView {
             <i data-lucide="trash-2" style="width:13px;height:13px"></i> Remove
           </button>
         </div>
+      </div>`;
+  }
+
+  /**
+   * The spaces YOU share — the composition view.
+   *
+   * The member cards below still show the same grants from the person's side;
+   * the two are one storage, so they cannot disagree.
+   */
+  #spacesSection(state) {
+    const spaces = (state.spaces || []);
+    if (!spaces.length) return '';
+    const family = state.family || [];
+
+    const cards = spaces.map((sp) => {
+      const people = (sp.members || [])
+        .map((m) => family.find((f) => f.id === m.memberId))
+        .filter(Boolean);
+      const accNames = (sp.accountIds || [])
+        .map((id) => (state.accounts || []).find((a) => a.id === id)?.name)
+        .filter(Boolean);
+      const nB = (sp.budgetIds || []).length;
+
+      return `
+        <div class="card p-4 cursor-pointer hover:shadow-md transition-shadow"
+             onclick="window.__app.openSpaceComposer('${this.jsArg(sp.id)}')">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="icon-pill" style="background:#8b5cf622;color:#8b5cf6">
+              <i data-lucide="users"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium truncate">${this.escapeHtml(sp.name)}</div>
+              <div class="text-xs text-zinc-500">
+                ${people.length} ${people.length === 1 ? 'person' : 'people'} ·
+                ${accNames.length} account${accNames.length === 1 ? '' : 's'}${nB ? ` · ${nB} budget${nB === 1 ? '' : 's'}` : ''}
+              </div>
+            </div>
+            <i data-lucide="chevron-right" class="text-zinc-400" style="width:16px;height:16px"></i>
+          </div>
+          ${people.length ? `<div class="flex flex-wrap gap-1">
+            ${people.map((p) => `<span class="chip text-xs"
+              style="background:${this.safeColor(p.color, '#a1a1aa')}18;color:${this.safeColor(p.color, '#a1a1aa')}">
+              ${this.escapeHtml(p.name || p.email || 'Member')}</span>`).join('')}
+          </div>` : `<div class="text-xs text-zinc-400 italic">Nobody in this space yet</div>`}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="mb-6">
+        <h3 class="text-sm font-semibold uppercase tracking-wider text-zinc-500 mb-3">Spaces you share</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">${cards}</div>
       </div>`;
   }
 

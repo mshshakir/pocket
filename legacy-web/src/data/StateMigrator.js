@@ -15,6 +15,7 @@
  */
 import { LedgerMath }      from '../domain/services/LedgerMath.js';
 import { CurrencyService } from '../domain/services/CurrencyService.js';
+import { OwnerSpaceService } from '../domain/services/OwnerSpaceService.js';
 
 export class StateMigrator {
   /**
@@ -60,6 +61,7 @@ export class StateMigrator {
     }
     if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
     if (!Array.isArray(state.family))        state.family = [];
+    if (!Array.isArray(state.spaces))        state.spaces = [];
     // Budget grants live beside account grants but in their own array — a
     // budget has no accountId to inherit from. Back-filled so a member record
     // written before per-budget sharing existed reads cleanly.
@@ -94,6 +96,10 @@ export class StateMigrator {
         t.hijriDate.offset = currentOffset;
       }
     }
+
+    // Build spaces from the member-first grants that predate them. Idempotent,
+    // and it never widens access — see OwnerSpaceService.migrate().
+    OwnerSpaceService.migrate(state);
 
     return state;
   }

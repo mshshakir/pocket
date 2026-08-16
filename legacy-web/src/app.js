@@ -55,6 +55,8 @@ import { Space }               from './domain/services/Space.js';
 import { SpaceRegistry }       from './domain/services/SpaceRegistry.js';
 import { SpaceSheet }          from './ui/components/SpaceSheet.js';
 import { BudgetShareSheet }    from './ui/components/BudgetShareSheet.js';
+import { OwnerSpaceService }    from './domain/services/OwnerSpaceService.js';
+import { SpaceComposerSheet }   from './ui/components/SpaceComposerSheet.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -158,6 +160,10 @@ export class Application {
   #spaceSheet         = null;
   /** @type {BudgetShareSheet} */
   #budgetShareSheet   = null;
+  /** @type {OwnerSpaceService} */
+  #ownerSpaces        = null;
+  /** @type {SpaceComposerSheet} */
+  #spaceComposer      = null;
   #filterRenderTimer  = null;   // debounce for the transaction search box
   #voice              = null;   // { recorder, overlay, done } while a voice entry is in progress
   /** @type {ReceiptScanService|null} lazily built — see get receiptScanner() */
@@ -183,6 +189,7 @@ export class Application {
     this.#accountGroups      = new AccountGroupService(this.#store);
     this.#familyShares       = new FamilyShareService(this.#store);
     this.#fxRates            = new ExchangeRateService();
+    this.#ownerSpaces        = new OwnerSpaceService(this.#store);
     // Which book the UI is showing. Reads flow through it (BaseView.state);
     // writes never do — the services keep talking to real local state.
     this.#spaces             = new SpaceRegistry({
@@ -211,6 +218,11 @@ export class Application {
       syncService:        this.#sync,
     });
     this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
+    this.#spaceComposer = new SpaceComposerSheet({
+      store:             this.#store,
+      ownerSpaceService: this.#ownerSpaces,
+      syncService:       this.#sync,
+    });
     this.#budgetShareSheet = new BudgetShareSheet({
       store:              this.#store,
       familyShareService: this.#familyShares,
@@ -284,6 +296,7 @@ export class Application {
     this.#accountShareSheet.mount(container);
     this.#spaceSheet.mount(container);
     this.#budgetShareSheet.mount(container);
+    this.#spaceComposer.mount(container);
     this.#nav.mount({
       onNavigate: (id) => this.navigate(id),
       onAdd:      ()   => this.openModal('transaction', {}),
@@ -494,6 +507,7 @@ export class Application {
     if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
     if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
     if (this.#budgetShareSheet?.isOpen)  this.#budgetShareSheet.close();
+    if (this.#spaceComposer?.isOpen)     this.#spaceComposer.close();
     this.#modal.close();
   }
 
@@ -726,6 +740,22 @@ export class Application {
   /** FamilyShareService — grants for accounts and budgets. */
   get familyShares() { return this.#familyShares; }
   get budgetShareSheet() { return this.#budgetShareSheet; }
+  get spaceComposer() { return this.#spaceComposer; }
+  /** The spaces YOU share — composition, not the ones shared WITH you. */
+  get ownerSpaces() { return this.#ownerSpaces; }
+
+  /** Open the composer for one of your spaces. @param {string} spaceId */
+  openSpaceComposer(spaceId) { this.#spaceComposer?.open(spaceId); }
+
+  /** Create a space and drop straight into composing it. */
+  createOwnerSpace() {
+    const name = prompt('Name this space\n\ne.g. Household, Business, Trip to Dubai');
+    if (name === null) return;
+    const res = this.#ownerSpaces.create(name);
+    if (!res.ok) return this.#toast.show(res.reason);
+    this.#render();
+    this.#spaceComposer?.open(res.space.id);
+  }
 
   /**
    * Open the per-budget share sheet. Refused in a guest space for the same
