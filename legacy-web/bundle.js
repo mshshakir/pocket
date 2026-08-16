@@ -4028,7 +4028,14 @@ RULES:
           continue;
         }
         const snapshot = {
-          sharedBy: state.user.name || this.#user.email,
+          // What this member will see the space called. Per-member, because
+          // family_shares is keyed (owner_id, member_email) — so "Household" for
+          // one person and "Business" for another already works, without any
+          // schema change. Falling back to the owner's own name is what it used
+          // to be unconditionally, which made every space you shared carry your
+          // personal name whatever it actually contained.
+          sharedBy: member.spaceName || state.user.name || this.#user.email,
+          ownerName: state.user.name || this.#user.email,
           // Owner's home currency so members can embed correct exchangeRate /
           // refAmount on contributed transactions (#21).
           homeCurrency: state.user.homeCurrency,
@@ -4729,6 +4736,33 @@ RULES:
       }
       if (affected.length) this.#store.flush();
       return affected;
+    }
+    /**
+     * Name the space this member sees.
+     *
+     * Stored on the member because there is exactly one space per (owner,
+     * member) pair today — the family_shares primary key. Multiple named spaces
+     * per owner is a larger change; see docs/OWNER-SPACES-DESIGN.md.
+     * @param {string} memberId
+     * @param {string} name  '' clears it, falling back to the owner's own name
+     * @returns {{ok:boolean, reason?:string}}
+     */
+    setSpaceName(memberId, name) {
+      const member = this.members().find((m) => m.id === memberId);
+      if (!member) return { ok: false, reason: "That member no longer exists" };
+      const trimmed = (name || "").trim().slice(0, 60);
+      if (trimmed) member.spaceName = trimmed;
+      else delete member.spaceName;
+      this.#store.flush();
+      return { ok: true };
+    }
+    /**
+     * What this member sees the space called.
+     * @param {object} member
+     * @returns {string}
+     */
+    spaceNameFor(member) {
+      return member?.spaceName || this.#store.getState().user?.name || "My money";
     }
     /**
      * The access a member currently holds on one account.
@@ -10531,10 +10565,9 @@ This replaces your current grouping.`
   };
   var ACCESS_LEVELS = {
     owner: { label: "Owner", icon: "shield", color: "#8b5cf6" },
-    full: { label: "Full access", icon: "shield-check", color: "#10b981" },
-    edit: { label: "Can edit", icon: "pencil", color: "#3b82f6" },
-    view: { label: "View only", icon: "eye", color: "#f59e0b" }
+    ...Object.fromEntries(FAMILY_ACCESS_LEVELS.map((l) => [l.id, l]))
   };
+  var BUDGET_LEVELS = Object.fromEntries(FAMILY_BUDGET_ACCESS_LEVELS.map((l) => [l.id, l]));
   var FamilyView = class extends BaseView {
     constructor() {
       super();
@@ -10586,7 +10619,16 @@ This replaces your current grouping.`
         </div>
       </div>`;
     }
+    /**
+     * One outbound space — what this member actually sees.
+     *
+     * Previously a "member card": a person plus a list of account checkboxes.
+     * That answered "who have I added?" but never "what does Zahra see?", which
+     * is the question you ask when you are about to change something. It now
+     * shows the space by its name, with every account AND budget in it.
+     */
     #memberCard(m, accounts) {
+      const state = this.state;
       const perms = Array.isArray(m.permissions) ? m.permissions : [];
       const sharedAccounts = perms.map((p) => {
         const acc = accounts.find((a) => a.id === p.accountId);
@@ -10594,22 +10636,40 @@ This replaces your current grouping.`
         const lvl = ACCESS_LEVELS[p.access] || ACCESS_LEVELS.view;
         return { acc, lvl };
       }).filter(Boolean);
+      const budgetPerms = Array.isArray(m.budgetPermissions) ? m.budgetPermissions : [];
+      const sharedBudgets = budgetPerms.map((p) => {
+        const b = (state.budgets || []).find((x) => x.id === p.budgetId);
+        if (!b) return null;
+        return { b, lvl: BUDGET_LEVELS[p.access] || BUDGET_LEVELS.view };
+      }).filter(Boolean);
       const initial = (m.initials || (m.name || m.email || "?").slice(0, 2)).toUpperCase();
+      const spaceName = m.spaceName || state.user?.name || "My money";
       return `
       <div class="card p-4">
         <div class="flex items-start gap-3 mb-4">
           <div class="w-10 h-10 rounded-full flex-shrink-0 grid place-items-center text-white font-semibold text-sm"
-               style="background:${m.color || "#8b5cf6"}">${this.escapeHtml(initial)}</div>
+               style="background:${this.safeColor(m.color, "#8b5cf6")}">${this.escapeHtml(initial)}</div>
           <div class="flex-1 min-w-0">
-            <div class="font-medium truncate">${this.escapeHtml(m.name)}</div>
-            ${m.email ? `<div class="text-xs text-zinc-500 truncate">${this.escapeHtml(m.email)}</div>` : ""}
+            <div class="font-medium truncate flex items-center gap-1.5">
+              ${this.escapeHtml(spaceName)}
+              <button class="btn btn-ghost px-1" title="Rename this space"
+                      onclick="window.__app.renameSharedSpace('${this.jsArg(m.id)}')">
+                <i data-lucide="pencil" style="width:12px;height:12px"></i>
+              </button>
+            </div>
+            <div class="text-xs text-zinc-500 truncate">
+              ${this.escapeHtml(m.name)}${m.email ? ` \xB7 ${this.escapeHtml(m.email)}` : ""}
+            </div>
+            ${m.spaceName ? "" : `<div class="text-[11px] text-zinc-400 mt-0.5">
+              They see this as your name \u2014 rename it to say what it holds
+            </div>`}
           </div>
-          <button class="btn btn-ghost" onclick="window.__app.openModal('familyMember',{id:'${m.id}'})" title="Edit">
-            <i data-lucide="pencil" style="width:15px;height:15px"></i>
+          <button class="btn btn-ghost" onclick="window.__app.openModal('familyMember',{id:'${this.jsArg(m.id)}'})" title="Edit member">
+            <i data-lucide="user-cog" style="width:15px;height:15px"></i>
           </button>
         </div>
 
-        ${sharedAccounts.length === 0 ? `<div class="text-xs text-zinc-400 italic">No accounts shared yet</div>` : `<div class="space-y-2">
+        ${sharedAccounts.length === 0 && sharedBudgets.length === 0 ? `<div class="text-xs text-zinc-400 italic">Nothing shared yet \u2014 they see an empty space</div>` : `<div class="space-y-2">
                ${sharedAccounts.map(({ acc, lvl }) => `
                  <div class="flex items-center gap-2">
                    <div class="icon-pill w-7 h-7 rounded-lg flex-shrink-0"
@@ -10620,19 +10680,41 @@ This replaces your current grouping.`
                      <div class="text-sm truncate">${this.escapeHtml(acc.name)}</div>
                      <div class="text-xs text-zinc-500">${acc.currency}</div>
                    </div>
-                   <span class="chip text-xs" style="background:${lvl.color}18;color:${lvl.color}">
-                     <i data-lucide="${lvl.icon}" style="width:10px;height:10px;display:inline"></i> ${lvl.label}
+                   <span class="chip text-xs" style="background:${this.safeColor(lvl.color)}18;color:${this.safeColor(lvl.color)}">
+                     <i data-lucide="${this.safeIcon(lvl.icon)}" style="width:10px;height:10px;display:inline"></i> ${this.escapeHtml(lvl.label)}
+                   </span>
+                 </div>`).join("")}
+               ${sharedBudgets.map(({ b, lvl }) => `
+                 <div class="flex items-center gap-2">
+                   <div class="icon-pill w-7 h-7 rounded-lg flex-shrink-0"
+                        style="background:#8b5cf622;color:#8b5cf6">
+                     <i data-lucide="target" style="width:13px;height:13px"></i>
+                   </div>
+                   <div class="flex-1 min-w-0">
+                     <div class="text-sm truncate">${this.escapeHtml(this.#budgetLabel(b))}</div>
+                     <div class="text-xs text-zinc-500">Budget \xB7 ${this.escapeHtml(b.currency)}</div>
+                   </div>
+                   <span class="chip text-xs" style="background:${this.safeColor(lvl.color)}18;color:${this.safeColor(lvl.color)}">
+                     <i data-lucide="${this.safeIcon(lvl.icon)}" style="width:10px;height:10px;display:inline"></i> ${this.escapeHtml(lvl.label)}
                    </span>
                  </div>`).join("")}
              </div>`}
 
         <div class="flex gap-2 mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800">
           <button class="btn btn-outline flex-1 justify-center text-xs text-rose-500"
-                  onclick="window.__app.deleteFamilyMember('${m.id}')">
+                  onclick="window.__app.deleteFamilyMember('${this.jsArg(m.id)}')">
             <i data-lucide="trash-2" style="width:13px;height:13px"></i> Remove
           </button>
         </div>
       </div>`;
+    }
+    /** A budget has no name of its own — it is known by its categories. */
+    #budgetLabel(b) {
+      if (b.name) return b.name;
+      const ids = Array.isArray(b.categoryIds) && b.categoryIds.length ? b.categoryIds : b.categoryId ? [b.categoryId] : [];
+      const names = ids.map((id) => (this.state.categories || []).find((c) => c.id === id)?.name).filter(Boolean);
+      if (!names.length) return "Budget";
+      return names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", ");
     }
     #inboundSection(state) {
       const sharedData = state._sharedData || [];
@@ -13728,6 +13810,34 @@ alter publication supabase_realtime add table public.family_contributions;</div>
      * reason the budget modal is: you cannot re-share someone else's budget.
      * @param {string} budgetId
      */
+    /**
+     * Rename the space a member sees.
+     *
+     * The label lives on the member because family_shares is keyed
+     * (owner_id, member_email) — one space per pair — so different people can
+     * already be shown different names. It travels in the snapshot as
+     * `sharedBy`, which is why the member's own override in
+     * `user.spaceLabels` still wins on their device: your name for it is a
+     * suggestion, not an imposition.
+     * @param {string} memberId
+     */
+    renameSharedSpace(memberId) {
+      const member = (this.#store.getState().family || []).find((m) => m.id === memberId);
+      if (!member) return this.#toast.show("That member no longer exists");
+      const current = member.spaceName || "";
+      const next = prompt(
+        `What should ${member.name || "they"} see this space called?
+
+Leave empty to use your own name.`,
+        current
+      );
+      if (next === null) return;
+      const res = this.#familyShares.setSpaceName(memberId, next);
+      if (!res.ok) return this.#toast.show(res.reason);
+      this.#sync.schedulePush?.();
+      this.#render();
+      this.#toast.show(next.trim() ? `Renamed to ${next.trim()}` : "Using your own name");
+    }
     shareBudget(budgetId) {
       const space = this.#spaces?.active?.();
       if (space && !space.isHome) {

@@ -732,6 +732,33 @@ export class Application {
    * reason the budget modal is: you cannot re-share someone else's budget.
    * @param {string} budgetId
    */
+  /**
+   * Rename the space a member sees.
+   *
+   * The label lives on the member because family_shares is keyed
+   * (owner_id, member_email) — one space per pair — so different people can
+   * already be shown different names. It travels in the snapshot as
+   * `sharedBy`, which is why the member's own override in
+   * `user.spaceLabels` still wins on their device: your name for it is a
+   * suggestion, not an imposition.
+   * @param {string} memberId
+   */
+  renameSharedSpace(memberId) {
+    const member = (this.#store.getState().family || []).find((m) => m.id === memberId);
+    if (!member) return this.#toast.show('That member no longer exists');
+    const current = member.spaceName || '';
+    const next = prompt(
+      `What should ${member.name || 'they'} see this space called?\n\nLeave empty to use your own name.`,
+      current,
+    );
+    if (next === null) return;                       // cancelled
+    const res = this.#familyShares.setSpaceName(memberId, next);
+    if (!res.ok) return this.#toast.show(res.reason);
+    this.#sync.schedulePush?.();
+    this.#render();
+    this.#toast.show(next.trim() ? `Renamed to ${next.trim()}` : 'Using your own name');
+  }
+
   shareBudget(budgetId) {
     const space = this.#spaces?.active?.();
     if (space && !space.isHome) {

@@ -34,6 +34,12 @@
  *        categories, which is meaningless rather than merely understated.
  *   SP17 Per-budget sharing is reachable from the UI, and refused in a guest
  *        space.
+ *   SP18 The OWNER names the space each member sees, and sees their outbound
+ *        shares as spaces — previously every space carried the owner's personal
+ *        name whatever it held, and the owner had no view of it at all.
+ *   SP19 FamilyView's hand-copied access table had drifted: it omitted 'add',
+ *        so a member granted "Can add" was displayed to the owner as
+ *        "View only" — told they had given LESS access than they had.
  *
  * Run:  node src/__smoke__/spaces.smoke.mjs
  */
@@ -677,6 +683,65 @@ console.log('\nspaces suite');
      !doc.getElementById('budgetShareSheetRoot')?.classList.contains('open')
        && !(doc.querySelector('#budgetShareSheetRoot .sheet-backdrop.open')),
      'sheet opened in a guest space');
+  w.close();
+}
+
+// ═══ SP18 / SP19 — the owner's side ════════════════════════════════════════
+{
+  const owner = memberState();
+  owner.user.name = 'Abbas';
+  owner.accounts  = [acct('a1', 'Joint Account'), acct('a2', 'Business')];
+  owner.budgets   = [{ id: 'bg1', categoryId: 'mycat', amount: 50000, currency: 'USD',
+                       period: 'gregorian', rollover: false }];
+  owner.family = [
+    { id: 'm1', name: 'Zahra', email: 'z@x.com', initials: 'Z', color: '#8b5cf6',
+      // 'add' is the level the old hand-copied table omitted entirely.
+      permissions: [{ accountId: 'a1', access: 'add' }],
+      budgetPermissions: [{ budgetId: 'bg1', access: 'view' }] },
+    { id: 'm2', name: 'Husain', email: 'h@x.com', initials: 'H', color: '#10b981',
+      permissions: [{ accountId: 'a2', access: 'view' }], budgetPermissions: [] },
+  ];
+  const w = boot(owner);
+  await wait(120);
+  await signIn(w);
+  const app = w.__app, doc = w.document;
+  app.navigate('family');
+  await wait(80);
+  let html = doc.getElementById('viewContent').innerHTML;
+
+  ok('SP19 an "add" grant is shown as Can add, not View only',
+     html.includes('Can add') && !/Zahra[\s\S]{0,600}View only/.test(html),
+     'the owner would be told they gave less access than they did');
+  ok('SP18 budgets shared with a member are listed too', html.includes('Budget ·'),
+     'the owner could not see which budgets a member holds');
+  ok('SP18 an unnamed space is flagged as carrying the owner\'s own name',
+     html.includes('They see this as your name'));
+
+  // Naming is per-member, which the (owner_id, member_email) key already allows.
+  app.familyShares.setSpaceName('m1', 'Household');
+  app.familyShares.setSpaceName('m2', 'Business');
+  app.navigate('family');
+  await wait(80);
+  html = doc.getElementById('viewContent').innerHTML;
+  ok('SP18 each member\'s space carries its own name',
+     html.includes('Household') && html.includes('Business'),
+     'two different shares from one owner were indistinguishable');
+
+  // And the name must travel to the member, replacing the owner's own name.
+  await app.sync.push();
+  await wait(120);
+  const forZahra = w.__cloud.pushedShares.filter((r) => r.member_email === 'z@x.com').at(-1)?.snapshot;
+  ok('SP18 the chosen name is what the member receives',
+     forZahra?.sharedBy === 'Household', String(forZahra?.sharedBy));
+  ok('SP18 …with the owner\'s real name still available alongside it',
+     forZahra?.ownerName === 'Abbas', String(forZahra?.ownerName));
+
+  app.familyShares.setSpaceName('m1', '');
+  await app.sync.push();
+  await wait(120);
+  const cleared = w.__cloud.pushedShares.filter((r) => r.member_email === 'z@x.com').at(-1)?.snapshot;
+  ok('SP18 clearing it falls back to the owner\'s name',
+     cleared?.sharedBy === 'Abbas', String(cleared?.sharedBy));
   w.close();
 }
 

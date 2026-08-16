@@ -146,6 +146,35 @@ export class FamilyShareService {
   }
 
   /**
+   * Name the space this member sees.
+   *
+   * Stored on the member because there is exactly one space per (owner,
+   * member) pair today — the family_shares primary key. Multiple named spaces
+   * per owner is a larger change; see docs/OWNER-SPACES-DESIGN.md.
+   * @param {string} memberId
+   * @param {string} name  '' clears it, falling back to the owner's own name
+   * @returns {{ok:boolean, reason?:string}}
+   */
+  setSpaceName(memberId, name) {
+    const member = this.members().find((m) => m.id === memberId);
+    if (!member) return { ok: false, reason: 'That member no longer exists' };
+    const trimmed = (name || '').trim().slice(0, 60);
+    if (trimmed) member.spaceName = trimmed;
+    else delete member.spaceName;
+    this.#store.flush();
+    return { ok: true };
+  }
+
+  /**
+   * What this member sees the space called.
+   * @param {object} member
+   * @returns {string}
+   */
+  spaceNameFor(member) {
+    return member?.spaceName || this.#store.getState().user?.name || 'My money';
+  }
+
+  /**
    * The access a member currently holds on one account.
    * @param {string} memberId
    * @param {string} accountId

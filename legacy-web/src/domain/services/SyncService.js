@@ -978,7 +978,14 @@ export class SyncService {
         await this.revokeMemberShare(member.email); continue;
       }
       const snapshot = {
-        sharedBy:     state.user.name || this.#user.email,
+        // What this member will see the space called. Per-member, because
+        // family_shares is keyed (owner_id, member_email) — so "Household" for
+        // one person and "Business" for another already works, without any
+        // schema change. Falling back to the owner's own name is what it used
+        // to be unconditionally, which made every space you shared carry your
+        // personal name whatever it actually contained.
+        sharedBy:     member.spaceName || state.user.name || this.#user.email,
+        ownerName:    state.user.name || this.#user.email,
         // Owner's home currency so members can embed correct exchangeRate /
         // refAmount on contributed transactions (#21).
         homeCurrency: state.user.homeCurrency,

@@ -53,6 +53,29 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Owner-side spaces, part 1 (2026-08-15).** Mufaddal: "as an owner I cannot see spaces nor
+rename it". Both halves are one gap — sharing is member-first (open a person, tick accounts),
+so there is no object representing the share to name or inspect.
+- **`member.spaceName`** — the owner names what each member sees. Travels as
+  `snapshot.sharedBy`, with the owner's real name alongside as `snapshot.ownerName`.
+  Per-MEMBER, not global: `family_shares` is keyed `(owner_id, member_email)`, so different
+  people can already be shown different names with no schema change. What that key forbids is
+  the same person being in two of your spaces — that is what needs the bigger change.
+- **The member's own override still wins.** `user.spaceLabels[ownerId]` beats `sharedBy` on
+  their device; the owner's name for a space is a suggestion, not an imposition.
+- **FamilyView member card → space card:** named, renameable, listing every account AND
+  budget in it with its access level.
+- **Real bug found on the way:** FamilyView kept a hand-copied `ACCESS_LEVELS` table that had
+  drifted from the constant — it omitted `add` entirely, so a member granted "Can add" was
+  shown to the OWNER as "View only". The owner was told they had given LESS access than they
+  had. `edit`/`view` colours were swapped too. Now derived from `FAMILY_ACCESS_LEVELS`.
+- **`docs/OWNER-SPACES-DESIGN.md`** — the full owner-created-space model written up for
+  approval, no code. Headline: it needs the `family_shares` primary key to gain `space_id`
+  and `#authoriseContribution` to resolve access through space membership — the security
+  boundary phase 1b deliberately avoided reshaping. Staged so steps 1-2 are reversible and
+  the commitment point is the backend migration in step 3.
+- Suite: 451 assertions; spaces 82 → 89, 3 more mutations verified.
+
 **Spaces 1b follow-up (2026-08-15) — the share UI, and a bug 1b shipped.**
 - **BudgetsView and BudgetDetailView were recomputing spend in a guest space.** Both called
   `BudgetService.currentSpend(b)`, which reads `Store.getState()` — the MEMBER's own
