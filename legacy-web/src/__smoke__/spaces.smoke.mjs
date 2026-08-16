@@ -29,6 +29,11 @@
  *        would write a single leg with no counter-leg into the owner's book.
  *   SP14 Budgets are shared individually and carry the OWNER's computed spend;
  *        debts and regulars ride on their account's permission.
+ *   SP16 The Budgets view RENDERS the owner's spend rather than recomputing it —
+ *        recomputing reads the member's own transactions against the owner's
+ *        categories, which is meaningless rather than merely understated.
+ *   SP17 Per-budget sharing is reachable from the UI, and refused in a guest
+ *        space.
  *
  * Run:  node src/__smoke__/spaces.smoke.mjs
  */
@@ -595,6 +600,83 @@ console.log('\nspaces suite');
   ok('SP15 the budget levels are view/edit/full',
      JSON.stringify(shares.constructor.budgetLevels.map((l) => l.id)) === '["view","edit","full"]',
      JSON.stringify(shares.constructor.budgetLevels.map((l) => l.id)));
+  w.close();
+}
+
+// ═══ SP16 — the Budgets view must not recompute a guest space's spend ══════
+{
+  const st = memberState();
+  // The member has their OWN spending in a category id that happens to collide
+  // with nothing — the point is that any locally-computed figure is wrong here.
+  st.transactions.push({
+    id: 'mine2tx', accountId: 'mine1', categoryId: 'mycat', amount: 999900,
+    currency: 'USD', type: 'expense', date: '2026-08-03', paymentType: 'card',
+    recordState: 'cleared', tags: [],
+  });
+  const withBudget = snapshot({
+    budgets: [{ id: 'ownbg', categoryId: 'owncat', amount: 100000, currency: 'AED',
+                period: 'gregorian', rollover: false, spent: 73500 }],
+    budgetPermission: { ownbg: 'view' },
+  });
+  const w = boot(st, { shares: [{ owner_id: 'abbas1', snapshot: withBudget }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app, doc = w.document;
+  app.switchSpace('abbas1');
+  await wait(60);
+  app.navigate('budgets');
+  await wait(80);
+
+  const html = doc.getElementById('viewContent').innerHTML;
+  ok('SP16 the owner\'s published spend is what renders', html.includes('735.00'),
+     html.slice(0, 0) || 'no 735.00 in the rendered budgets view');
+  ok('SP16 …and the member\'s own 9,999.00 does not leak in',
+     !html.includes('9,999.00'), 'member spending appeared in a guest budget');
+  ok('SP16 creating a budget is not offered here', !html.includes('New budget'));
+  w.close();
+}
+
+// ═══ SP17 — per-budget sharing is reachable, and home-only ═════════════════
+{
+  const owner = memberState();
+  owner.family = [{ id: 'm1', name: 'Zahra', email: 'z@x.com', initials: 'Z',
+                    color: '#8b5cf6', permissions: [], budgetPermissions: [] }];
+  const w = boot(owner, { shares: [{ owner_id: 'abbas1', snapshot: snapshot() }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app, doc = w.document;
+
+  app.shareBudget('mybg');
+  await wait(60);
+  const sheet = doc.getElementById('budgetShareSheetRoot');
+  ok('SP17 the budget share sheet opens at home', !!sheet && sheet.innerHTML.includes('Share budget'));
+  // The level choices only render once a member row is expanded.
+  app.budgetShareSheet.pick('m1');
+  await wait(40);
+  const expanded = doc.getElementById('budgetShareSheetRoot').innerHTML;
+  ok('SP17 …offering the BUDGET ladder, not the account one',
+     expanded.includes('Change the amount, period and categories')
+       && !expanded.includes('View + add new transactions'),
+     'the account ladder\'s "add" is meaningless on a budget');
+  ok('SP17 …and warning that spend covers every account',
+     /counted[\s\S]*all[\s\S]*your accounts/.test(sheet.innerHTML));
+
+  app.budgetShareSheet.setAccess('m1', 'edit');
+  await wait(40);
+  ok('SP17 granting works', app.familyShares.budgetAccessFor('m1', 'mybg') === 'edit',
+     String(app.familyShares.budgetAccessFor('m1', 'mybg')));
+  app.budgetShareSheet.close();
+  await wait(20);
+
+  // You cannot re-share someone else's budget from inside their space.
+  app.switchSpace('abbas1');
+  await wait(60);
+  app.shareBudget('mybg');
+  await wait(40);
+  ok('SP17 sharing is refused inside a guest space',
+     !doc.getElementById('budgetShareSheetRoot')?.classList.contains('open')
+       && !(doc.querySelector('#budgetShareSheetRoot .sheet-backdrop.open')),
+     'sheet opened in a guest space');
   w.close();
 }
 

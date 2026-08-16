@@ -53,6 +53,21 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Spaces 1b follow-up (2026-08-15) — the share UI, and a bug 1b shipped.**
+- **BudgetsView and BudgetDetailView were recomputing spend in a guest space.** Both called
+  `BudgetService.currentSpend(b)`, which reads `Store.getState()` — the MEMBER's own
+  transactions, measured against the OWNER's budget categories. Not understated: meaningless.
+  New `BaseView.spendFor(budget, compute)` returns the owner's published `spent` in a guest
+  space and computes only at home. This is the trap the design doc §8.4 predicted, arriving
+  from a direction it did not: I had thought only the transaction LIST would disagree.
+- **New `BudgetShareSheet`** (`app.shareBudget(id)`, Share button on each budget card) —
+  without it the per-budget grants built in 1b were unreachable from the UI. Refused inside a
+  guest space; you cannot re-share someone else's budget.
+- **Guest-space read-only treatment:** New budget hidden, Reports and BudgetDetailView label
+  the scope they actually cover (`Space.scopeNote`), and BudgetDetailView says outright that
+  its row list is a subset of the total shown above it.
+- Suite: 444 assertions; spaces 74 → 82, 3 more mutations verified.
+
 **Spaces phase 1b (2026-08-15) — budgets/debts/regulars in a guest space, plus two bugs
 Mufaddal found in phase 1.** Suite now **436 assertions across 10 files**; spaces suite
 38 → 74, mutation-verified against 8 more reverts.

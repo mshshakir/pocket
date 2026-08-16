@@ -83,6 +83,23 @@ export class BaseView {
   }
 
   /**
+   * How much of a budget is spent.
+   *
+   * At home, compute it. In a guest space, use the figure the OWNER computed
+   * and published — recomputing there reads `Store.getState()`, i.e. the
+   * MEMBER's own transactions measured against the OWNER's budget categories,
+   * which is not a smaller number, it is a meaningless one.
+   *
+   * @param {object} budget
+   * @param {() => number} compute  the local calculation, for the home space
+   * @returns {number} minor units
+   */
+  spendFor(budget, compute) {
+    if (this.inGuestSpace) return Number(budget?.spent) || 0;
+    return compute();
+  }
+
+  /**
    * Totals convert to the OWNER's home currency inside their space — showing
    * their balances in the member's currency would misrepresent their book.
    */

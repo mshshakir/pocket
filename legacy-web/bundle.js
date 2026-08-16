@@ -7621,6 +7621,194 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/BudgetShareSheet.js
+  var BudgetShareSheet = class extends OverlaySheet {
+    /** @type {Store} */
+    #store;
+    /** @type {FamilyShareService} */
+    #shares;
+    /** @type {object} */
+    #sync;
+    #budgetId = null;
+    #memberId = null;
+    // member whose level list is expanded
+    #error = "";
+    /**
+     * @param {object} deps
+     * @param {Store}              [deps.store]
+     * @param {FamilyShareService} deps.familyShareService
+     * @param {object}             deps.syncService
+     */
+    constructor({ store, familyShareService, syncService }) {
+      super({ id: "budgetShareSheetRoot" });
+      this.#store = store || Store.getInstance();
+      this.#shares = familyShareService;
+      this.#sync = syncService;
+    }
+    // ── Public API ────────────────────────────────────────────────────────
+    /** @param {string} budgetId */
+    open(budgetId) {
+      this.#budgetId = budgetId;
+      this.#memberId = null;
+      this.#error = "";
+      this.render();
+      this.show();
+    }
+    /** @param {string} memberId */
+    pick(memberId) {
+      this.#memberId = this.#memberId === memberId ? null : memberId;
+      this.#error = "";
+      this.render();
+    }
+    /**
+     * Apply an access level. `access` of '' revokes.
+     * @param {string} memberId
+     * @param {string} access
+     */
+    setAccess(memberId, access) {
+      const level = access || null;
+      const res = this.#shares.setBudgetAccess(memberId, this.#budgetId, level);
+      if (!res.ok) {
+        this.#error = res.reason;
+        this.render();
+        return;
+      }
+      if (res.wasLast && res.member?.email) {
+        this.#sync?.revokeMemberShare?.(res.member.email);
+      }
+      this.#memberId = null;
+      this.#error = "";
+      this.render();
+      const name = res.member?.name || "member";
+      window.__app?.showToast?.(
+        level ? `Budget shared with ${name}` : `Stopped sharing with ${name}`
+      );
+    }
+    /** Stop sharing this budget with everyone. */
+    unshareAll() {
+      const affected = this.#shares.unshareBudget(this.#budgetId);
+      for (const { member, wasLast } of affected) {
+        if (wasLast && member.email) this.#sync?.revokeMemberShare?.(member.email);
+      }
+      this.#memberId = null;
+      this.render();
+      window.__app?.showToast?.("Stopped sharing this budget");
+    }
+    // ── Rendering ─────────────────────────────────────────────────────────
+    /** @override */
+    renderContent() {
+      const state = this.#store.getState();
+      const budget = (state.budgets || []).find((b) => b.id === this.#budgetId);
+      if (!budget) return this.#missing();
+      const members = this.#shares.members();
+      const shared = this.#shares.budgetSharedWith(this.#budgetId);
+      const name = this.#budgetName(budget, state);
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <span class="sheet-dot" style="background:#8b5cf6"></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-base font-semibold truncate">Share budget \xB7 ${this.esc(name)}</div>
+            <div class="sheet-note">
+              ${shared.length ? `Shared with ${shared.length} member${shared.length === 1 ? "" : "s"}` : "Not shared with anyone yet"}
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.budgetShareSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body">
+        ${this.#error ? `<div class="sheet-note text-rose-500 px-2 pb-1">${this.esc(this.#error)}</div>` : ""}
+        <div class="sheet-note px-2 pb-2">
+          They'll see how much of this budget is spent, counted across
+          <strong>all</strong> your accounts \u2014 not only the ones you've shared.
+        </div>
+        ${members.length ? members.map((m) => this.#memberRow(m)).join("") : `<div class="sheet-empty">No family members yet \u2014 invite someone to start sharing.</div>`}
+        ${shared.length ? `
+          <button type="button" class="sheet-row text-rose-500 mt-1"
+                  onclick="window.__app.budgetShareSheet.unshareAll()">
+            <i data-lucide="user-minus" style="width:15px;height:15px"></i>
+            <span class="sheet-row-name">Stop sharing with everyone</span>
+          </button>` : ""}
+      </div>
+      <div class="sheet-foot">
+        <div class="sheet-note">Changes sync to their device right away</div>
+        <div class="flex-1"></div>
+        <button type="button" class="btn btn-primary"
+                onclick="window.__app.budgetShareSheet.close()">Done</button>
+      </div>`;
+    }
+    /** A budget has no name of its own — it is known by its categories. */
+    #budgetName(budget, state) {
+      if (budget.name) return budget.name;
+      const ids = Array.isArray(budget.categoryIds) && budget.categoryIds.length ? budget.categoryIds : budget.categoryId ? [budget.categoryId] : [];
+      const names = ids.map((id) => (state.categories || []).find((c) => c.id === id)?.name).filter(Boolean);
+      if (!names.length) return "Budget";
+      return names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", ");
+    }
+    #memberRow(m) {
+      const access = this.#shares.budgetAccessFor(m.id, this.#budgetId);
+      const level = FamilyShareService.budgetLevels.find((l) => l.id === access);
+      const open = this.#memberId === m.id;
+      const header = `
+      <button type="button" class="sheet-row ${access ? "is-selected" : ""}"
+              onclick="window.__app.budgetShareSheet.pick('${this.js(m.id)}')">
+        <span class="sheet-dot" style="background:${this.safeColor(m.color, "#a1a1aa")}"></span>
+        <span class="sheet-row-name">
+          ${this.esc(m.name || m.email || "Member")}
+          ${m.email ? `<span class="sheet-row-meta"> \xB7 ${this.esc(m.email)}</span>` : ""}
+        </span>
+        <span class="sheet-row-meta" ${level ? `style="color:${this.safeColor(level.color)}"` : ""}>
+          ${level ? this.esc(level.label) : "No access"}
+        </span>
+        <i data-lucide="${open ? "chevron-down" : "chevron-right"}" class="text-zinc-400"
+           style="width:15px;height:15px"></i>
+      </button>`;
+      if (!open) return header;
+      const choices = [
+        ...FamilyShareService.budgetLevels.map((l) => ({
+          id: l.id,
+          label: l.label,
+          desc: l.desc,
+          color: l.color,
+          icon: l.icon
+        })),
+        { id: "", label: "No access", desc: "Remove this budget from their view", color: "#71717a", icon: "ban" }
+      ].map((l) => {
+        const on = (access || "") === l.id;
+        return `
+        <button type="button" class="sheet-row ${on ? "is-selected" : ""}" style="padding-left:2rem"
+                onclick="window.__app.budgetShareSheet.setAccess('${this.js(m.id)}','${this.js(l.id)}')">
+          <i data-lucide="${this.safeIcon(l.icon)}" style="width:14px;height:14px;color:${this.safeColor(l.color)}"></i>
+          <span class="sheet-row-name">
+            ${this.esc(l.label)}
+            <span class="sheet-row-meta"> \xB7 ${this.esc(l.desc)}</span>
+          </span>
+          ${on ? `<i data-lucide="check" style="width:15px;height:15px" class="text-emerald-500"></i>` : ""}
+        </button>`;
+      }).join("");
+      const noEmail = !m.email ? `<div class="sheet-note text-amber-600 px-3 pb-1">
+           Add an email to this member so the share can reach their device.
+         </div>` : "";
+      return header + noEmail + choices;
+    }
+    #missing() {
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 text-base font-semibold">Share budget</div>
+          <button type="button" class="btn btn-ghost px-2" aria-label="Close"
+                  onclick="window.__app.budgetShareSheet.close()">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body"><div class="sheet-empty">That budget no longer exists.</div></div>`;
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -7681,6 +7869,22 @@ This replaces your current grouping.`
     get inGuestSpace() {
       const s = this.space;
       return !!s && !s.isHome;
+    }
+    /**
+     * How much of a budget is spent.
+     *
+     * At home, compute it. In a guest space, use the figure the OWNER computed
+     * and published — recomputing there reads `Store.getState()`, i.e. the
+     * MEMBER's own transactions measured against the OWNER's budget categories,
+     * which is not a smaller number, it is a meaningless one.
+     *
+     * @param {object} budget
+     * @param {() => number} compute  the local calculation, for the home space
+     * @returns {number} minor units
+     */
+    spendFor(budget, compute) {
+      if (this.inGuestSpace) return Number(budget?.spent) || 0;
+      return compute();
     }
     /**
      * Totals convert to the OWNER's home currency inside their space — showing
@@ -9343,14 +9547,15 @@ This replaces your current grouping.`
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets</h1>
-          <div class="text-xs text-zinc-500 mt-0.5">Gregorian-month or Hijri-month tracking</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Shared with you \xB7 spend counted ${this.escapeHtml(this.space?.scopeNote ? "across all their accounts" : "")}` : "Gregorian-month or Hijri-month tracking"}</div>
         </div>
+        ${this.inGuestSpace ? "" : `
         <button class="btn btn-primary" onclick="window.__app.openModal('budget')">
           <i data-lucide="plus"></i> New budget
-        </button>
+        </button>`}
       </div>
 
-      ${state.budgets.length === 0 ? `<div class="card p-10 text-center">${this.emptyState("No budgets yet", "Set a monthly limit per category to stay on track.")}</div>` : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      ${state.budgets.length === 0 ? `<div class="card p-10 text-center">${this.inGuestSpace ? this.emptyState("No budgets shared with you", "They haven\u2019t shared any budgets from this space.") : this.emptyState("No budgets yet", "Set a monthly limit per category to stay on track.")}</div>` : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             ${state.budgets.map((b) => this.#budgetCard(b, todayH, now, eom)).join("")}
           </div>`}
     `;
@@ -9361,7 +9566,7 @@ This replaces your current grouping.`
       const cats = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
       const firstCat = cats[0];
       const isHijri = b.period === "hijri";
-      const spent = this.#budgets.currentSpend(b);
+      const spent = this.spendFor(b, () => this.#budgets.currentSpend(b));
       const eff = this.#budgets.effectiveLimit(b);
       const limit = eff.limit;
       const pct = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
@@ -9384,9 +9589,13 @@ This replaces your current grouping.`
                 <span class="truncate">${title}</span>
                 ${multi ? `<span class="chip flex-shrink-0" style="font-size:.65rem">${cats.length} categories</span>` : hasSubs ? '<span class="chip flex-shrink-0" style="font-size:.65rem">incl. sub-categories</span>' : ""}
               </div>
-              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.openModal('budget',{id:'${b.id}'})" title="Edit budget">
-                <i data-lucide="pencil"></i>
+              ${this.inGuestSpace ? "" : `
+              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.shareBudget('${this.jsArg(b.id)}')" title="Share this budget">
+                <i data-lucide="users"></i>
               </button>
+              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.openModal('budget',{id:'${this.jsArg(b.id)}'})" title="Edit budget">
+                <i data-lucide="pencil"></i>
+              </button>`}
             </div>
             <div class="text-xs text-zinc-500">${periodLabel}${b.rollover ? " \xB7 rollover on" : ""}</div>
           </div>
@@ -9448,7 +9657,7 @@ This replaces your current grouping.`
       if (!b) return `<div class="p-6 text-zinc-400">Budget not found.</div>`;
       const targetIds = this.#budgets.targetCategoryIds(b);
       const cats = targetIds.map((id) => state.categories.find((c) => c.id === id)).filter(Boolean);
-      const spent = this.#budgets.currentSpend(b);
+      const spent = this.spendFor(b, () => this.#budgets.currentSpend(b));
       const eff = this.#budgets.effectiveLimit(b);
       const limit = eff.limit;
       const pct = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
@@ -9522,6 +9731,11 @@ This replaces your current grouping.`
       <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2 px-1">
         ${txs.length} transaction${txs.length === 1 ? "" : "s"} this period
       </div>
+      ${this.inGuestSpace ? `
+        <div class="text-[11px] text-zinc-500 mb-2 px-1">
+          Only the rows on accounts shared with you are listed \u2014 the total above
+          counts their spending on every account.
+        </div>` : ""}
       ${txs.length === 0 ? `<div class="card p-10 text-center">${this.emptyState("No spending yet", "No transactions have counted toward this budget this period.")}</div>` : Object.keys(dayGroups).map((date) => `
             <div class="mb-2">
               <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1 px-1">${this.dateLabel(date)}</div>
@@ -9647,7 +9861,12 @@ This replaces your current grouping.`
       const showHijri = this.state.user?.showHijri;
       return `
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Reports</h1>
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Reports</h1>
+          ${this.inGuestSpace ? `<div class="text-xs text-zinc-500 mt-0.5">
+            ${this.escapeHtml(this.space.label)} \xB7 ${this.escapeHtml(this.space.scopeNote)}
+          </div>` : ""}
+        </div>
         <div class="flex items-center gap-2">
           <select class="select" onchange="window.__app.setReportRange(this.value)">
             <option value="7"  ${this.#range === "7" ? "selected" : ""}>Last 7d</option>
@@ -13015,6 +13234,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     #spaces = null;
     /** @type {SpaceSheet} */
     #spaceSheet = null;
+    /** @type {BudgetShareSheet} */
+    #budgetShareSheet = null;
     #filterRenderTimer = null;
     // debounce for the transaction search box
     #voice = null;
@@ -13067,6 +13288,11 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         syncService: this.#sync
       });
       this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
+      this.#budgetShareSheet = new BudgetShareSheet({
+        store: this.#store,
+        familyShareService: this.#familyShares,
+        syncService: this.#sync
+      });
       this.#swipe = new SwipeRowController({
         onDelete: ({ id, shareIndex, isOwnContrib }) => {
           if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
@@ -13105,6 +13331,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#accountGroupSheet.mount(container);
       this.#accountShareSheet.mount(container);
       this.#spaceSheet.mount(container);
+      this.#budgetShareSheet.mount(container);
       this.#nav.mount({
         onNavigate: (id) => this.navigate(id),
         onAdd: () => this.openModal("transaction", {}),
@@ -13279,6 +13506,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       if (this.#paymentSheet?.isOpen) this.#paymentSheet.close();
       if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
       if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
+      if (this.#budgetShareSheet?.isOpen) this.#budgetShareSheet.close();
       this.#modal.close();
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -13491,6 +13719,21 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     /** FamilyShareService — grants for accounts and budgets. */
     get familyShares() {
       return this.#familyShares;
+    }
+    get budgetShareSheet() {
+      return this.#budgetShareSheet;
+    }
+    /**
+     * Open the per-budget share sheet. Refused in a guest space for the same
+     * reason the budget modal is: you cannot re-share someone else's budget.
+     * @param {string} budgetId
+     */
+    shareBudget(budgetId) {
+      const space = this.#spaces?.active?.();
+      if (space && !space.isHome) {
+        return this.#toast.show("You can only share budgets from your own space");
+      }
+      this.#budgetShareSheet?.open(budgetId);
     }
     /** Which modal is open, if any — used by the smoke suites. */
     get modalActive() {

@@ -54,6 +54,7 @@ import { SwipeRowController }  from './ui/components/SwipeRowController.js';
 import { Space }               from './domain/services/Space.js';
 import { SpaceRegistry }       from './domain/services/SpaceRegistry.js';
 import { SpaceSheet }          from './ui/components/SpaceSheet.js';
+import { BudgetShareSheet }    from './ui/components/BudgetShareSheet.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -155,6 +156,8 @@ export class Application {
   #spaces             = null;
   /** @type {SpaceSheet} */
   #spaceSheet         = null;
+  /** @type {BudgetShareSheet} */
+  #budgetShareSheet   = null;
   #filterRenderTimer  = null;   // debounce for the transaction search box
   #voice              = null;   // { recorder, overlay, done } while a voice entry is in progress
   /** @type {ReceiptScanService|null} lazily built — see get receiptScanner() */
@@ -208,6 +211,11 @@ export class Application {
       syncService:        this.#sync,
     });
     this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
+    this.#budgetShareSheet = new BudgetShareSheet({
+      store:              this.#store,
+      familyShareService: this.#familyShares,
+      syncService:        this.#sync,
+    });
     // The controller owns the gesture; the app owns what deleting means. The
     // revealed button is itself the confirmation, so these are the no-dialog
     // variants of the delete methods.
@@ -275,6 +283,7 @@ export class Application {
     this.#accountGroupSheet.mount(container);
     this.#accountShareSheet.mount(container);
     this.#spaceSheet.mount(container);
+    this.#budgetShareSheet.mount(container);
     this.#nav.mount({
       onNavigate: (id) => this.navigate(id),
       onAdd:      ()   => this.openModal('transaction', {}),
@@ -484,6 +493,7 @@ export class Application {
     if (this.#paymentSheet?.isOpen)      this.#paymentSheet.close();
     if (this.#accountGroupSheet?.isOpen) this.#accountGroupSheet.close();
     if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
+    if (this.#budgetShareSheet?.isOpen)  this.#budgetShareSheet.close();
     this.#modal.close();
   }
 
@@ -715,6 +725,20 @@ export class Application {
   get spaces() { return this.#spaces; }
   /** FamilyShareService — grants for accounts and budgets. */
   get familyShares() { return this.#familyShares; }
+  get budgetShareSheet() { return this.#budgetShareSheet; }
+
+  /**
+   * Open the per-budget share sheet. Refused in a guest space for the same
+   * reason the budget modal is: you cannot re-share someone else's budget.
+   * @param {string} budgetId
+   */
+  shareBudget(budgetId) {
+    const space = this.#spaces?.active?.();
+    if (space && !space.isHome) {
+      return this.#toast.show('You can only share budgets from your own space');
+    }
+    this.#budgetShareSheet?.open(budgetId);
+  }
   /** Which modal is open, if any — used by the smoke suites. */
   get modalActive() { return this.#modal?.active ?? null; }
   /** The transaction modal instance, for suites that inspect sharedTxMode. */

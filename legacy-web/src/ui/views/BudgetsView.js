@@ -28,15 +28,20 @@ export class BudgetsView extends BaseView {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets</h1>
-          <div class="text-xs text-zinc-500 mt-0.5">Gregorian-month or Hijri-month tracking</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace
+             ? `Shared with you · spend counted ${this.escapeHtml(this.space?.scopeNote ? 'across all their accounts' : '')}`
+             : 'Gregorian-month or Hijri-month tracking'}</div>
         </div>
+        ${this.inGuestSpace ? '' : `
         <button class="btn btn-primary" onclick="window.__app.openModal('budget')">
           <i data-lucide="plus"></i> New budget
-        </button>
+        </button>`}
       </div>
 
       ${state.budgets.length === 0
-        ? `<div class="card p-10 text-center">${this.emptyState('No budgets yet', 'Set a monthly limit per category to stay on track.')}</div>`
+        ? `<div class="card p-10 text-center">${this.inGuestSpace
+             ? this.emptyState('No budgets shared with you', 'They haven\u2019t shared any budgets from this space.')
+             : this.emptyState('No budgets yet', 'Set a monthly limit per category to stay on track.')}</div>`
         : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             ${state.budgets.map((b) => this.#budgetCard(b, todayH, now, eom)).join('')}
           </div>`}
@@ -50,7 +55,7 @@ export class BudgetsView extends BaseView {
     const cats      = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
     const firstCat  = cats[0];
     const isHijri  = b.period === 'hijri';
-    const spent    = this.#budgets.currentSpend(b);
+    const spent    = this.spendFor(b, () => this.#budgets.currentSpend(b));
     const eff      = this.#budgets.effectiveLimit(b);
     const limit    = eff.limit;
     const pct      = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
@@ -80,9 +85,13 @@ export class BudgetsView extends BaseView {
                   ? `<span class="chip flex-shrink-0" style="font-size:.65rem">${cats.length} categories</span>`
                   : (hasSubs ? '<span class="chip flex-shrink-0" style="font-size:.65rem">incl. sub-categories</span>' : '')}
               </div>
-              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.openModal('budget',{id:'${b.id}'})" title="Edit budget">
-                <i data-lucide="pencil"></i>
+              ${this.inGuestSpace ? '' : `
+              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.shareBudget('${this.jsArg(b.id)}')" title="Share this budget">
+                <i data-lucide="users"></i>
               </button>
+              <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.openModal('budget',{id:'${this.jsArg(b.id)}'})" title="Edit budget">
+                <i data-lucide="pencil"></i>
+              </button>`}
             </div>
             <div class="text-xs text-zinc-500">${periodLabel}${b.rollover ? ' · rollover on' : ''}</div>
           </div>

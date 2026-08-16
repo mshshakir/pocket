@@ -35,7 +35,12 @@ export class ReportsView extends BaseView {
     const showHijri = this.state.user?.showHijri;
     return `
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Reports</h1>
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Reports</h1>
+          ${this.inGuestSpace ? `<div class="text-xs text-zinc-500 mt-0.5">
+            ${this.escapeHtml(this.space.label)} · ${this.escapeHtml(this.space.scopeNote)}
+          </div>` : ''}
+        </div>
         <div class="flex items-center gap-2">
           <select class="select" onchange="window.__app.setReportRange(this.value)">
             <option value="7"  ${this.#range==='7' ?'selected':''}>Last 7d</option>

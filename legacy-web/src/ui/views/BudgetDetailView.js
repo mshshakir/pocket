@@ -36,7 +36,7 @@ export class BudgetDetailView extends BaseView {
 
     const targetIds = this.#budgets.targetCategoryIds(b);
     const cats      = targetIds.map((id) => state.categories.find((c) => c.id === id)).filter(Boolean);
-    const spent     = this.#budgets.currentSpend(b);
+    const spent     = this.spendFor(b, () => this.#budgets.currentSpend(b));
     const eff       = this.#budgets.effectiveLimit(b);
     const limit     = eff.limit;
     const pct       = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
@@ -116,6 +116,11 @@ export class BudgetDetailView extends BaseView {
       <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2 px-1">
         ${txs.length} transaction${txs.length === 1 ? '' : 's'} this period
       </div>
+      ${this.inGuestSpace ? `
+        <div class="text-[11px] text-zinc-500 mb-2 px-1">
+          Only the rows on accounts shared with you are listed — the total above
+          counts their spending on every account.
+        </div>` : ''}
       ${txs.length === 0
         ? `<div class="card p-10 text-center">${this.emptyState('No spending yet', 'No transactions have counted toward this budget this period.')}</div>`
         : Object.keys(dayGroups).map((date) => `
