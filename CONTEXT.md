@@ -6,7 +6,7 @@
 > Paste this whole file into a new chat to bring a fresh session up to speed.
 > It complements the auto-memory (see _Memory_ below) — this is the human-readable brief.
 
-**Last updated:** 2026-08-15
+**Last updated:** 2026-08-15 (mobile port same day)
 
 ---
 
@@ -52,6 +52,41 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `store.init(seed)`) and stub `global.fetch`.
 
 ## Recent changes
+
+**Mobile port of the 2026-08-15 work — and mobile had the SAME data-loss bug, worse.**
+New suite `mobile-app/test/session-2026-08.test.mjs` (31 assertions, wired into `npm test`);
+7 mutations tried, all 7 turn it red. `npm test` now runs domain (30) + family (10) + this.
+- **MobileSyncService had every ingredient of the web failure, plus three of its own.**
+  `schedulePush()` used a 1500ms trailing debounce with no cap; `#dirty` was memory-only; the
+  cold-start guard `if (this.#dirty && this.#cloudVersion !== null)` cannot fire on boot
+  (`#cloudVersion` starts null, `#dirty` starts false), so `#doPull` `replaceState`d the stale
+  cloud row over memory AND AsyncStorage; a failed push was dropped with no retry.
+  Worse than web: (a) `Repository.save()` is ASYNC and UN-AWAITED and returns `true` before
+  the write is attempted, so a storage failure is structurally unreportable and there is a
+  real window where nothing is on disk; (b) `flushWrites()` existed but had **zero call
+  sites**; (c) **no `AppState` listener anywhere**, and Android kills a backgrounded process
+  with no further JS — so the pending timer simply never fires.
+  Fixed with `mobile-app/src/core/SyncJournal.js` (AsyncStorage-backed, same `baseVersion`
+  rule as web), `#recoverPendingLocalEdits()`, `MAX_PUSH_WAIT_MS = 4000`, backoff retries,
+  and `flushForBackground()` wired to `AppState` 'background'/'inactive' in `AppContext`,
+  which also awaits `Repository.flushWrites()` and the journal.
+  `SyncJournal.prepare()` MUST be awaited before the first pull or recovery silently no-ops.
+- **Mobile-only regression closed:** `#commitState`'s first-write branch was a bare upsert
+  that always returned `true`, so a simultaneous first sign-in on a second device was
+  clobbered. Now `ignoreDuplicates: true` + `.select('version')`, matching web.
+- **`#stashConflict` was write-only.** Single fixed key (each conflict overwrote the last)
+  and nothing ever read it. Now timestamped keys + a capped index of 5, plus
+  `conflictBackups()` / `readConflictBackup()`. Still needs a Settings restore UI.
+- **Voice splitting ported verbatim** — `#buildVoicePrompt`, `#buildVoicePrefill` and
+  `#reconcileSplits` are byte-identical to the web copies (verified by diff).
+  `TransactionFormScreen.applyPrefill` gained the missing `setSplits(prefill.splits)`: mobile
+  was silently dropping splits, which had been true for **receipt scans too**, not just voice.
+- **Settings defaults ported** — `defaultAccountId` / `defaultPaymentType` in seed +
+  StateMigrator, `AccountService.defaultId()`, `PaymentTypeService.defaultType()`, pill rows
+  in the Preferences block, and both used by `TransactionFormScreen`.
+- `Store.#persistState` now fires the local-change hook even when the write failed (web parity).
+- Swipe and the FX panel stay web-only: the RN app has no swipe-delete (deletion is an
+  explicit multi-select mode) and no browser-refresh path.
 
 **Six-item fix pass (2026-08-15) — WEB ONLY. Mobile port pending (see _Pending_ 0).**
 New suite `src/__smoke__/session-2026-08.smoke.mjs` (57 assertions, added to `npm run smoke`).
@@ -184,18 +219,13 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
 
 ## Pending / action items
 
-0. **Port the 2026-08-15 web work to mobile** (user chose "web now, mobile after"):
-   - `ReceiptScanService.parseVoice` — the `items[]` prompt, `#buildVoicePrefill` and
-     `#reconcileSplits` must be copied VERBATIM into `mobile-app/src/domain/services/`.
-   - `TransactionFormScreen.applyPrefill` (`:221-237`) has **no `setSplits(prefill.splits)`**
-     line, so mobile silently drops splits — this is already true for receipt scan today.
-   - Settings defaults: `seed.js` + `StateMigrator.js` are byte-identical copies and need the
-     same two fields; `SettingsScreen`'s `Preferences` block (`:204-287`) is where the rows go;
-     `TransactionFormScreen:76,82` hardcodes `state.accounts[0]?.id` and `'card'`.
-   - Swipe and the FX panel are web-only — the RN app has no swipe-delete (deletion is an
-     explicit multi-select mode) and no browser refresh path.
-   - The SyncJournal work applies to `MobileSyncService` too, but AsyncStorage + RN app-state
-     lifecycle differ enough that it needs its own design pass.
+0. **Mobile voice + the sync fixes need a native rebuild before they can be tested**
+   (expo-av is already required for voice): `cd mobile-app && eas build --profile development
+   --platform android`. The sync work is plain JS and ships in the JS bundle, but there is no
+   way to exercise the AppState background flush without a device.
+0b. **Mobile has no UI to restore a conflict backup.** `conflictBackups()` /
+   `readConflictBackup()` now exist on `MobileSyncService` and the data is written under
+   `pocket.v1.conflict.<ts>`, but nothing surfaces it — web has this in Settings.
 1. **Mobile: shared accounts in Regulars.** `RegularsScreen.js` still lists `state.accounts` only,
    and its log path writes locally. Port the web work: `AccountRef` equivalent, `sharedOwnerId` on
    the item, contribution submit, and a merged log source so shared entries stay visible.

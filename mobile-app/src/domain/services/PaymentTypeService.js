@@ -33,6 +33,19 @@ export class PaymentTypeService {
     return [...BASE_TYPES.filter((t) => !hidden.has(t)), ...custom];
   }
 
+  /**
+   * The payment method a new entry form should start on. The stored preference
+   * can name a method the user has since deleted or hidden, so it is validated
+   * against the live list before being trusted.
+   * @returns {string}
+   */
+  defaultType() {
+    const offered = this.allTypes();
+    const preferred = this.#store.getState().user?.defaultPaymentType;
+    if (preferred && offered.includes(preferred)) return preferred;
+    return offered[0] || 'card';
+  }
+
   /** @returns {string[]} the unmodified built-in list */
   static get baseTypes() { return [...BASE_TYPES]; }
 
@@ -125,6 +138,9 @@ export class PaymentTypeService {
     for (const item of state.regularItems || []) {
       if (item.paymentType === oldName) item.paymentType = next;
     }
+    // …and so does the Settings preference. Without this a rename stranded it
+    // on a name that no longer exists, silently reverting new forms to 'card'.
+    if (state.user.defaultPaymentType === oldName) state.user.defaultPaymentType = next;
 
     this.#store.flush();
     return { ok: true, name: next, migrated };
@@ -159,6 +175,11 @@ export class PaymentTypeService {
       const i = (state.user.customPaymentTypes || []).indexOf(name);
       if (i < 0) return { ok: false, reason: 'That method no longer exists' };
       state.user.customPaymentTypes.splice(i, 1);
+    }
+    // Deleting the preferred method must clear the preference, not leave it
+    // dangling at a value defaultType() would have to keep rejecting.
+    if (state.user.defaultPaymentType === name) {
+      state.user.defaultPaymentType = this.allTypes()[0] || 'card';
     }
 
     this.#store.flush();

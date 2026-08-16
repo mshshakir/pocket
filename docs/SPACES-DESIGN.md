@@ -1,7 +1,7 @@
 # Spaces — design proposal
 
-**Status:** proposal, awaiting approval. No code written.
-**Date:** 2026-08-15
+**Status:** proposal, awaiting approval. No code written. All open questions answered.
+**Date:** 2026-08-15 (revised 2026-08-15 — §6 and §8 record the answers)
 **Scope:** `legacy-web` first, `mobile-app` to follow.
 
 ---
@@ -281,38 +281,233 @@ can inject a payload that the owner's category list renders directly.
 
 **This is a blocking dependency, not a nice-to-have.**
 
-## 6. Rollout
+## 6. Decisions taken
+
+Answers to the questions this doc originally left open, and what each one costs.
+
+### 6.1 Budgets, debts, regulars and reports are IN a guest space
+
+> *"regulars, budgets, debt and report if from a shared account should be visible
+> and editable as per access in spaces."*
+
+This is the answer that most changes the plan, because **none of those four
+travel in the snapshot today** — it carries only `accounts`, `categories`,
+`transactions`, `homeCurrency`, `permission` and `sharedBy`. Three of them scope
+cleanly; one does not.
+
+**Debts and regular items — clean.** Both carry an `accountId`
+(`DebtModal.js:105`, `RegularItemModal.js:128`), so they filter exactly like
+transactions do: include the row when `permMap[accountId]` exists. Editing is
+gated by that same per-account permission, which is the model already in place.
+
+**Reports — clean, but say so.** Reports are derived from transactions, so in a
+guest space they naturally cover the shared accounts and nothing else. That is
+the correct answer, not a limitation: the member is not entitled to the owner's
+other accounts. It must be **labelled** in the UI ("across the 2 accounts shared
+with you"), or the member will read a partial figure as a total.
+
+**Budgets — genuinely awkward, and the reason this needs one more decision.**
+Two independent problems:
+
+1. **A budget is not account-scoped.** Its shape is
+   `{ id, categoryId | categoryIds[], amount, currency, period, rollover }` —
+   there is no `accountId` anywhere on it. So "a budget from a shared account"
+   does not exist as a thing to filter on. Either all of the owner's budgets
+   appear in their space (defensible: the whole category tree is already shared),
+   or none do.
+
+2. **The member cannot compute the right number.** `BudgetService.currentSpend()`
+   (`BudgetService.js:112-122`) sums over `state.transactions` — ALL of them.
+   A member receives only transactions touching shared accounts, so a budget
+   rendered member-side would report *less* spend than reality, and the more of
+   the owner's spending happens on unshared accounts the more wrong it gets.
+   Sending every transaction to fix it is not an option: that is the privacy leak
+   the snapshot filter exists to prevent.
+
+   **The fix is to send the answer, not the inputs.** The owner computes spend at
+   push time and the snapshot carries it:
+
+   ```js
+   budgets: state.budgets.map((b) => ({ ...b, spent: budgetSvc.currentSpend(b) })),
+   ```
+
+   The member's Budgets view then renders `b.spent` instead of recomputing. A
+   derived number crossing the wire is normally a smell; here it is the only
+   shape that is both correct and private.
+
+### 6.2 The Dashboard shows the active space only
+
+Confirmed. Totals, balances and recent activity all describe the selected space.
+The switcher stays visible in the header so the context is never ambiguous.
+
+### 6.3 Two spaces from the same owner: not possible
+
+Confirmed, and it matches the storage: `family_shares` is keyed
+`(owner_id, member_email)`, one row per pair. A space is identified by
+`_ownerId` alone and nothing needs to handle a list.
+
+### 6.4 Losing access mid-session tells the user
+
+> *"it should inform the user that permission is now denied or revoked."*
+
+When a pull removes the active space (revoked entirely, or the last account
+un-shared), `SpaceRegistry.activate()` falls back to home and the user is told
+explicitly — not silently relocated:
+
+- Any open modal belonging to that space closes.
+- A toast names what happened: *"Abbas removed your access — switched back to
+  your own space."*
+- A revoked space disappears from the switcher rather than lingering as a dead
+  entry.
+
+The same message covers a narrowing: if the member kept some accounts but lost
+the one they were looking at, the space survives and the account view falls back
+to the space root with *"You no longer have access to that account."*
+
+Worth noting the failure this replaces: today a stale snapshot simply keeps
+working until the next pull, and `revokeMemberShare()` exists precisely because
+leaving the row in place "would keep the member's stale snapshot alive forever"
+(`SyncService.js:757`).
+
+## 7. What 6.1 costs — the phasing has to change
+
+The original plan called phase 1 "no server work". **That is no longer true.**
+Making the four new areas *editable* means each one needs its own contribution
+payload and its own branch in `#authoriseContribution` — which is the
+security-boundary work that was scoped as phase 2.
+
+| Area | Visible | Editable | New payload kind |
+|---|---|---|---|
+| Transactions | already | already | — |
+| Debts | snapshot field | per-account permission | `_kind: 'debt'` |
+| Regular items | snapshot field | per-account permission | `_kind: 'regular'` |
+| Budgets | snapshot field + owner-computed `spent` | needs a right that does not exist | `_kind: 'budget'` |
+| Reports | derived, label the scope | n/a — read-only | — |
+| Categories | already in snapshot | needs `canAddCategories` | `_kind: 'category'` |
+
+Revised phases:
 
 | Phase | Content | Server change | Risk |
 |---|---|---|---|
-| **1** | `Space` + `SpaceRegistry`, switcher UI, `BaseView.state` projection, guest-space Accounts / Transactions / Categories / Add-entry | none | medium — wide but mechanical |
-| **1b** | Delete `sharedMatch`, the three `_sharedData` fallbacks, positional `shareIndex`, `data-ownerid` | none | low, after 1 lands |
-| **2** | `canAddCategories` + category contributions | yes: `#authoriseContribution` branch, snapshot field, later a nullable `account_id` | high — touches the security boundary |
+| **1** | `Space` + `SpaceRegistry`, switcher, `BaseView.state` projection, guest-space Accounts / Transactions / Categories / Add-entry. Everything READ-ONLY beyond the transaction contributions that already work. | none | medium — wide but mechanical |
+| **1b** | Snapshot gains `debts` + `regularItems` (filtered by account `permMap`) and `budgets` (filtered by the NEW per-budget grants, each carrying owner-computed `spent`). Those become **visible** in a guest space; Reports and BudgetDetailView labelled with their scope. Requires the `permissions` entry migration in §8.2 and a budget share UI. | snapshot shape + permission storage | medium |
+| **1c** | Delete `sharedMatch`, the three `_sharedData` fallbacks, positional `shareIndex`, `data-ownerid` | none | low |
+| **2** | **Editable**: `_kind` payloads for debt / regular / budget / category, each with an `#authoriseContribution` branch and permission rules. Budget is the first kind with no account, so it forces the `account_id` NOT NULL decision. | yes, on the security boundary | high |
 | **2 prereq** | Fix audit **H1** (escape `_sharedData` on render) | none | low, isolated |
 
-Phase 1 is safe to ship alone and delivers most of what was asked: switching by
-owner, the owner's accounts and *only* the owner's categories inside their
-space. Phase 2 adds "and I can add a category while I'm in there."
+Splitting visible (1b) from editable (2) matters: 1b is a snapshot change nobody
+can abuse, while 2 lets another user's device propose writes into your budgets
+and debts. Shipping 1 + 1b gives a member a fully readable space; 2 is where the
+care goes.
 
-## 7. Open questions
+**Snapshot size** deserves a note. Every share row already carries the owner's
+whole category tree and every transaction touching a shared account, and it is
+re-uploaded per member on every push. Adding budgets, debts and regulars grows
+that further. `family_shares.snapshot` is `jsonb` so there is headroom, but the
+per-push cost is `O(members × snapshot)` and the audit already flagged snapshot
+bloat as the fastest route to a quota failure (M9). Worth measuring on real data
+before 1b ships.
 
-1. **Budgets, Reports, Debts, Regulars inside a guest space.** The snapshot
-   carries no budgets or debts, so those tabs have nothing to show. Options:
-   (a) hide them in a guest space, (b) show them read-only-empty with an
-   explanation, (c) keep them always scoped to home. I lean (a) — a space you
-   cannot budget in should not show a Budgets tab. **Needs a decision.**
-2. **Should the Dashboard aggregate across spaces or show only the active one?**
-   Consistency says active-only. But "my total net worth" arguably spans both.
-   I lean active-only, with the switcher visible in the header so the context is
-   never ambiguous.
-3. **Two spaces from the same owner.** Not possible today — `family_shares` is
-   keyed `(owner_id, member_email)`, one row per pair. Worth stating explicitly
-   so nobody designs for a list.
-4. **What happens to an open modal when a realtime pull revokes the active
-   space?** Proposal: `activate()` falls back to home and the modal closes with
-   a toast. Needs a test.
+## 8. Budgets are shared explicitly, like accounts
 
-## 8. Estimate
+Both questions this section previously left open are answered, and the answer is
+the same for each: **a budget is shared individually, with its own access level
+chosen at share time, exactly as an account is.**
+
+### 8.1 What this fixes
+
+It removes the awkwardness in §6.1 rather than working around it. Budgets have no
+`accountId`, so the earlier choice was between "all of the owner's budgets" and
+"none" — both wrong. Making the budget itself the unit of sharing sidesteps the
+missing `accountId` entirely: the owner names the budget, the same way they name
+the account.
+
+It also resolves the privacy objection to shipping a precomputed `spent`.
+`BudgetService.currentSpend()` sums across ALL the owner's transactions, so the
+figure necessarily reflects spending on accounts the member cannot see. That was
+a leak while budgets travelled implicitly. Once the owner has explicitly ticked
+*this* budget for *this* member, the aggregate is the thing they chose to
+disclose — a budget without its true spend is not worth sharing. **Explicit
+sharing is the consent that makes the aggregate legitimate.**
+
+### 8.2 Storage
+
+`state.family[n].permissions` is currently `[{ accountId, access }]`. Rather than
+bolting on a parallel array, generalise the entry so the same machinery covers
+anything shareable:
+
+```js
+permissions: [
+  { kind: 'account', id: 'acc_1', access: 'edit' },
+  { kind: 'budget',  id: 'bg_7',  access: 'view' },
+]
+```
+
+`StateMigrator` back-fills `kind: 'account'` on every legacy entry that has an
+`accountId`, and `FamilyShareService.setAccess(memberId, accountId, access)`
+becomes `setAccess(memberId, ref, access)` where `ref` is `{kind, id}`. Both
+platforms and the snapshot read this shape, so the migration has to land in
+`legacy-web` and `mobile-app` together.
+
+### 8.3 Access levels — budgets need their own ladder
+
+`FAMILY_ACCESS_LEVELS` is `view < add < edit < full`, and every description talks
+about transactions. Reusing it verbatim would offer a member *"Can add — View +
+add new transactions"* on a budget, which means nothing. Budgets take a shorter,
+separate ladder:
+
+| Level | Meaning |
+|---|---|
+| `view` | see the budget, its limit and its progress |
+| `edit` | change amount, period, rollover, target categories |
+| `full` | edit + delete |
+
+No `add`: creating a budget in someone else's book is a different act from being
+granted one, and is out of scope.
+
+### 8.4 The trap: BudgetDetailView
+
+`BudgetDetailView` exists to show "the transactions counting toward this budget
+this period" (`BudgetDetailView.js:6`), and it derives that list from
+`state.transactions`. In a guest space the member holds only the transactions on
+accounts shared with them, so that list would be a *subset* — and it would visibly
+disagree with the `spent` figure shown directly above it.
+
+Two numbers on one screen that do not reconcile is worse than one number with a
+caveat. In a guest space the detail view must either omit the contributing-rows
+list, or label it explicitly ("showing 3 of 11 contributing transactions — the
+rest are on accounts not shared with you"). **Recommendation: label it.** Hiding
+it invites the member to assume the budget covers only what they can see;
+labelling makes the boundary visible, which is the same principle as labelling
+Reports in §6.1.
+
+### 8.5 Snapshot and authorisation
+
+```js
+budgets: state.budgets
+  .filter((b) => budgetPermMap[b.id])
+  .map((b) => ({ ...b, spent: budgetSvc.currentSpend(b) })),
+budgetPermission: budgetPermMap,   // { budgetId → 'view'|'edit'|'full' }
+```
+
+Editing rides the contribution path like everything else — `_kind: 'budget'` with
+an `#authoriseContribution` branch checking `budgetPermission[id]` against the
+required level. Note this is the **first contribution kind that carries no
+account**, so it is the one that forces the `family_contributions.account_id`
+NOT NULL column to take a sentinel (or, better, be made nullable).
+
+### 8.6 Asymmetry with debts and regulars — deliberate
+
+Debts and regular items keep inheriting from their account's permission, because
+unlike budgets they *have* an `accountId` (`DebtModal.js:105`,
+`RegularItemModal.js:128`). Sharing an account shares its debts and regulars;
+budgets are shared one at a time. That asymmetry is not an inconsistency — it
+follows from which entities are account-scoped and which are not, and it avoids
+making the owner tick a box per debt when the account grant already says it.
+
+## 9. Estimate
+
+(Phase numbering below refers to the revised table in §7.)
 
 Phase 1 is roughly: 2 new domain classes, 1 new component (the switcher), the
 `BaseView` projection, guards on 6 mutating services, and rework of the shared

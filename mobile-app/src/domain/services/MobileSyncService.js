@@ -27,10 +27,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Store } from '../../core/Store.js';
 import { EventBus } from '../../core/EventBus.js';
 import { Repository } from '../../core/Repository.js';
+import { SyncJournal } from '../../core/SyncJournal.js';
 import { StateMigrator } from '../../data/StateMigrator.js';
 import { CurrencyService } from './CurrencyService.js';
 import { LedgerMath } from './LedgerMath.js';
 import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../../data/constants.js';
+
+/** Trailing-edge debounce applied after each local save. */
+const PUSH_DEBOUNCE_MS = 1500;
+/**
+ * Ceiling on how long an uncommitted edit may sit in the debounce window. The
+ * debounce is re-armed by every save, so entering rows back-to-back could
+ * postpone the only durable write indefinitely.
+ */
+const MAX_PUSH_WAIT_MS = 4000;
+/** Backoff for retrying a push that failed on the network. */
+const RETRY_BASE_MS    = 4000;
+const MAX_PUSH_RETRIES = 4;
 
 export class MobileSyncService {
   /** @type {Store} */    #store;
@@ -43,6 +56,14 @@ export class MobileSyncService {
   #cloudVersion = null;
   #saveTimer = null;
   #dirty = false;
+  /** Timestamp of the edit that started the current uncommitted run. */
+  #dirtySince = 0;
+  /** Consecutive failed pushes, for the backoff in #retryPushLater(). */
+  #pushRetries = 0;
+  /** Re-entrancy guard for the flush-before-pull path. */
+  #flushing = false;
+  /** Durable twin of #dirty — survives the process being killed. */
+  /** @type {SyncJournal} */ #journal = new SyncJournal();
   #syncing = Promise.resolve();
 
   // ── Family sharing (member + owner) ──────────────────────────────────
@@ -255,8 +276,58 @@ export class MobileSyncService {
   schedulePush() {
     if (!this.#sb || !this.#user) return;
     this.#dirty = true;
+    // Durable twin of #dirty: the field dies with the process, this does not.
+    // It is what lets a cold start tell "the cloud row is current" apart from
+    // "the cloud row is behind because Android killed us before the push".
+    this.#journal.mark(this.#user.id, this.#cloudVersion);
+    const now = Date.now();
+    if (!this.#dirtySince) this.#dirtySince = now;
+    // Cap the total wait: once work has been at risk for MAX_PUSH_WAIT_MS the
+    // next save commits immediately instead of resetting the clock again.
+    const wait = Math.max(0, Math.min(
+      PUSH_DEBOUNCE_MS,
+      this.#dirtySince + MAX_PUSH_WAIT_MS - now,
+    ));
     clearTimeout(this.#saveTimer);
-    this.#saveTimer = setTimeout(() => this.push(), 1500);
+    this.#saveTimer = setTimeout(() => this.push(), wait);
+  }
+
+  /** Mark local state as fully committed. */
+  #markClean() {
+    this.#dirty       = false;
+    this.#dirtySince  = 0;
+    this.#pushRetries = 0;
+    this.#journal.clear();
+  }
+
+  /**
+   * Re-arm a failed push with exponential backoff. Previously a failed push was
+   * dropped outright: one flaky mobile-network moment and the edit stayed local
+   * forever with no further attempt.
+   */
+  #retryPushLater() {
+    if (this.#pushRetries >= MAX_PUSH_RETRIES) return;
+    const delay = RETRY_BASE_MS * (2 ** this.#pushRetries);
+    this.#pushRetries++;
+    clearTimeout(this.#saveTimer);
+    this.#saveTimer = setTimeout(() => this.push(), delay);
+  }
+
+  /**
+   * Flush everything durable before the OS is allowed to kill us.
+   *
+   * Android reclaims a backgrounded process with no further JS execution, so a
+   * pending `setTimeout` push and an un-awaited AsyncStorage write are both
+   * simply lost. Wire this to AppState 'background'/'inactive'.
+   * @returns {Promise<void>}
+   */
+  async flushForBackground() {
+    try { await Repository.flushWrites?.(); } catch (_) {}
+    try { await this.#journal.flush(); } catch (_) {}
+    if (!this.#dirty || !this.#sb || !this.#user) return;
+    clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    try { await this.push(); } catch (_) {}
   }
 
   push() {
@@ -270,6 +341,9 @@ export class MobileSyncService {
       // No successful pull yet — uploading would overwrite an unknown baseline.
       console.warn('[MobileSync] holding push until a pull succeeds');
       this.#emit('error');
+      // Hold, but do NOT give up: the pull that unblocks this may land a second
+      // from now, and without a retry the edit sits local-only forever.
+      this.#retryPushLater();
       return;
     }
     this.#emit('syncing');
@@ -280,11 +354,11 @@ export class MobileSyncService {
         // local copy is stashed so a conflict never silently destroys work.
         await this.#stashConflict();
         await this.#doPull();
-        this.#dirty = false;
+        this.#markClean();
         this.#bus.emit('toast', { message: 'Another device saved first — local copy kept as backup' });
         return;
       }
-      this.#dirty = false;
+      this.#markClean();
       this.#emit('synced');
       // Web parity: after every successful push, re-publish the snapshots that
       // family members read and drain any pending inbound contributions, so an
@@ -295,6 +369,9 @@ export class MobileSyncService {
     } catch (e) {
       console.error('[MobileSync] push error:', e);
       this.#emit('error');
+      // Keep #dirty and the journal set so both the backoff below and, failing
+      // that, the next cold start still know this edit is outstanding.
+      this.#retryPushLater();
     }
   }
 
@@ -316,10 +393,16 @@ export class MobileSyncService {
       this.#cloudVersion = expected + 1;
       return true;
     }
-    const { error } = await this.#sb.from('user_data').upsert({
+    // First write for this user (no row yet). INSERT … ON CONFLICT DO NOTHING,
+    // so a simultaneous first sign-in on another device can't be clobbered: if
+    // the row already exists we lost the race and return false, letting #doPush
+    // stash + pull the winner. The bare upsert this replaces always claimed
+    // success — a mobile-only regression the web audit had already closed.
+    const { data: rows, error } = await this.#sb.from('user_data').upsert({
       id: this.#user.id, data: state, version: 1, updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' });
+    }, { onConflict: 'id', ignoreDuplicates: true }).select('version');
     if (error) throw error;
+    if (!rows || !rows.length) return false;
     this.#cloudVersion = 1;
     return true;
   }
@@ -335,9 +418,14 @@ export class MobileSyncService {
     if (!this.#sb || !this.#user) return;
 
     // Commit a pending local edit before overwriting local state (C6).
-    if (this.#dirty && this.#cloudVersion !== null) {
+    // This needs a CAS baseline to push against, so it only covers the
+    // in-session case; a cold start has #cloudVersion === null and is handled
+    // by #recoverPendingLocalEdits() once the row has been read.
+    if (this.#dirty && !this.#flushing && this.#cloudVersion !== null) {
+      this.#flushing = true;
       clearTimeout(this.#saveTimer);
       try { await this.#doPush(); } catch (_) {}
+      finally { this.#flushing = false; }
       if (!this.#dirty) return;
     }
 
@@ -351,9 +439,13 @@ export class MobileSyncService {
       if (error && error.code !== 'PGRST116') throw error;
 
       if (data?.data) {
+        // Cold start carrying work the cloud never received: the row we just
+        // read is BEHIND this device, so adopting it would delete real entries.
+        if (await this.#recoverPendingLocalEdits(data)) return;
+
         this.#store.replaceState(data.data, (s) => StateMigrator.migrate(s));
         this.#cloudVersion = data.version ?? 0;
-        this.#dirty = false;
+        this.#markClean();
         // As the OWNER, apply anything family members contributed while we were
         // away, then refresh the accounts OTHERS share with us.
         await this.#pullMemberContributions();
@@ -376,13 +468,104 @@ export class MobileSyncService {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
+  /**
+   * Cold-start recovery for edits that never reached the cloud.
+   *
+   * Android can kill a backgrounded app before the debounced push fires. The
+   * durable SyncJournal marker makes that detectable; the row's own version is
+   * then a valid CAS baseline, so the right move is to commit local state OVER
+   * the stale row. If another device legitimately wrote while this one was
+   * away, the recorded baseline no longer matches and we stash instead —
+   * blindly pushing would destroy THEIR work, which is the same bug pointed the
+   * other way.
+   *
+   * @param {{data: object, version: number}} row  the cloud row just read
+   * @returns {Promise<boolean>} true when the caller must NOT adopt the snapshot
+   */
+  async #recoverPendingLocalEdits(row) {
+    if (this.#flushing) return false;
+    if (this.#cloudVersion !== null) return false;   // not a cold start
+
+    const pending = this.#journal.read();
+    if (!pending || pending.userId !== this.#user.id) return false;
+
+    const rowVersion = row.version ?? 0;
+    // A null baseline means the edits predate any successful pull, so nothing
+    // can be proven about them; treat that as a conflict too.
+    if (pending.baseVersion == null || pending.baseVersion !== rowVersion) {
+      await this.#stashConflict();
+      this.#markClean();
+      this.#bus.emit('toast', { message: 'Another device saved while you were away — your unsynced copy was kept as a backup' });
+      return false;
+    }
+
+    this.#flushing     = true;
+    this.#cloudVersion = rowVersion;
+    this.#dirty        = true;
+    try {
+      const ok = await this.#commitState(this.#store.getState());
+      if (ok) {
+        this.#markClean();
+        this.#emit('synced');
+        this.#bus.emit('toast', { message: 'Recovered changes that had not finished syncing' });
+        await this.#pullMemberContributions();
+        await this.#pullFamilyShares();
+        this.#subscribeFamily();
+        this.#bus.emit('state:changed', this.#store.getState());
+        return true;
+      }
+      await this.#stashConflict();
+      this.#markClean();
+      this.#bus.emit('toast', { message: 'Another device saved first — your unsynced copy was kept as a backup' });
+      return false;
+    } catch (e) {
+      // Transient failure. Adopting the cloud here would destroy exactly the
+      // data this method exists to protect, so keep local state and retry.
+      console.error('[MobileSync] pending-edit recovery failed:', e);
+      this.#emit('error');
+      this.#retryPushLater();
+      return true;
+    } finally {
+      this.#flushing = false;
+    }
+  }
+
+  /**
+   * Keep a recoverable copy before anything overwrites local state.
+   *
+   * Timestamped keys with a capped index, matching web. The previous single
+   * fixed key meant every conflict silently overwrote the last backup, and
+   * nothing ever read it back.
+   */
   async #stashConflict() {
     try {
-      await AsyncStorage.setItem('pocket.v1.conflict', JSON.stringify({
-        savedAt: new Date().toISOString(),
+      const savedAt = new Date().toISOString();
+      const key = `pocket.v1.conflict.${Date.now()}`;
+      await AsyncStorage.setItem(key, JSON.stringify({
+        savedAt,
         state: Repository.stripTransient(this.#store.getState()),
       }));
+      const idx = await this.conflictBackups();
+      idx.unshift({ key, savedAt });
+      for (const stale of idx.slice(5)) {
+        try { await AsyncStorage.removeItem(stale.key); } catch (_) {}
+      }
+      await AsyncStorage.setItem('pocket.v1.conflicts', JSON.stringify(idx.slice(0, 5)));
     } catch (_) { /* best effort */ }
+  }
+
+  /** @returns {Promise<{key:string, savedAt:string}[]>} newest first */
+  async conflictBackups() {
+    try { return JSON.parse(await AsyncStorage.getItem('pocket.v1.conflicts') || '[]'); }
+    catch (_) { return []; }
+  }
+
+  /** @param {string} key @returns {Promise<object|null>} the stashed state */
+  async readConflictBackup(key) {
+    try {
+      const raw = await AsyncStorage.getItem(key);
+      return raw ? (JSON.parse(raw).state ?? null) : null;
+    } catch (_) { return null; }
   }
 
   #emit(status) {

@@ -212,6 +212,25 @@ function Preferences({ state, services }) {
   };
   const showHijri = state.user.showHijri !== false;
 
+  // Generic pill row — same shape as currencyRow, but the value and the label
+  // differ (account id vs name), so it takes explicit accessors.
+  const pillRow = (items, selectedId, onPick) => (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <View style={{ flexDirection: 'row', gap: 6 }}>
+        {items.map((it) => (
+          <TouchableOpacity key={it.id} onPress={() => onPick(it.id)}
+            style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6,
+              borderColor: it.id === selectedId ? colors.primary : colors.border,
+              backgroundColor: it.id === selectedId ? colors.primary : colors.card }}>
+            <Text style={{ fontSize: 12, color: it.id === selectedId ? colors.primaryFg : colors.text }}>
+              {it.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </ScrollView>
+  );
+
   const currencyRow = (selected, onPick) => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -234,6 +253,24 @@ function Preferences({ state, services }) {
       </Field>
       <Field label="Default currency for new entries">
         {currencyRow(state.user.defaultCurrency || state.user.homeCurrency, setDefault)}
+      </Field>
+      <Field label="Default account for new entries">
+        {pillRow(
+          [{ id: '', label: 'First in list' },
+           ...state.accounts.filter((a) => !a.archived)
+             .map((a) => ({ id: a.id, label: `${a.name} · ${a.currency}` }))],
+          state.user.defaultAccountId || '',
+          (id) => { state.user.defaultAccountId = id; flush(); },
+        )}
+      </Field>
+      <Field label="Default payment method">
+        {pillRow(
+          services.paymentTypes.allTypes().map((t) => ({
+            id: t, label: t.charAt(0).toUpperCase() + t.slice(1),
+          })),
+          services.paymentTypes.defaultType(),
+          (id) => { state.user.defaultPaymentType = id; flush(); },
+        )}
       </Field>
       <Field label="Date format">
         <Segmented

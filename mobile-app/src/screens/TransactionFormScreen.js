@@ -27,7 +27,7 @@ const hijri = new HijriCalendarService();
 export default function TransactionFormScreen({ navigation, route }) {
   const { id } = route.params || {};
   const { state, services } = useAppState();
-  const { fx, composer, categories, paymentTypes, sync, receipts } = services;
+  const { fx, composer, categories, paymentTypes, sync, receipts, accounts } = services;
 
   // Shared-account contribution: the row lives in the OWNER's book, so this
   // form submits through the sync contribution API, not the local composer.
@@ -73,13 +73,15 @@ export default function TransactionFormScreen({ navigation, route }) {
     seed ? String(fx.fromMinor(seed.amount, seed.currency)) : '');
   const [currency, setCurrency]   = useState(
     seed?.currency || state.user.defaultCurrency || state.user.homeCurrency);
-  const [accountId, setAccountId] = useState(editBase?.accountId || state.accounts[0]?.id || null);
+  const [accountId, setAccountId] = useState(
+    editBase?.accountId || accounts.defaultId?.() || state.accounts[0]?.id || null);
   const [toAccountId, setToAccountId] = useState(editPair?.accountId ?? null);
   const [categoryId, setCategoryId]   = useState(seed?.categoryId || null);
   const [payee, setPayee]         = useState(seed?.payee || '');
   const [note, setNote]           = useState(seed?.note || '');
   const [date, setDate]           = useState(seed?.date || DateService.todayIso());
-  const [paymentType, setPaymentType] = useState(seed?.paymentType || 'card');
+  const [paymentType, setPaymentType] = useState(
+    seed?.paymentType || paymentTypes.defaultType?.() || 'card');
   const [splits, setSplits]       = useState(
     editBase?.splits ? editBase.splits.map((s) => ({ ...s })) : null);
 
@@ -233,6 +235,16 @@ export default function TransactionFormScreen({ navigation, route }) {
     if (prefill.date) setDate(prefill.date);
     if (prefill.paymentType) setPaymentType(prefill.paymentType);
     if (prefill.categoryId) setCategoryId(prefill.categoryId);
+    // Splits arrive from a multi-category receipt scan or voice entry. Without
+    // this line they were silently dropped — mobile accepted the prefill,
+    // showed the total, and threw away the per-category breakdown the model had
+    // already worked out. A contribution to a shared account has no split path,
+    // so they are refused there rather than dropped after the fact.
+    if (Array.isArray(prefill.splits) && prefill.splits.length && !sharedMode
+        && prefill.type !== 'transfer') {
+      setSplits(prefill.splits.map((sp) => ({ ...sp })));
+      setCategoryId(null);   // the parent of a split carries no category
+    }
     Alert.alert(opts.title || 'Receipt scanned', opts.message || 'Review the pre-filled fields, then save.');
   };
 

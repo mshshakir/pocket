@@ -33,11 +33,16 @@ export class StateMigrator {
       showHijri: true, calendarMode: 'both', dateFormat: 'auto',
       geminiApiKey: '', supabaseUrl: '', supabaseKey: '',
       hijriOffset: 0,
+      defaultAccountId: '', defaultPaymentType: 'card',
       customPaymentTypes: [], hiddenPaymentTypes: [],
       collapsedAccountGroups: [], collapsedCategories: [],
     }, state.user || {});
     if (typeof state.user.hijriOffset !== 'number') state.user.hijriOffset = 0;
     if (!state.user.defaultCurrency) state.user.defaultCurrency = state.user.homeCurrency;
+    // Stored as plain strings so a preference naming a since-deleted account or
+    // payment method degrades to the service fallback rather than crashing.
+    if (typeof state.user.defaultAccountId !== 'string') state.user.defaultAccountId = '';
+    if (typeof state.user.defaultPaymentType !== 'string') state.user.defaultPaymentType = 'card';
 
     // ── collection defaults ────────────────────────────────────────────
     if (!Array.isArray(state.accounts))      state.accounts = [];

@@ -14,12 +14,13 @@
 import React, {
   createContext, useContext, useEffect, useMemo, useState, useRef,
 } from 'react';
-import { Appearance } from 'react-native';
+import { Appearance, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { applyTheme } from '../ui/theme.js';
 import { Store } from '../core/Store.js';
 import { EventBus } from '../core/EventBus.js';
 import { Repository } from '../core/Repository.js';
+import { SyncJournal } from '../core/SyncJournal.js';
 import { SeedFactory } from '../data/seed.js';
 import { StateMigrator } from '../data/StateMigrator.js';
 import { AccountService } from '../domain/services/AccountService.js';
@@ -73,10 +74,16 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
+    /** Teardown callbacks registered during boot. */
+    const subscriptions = [];
     (async () => {
       // 1. Load persisted state BEFORE the store boots (async → sync bridge).
       Repository.setBackend(AsyncStorage);
       await Repository.prepare();
+      // The journal must be loaded BEFORE the first pull, or the cold-start
+      // recovery in MobileSyncService reads null and never runs.
+      SyncJournal.setBackend(AsyncStorage);
+      await SyncJournal.prepare();
 
       const services = buildServices();
       servicesRef.current = services;
@@ -113,6 +120,18 @@ export function AppProvider({ children }) {
       bus.on('sync:status',   ({ status }) => { if (mounted) setStatus(status); });
       bus.on('auth:changed',  ({ user: u }) => { if (mounted) setUser(u ?? null); });
 
+      // 5a. Flush everything durable when the app leaves the foreground.
+      //     Android reclaims a backgrounded process with no further JS, so a
+      //     pending debounced push and an un-awaited AsyncStorage write are
+      //     both simply lost — this is the RN equivalent of the web app's
+      //     visibilitychange/pagehide hook.
+      const appStateSub = AppState.addEventListener('change', (next) => {
+        if (next === 'background' || next === 'inactive') {
+          services.sync.flushForBackground?.().catch(() => {});
+        }
+      });
+      subscriptions.push(() => appStateSub?.remove?.());
+
       // 6. Restore a signed-in session and pull, if sync is configured.
       if (services.sync.init()) {
         services.sync.restoreSession().then(() => {
@@ -122,7 +141,10 @@ export function AppProvider({ children }) {
 
       if (mounted) setReady(true);
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+      for (const off of subscriptions) { try { off(); } catch (_) {} }
+    };
   }, []);
 
   const value = useMemo(
