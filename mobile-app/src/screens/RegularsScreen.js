@@ -20,29 +20,79 @@ import { IdGenerator } from '../domain/services/IdGenerator.js';
 import { DateService } from '../domain/services/DateService.js';
 import { HijriCalendarService } from '../domain/services/HijriCalendarService.js';
 import { RATES } from '../domain/services/FxRates.js';
+import { AccountRef } from '../domain/services/AccountRef.js';
 
 const hijri = new HijriCalendarService();
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
-/** Build the transaction a single regular-item log writes. */
-function buildLogTx(item, services) {
-  const s = services.store.getState();
+/**
+ * Build the transaction a single regular-item log writes.
+ *
+ * An item attached to an account someone shared writes into the OWNER's book,
+ * so its reporting fields are denominated in the OWNER's home currency — the
+ * same rule submitTx and the web app's submitRegularLog follow. Getting this
+ * wrong does not fail loudly; it quietly mis-states the owner's totals.
+ *
+ * @param {object} item
+ * @param {object} services
+ * @param {string} [date]
+ * @returns {object}
+ */
+function buildLogTx(item, services, date = DateService.todayIso()) {
+  const s   = services.store.getState();
+  const ref = AccountRef.fromRecord(item);
   const currency = item.currency || s.user.homeCurrency;
+  const share = ref.isShared ? services.sync.shareByOwner?.(ref.ownerId) : null;
+  const base  = share ? (share.homeCurrency || s.user.homeCurrency) : s.user.homeCurrency;
+  const amount = item.defaultAmount || 0;
+
   return {
     id: IdGenerator.generate('tx'),
     regularItemId: item.id,
-    accountId: item.accountId || s.accounts[0]?.id,
-    date: DateService.todayIso(), hijriDate: null,
-    amount: item.defaultAmount || 0, unitAmount: item.defaultAmount || 0, qty: 1,
+    accountId: ref.accountId || s.accounts[0]?.id,
+    date, hijriDate: null,
+    amount, unitAmount: amount, qty: 1,
     currency,
-    exchangeRate: (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1),
-    refAmount: services.fx.convert(item.defaultAmount || 0, currency, s.user.homeCurrency),
+    exchangeRate: (RATES[currency] || 1) / (RATES[base] || 1),
+    refAmount: services.fx.convert(amount, currency, base),
+    description: item.name,
     payee: item.name, note: '', type: 'expense',
     categoryId: item.categoryId || null, splits: null,
     paymentType: 'cash', recordState: 'cleared', tags: [],
     createdAt: new Date().toISOString(),
+    // Only set on a contribution — the owner's authorisation check and the
+    // member's own delete rights both key off it.
+    addedBy: ref.isShared ? (services.sync.currentUser?.email || null) : undefined,
   };
+}
+
+/**
+ * Log a regular item, to whichever book it belongs to.
+ * @returns {Promise<{ok: boolean, shared: boolean, reason?: string}>}
+ */
+async function logRegular(item, services, date) {
+  const ref = AccountRef.fromRecord(item);
+  const tx  = buildLogTx(item, services, date);
+
+  if (!ref.isShared) {
+    services.store.getState().transactions.push(tx);
+    services.store.flush();
+    return { ok: true, shared: false };
+  }
+
+  const share = services.sync.shareByOwner?.(ref.ownerId);
+  if (!share?._ownerId) return { ok: false, shared: true, reason: 'Shared account not found' };
+  try {
+    await services.sync.submitContribution(share._ownerId, tx);
+    // The owner's client applies contributions asynchronously, so one refresh
+    // often lands before it has been picked up.
+    services.sync.scheduleSharesRefresh?.(3000);
+    services.sync.scheduleSharesRefresh?.(8000);
+    return { ok: true, shared: true };
+  } catch (e) {
+    return { ok: false, shared: true, reason: String(e?.message || e) };
+  }
 }
 
 const isoOf = (d) => DateService.toIso(d);
@@ -95,7 +145,10 @@ function CalendarTab({ state, services }) {
 
   const setMode = (m) => { state.user.calendarMode = m; services.store.flush(); };
 
-  const logsForDate = (iso) => (state.transactions || []).filter((t) => t.regularItemId && t.date === iso);
+  // Merged: local rows plus contributions sitting in an owner's snapshot. Read
+  // straight from state.transactions and a shared log disappears the instant it
+  // is submitted, because it never lands locally.
+  const logsForDate = (iso) => services.regularLogs.onDate(iso);
   const itemOf = (id) => items.find((i) => i.id === id);
 
   // Shift a month in whichever calendar is active.
@@ -126,8 +179,7 @@ function CalendarTab({ state, services }) {
       const g = hijri.toGregorian(h.year, h.month, d);
       cells.push({ primary: d, secondary: `${g.getDate()} ${g.toLocaleDateString(undefined, { month: 'short' })}`, iso: isoOf(g) });
     }
-    monthLogs = (state.transactions || []).filter((t) => {
-      if (!t.regularItemId) return false;
+    monthLogs = services.regularLogs.all().filter((t) => {
       const th = hijri.toHijri(t.date);
       return th.year === h.year && th.month === h.month;
     });
@@ -142,8 +194,7 @@ function CalendarTab({ state, services }) {
       const h = showBoth ? hijri.toHijri(iso) : null;
       cells.push({ primary: d, secondary: h ? `${h.day} ${hijri.monthsShort[h.month]}` : null, iso });
     }
-    monthLogs = (state.transactions || []).filter((t) => {
-      if (!t.regularItemId) return false;
+    monthLogs = services.regularLogs.all().filter((t) => {
       const dt = new Date(t.date + 'T12:00:00');
       return dt.getFullYear() === year && dt.getMonth() === month;
     });
@@ -250,19 +301,32 @@ function DayPanel({ iso, logs, items, services, state, showHijri }) {
   const h = showHijri ? hijri.toHijri(iso) : null;
   const miqaats = showHijri ? hijri.miqaatsForGregorian(iso) : [];
 
-  const quickAdd = (item) => {
-    const s = services.store.getState();
-    const tx = buildLogTx(item, services);
-    tx.date = iso; // log onto the tapped day
-    const cur = tx.currency;
-    tx.hijriDate = null;
-    s.transactions.push(tx);
-    services.store.flush();
+  const quickAdd = async (item) => {
+    const res = await logRegular(item, services, iso);
     force((n) => n + 1);
-    Alert.alert('Logged', `${item.name} · ${fx.formatMoney(item.defaultAmount || 0, cur)} on ${iso}`);
+    if (!res.ok) return Alert.alert('Could not log', res.reason || 'Please try again');
+    const cur = item.currency || services.store.getState().user.homeCurrency;
+    Alert.alert(
+      res.shared ? 'Submitted' : 'Logged',
+      `${item.name} · ${fx.formatMoney(item.defaultAmount || 0, cur)} on ${iso}`
+        + (res.shared ? '\n\nSent to the account owner.' : ''),
+    );
   };
 
-  const removeLog = (t) => {
+  const removeLog = async (t) => {
+    // A contributed row does not live in state.transactions at all — it comes
+    // back inside the owner's snapshot, tagged by RegularLogService. Deleting it
+    // means asking the owner, not filtering a local array.
+    if (t._shared) {
+      try {
+        await services.sync.deleteContribution(t._ownerId, t.id);
+        services.sync.scheduleSharesRefresh?.(3000);
+      } catch (e) {
+        return Alert.alert('Could not delete', String(e?.message || e));
+      }
+      force((n) => n + 1);
+      return;
+    }
     const s = services.store.getState();
     s.transactions = (s.transactions || []).filter((x) => x.id !== t.id);
     services.store.flush();
@@ -289,6 +353,11 @@ function DayPanel({ iso, logs, items, services, state, showHijri }) {
             <Dot color={it?.color} />
             <View style={{ flex: 1 }}>
               <Text style={{ color: colors.text }}>{it?.name || t.payee}</Text>
+              {t._shared ? (
+                <Text style={{ fontSize: 10, color: colors.subtle }}>
+                  In their book · pending the owner
+                </Text>
+              ) : null}
             </View>
             <Text style={{ color: colors.text, fontWeight: '600', marginRight: 10 }}>
               {fx.formatMoney(t.amount, t.currency)}
@@ -328,8 +397,7 @@ function SummaryTab({ state, services }) {
   const items = state.regularItems || [];
   const now = new Date();
 
-  const logs = (state.transactions || []).filter((t) => {
-    if (!t.regularItemId) return false;
+  const logs = services.regularLogs.all().filter((t) => {
     const d = new Date(t.date + 'T12:00:00');
     return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
   });
@@ -384,16 +452,21 @@ function ItemsTab({ state, services, onEdit }) {
   const { fx, categories } = services;
   const items = state.regularItems || [];
 
-  const log = (item) => {
-    const s = services.store.getState();
-    s.transactions.push(buildLogTx(item, services));
-    services.store.flush();
-    Alert.alert('Logged', `${item.name} · ${fx.formatMoney(item.defaultAmount || 0, item.currency || s.user.homeCurrency)}`);
+  const log = async (item) => {
+    const res = await logRegular(item, services);
+    if (!res.ok) return Alert.alert('Could not log', res.reason || 'Please try again');
+    Alert.alert(
+      res.shared ? 'Submitted' : 'Logged',
+      `${item.name} · ${fx.formatMoney(item.defaultAmount || 0, item.currency || state.user.homeCurrency)}`
+        + (res.shared ? '\n\nSent to the account owner.' : ''),
+    );
   };
 
   const del = (item) => {
     const s = services.store.getState();
-    const n = (s.transactions || []).filter((t) => t.regularItemId === item.id).length;
+    // Count through the merged source — an item on a shared account has none of
+    // its logs locally, so a local count always reported zero.
+    const n = services.regularLogs.all().filter((t) => t.regularItemId === item.id).length;
     Alert.alert('Delete item', n ? `${n} logged transaction${n === 1 ? '' : 's'} will be kept.` : '', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => {
@@ -433,16 +506,51 @@ function ItemsTab({ state, services, onEdit }) {
 }
 
 function ItemForm({ item, onDone, navigation, services, state }) {
-  const { fx, categories } = services;
+  const { fx, categories, sync, accounts: accountService } = services;
   const [name, setName] = useState(item?.name || '');
   const [amount, setAmount] = useState(item ? String(fx.fromMinor(item.defaultAmount || 0, item.currency || state.user.homeCurrency)) : '');
   const [currency, setCurrency] = useState(item?.currency || state.user.homeCurrency);
-  const [accountId, setAccountId] = useState(item?.accountId || state.accounts[0]?.id || '');
+  const [accountId, setAccountId] = useState(
+    item?.accountId || accountService?.defaultId?.() || state.accounts[0]?.id || '');
+  // null = my own book. Set, and logging this item contributes to that owner.
+  const [ownerId, setOwnerId] = useState(item?.sharedOwnerId || null);
   const [categoryId, setCategoryId] = useState(item?.categoryId || null);
+
+  // Only accounts the member may actually post to — offering a view-only one
+  // would just produce a contribution the owner's device rejects later.
+  const CAN_POST = ['add', 'edit', 'full'];
+  const shares = (sync?.sharedData || [])
+    .map((sh) => ({
+      sh,
+      accounts: (sh.accounts || []).filter((a) => CAN_POST.includes((sh.permission || {})[a.id])),
+    }))
+    .filter((g) => g.accounts.length);
+
+  // A contribution lands in the OWNER's book, so its categoryId has to be one
+  // of theirs. Their tree travels in the snapshot already.
+  const ownerShare = ownerId ? shares.find((g) => g.sh._ownerId === ownerId)?.sh : null;
+  const ownerCats  = ownerShare ? (ownerShare.categories || []) : null;
 
   const pickCategory = () => {
     const token = PickerBus.register((ids) => setCategoryId(ids[0] ?? null));
-    navigation.navigate('CategoryPicker', { token, mode: 'single', type: 'expense', selected: categoryId ? [categoryId] : [] });
+    navigation.navigate('CategoryPicker', {
+      token, mode: 'single', type: 'expense',
+      selected: categoryId ? [categoryId] : [],
+      // Undefined means "my own book" — the picker falls back to local.
+      categories: ownerCats || undefined,
+    });
+  };
+
+  /**
+   * Move the item between books. The previously-picked category belongs to the
+   * old book and means nothing in the new one, so it is dropped rather than
+   * submitted as an id the owner cannot resolve.
+   */
+  const chooseAccount = (accId, ccy, nextOwnerId = null) => {
+    if ((nextOwnerId || null) !== (ownerId || null)) setCategoryId(null);
+    setAccountId(accId);
+    setOwnerId(nextOwnerId || null);
+    if (ccy) setCurrency(ccy);
   };
 
   const save = () => {
@@ -453,6 +561,8 @@ function ItemForm({ item, onDone, navigation, services, state }) {
       name: name.trim(),
       defaultAmount: fx.toMinor(Number(amount) || 0, currency),
       currency, accountId, categoryId,
+      // Stored as two fields, not the encoded "shared:owner:acc" transport form.
+      sharedOwnerId: ownerId || null,
       icon: item?.icon || 'coffee', color: item?.color || '#f97316',
     };
     if (item) Object.assign(item, payload);
@@ -484,16 +594,41 @@ function ItemForm({ item, onDone, navigation, services, state }) {
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{ flexDirection: 'row', gap: 8 }}>
               {state.accounts.map((a) => (
-                <TouchableOpacity key={a.id} onPress={() => { setAccountId(a.id); setCurrency(a.currency); }}
+                <TouchableOpacity key={a.id} onPress={() => chooseAccount(a.id, a.currency, null)}
                   style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8,
-                    borderColor: a.id === accountId ? colors.primary : colors.border,
-                    backgroundColor: a.id === accountId ? colors.primary : colors.card }}>
-                  <Text style={{ fontSize: 13, color: a.id === accountId ? colors.primaryFg : colors.text }}>{a.name}</Text>
+                    borderColor: (!ownerId && a.id === accountId) ? colors.primary : colors.border,
+                    backgroundColor: (!ownerId && a.id === accountId) ? colors.primary : colors.card }}>
+                  <Text style={{ fontSize: 13, color: (!ownerId && a.id === accountId) ? colors.primaryFg : colors.text }}>{a.name}</Text>
                 </TouchableOpacity>
               ))}
             </View>
           </ScrollView>
         </Field>
+        {shares.map(({ sh, accounts }) => (
+          <Field key={sh._ownerId} label={`Shared by ${sh.sharedBy || 'Family'}`}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {accounts.map((a) => {
+                  const on = ownerId === sh._ownerId && a.id === accountId;
+                  return (
+                    <TouchableOpacity key={a.id}
+                      onPress={() => chooseAccount(a.id, a.currency, sh._ownerId)}
+                      style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8,
+                        borderColor: on ? colors.primary : colors.border,
+                        backgroundColor: on ? colors.primary : colors.card }}>
+                      <Text style={{ fontSize: 13, color: on ? colors.primaryFg : colors.text }}>{a.name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </Field>
+        ))}
+        {ownerId ? (
+          <Text style={{ fontSize: 11, color: colors.subtle, marginTop: -4 }}>
+            Entries logged from this item go to the owner's book, and use their categories.
+          </Text>
+        ) : null}
       </Card>
       <Button title={item ? 'Save' : 'Create'} onPress={save} />
       <Button title="Cancel" kind="ghost" onPress={onDone} style={{ marginTop: 8 }} />

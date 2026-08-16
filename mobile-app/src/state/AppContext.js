@@ -20,6 +20,7 @@ import { applyTheme } from '../ui/theme.js';
 import { Store } from '../core/Store.js';
 import { EventBus } from '../core/EventBus.js';
 import { Repository } from '../core/Repository.js';
+import { RegularLogService } from '../domain/services/RegularLogService.js';
 import { SyncJournal } from '../core/SyncJournal.js';
 import { SeedFactory } from '../data/seed.js';
 import { StateMigrator } from '../data/StateMigrator.js';
@@ -61,6 +62,10 @@ function buildServices() {
     reports:       new ReportService(),
     receipts:      new ReceiptScanService(),
     familyShares:  new FamilyShareService(store),
+    // Regular-item logs live in two books: local rows, and contributions sitting
+    // in an owner's snapshot. Needs `sync` because mobile never populates
+    // state._sharedData the way the web app does on every render.
+    regularLogs:   null,
   };
   return services;
 }
@@ -86,6 +91,9 @@ export function AppProvider({ children }) {
       await SyncJournal.prepare();
 
       const services = buildServices();
+      // Assigned after construction: it depends on `sync`, which is created in
+      // the same object literal.
+      services.regularLogs = new RegularLogService({ store: services.store, sync: services.sync });
       servicesRef.current = services;
       const store = services.store;
 

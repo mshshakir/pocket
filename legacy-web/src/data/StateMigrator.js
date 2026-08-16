@@ -52,6 +52,12 @@ export class StateMigrator {
     if (!Array.isArray(state.budgets))       state.budgets = [];
     if (!Array.isArray(state.debts))         state.debts = [];
     if (!Array.isArray(state.regularItems))  state.regularItems = [];
+    // A regular item on an account someone shared carries the owner alongside
+    // the account id — AccountRef keeps the two apart. Back-filled so items
+    // created before shared accounts were supported read cleanly.
+    for (const it of state.regularItems) {
+      if (typeof it.sharedOwnerId === 'undefined') it.sharedOwnerId = null;
+    }
     if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
     if (!Array.isArray(state.family))        state.family = [];
     // Budget grants live beside account grants but in their own array — a

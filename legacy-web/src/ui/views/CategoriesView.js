@@ -29,9 +29,10 @@ export class CategoriesView extends BaseView {
             ${anyExpanded  ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllCategories()" title="Collapse every parent"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ''}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllCategories()" title="Expand every parent"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ''}
           ` : ''}
+          ${this.inGuestSpace ? '' : `
           <button class="btn btn-primary" onclick="window.__app.openModal('category')">
             <i data-lucide="plus"></i> New category
-          </button>
+          </button>`}
         </div>
       </div>
 

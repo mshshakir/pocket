@@ -45,9 +45,10 @@ export class AccountsView extends BaseView {
                   title="Create, rename and fill account groups">
             <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
           </button>
+          ${this.inGuestSpace ? '' : `
           <button class="btn btn-primary" onclick="window.__app.openModal('account')">
             <i data-lucide="plus"></i> New account
-          </button>
+          </button>`}
         </div>
       </div>
 

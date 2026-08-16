@@ -62,9 +62,10 @@ export class CalendarView extends BaseView {
                        class="px-2 py-1 rounded ${mode===k?'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900':'text-zinc-500'}">${l}</button>`
             ).join('')}
           </div>
+          ${this.inGuestSpace ? '' : `
           <button class="btn btn-outline" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> <span class="hidden sm:inline">Item</span>
-          </button>
+          </button>`}
         </div>
       </div>
 
@@ -194,10 +195,13 @@ export class CalendarView extends BaseView {
 
       ${(state.regularItems || []).length === 0 ? `
         <div class="card p-6 mt-4 text-center">
-          ${this.emptyState('No regular items yet', 'Define an item like "Morning coffee" or "Bus pass" and start logging.')}
+          ${this.inGuestSpace
+             ? this.emptyState('No regular items shared with you', 'Regular purchases follow the accounts they\u2019re on.')
+             : this.emptyState('No regular items yet', 'Define an item like "Morning coffee" or "Bus pass" and start logging.')}
+          ${this.inGuestSpace ? '' : `
           <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> Add item
-          </button>
+          </button>`}
         </div>` : ''}
     `;
   }
@@ -283,9 +287,10 @@ export class CalendarView extends BaseView {
       return `
         <div class="card p-10 text-center">
           ${this.emptyState('No items yet', 'Define your regular purchases here.')}
+          ${this.inGuestSpace ? '' : `
           <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> Add item
-          </button>
+          </button>`}
         </div>`;
     }
     return `

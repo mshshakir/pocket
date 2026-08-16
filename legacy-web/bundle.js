@@ -1477,6 +1477,9 @@ var _PocketApp = (() => {
       if (!Array.isArray(state.budgets)) state.budgets = [];
       if (!Array.isArray(state.debts)) state.debts = [];
       if (!Array.isArray(state.regularItems)) state.regularItems = [];
+      for (const it of state.regularItems) {
+        if (typeof it.sharedOwnerId === "undefined") it.sharedOwnerId = null;
+      }
       if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
       if (!Array.isArray(state.family)) state.family = [];
       for (const m of state.family) {
@@ -2743,9 +2746,23 @@ var _PocketApp = (() => {
   var RegularLogService = class {
     /** @type {Store} */
     #store;
-    /** @param {object} [deps] @param {Store} [deps.store] */
-    constructor({ store } = {}) {
+    /** @type {object|null} */
+    #sync;
+    /**
+     * @param {object} [deps]
+     * @param {Store} [deps.store]
+     * @param {object} [deps.sync]  SyncService/MobileSyncService — read-only
+     */
+    constructor({ store, sync = null } = {}) {
       this.#store = store || Store.getInstance();
+      this.#sync = sync;
+    }
+    /**
+     * The share snapshots to merge from.
+     * @returns {object[]}
+     */
+    #shares() {
+      return this.#sync?.sharedData || this.#store.getState()._sharedData || [];
     }
     /**
      * Every visible regular-item log — local rows first, then contributions.
@@ -2756,7 +2773,7 @@ var _PocketApp = (() => {
       const local = (state.transactions || []).filter((t) => t.regularItemId);
       const mine = new Set((state.regularItems || []).map((i) => i.id));
       if (!mine.size) return local;
-      const shared = (state._sharedData || []).flatMap(
+      const shared = this.#shares().flatMap(
         (share) => (share.transactions || []).filter((t) => t.regularItemId && mine.has(t.regularItemId)).map((t) => ({ ...t, _shared: true, _ownerId: share._ownerId }))
       );
       return local.concat(shared);
@@ -9000,9 +9017,10 @@ This replaces your current grouping.`
                   title="Create, rename and fill account groups">
             <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
           </button>
+          ${this.inGuestSpace ? "" : `
           <button class="btn btn-primary" onclick="window.__app.openModal('account')">
             <i data-lucide="plus"></i> New account
-          </button>
+          </button>`}
         </div>
       </div>
 
@@ -9804,9 +9822,10 @@ This replaces your current grouping.`
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllCategories()" title="Collapse every parent"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllCategories()" title="Expand every parent"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ""}
           ` : ""}
+          ${this.inGuestSpace ? "" : `
           <button class="btn btn-primary" onclick="window.__app.openModal('category')">
             <i data-lucide="plus"></i> New category
-          </button>
+          </button>`}
         </div>
       </div>
 
@@ -10125,11 +10144,12 @@ This replaces your current grouping.`
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts</h1>
-          <div class="text-xs text-zinc-500 mt-0.5">Track loans, repayments and IOUs \xB7 all linked to your accounts</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Debts on the accounts shared with you \xB7 ${this.escapeHtml(this.space.label)}` : "Track loans, repayments and IOUs \xB7 all linked to your accounts"}</div>
         </div>
+        ${this.inGuestSpace ? "" : `
         <button class="btn btn-primary" onclick="window.__app.openModal('debt')">
           <i data-lucide="plus"></i> New debt
-        </button>
+        </button>`}
       </div>
 
       <div class="grid grid-cols-2 gap-4 mb-6">
@@ -10286,9 +10306,10 @@ This replaces your current grouping.`
                        class="px-2 py-1 rounded ${mode === k ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "text-zinc-500"}">${l}</button>`
       ).join("")}
           </div>
+          ${this.inGuestSpace ? "" : `
           <button class="btn btn-outline" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> <span class="hidden sm:inline">Item</span>
-          </button>
+          </button>`}
         </div>
       </div>
 
@@ -10409,10 +10430,11 @@ This replaces your current grouping.`
 
       ${(state.regularItems || []).length === 0 ? `
         <div class="card p-6 mt-4 text-center">
-          ${this.emptyState("No regular items yet", 'Define an item like "Morning coffee" or "Bus pass" and start logging.')}
+          ${this.inGuestSpace ? this.emptyState("No regular items shared with you", "Regular purchases follow the accounts they\u2019re on.") : this.emptyState("No regular items yet", 'Define an item like "Morning coffee" or "Bus pass" and start logging.')}
+          ${this.inGuestSpace ? "" : `
           <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> Add item
-          </button>
+          </button>`}
         </div>` : ""}
     `;
     }
@@ -10491,9 +10513,10 @@ This replaces your current grouping.`
         return `
         <div class="card p-10 text-center">
           ${this.emptyState("No items yet", "Define your regular purchases here.")}
+          ${this.inGuestSpace ? "" : `
           <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> Add item
-          </button>
+          </button>`}
         </div>`;
       }
       return `
@@ -14866,9 +14889,24 @@ Leave empty to use your own name.`,
       if (!this.#txModal?.setSharedAccount?.(accId)) return;
       this.#refreshModal({ capture: true });
     }
-    onTxAccountChange(accId) {
+    /**
+     * Find an account by id in EITHER book — the user's own, or any snapshot
+     * shared with them.
+     *
+     * This lookup was copy-pasted at three call sites (onTxAccountChange,
+     * updateTxFxPanel, resetTxFx), which is three chances for one of them to
+     * drift. A form can legitimately point at a shared account while the user
+     * stands in their own space, because the account dropdown still offers a
+     * "Shared with me" group — so the fallback is live, not legacy.
+     * @param {string} accId
+     * @returns {object|undefined}
+     */
+    #anyAccount(accId) {
       const state = this.#store.getState();
-      const acc = state.accounts.find((a) => a.id === accId) || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+      return state.accounts.find((a) => a.id === accId) || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    }
+    onTxAccountChange(accId) {
+      const acc = this.#anyAccount(accId);
       const curEl = document.querySelector("[name=currency]");
       if (curEl && acc?.currency) curEl.value = acc.currency;
       const ownerId = this.ownerIdForAccount(accId);
@@ -14916,9 +14954,8 @@ Leave empty to use your own name.`,
     updateTxFxPanel(userChangedRate = false) {
       const panel = document.getElementById("fxTxPanel");
       if (!panel) return;
-      const state = this.#store.getState();
       const accId = document.querySelector("[name=accountId]")?.value;
-      const acc = state.accounts.find((a) => a.id === accId) || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+      const acc = this.#anyAccount(accId);
       const txCcy = document.querySelector("[name=currency]")?.value;
       if (!acc || !txCcy || acc.currency === txCcy) {
         panel.style.display = "none";
@@ -14944,9 +14981,8 @@ Leave empty to use your own name.`,
       set("fxTxRateNote", `Auto: 1 ${txCcy} = ${autoRate.toFixed(4)} ${accCcy}`);
     }
     resetTxFx() {
-      const state = this.#store.getState();
       const accId = document.querySelector("[name=accountId]")?.value;
-      const acc = state.accounts.find((a) => a.id === accId) || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+      const acc = this.#anyAccount(accId);
       const txCcy = document.querySelector("[name=currency]")?.value;
       const rateInp = document.getElementById("fxTxRate");
       if (acc && txCcy && rateInp) {

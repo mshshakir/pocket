@@ -53,6 +53,30 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Loose ends cleared (2026-08-15).** Web 451 assertions, mobile 88 (30+10+48).
+- **Mobile: shared accounts in Regular purchases** — the oldest outstanding item, now done.
+  `AccountRef.js` copied verbatim; `RegularLogService.js` made portable by taking an optional
+  `sync` dep (web injects `state._sharedData` every render, mobile never populates it) so BOTH
+  copies are byte-identical again. RegularsScreen: the item form offers "Shared by …" account
+  chips filtered to add/edit/full, persists `sharedOwnerId`, clears the category when the item
+  moves between books, and hands the owner's tree to the category picker. Logging contributes;
+  deleting a contributed log routes through `deleteContribution`; all five log-read sites and
+  the delete-item count now read the merged source — without which a log against a shared
+  account vanished the moment it was submitted.
+- **`MobileSyncService.setStorage()`** — AsyncStorage is a native module with no node
+  implementation, so the conflict-backup READ path was untestable. That is precisely how it
+  came to be written for months with nothing able to read it back. Same seam as
+  `Repository.setBackend`.
+- **Mobile Settings → Recovered copies** — conflict backups are now restorable.
+- **Guest-space polish:** the five create buttons that only toast-refused (New account, New
+  debt, New category, three New regular item) are hidden in a guest space.
+- **Phase 1c, partially — and my earlier claim was wrong.** I called it "pure deletion".
+  `sharedMatch` is NOT dead: the home-space account dropdown still offers a "Shared with me"
+  optgroup, so picking a shared account from your own space is a live path. Killing it means
+  removing that optgroup — a behaviour change ("to contribute, switch to their space"), left
+  for the Spaces work. Did do the safe part: the three copy-pasted `_sharedData.flatMap`
+  account lookups are now one `#anyAccount()` helper.
+
 **Owner-side spaces, part 1 (2026-08-15).** Mufaddal: "as an owner I cannot see spaces nor
 rename it". Both halves are one gap — sharing is member-first (open a person, tick accounts),
 so there is no object representing the share to name or inspect.

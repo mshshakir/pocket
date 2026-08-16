@@ -154,6 +154,9 @@ export default function SettingsScreen() {
       <ExportData state={state} />
       <DataTools services={services} />
 
+      <SectionTitle>Recovered copies</SectionTitle>
+      <ConflictBackups services={services} />
+
       <SectionTitle>About</SectionTitle>
       <Card>
         <Text style={{ color: colors.subtle, fontSize: 13, lineHeight: 19 }}>
@@ -345,6 +348,74 @@ function parseCsv(text) {
 }
 
 /** Import a JSON backup (paste/file), a CSV, recalculate balances, or reset. */
+/**
+ * Conflict backups — recoverable copies of local state that lost a sync race.
+ *
+ * MobileSyncService has written these for a while and nothing ever read them
+ * back: the data was preserved and unreachable, which is barely better than not
+ * keeping it. Restoring is deliberately two taps and destructive-styled, since
+ * it replaces the whole book.
+ */
+function ConflictBackups({ services }) {
+  const [rows, setRows]   = useState(null);   // null = not loaded yet
+  const [busy, setBusy]   = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    try { setRows(await services.sync.conflictBackups()); }
+    catch { setRows([]); }
+    finally { setBusy(false); }
+  };
+
+  const restore = (row) => {
+    Alert.alert(
+      'Restore this copy?',
+      'The book on this device is replaced by the copy saved at '
+        + new Date(row.savedAt).toLocaleString()
+        + '. Your current data is not kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore', style: 'destructive', onPress: async () => {
+          setBusy(true);
+          try {
+            const state = await services.sync.readConflictBackup(row.key);
+            if (!state) { Alert.alert('Not found', 'That backup could not be read.'); return; }
+            services.store.replaceState(state, (s) => StateMigrator.migrate(s));
+            services.accounts.recompute();
+            services.store.persist();
+            Alert.alert('Restored', 'This device now holds the recovered copy.');
+          } catch (e) {
+            Alert.alert('Could not restore', String(e?.message || e));
+          } finally { setBusy(false); }
+        } },
+      ],
+    );
+  };
+
+  return (
+    <Card>
+      {rows === null ? (
+        <Button title={busy ? 'Checking…' : 'Check for recovered copies'} kind="outline"
+                onPress={load} disabled={busy} />
+      ) : rows.length === 0 ? (
+        <Text style={{ fontSize: 12, color: colors.subtle }}>
+          No recovered copies. One is kept automatically whenever another device saves
+          over changes this device had not synced yet.
+        </Text>
+      ) : rows.map((row) => (
+        <View key={row.key} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
+          <Text style={{ flex: 1, fontSize: 12, color: colors.text }}>
+            {new Date(row.savedAt).toLocaleString()}
+          </Text>
+          <TouchableOpacity onPress={() => restore(row)} disabled={busy}>
+            <Text style={{ color: colors.primary, fontSize: 13, fontWeight: '600' }}>Restore</Text>
+          </TouchableOpacity>
+        </View>
+      ))}
+    </Card>
+  );
+}
+
 function DataTools({ services }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [json, setJson] = useState('');

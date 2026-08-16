@@ -24,11 +24,14 @@ export class DebtsView extends BaseView {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts</h1>
-          <div class="text-xs text-zinc-500 mt-0.5">Track loans, repayments and IOUs · all linked to your accounts</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace
+             ? `Debts on the accounts shared with you · ${this.escapeHtml(this.space.label)}`
+             : 'Track loans, repayments and IOUs · all linked to your accounts'}</div>
         </div>
+        ${this.inGuestSpace ? '' : `
         <button class="btn btn-primary" onclick="window.__app.openModal('debt')">
           <i data-lucide="plus"></i> New debt
-        </button>
+        </button>`}
       </div>
 
       <div class="grid grid-cols-2 gap-4 mb-6">

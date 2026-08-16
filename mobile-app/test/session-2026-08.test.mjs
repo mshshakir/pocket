@@ -14,6 +14,15 @@
  *   V2  Several items under ONE category stay a single un-split transaction.
  *   V3  The pre-items response shape still works.
  *   S1  Store fires the local-change hook even when the local write failed.
+ *   R1  AccountRef round-trips a shared account reference, and degrades safely
+ *       on a malformed value rather than inventing an owner.
+ *   R2  RegularLogService merges local logs with contributions from an owner's
+ *       snapshot — without it, a log against a shared account vanishes the
+ *       moment it is submitted, because it never lands locally.
+ *   R3  ...and lifts out ONLY logs belonging to the user's own regular items;
+ *       the owner's own regular purchases are none of their business.
+ *   C1  Conflict backups are readable, not just writable. They were written for
+ *       a while with nothing able to read them back — preserved and unreachable.
  *
  * Run:  node test/session-2026-08.test.mjs
  */
@@ -25,6 +34,8 @@ import { AccountService } from '../src/domain/services/AccountService.js';
 import { PaymentTypeService } from '../src/domain/services/PaymentTypeService.js';
 import { ReceiptScanService } from '../src/domain/services/ReceiptScanService.js';
 import { TransactionComposer } from '../src/domain/services/TransactionComposer.js';
+import { AccountRef } from '../src/domain/services/AccountRef.js';
+import { RegularLogService } from '../src/domain/services/RegularLogService.js';
 
 let passed = 0, failed = 0;
 const ok = (label, cond, extra = '') => {
@@ -261,6 +272,95 @@ console.log('\n S — store durability');
   ok('S1 the push hook fires even when the local write failed', hookCalls > before,
      `${hookCalls - before} calls`);
   store.setLocalChangeHook(null);
+}
+
+// ═══ R — shared accounts in regular purchases (ported from web) ════════════
+console.log('\n R — regular logs across two books');
+{
+  // R1 — the encoding both platforms must agree on.
+  const local = AccountRef.parse('acc_1');
+  ok('R1 a plain id parses as local', local.accountId === 'acc_1' && !local.isShared);
+  const shared = AccountRef.parse('shared:own_9:acc_1');
+  ok('R1 a shared ref carries both ids',
+     shared.accountId === 'acc_1' && shared.ownerId === 'own_9' && shared.isShared,
+     JSON.stringify({ a: shared.accountId, o: shared.ownerId }));
+  ok('R1 it round-trips', shared.toValue() === 'shared:own_9:acc_1', shared.toValue());
+  ok('R1 an empty value round-trips to empty', AccountRef.parse('').toValue() === '');
+  // A malformed value must degrade to LOCAL, never invent an owner — an
+  // invented owner id would route a contribution to nobody.
+  const bad = AccountRef.parse('shared:nocolon');
+  ok('R1 a malformed ref degrades to local', !bad.isShared && bad.accountId === 'nocolon',
+     JSON.stringify({ a: bad.accountId, o: bad.ownerId }));
+  ok('R1 fromRecord reads the two stored fields',
+     AccountRef.fromRecord({ accountId: 'a', sharedOwnerId: 'o' }).toValue() === 'shared:o:a');
+
+  // R2/R3 — the merge. Mobile never populates state._sharedData, so the service
+  // must read through the sync dependency instead.
+  const st = store.getState();
+  st.regularItems = [{ id: 'ri_mine', name: 'Coffee', accountId: 'shared1', sharedOwnerId: 'own_9' }];
+  st.transactions = [
+    { id: 'tLocal', regularItemId: 'ri_mine', date: '2026-08-10', amount: 500, currency: 'USD' },
+    { id: 'tPlain', date: '2026-08-10', amount: 100, currency: 'USD' },
+  ];
+  const fakeSync = {
+    sharedData: [{
+      _ownerId: 'own_9', sharedBy: 'Abbas',
+      transactions: [
+        { id: 'tShared', regularItemId: 'ri_mine',  date: '2026-08-11', amount: 700, currency: 'AED' },
+        { id: 'tTheirs', regularItemId: 'ri_theirs', date: '2026-08-11', amount: 900, currency: 'AED' },
+      ],
+    }],
+  };
+  const logs = new RegularLogService({ store, sync: fakeSync });
+  const all  = logs.all();
+
+  ok('R2 the local log is present', all.some((t) => t.id === 'tLocal'));
+  ok('R2 the contributed log is present too — it never lands locally',
+     all.some((t) => t.id === 'tShared'), JSON.stringify(all.map((t) => t.id)));
+  ok('R2 a non-regular transaction is excluded', !all.some((t) => t.id === 'tPlain'));
+  ok('R3 the owner\'s OWN regular purchases stay invisible',
+     !all.some((t) => t.id === 'tTheirs'), JSON.stringify(all.map((t) => t.id)));
+
+  const contributed = all.find((t) => t.id === 'tShared');
+  ok('R2 the contributed row is tagged for delete routing',
+     contributed._shared === true && contributed._ownerId === 'own_9',
+     JSON.stringify({ s: contributed._shared, o: contributed._ownerId }));
+  ok('R2 tagging does not mutate the snapshot',
+     fakeSync.sharedData[0].transactions[0]._shared === undefined);
+
+  ok('R2 onDate finds a contributed log', logs.onDate('2026-08-11').some((t) => t.id === 'tShared'));
+  ok('R2 find() resolves it by id, which is how a delete is routed',
+     logs.find('tShared')?._ownerId === 'own_9');
+}
+
+// ═══ C — conflict backups must be recoverable, not merely kept ═════════════
+console.log('\n C — conflict backup recovery');
+{
+  const { MobileSyncService } = await import('../src/domain/services/MobileSyncService.js');
+  const sync = new MobileSyncService();
+
+  // AsyncStorage is a native module with no node implementation, which is
+  // exactly why the read path went untested for so long. MobileSyncService.
+  // setStorage() is the same seam Repository.setBackend already provides.
+  const mem = makeStorage();
+  MobileSyncService.setStorage(mem);
+
+  const key = 'pocket.v1.conflict.1755300000000';
+  await mem.setItem(key, JSON.stringify({
+    savedAt: '2026-08-15T12:00:00.000Z',
+    state: { accounts: [{ id: 'rec1', name: 'Recovered' }], transactions: [] },
+  }));
+  await mem.setItem('pocket.v1.conflicts',
+    JSON.stringify([{ key, savedAt: '2026-08-15T12:00:00.000Z' }]));
+
+  const index = await sync.conflictBackups();
+  ok('C1 the backup index is readable', index.length === 1 && index[0].key === key,
+     JSON.stringify(index));
+  const restored = await sync.readConflictBackup(key);
+  ok('C1 the backup itself is readable',
+     restored?.accounts?.[0]?.id === 'rec1', JSON.stringify(restored));
+  ok('C1 a missing key reads as null, not a throw',
+     (await sync.readConflictBackup('pocket.v1.conflict.nope')) === null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

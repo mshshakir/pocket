@@ -46,6 +46,20 @@ const RETRY_BASE_MS    = 4000;
 const MAX_PUSH_RETRIES = 4;
 
 export class MobileSyncService {
+  /**
+   * Key-value storage for conflict backups.
+   *
+   * Injectable for the same reason Repository's is: AsyncStorage is a native
+   * module with no implementation under plain node, so hard-importing it made
+   * the backup read path untestable — which is how it came to be written for
+   * months with nothing able to read it back.
+   * @type {object}
+   */
+  static #storage = AsyncStorage;
+
+  /** @param {object} storage  AsyncStorage-compatible {getItem,setItem,removeItem} */
+  static setStorage(storage) { MobileSyncService.#storage = storage; }
+
   /** @type {Store} */    #store;
   /** @type {EventBus} */ #bus;
   /** @type {CurrencyService} */ #fx;
@@ -541,29 +555,29 @@ export class MobileSyncService {
     try {
       const savedAt = new Date().toISOString();
       const key = `pocket.v1.conflict.${Date.now()}`;
-      await AsyncStorage.setItem(key, JSON.stringify({
+      await MobileSyncService.#storage.setItem(key, JSON.stringify({
         savedAt,
         state: Repository.stripTransient(this.#store.getState()),
       }));
       const idx = await this.conflictBackups();
       idx.unshift({ key, savedAt });
       for (const stale of idx.slice(5)) {
-        try { await AsyncStorage.removeItem(stale.key); } catch (_) {}
+        try { await MobileSyncService.#storage.removeItem(stale.key); } catch (_) {}
       }
-      await AsyncStorage.setItem('pocket.v1.conflicts', JSON.stringify(idx.slice(0, 5)));
+      await MobileSyncService.#storage.setItem('pocket.v1.conflicts', JSON.stringify(idx.slice(0, 5)));
     } catch (_) { /* best effort */ }
   }
 
   /** @returns {Promise<{key:string, savedAt:string}[]>} newest first */
   async conflictBackups() {
-    try { return JSON.parse(await AsyncStorage.getItem('pocket.v1.conflicts') || '[]'); }
+    try { return JSON.parse(await MobileSyncService.#storage.getItem('pocket.v1.conflicts') || '[]'); }
     catch (_) { return []; }
   }
 
   /** @param {string} key @returns {Promise<object|null>} the stashed state */
   async readConflictBackup(key) {
     try {
-      const raw = await AsyncStorage.getItem(key);
+      const raw = await MobileSyncService.#storage.getItem(key);
       return raw ? (JSON.parse(raw).state ?? null) : null;
     } catch (_) { return null; }
   }

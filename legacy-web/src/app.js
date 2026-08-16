@@ -1900,11 +1900,27 @@ export class Application {
     this.#refreshModal({ capture: true });
   }
 
-  onTxAccountChange(accId) {
+  /**
+   * Find an account by id in EITHER book — the user's own, or any snapshot
+   * shared with them.
+   *
+   * This lookup was copy-pasted at three call sites (onTxAccountChange,
+   * updateTxFxPanel, resetTxFx), which is three chances for one of them to
+   * drift. A form can legitimately point at a shared account while the user
+   * stands in their own space, because the account dropdown still offers a
+   * "Shared with me" group — so the fallback is live, not legacy.
+   * @param {string} accId
+   * @returns {object|undefined}
+   */
+  #anyAccount(accId) {
     const state = this.#store.getState();
-    // Check own accounts first, then shared accounts
-    const acc = state.accounts.find((a) => a.id === accId)
+    return state.accounts.find((a) => a.id === accId)
       || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+  }
+
+  onTxAccountChange(accId) {
+    // Check own accounts first, then shared accounts
+    const acc = this.#anyAccount(accId);
     const curEl = document.querySelector('[name=currency]');
     if (curEl && acc?.currency) curEl.value = acc.currency;
 
@@ -1966,10 +1982,8 @@ export class Application {
     const panel = document.getElementById('fxTxPanel');
     if (!panel) return;
 
-    const state = this.#store.getState();
     const accId = document.querySelector('[name=accountId]')?.value;
-    const acc   = state.accounts.find((a) => a.id === accId)
-      || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    const acc   = this.#anyAccount(accId);
     const txCcy = document.querySelector('[name=currency]')?.value;
 
     if (!acc || !txCcy || acc.currency === txCcy) {
@@ -2000,10 +2014,8 @@ export class Application {
   }
 
   resetTxFx() {
-    const state = this.#store.getState();
     const accId = document.querySelector('[name=accountId]')?.value;
-    const acc   = state.accounts.find((a) => a.id === accId)
-      || (state._sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === accId);
+    const acc   = this.#anyAccount(accId);
     const txCcy = document.querySelector('[name=currency]')?.value;
     const rateInp = document.getElementById('fxTxRate');
     if (acc && txCcy && rateInp) {
