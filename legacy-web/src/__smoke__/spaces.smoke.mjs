@@ -21,6 +21,9 @@
  *   SP10 The active space is session-scoped and never written to user state,
  *        so it can't sync to another device or outlive a revocation.
  *   SP11 A hostile snapshot renders inert in the switcher too (audit H1).
+ *   SP12 A space sharing SEVERAL accounts offers all the writable ones in the
+ *        account dropdown — arriving via the switcher picks one arbitrarily, so
+ *        pinning the form to it (which the lock did) stranded the other.
  *
  * Run:  node src/__smoke__/spaces.smoke.mjs
  */
@@ -314,6 +317,69 @@ console.log('\nspaces suite');
   ok('SP11 the sheet rendered', !!sheet && sheet.innerHTML.length > 0);
   ok('SP11 the hostile name is escaped, not live markup',
      !sheet.querySelector('img[onerror]') && !sheet.querySelector('script'));
+  w.close();
+}
+
+// ═══ SP12 — every writable account in the space must be offered ════════════
+{
+  // Three accounts: two the member can write to, one view-only.
+  const multi = snapshot({
+    sharedBy: 'Abbas',
+    permission: { own1: 'edit', own2: 'add', own3: 'view' },
+    accounts: [
+      { ...acct('own1', 'Abbas Wallet',  'AED'), icon: 'wallet' },
+      { ...acct('own2', 'Abbas Savings', 'AED'), icon: 'landmark' },
+      { ...acct('own3', 'Abbas Locked',  'AED'), icon: 'lock' },
+    ],
+  });
+  const w = boot(memberState(), { shares: [{ owner_id: 'abbas1', snapshot: multi }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app, doc = w.document;
+  app.switchSpace('abbas1');
+  await wait(60);
+
+  app.openModal('transaction', {});
+  await wait(60);
+  ok('SP12 the form opened as a contribution', app.modalActive === 'transaction'
+     && !!app.txModal?.sharedTxMode, String(app.modalActive));
+
+  const sel = doc.querySelector('#txForm [name=accountId]');
+  ok('SP12 the account control is a real dropdown, not a locked label',
+     sel?.tagName === 'SELECT', sel?.tagName);
+  const opts = [...(sel?.options || [])].map((o) => o.value);
+  ok('SP12 both writable accounts are offered',
+     opts.includes('own1') && opts.includes('own2'), JSON.stringify(opts));
+  ok('SP12 …and the view-only one is not', !opts.includes('own3'), JSON.stringify(opts));
+
+  // Switching must actually re-point the contribution.
+  app.onSharedTxAccountChange('own2');
+  await wait(60);
+  ok('SP12 picking another account re-points the contribution',
+     app.txModal?.sharedTxMode?.accountId === 'own2',
+     JSON.stringify(app.txModal?.sharedTxMode));
+  ok('SP12 …and the owner is unchanged, so the category list stays valid',
+     app.txModal?.sharedTxMode?.ownerId === 'abbas1');
+  const catField = doc.querySelector('[data-ownerid]');
+  ok('SP12 …with the category field still homed to the owner',
+     catField?.getAttribute('data-ownerid') === 'abbas1',
+     catField?.getAttribute('data-ownerid'));
+  app.closeModal();
+  await wait(20);
+
+  // A single writable account has nothing to choose, so it stays locked.
+  const one = snapshot({ permission: { own1: 'edit' } });
+  const w2 = boot(memberState(), { shares: [{ owner_id: 'solo1', snapshot: one }] });
+  await wait(120);
+  await signIn(w2);
+  w2.__app.switchSpace('solo1');
+  await wait(60);
+  w2.__app.openModal('transaction', {});
+  await wait(60);
+  ok('SP12 one writable account stays locked — nothing to choose',
+     w2.document.querySelector('#txForm [name=accountId]')?.tagName === 'INPUT',
+     w2.document.querySelector('#txForm [name=accountId]')?.tagName);
+  w2.close();
   w.close();
 }
 

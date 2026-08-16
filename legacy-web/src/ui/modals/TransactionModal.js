@@ -133,6 +133,26 @@ export class TransactionModal {
    * surviving name instead of falling back to the default.
    * @param {string} name
    */
+  /**
+   * Re-point a contribution at a different account in the SAME space.
+   *
+   * The owner does not change, so the category list and any pick made from it
+   * stay valid — unlike the local `onTxAccountChange` path, which has to drop
+   * the category when the account moves between books.
+   * @param {string} accountId
+   * @returns {boolean} true if it changed
+   */
+  setSharedAccount(accountId) {
+    if (!this.#sharedTxMode || !accountId) return false;
+    if (this.#sharedTxMode.accountId === accountId) return false;
+    // Mutate IN PLACE. render() re-reads opts.sharedTxMode on every call
+    // (line ~199), and this field is the same object the Modal holds in
+    // #currentOpts — so replacing it here would be silently undone by the very
+    // next render, which is exactly what happened the first time.
+    this.#sharedTxMode.accountId = accountId;
+    return true;
+  }
+
   setPaymentType(name) {
     if (name) this.#draft.paymentType = name;
   }
@@ -558,12 +578,40 @@ export class TransactionModal {
           .find((a) => a.id === this.#sharedTxMode.accountId)?.name || 'Shared account'
       : null;
 
+    // Inside a space the member may hold write access to SEVERAL of the owner's
+    // accounts. Pinning the form to one of them — which is what the lock did —
+    // was correct only when sharedTxMode was reached by tapping a specific
+    // account. Arriving via the space switcher's "+" picks an account
+    // arbitrarily, so the choice has to be offered.
+    //
+    // Two cases still stay locked:
+    //   · editing an existing contribution — moving a row between accounts is a
+    //     different operation, not an edit of this one
+    //   · exactly one writable account — there is nothing to choose
+    const shareForMode = isSharedMode
+      ? (state._sharedData || [])[this.#sharedTxMode.shareIndex]
+      : null;
+    const writableShared = isSharedMode
+      ? (shareForMode?.accounts || []).filter((a) => {
+          const p = (shareForMode?.permission || {})[a.id];
+          return p === 'add' || p === 'edit' || p === 'full';
+        })
+      : [];
+    const lockSharedAccount = !!this.#sharedTxMode?.editTxId || writableShared.length <= 1;
+
     const accountSelect = isSharedMode
-      ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
-         <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
-           <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
-           <span class="truncate">${this.#esc(sharedAccName)}</span>
-         </div>`
+      ? (lockSharedAccount
+        ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
+           <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
+             <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
+             <span class="truncate">${this.#esc(sharedAccName)}</span>
+           </div>`
+        : `<select class="select" name="accountId"
+                   onchange="window.__app.onSharedTxAccountChange(this.value)">
+             ${writableShared.map((a) => `<option value="${this.#esc(a.id)}" ${
+               a.id === this.#sharedTxMode.accountId ? 'selected' : ''
+             }>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
+           </select>`)
       : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
            <optgroup label="My accounts">
              ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)}</option>`).join('')}

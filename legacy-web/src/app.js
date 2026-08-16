@@ -1824,6 +1824,20 @@ export class Application {
     this.updateTransferFxPanel(false);
   }
 
+  /**
+   * Account changed on a shared-account contribution.
+   *
+   * The currency is locked to the account in shared mode, so this needs a full
+   * re-render rather than a DOM patch — but the form values are captured first
+   * so a half-typed amount survives. The owner is unchanged, so the category
+   * selection is deliberately NOT reset.
+   * @param {string} accId
+   */
+  onSharedTxAccountChange(accId) {
+    if (!this.#txModal?.setSharedAccount?.(accId)) return;
+    this.#refreshModal({ capture: true });
+  }
+
   onTxAccountChange(accId) {
     const state = this.#store.getState();
     // Check own accounts first, then shared accounts

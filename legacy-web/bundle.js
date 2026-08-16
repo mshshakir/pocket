@@ -10390,6 +10390,21 @@ This replaces your current grouping.`
      * surviving name instead of falling back to the default.
      * @param {string} name
      */
+    /**
+     * Re-point a contribution at a different account in the SAME space.
+     *
+     * The owner does not change, so the category list and any pick made from it
+     * stay valid — unlike the local `onTxAccountChange` path, which has to drop
+     * the category when the account moves between books.
+     * @param {string} accountId
+     * @returns {boolean} true if it changed
+     */
+    setSharedAccount(accountId) {
+      if (!this.#sharedTxMode || !accountId) return false;
+      if (this.#sharedTxMode.accountId === accountId) return false;
+      this.#sharedTxMode.accountId = accountId;
+      return true;
+    }
     setPaymentType(name) {
       if (name) this.#draft.paymentType = name;
     }
@@ -10692,11 +10707,20 @@ This replaces your current grouping.`
         (share) => (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} (shared)</option>`)
       ).join("");
       const sharedAccName = isSharedMode ? (state._sharedData?.[this.#sharedTxMode.shareIndex]?.accounts || []).find((a) => a.id === this.#sharedTxMode.accountId)?.name || "Shared account" : null;
-      const accountSelect = isSharedMode ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
-         <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
-           <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
-           <span class="truncate">${this.#esc(sharedAccName)}</span>
-         </div>` : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
+      const shareForMode = isSharedMode ? (state._sharedData || [])[this.#sharedTxMode.shareIndex] : null;
+      const writableShared = isSharedMode ? (shareForMode?.accounts || []).filter((a) => {
+        const p = (shareForMode?.permission || {})[a.id];
+        return p === "add" || p === "edit" || p === "full";
+      }) : [];
+      const lockSharedAccount = !!this.#sharedTxMode?.editTxId || writableShared.length <= 1;
+      const accountSelect = isSharedMode ? lockSharedAccount ? `<input type="hidden" name="accountId" value="${this.#esc(this.#sharedTxMode.accountId)}">
+           <div class="select flex items-center gap-2 text-zinc-500" style="cursor:default">
+             <i data-lucide="lock" style="width:13px;height:13px;flex-shrink:0"></i>
+             <span class="truncate">${this.#esc(sharedAccName)}</span>
+           </div>` : `<select class="select" name="accountId"
+                   onchange="window.__app.onSharedTxAccountChange(this.value)">
+             ${writableShared.map((a) => `<option value="${this.#esc(a.id)}" ${a.id === this.#sharedTxMode.accountId ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
+           </select>` : `<select class="select" name="accountId" onchange="window.__app.onTxAccountChange(this.value)">
            <optgroup label="My accounts">
              ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
            </optgroup>
@@ -14281,6 +14305,19 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         if (rateInp) rateInp.value = "";
       }
       this.updateTransferFxPanel(false);
+    }
+    /**
+     * Account changed on a shared-account contribution.
+     *
+     * The currency is locked to the account in shared mode, so this needs a full
+     * re-render rather than a DOM patch — but the form values are captured first
+     * so a half-typed amount survives. The owner is unchanged, so the category
+     * selection is deliberately NOT reset.
+     * @param {string} accId
+     */
+    onSharedTxAccountChange(accId) {
+      if (!this.#txModal?.setSharedAccount?.(accId)) return;
+      this.#refreshModal({ capture: true });
     }
     onTxAccountChange(accId) {
       const state = this.#store.getState();
