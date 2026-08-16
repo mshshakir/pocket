@@ -10,7 +10,7 @@
  */
 import React, { useState } from 'react';
 import { ScrollView, View, Text, Alert, TouchableOpacity, Appearance } from 'react-native';
-import { useAppState } from '../state/AppContext.js';
+import { useOwnState } from '../state/AppContext.js';
 import { Card, Field, Input, Button, SectionTitle, Segmented, Dot } from '../ui/common.js';
 import { colors, applyTheme } from '../ui/theme.js';
 import { CURRENCIES } from '../data/constants.js';
@@ -29,7 +29,12 @@ const DATE_FORMATS = [
 ];
 
 export default function SettingsScreen() {
-  const { state, services, syncStatus, user } = useAppState();
+  // useOwnState, NOT useAppState: nothing on this screen belongs to the space
+  // being viewed. Under a projection the home-currency chip showed the OWNER's
+  // currency as the member's own setting, the default-account list offered
+  // accounts they do not own, and Export wrote a backup of the owner's entire
+  // book — which, restored through Import below, replaced the member's.
+  const { state, services, syncStatus, user, inGuestSpace } = useOwnState();
   const sync = services.sync;
   const [email, setEmail] = useState('');
   const [code, setCode]   = useState('');
@@ -69,6 +74,18 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
+      {/* The space bar overhead says you are in someone else's book. This
+          screen deliberately is not — say so, or the currency and backup
+          controls read as though they were about theirs. */}
+      {inGuestSpace ? (
+        <Text style={{
+          color: colors.subtle, fontSize: 12, lineHeight: 17,
+          backgroundColor: '#818cf815', borderRadius: 10, padding: 10, marginBottom: 12,
+        }}>
+          These settings and backups are your own — they don't change with the
+          space you're viewing.
+        </Text>
+      ) : null}
       <SectionTitle>Cloud sync</SectionTitle>
       <Card>
         <Text style={{ color: colors.subtle, fontSize: 13, marginBottom: 8 }}>
@@ -178,7 +195,7 @@ function Appearance_({ state, services }) {
   const [, force] = useState(0);
   const current = state.user.theme || 'system';
   const setTheme = (mode) => {
-    state.user.theme = mode;
+    services.store.getState().user.theme = mode;
     applyTheme(mode, Appearance.getColorScheme());
     services.store.flush();          // persists + emits state:changed → app repaints
     force((n) => n + 1);
@@ -207,10 +224,19 @@ function Appearance_({ state, services }) {
 function Preferences({ state, services }) {
   const [, force] = useState(0);
   const flush = () => { services.store.flush(); force((n) => n + 1); };
-  const setHome = (c) => { state.user.homeCurrency = c; flush(); };
-  const setDefault = (c) => { state.user.defaultCurrency = c; flush(); };
+  /**
+   * Settings belong to the USER, not to whichever space is being viewed. The
+   * screen now takes its state from useOwnState(), so `state` is already the
+   * real book and this is belt-and-braces — kept because it is the one thing
+   * that stays correct if a later edit hands this component a projection
+   * again, and because a write that lands on a discarded copy leaves no trace:
+   * flush() persists the real state and the screen repaints as if it saved.
+   */
+  const real = () => services.store.getState().user;
+  const setHome = (c) => { real().homeCurrency = c; flush(); };
+  const setDefault = (c) => { real().defaultCurrency = c; flush(); };
   const bumpOffset = (d) => {
-    state.user.hijriOffset = Math.max(-7, Math.min(7, (state.user.hijriOffset ?? 0) + d));
+    real().hijriOffset = Math.max(-7, Math.min(7, (state.user.hijriOffset ?? 0) + d));
     flush();
   };
   const showHijri = state.user.showHijri !== false;
@@ -263,7 +289,7 @@ function Preferences({ state, services }) {
            ...state.accounts.filter((a) => !a.archived)
              .map((a) => ({ id: a.id, label: `${a.name} · ${a.currency}` }))],
           state.user.defaultAccountId || '',
-          (id) => { state.user.defaultAccountId = id; flush(); },
+          (id) => { real().defaultAccountId = id; flush(); },
         )}
       </Field>
       <Field label="Default payment method">
@@ -272,19 +298,19 @@ function Preferences({ state, services }) {
             id: t, label: t.charAt(0).toUpperCase() + t.slice(1),
           })),
           services.paymentTypes.defaultType(),
-          (id) => { state.user.defaultPaymentType = id; flush(); },
+          (id) => { real().defaultPaymentType = id; flush(); },
         )}
       </Field>
       <Field label="Date format">
         <Segmented
           options={DATE_FORMATS}
           value={state.user.dateFormat || 'auto'}
-          onChange={(id) => { state.user.dateFormat = id; flush(); }}
+          onChange={(id) => { real().dateFormat = id; flush(); }}
         />
       </Field>
 
       <TouchableOpacity
-        onPress={() => { state.user.showHijri = !showHijri; flush(); }}
+        onPress={() => { real().showHijri = !showHijri; flush(); }}
         style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8 }}
       >
         <View style={{
@@ -317,7 +343,7 @@ function Preferences({ state, services }) {
                 { id: 'hijri', label: 'Hijri' },
               ]}
               value={state.user.calendarMode || 'both'}
-              onChange={(id) => { state.user.calendarMode = id; flush(); }}
+              onChange={(id) => { real().calendarMode = id; flush(); }}
             />
           </Field>
         </>
@@ -643,7 +669,7 @@ function AddMethod({ onAdd }) {
 function GeminiKey({ state, services }) {
   const [key, setKey] = useState(state.user.geminiApiKey || '');
   const save = () => {
-    state.user.geminiApiKey = key.trim();
+    services.store.getState().user.geminiApiKey = key.trim();
     services.store.flush();
     Alert.alert(key.trim() ? 'Key saved' : 'Key cleared',
       key.trim() ? 'Receipt scanning is enabled.' : 'Receipt scanning disabled.');

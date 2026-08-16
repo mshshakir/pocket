@@ -21,6 +21,9 @@ import { Store } from '../core/Store.js';
 import { EventBus } from '../core/EventBus.js';
 import { Repository } from '../core/Repository.js';
 import { RegularLogService } from '../domain/services/RegularLogService.js';
+import { Space } from '../domain/services/Space.js';
+import { SpaceRegistry } from '../domain/services/SpaceRegistry.js';
+import { SpaceGuard } from '../domain/services/SpaceGuard.js';
 import { SyncJournal } from '../core/SyncJournal.js';
 import { SeedFactory } from '../data/seed.js';
 import { StateMigrator } from '../data/StateMigrator.js';
@@ -66,6 +69,12 @@ function buildServices() {
     // in an owner's snapshot. Needs `sync` because mobile never populates
     // state._sharedData the way the web app does on every render.
     regularLogs:   null,
+    // Which book the UI is showing. Assigned after construction — it needs the
+    // sync instance created in this same literal.
+    spaces:        null,
+    // May-I, and against whose book. Assigned after construction — it needs
+    // `spaces`, which needs `sync`.
+    spaceGuard:    null,
   };
   return services;
 }
@@ -94,6 +103,26 @@ export function AppProvider({ children }) {
       // Assigned after construction: it depends on `sync`, which is created in
       // the same object literal.
       services.regularLogs = new RegularLogService({ store: services.store, sync: services.sync });
+      services.spaces = new SpaceRegistry({
+        store: services.store,
+        sync:  services.sync,
+        spaceFactory: (opts) => new Space(opts),
+        // React Native has no sessionStorage. In-memory means a cold start
+        // returns you to your own space, which is the right default: a stale
+        // pointer at a space that was revoked while the app was closed is worse
+        // than an extra tap.
+        sessionStore: (() => {
+          const mem = new Map();
+          return {
+            getItem:    (k) => (mem.has(k) ? mem.get(k) : null),
+            setItem:    (k, v) => { mem.set(k, v); },
+            removeItem: (k) => { mem.delete(k); },
+          };
+        })(),
+      });
+      services.spaceGuard = new SpaceGuard({
+        spaces: services.spaces, store: services.store, sync: services.sync,
+      });
       servicesRef.current = services;
       const store = services.store;
 
@@ -170,8 +199,67 @@ export function AppProvider({ children }) {
 export function useAppState() {
   const ctx = useContext(AppCtx);
   if (!ctx?.services) throw new Error('useAppState() outside AppProvider or before boot');
+  const space = ctx.services.spaces?.active?.() ?? null;
   return {
+    /**
+     * State, SCOPED TO THE ACTIVE SPACE.
+     *
+     * Home returns the real state object; a guest space returns a shallow
+     * projection whose collections come from the owner's snapshot. This one
+     * getter re-points every screen, the same way BaseView.state does on web.
+     *
+     * Treat it as READ-ONLY. Anything that mutates must go through a service or
+     * `services.store.getState()` — a write through a guest projection lands on
+     * a copy the next pull discards, while store.flush() persists the real
+     * state, so the screen repaints and the write appears to have worked.
+     */
+    state: space ? space.project() : ctx.services.store.getState(),
+    /** The unscoped local book, for the rare caller that needs both. */
+    localState: ctx.services.store.getState(),
+    /** @type {import('../domain/services/Space.js').Space|null} */
+    space,
+    /** True when viewing someone else's book — hide or refuse writes. */
+    inGuestSpace: !!space && !space.isHome,
+    /** @type {import('../domain/services/SpaceGuard.js').SpaceGuard} */
+    guard: ctx.services.spaceGuard,
+    services: ctx.services,
+    revision: ctx.revision,
+    syncStatus: ctx.syncStatus,
+    user: ctx.user,
+  };
+}
+
+/**
+ * State for a screen that is ALWAYS about the signed-in member's own book,
+ * whatever space is selected.
+ *
+ * Some screens are not about the space at all. Settings holds the member's
+ * preferences, their backups and their sign-in; Family holds who THEY share
+ * with. Handing those a projection is not a scoping decision, it is a category
+ * error, and the failures were correspondingly odd: the home-currency chip
+ * showed the owner's currency as though it were the member's setting, the
+ * default-account list offered accounts they do not own, and Export produced a
+ * backup of the owner's entire book which, re-imported, replaced the member's.
+ *
+ * This exists as its own hook rather than as `useAppState().localState` because
+ * a screen that must never see a projection should not be one forgotten
+ * destructure away from seeing one. The import line states the intent, and the
+ * W-block asserts on it.
+ *
+ * @returns {{state:object, services:object, revision:number, syncStatus:string,
+ *            user:object|null, inGuestSpace:boolean, guard:object}}
+ */
+export function useOwnState() {
+  const ctx = useContext(AppCtx);
+  if (!ctx?.services) throw new Error('useOwnState() outside AppProvider or before boot');
+  const space = ctx.services.spaces?.active?.() ?? null;
+  return {
+    /** The member's real book. Never a projection. Safe to mutate. */
     state: ctx.services.store.getState(),
+    /** Still reported, so a screen can say "you're viewing someone else's book". */
+    inGuestSpace: !!space && !space.isHome,
+    space,
+    guard: ctx.services.spaceGuard,
     services: ctx.services,
     revision: ctx.revision,
     syncStatus: ctx.syncStatus,

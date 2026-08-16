@@ -22,7 +22,14 @@ import { DateService } from '../domain/services/DateService.js';
 import { RATES } from '../domain/services/FxRates.js';
 
 export default function AccountsScreen({ navigation }) {
-  const { state, services } = useAppState();
+  const { state, services, inGuestSpace, guard, space } = useAppState();
+
+  /** Editing, deleting and re-sharing an account are all owner-side. */
+  const requireOwn = () => {
+    const v = guard?.requireHome('accounts') ?? { ok: true };
+    if (!v.ok) Alert.alert('Not here', v.message);
+    return v.ok;
+  };
   const { fx, accountGroups } = services;
   const home = state.user.homeCurrency;
   // null = list · { id?: ... } = edit form · { view: account } = ledger
@@ -34,12 +41,30 @@ export default function AccountsScreen({ navigation }) {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  const sections = [
-    ...accountGroups.all().map((g) => ({
-      id: g.id, name: g.name, color: g.color, accs: accountGroups.accountsIn(g.id),
-    })),
-    { id: '__none__', name: 'Ungrouped', color: '#9ca3af', accs: accountGroups.ungrouped() },
-  ].filter((s) => s.accs.length);
+  /**
+   * The list and the lookup below MUST draw on the same book.
+   *
+   * They did not: `sections` came from AccountGroupService, which reads the
+   * member's own store, while the tap handler resolved the id against
+   * `state.accounts` — the OWNER's, in a guest space. Every id missed, the
+   * `if (!account)` early-return fired, and tapping an account simply did
+   * nothing. That accidentally hid the Edit / Delete / Share paths behind it,
+   * which is why the screen never corrupted anything; it is not a guard, it is
+   * a coincidence, and the next refactor removes it without noticing.
+   *
+   * Account groups are the owner's private filing system and are not shared
+   * (`Space.project()` sends `accountGroups: []`), so a guest space is one flat
+   * list of what they shared with you.
+   */
+  const sections = inGuestSpace
+    ? [{ id: '__shared__', name: space?.label || 'Shared with you', color: '#818cf8', accs: state.accounts || [] }]
+        .filter((s) => s.accs.length)
+    : [
+      ...accountGroups.all().map((g) => ({
+        id: g.id, name: g.name, color: g.color, accs: accountGroups.accountsIn(g.id),
+      })),
+      { id: '__none__', name: 'Ungrouped', color: '#9ca3af', accs: accountGroups.ungrouped() },
+    ].filter((s) => s.accs.length);
 
   if (editing !== null) {
     return (
@@ -59,11 +84,12 @@ export default function AccountsScreen({ navigation }) {
     return (
       <AccountDetail
         account={account}
+        inGuestSpace={inGuestSpace}
         services={services}
         state={state}
         navigation={navigation}
         onBack={() => setViewing(null)}
-        onEdit={() => { setViewing(null); setEditing(account); }}
+        onEdit={() => { if (requireOwn()) { setViewing(null); setEditing(account); } }}
       />
     );
   }
@@ -71,8 +97,10 @@ export default function AccountsScreen({ navigation }) {
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
       <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-        <Button title="＋ New account" onPress={() => setEditing({})} style={{ flex: 1 }} />
-        <Button title="Groups" kind="ghost" onPress={() => setManageGroups((v) => !v)} />
+        {inGuestSpace ? null : <Button title="＋ New account" onPress={() => setEditing({})} style={{ flex: 1 }} />}
+        {/* Groups are the member's own filing system — meaningless applied to
+            someone else's accounts, and the manager wrote to the local book. */}
+        {inGuestSpace ? null : <Button title="Groups" kind="ghost" onPress={() => setManageGroups((v) => !v)} />}
       </View>
       {manageGroups ? <GroupManager services={services} onClose={() => setManageGroups(false)} /> : null}
       {sections.length === 0 ? (
@@ -130,7 +158,7 @@ export default function AccountsScreen({ navigation }) {
  * header + balance, this-month/lifetime in-out stats, and the transaction
  * list grouped by day (newest first). Tapping a row edits that transaction.
  */
-function AccountDetail({ account: a, services, state, navigation, onBack, onEdit }) {
+function AccountDetail({ account: a, inGuestSpace, services, state, navigation, onBack, onEdit }) {
   const { fx, transactions: txs, categories, reports } = services;
   const home = state.user.homeCurrency;
   const [sharing, setSharing] = useState(false);
@@ -176,8 +204,14 @@ function AccountDetail({ account: a, services, state, navigation, onBack, onEdit
           <Text style={{ color: colors.primary, fontWeight: '600' }}>‹ Accounts</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }} />
-        <Button title="Share" kind="ghost" onPress={() => setSharing((v) => !v)} />
-        <Button title="Edit" kind="ghost" onPress={onEdit} />
+        {/* Sharing and editing an account belong to whoever owns it. Both wrote
+            to the member's own book and would have silently no-opped here. */}
+        {inGuestSpace ? null : (
+          <>
+            <Button title="Share" kind="ghost" onPress={() => setSharing((v) => !v)} />
+            <Button title="Edit" kind="ghost" onPress={onEdit} />
+          </>
+        )}
       </View>
 
       {sharing ? <AccountShareSheet accountId={a.id} services={services} onClose={() => setSharing(false)} /> : null}
@@ -231,7 +265,9 @@ function AccountDetail({ account: a, services, state, navigation, onBack, onEdit
                     <Text style={{ color: colors.text, fontWeight: '500' }} numberOfLines={1}>
                       {t.payee || (t.type === 'transfer'
                         ? `Transfer ${t.transferDir === 'in' ? 'in' : 'out'}`
-                        : categories.fullName(t.categoryId) || 'Uncategorised')}
+                        : (inGuestSpace
+                            ? categories.fullName(t.categoryId, state.categories)
+                            : categories.fullName(t.categoryId)) || 'Uncategorised')}
                     </Text>
                     {t.note ? (
                       <Text style={{ fontSize: 12, color: colors.subtle }} numberOfLines={1}>{t.note}</Text>

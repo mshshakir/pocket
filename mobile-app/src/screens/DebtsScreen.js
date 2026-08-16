@@ -29,29 +29,51 @@ function daysUntil(iso) {
 }
 
 export default function DebtsScreen() {
-  const { state, services } = useAppState();
+  const { state, services, inGuestSpace, guard } = useAppState();
   const { fx, debts } = services;
   const home = state.user.homeCurrency;
   const [mode, setMode] = useState(null); // null | 'new' | {debt} payment | {edit:debt}
+
+  /**
+   * The debt list and the ledger its payments are measured against MUST come
+   * from the same book. They did not: the cards came from `debts.all()` (local)
+   * while `state.transactions` was the owner's snapshot, so every count and
+   * every remaining balance was computed across two different people's data.
+   * The visible consequence was the delete confirmation, which reported "0
+   * linked transactions" and then deleted the member's real linked rows.
+   */
+  const ledger = inGuestSpace ? (state.transactions || []) : services.store.getState().transactions;
+
+  /** Nothing here is editable from inside someone else's space (phase 1). */
+  const requireOwn = () => {
+    const v = guard?.requireHome('debts') ?? { ok: true };
+    if (!v.ok) Alert.alert('Not here', v.message);
+    return v.ok;
+  };
 
   if (mode === 'new') return <DebtForm onDone={() => setMode(null)} services={services} state={state} />;
   if (mode && mode.edit) return <DebtForm debt={mode.edit} onDone={() => setMode(null)} services={services} state={state} />;
   if (mode && mode.id) return <PaymentForm debt={mode} onDone={() => setMode(null)} services={services} state={state} />;
 
-  const all = debts.all();
-  const active = all.filter((d) => d.status !== 'paid' && debts.remaining(d) > 0);
-  const paid = all.filter((d) => d.status === 'paid' || debts.remaining(d) <= 0);
+  // In a guest space these are the OWNER's debts, from their snapshot; at home
+  // they are the member's own. Either way they are drawn from the same book as
+  // `ledger` above.
+  const all = inGuestSpace ? (state.debts || []) : debts.all();
+  const left = (d) => debts.remaining(d, ledger);
+  const active = all.filter((d) => d.status !== 'paid' && left(d) > 0);
+  const paid = all.filter((d) => d.status === 'paid' || left(d) <= 0);
 
   const youOwe = active.filter((d) => d.type === 'borrowed')
-    .reduce((s, d) => s + fx.convert(debts.remaining(d), d.currency, home), 0);
+    .reduce((s, d) => s + fx.convert(left(d), d.currency, home), 0);
   const owed = active.filter((d) => d.type === 'lent')
-    .reduce((s, d) => s + fx.convert(debts.remaining(d), d.currency, home), 0);
+    .reduce((s, d) => s + fx.convert(left(d), d.currency, home), 0);
 
   const paymentCount = (d) =>
-    state.transactions.filter((t) => t.debtId === d.id && t.id !== d.initialTxId).length;
+    ledger.filter((t) => t.debtId === d.id && t.id !== d.initialTxId).length;
 
   const confirmDelete = (d) => {
-    const linked = state.transactions.filter((t) => t.debtId === d.id || t.id === d.initialTxId).length;
+    if (!requireOwn()) return;
+    const linked = ledger.filter((t) => t.debtId === d.id || t.id === d.initialTxId).length;
     Alert.alert('Delete debt', `${linked} linked transaction${linked === 1 ? '' : 's'}.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Keep transactions', onPress: () => { debts.delete(d, false); } },
@@ -60,7 +82,8 @@ export default function DebtsScreen() {
   };
 
   const confirmMarkPaid = (d) => {
-    const rem = debts.remaining(d);
+    if (!requireOwn()) return;
+    const rem = left(d);
     if (rem <= 0) { debts.markPaid(d, 'external'); return; }
     Alert.alert('Mark as paid off',
       `${fx.formatMoney(rem, d.currency)} still outstanding. How was it settled?`, [
@@ -71,7 +94,7 @@ export default function DebtsScreen() {
   };
 
   const renderCard = (d) => {
-    const rem = debts.remaining(d);
+    const rem = left(d);
     const isPaid = d.status === 'paid' || rem <= 0;
     const pctRepaid = d.principal > 0 ? Math.min(1, (d.principal - rem) / d.principal) : 0;
     const pays = paymentCount(d);
@@ -109,13 +132,18 @@ export default function DebtsScreen() {
         {d.note ? <Text style={{ fontSize: 12, color: colors.subtle, marginTop: 4 }}>{d.note}</Text> : null}
 
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, alignItems: 'center' }}>
+          {/* Every one of these resolved the debt against the member's own book
+              and returned early on a miss — the form closed and nothing changed.
+              The guard refuses with a reason instead. */}
           {!isPaid ? (
             <>
-              <Button title="Record payment" onPress={() => setMode(d)} style={{ flex: 1 }} />
+              <Button title="Record payment" style={{ flex: 1 }}
+                onPress={() => { if (requireOwn()) setMode(d); }} />
               <Button title="Paid off" kind="ghost" onPress={() => confirmMarkPaid(d)} />
             </>
           ) : <View style={{ flex: 1 }} />}
-          <Button title="Edit" kind="ghost" onPress={() => setMode({ edit: d })} />
+          <Button title="Edit" kind="ghost"
+            onPress={() => { if (requireOwn()) setMode({ edit: d }); }} />
         </View>
         <TouchableOpacity onPress={() => confirmDelete(d)} style={{ marginTop: 8 }}>
           <Text style={{ fontSize: 12, color: colors.faint }}>Delete</Text>
@@ -126,7 +154,7 @@ export default function DebtsScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
-      <Button title="＋ New debt" onPress={() => setMode('new')} style={{ marginBottom: 12 }} />
+      {inGuestSpace ? null : <Button title="＋ New debt" onPress={() => setMode('new')} style={{ marginBottom: 12 }} />}
       <View style={{ flexDirection: 'row', gap: 12 }}>
         <Card style={{ flex: 1 }}>
           <Text style={{ fontSize: 12, color: colors.subtle }}>You owe</Text>

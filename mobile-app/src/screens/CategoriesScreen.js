@@ -11,8 +11,25 @@ import { Card, SectionTitle, Field, Input, Button, Segmented, Dot } from '../ui/
 import { colors } from '../ui/theme.js';
 
 export default function CategoriesScreen() {
-  const { state, services } = useAppState();
+  const { state, services, inGuestSpace, guard, space } = useAppState();
   const cats = services.categories;
+
+  /**
+   * In a guest space this is the OWNER's tree, read-only.
+   *
+   * It used to be the member's own, because `visibleRoots`/`orphans` read the
+   * local store unconditionally — so the screen showed your categories under a
+   * banner naming someone else's space, and "＋ New category" was hidden while
+   * Edit and ✕ on every row stayed live. Nothing was corrupted, but the screen
+   * answered a question nobody asked: it is reached FROM a space, and the ids
+   * it must explain are the ones a contribution has to carry.
+   */
+  const tree = inGuestSpace ? (state.categories || []) : null;
+  const requireOwn = () => {
+    const v = guard?.requireHome('categories') ?? { ok: true };
+    if (!v.ok) Alert.alert('Not here', v.message);
+    return v.ok;
+  };
   const [editing, setEditing] = useState(null); // null | {} | category
   const [typeFilter, setTypeFilter] = useState('expense');
   const [collapsed, setCollapsed] = useState(() => new Set());
@@ -25,10 +42,11 @@ export default function CategoriesScreen() {
       onDone={() => setEditing(null)} services={services} state={state} />;
   }
 
-  const roots = cats.visibleRoots(typeFilter);
-  const orphans = cats.orphans(typeFilter);
+  const roots = cats.visibleRoots(typeFilter, tree);
+  const orphans = cats.orphans(typeFilter, tree);
 
   const del = (c) => {
+    if (!requireOwn()) return;
     const used = cats.usageCount(c.id);
     if (used > 0) { Alert.alert('In use', `${used} transaction${used === 1 ? '' : 's'} use this — reassign them first.`); return; }
     Alert.alert('Delete category', `Delete "${c.name}"?`, [
@@ -51,12 +69,19 @@ export default function CategoriesScreen() {
         <Text style={{ flex: 1, color: colors.text }}>
           {indent ? '↳ ' : ''}{c.name}{childCount > 0 ? <Text style={{ color: colors.faint }}>  {childCount}</Text> : null}
         </Text>
-        <TouchableOpacity onPress={() => setEditing(c)} style={{ paddingHorizontal: 8 }}>
-          <Text style={{ color: colors.subtle }}>Edit</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => del(c)} style={{ paddingHorizontal: 4 }}>
-          <Text style={{ color: colors.red }}>✕</Text>
-        </TouchableOpacity>
+        {/* Both resolved the id against the member's own book and returned
+            early on a miss, so they closed and changed nothing. Phase 2 gives
+            a member their own categories inside a space; until then, read-only. */}
+        {inGuestSpace ? null : (
+          <>
+            <TouchableOpacity onPress={() => setEditing(c)} style={{ paddingHorizontal: 8 }}>
+              <Text style={{ color: colors.subtle }}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => del(c)} style={{ paddingHorizontal: 4 }}>
+              <Text style={{ color: colors.red }}>✕</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     );
   };
@@ -66,7 +91,15 @@ export default function CategoriesScreen() {
       <Segmented
         options={[{ id: 'expense', label: 'Expense' }, { id: 'income', label: 'Income' }, { id: 'transfer', label: 'Transfer' }]}
         value={typeFilter} onChange={setTypeFilter} />
-      <Button title="＋ New category" onPress={() => setEditing({})} style={{ marginBottom: 12 }} />
+      {inGuestSpace ? (
+        <Text style={{
+          color: colors.subtle, fontSize: 12, lineHeight: 17,
+          backgroundColor: '#818cf815', borderRadius: 10, padding: 10, marginVertical: 12,
+        }}>
+          {space?.label}'s categories. Anything you add to their accounts is filed
+          under these, not your own.
+        </Text>
+      ) : <Button title="＋ New category" onPress={() => setEditing({})} style={{ marginBottom: 12 }} />}
 
       {roots.length === 0 && orphans.length === 0 ? (
         <Card><Text style={{ color: colors.subtle, textAlign: 'center' }}>No categories of this type yet.</Text></Card>

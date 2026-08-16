@@ -107,8 +107,8 @@ export class CategoryService {
    * @param {'expense'|'income'|'transfer'|null} [type]
    * @returns {object[]} sorted by name
    */
-  visibleRoots(type = null) {
-    const cats  = this.#store.getState().categories;
+  visibleRoots(type = null, list = null) {
+    const cats  = list || this.#store.getState().categories;
     const match = (c) => !type || c.type === type;
     return cats
       .filter((c) => !c.parentId)
@@ -136,8 +136,8 @@ export class CategoryService {
    * @param {'expense'|'income'|'transfer'|null} [type]
    * @returns {object[]}
    */
-  orphans(type = null) {
-    const cats  = this.#store.getState().categories;
+  orphans(type = null, list = null) {
+    const cats  = list || this.#store.getState().categories;
     const ids   = new Set(cats.map((c) => c.id));
     const match = (c) => !type || c.type === type;
     return cats

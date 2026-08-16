@@ -53,6 +53,18 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Mobile caught up with web on the share snapshot (2026-08-15)** — a phase C prerequisite,
+and a live bug. Mobile 106 assertions (30+10+66), 3 mutations verified.
+- **Mobile was missing phase 1b entirely.** Both platforms write the SAME `family_shares`
+  row, so whichever pushed last won — a push from the phone silently STRIPPED `budgets`,
+  `budgetPermission`, `debts`, `regularItems`, `ownerName` and the per-member `spaceName`
+  from what the member saw, even though web publishes them correctly. The snapshot literal
+  must stay field-for-field identical; a test now asserts each field by name.
+- **Mobile phase B:** `space_id` on push (three-column onConflict), read back on pull as
+  `_spaceId`, and `revokeMemberShare(email, spaceId?)`.
+- **Phase C is now unblocked ON CODE** but still needs `eas build` + install, because the
+  APK in the field is the old client.
+
 **Swipe delete asks for confirmation again (2026-08-15)** — Mufaddal, after using it. The
 reveal still makes an ACCIDENTAL delete structurally impossible; the dialog on top is a
 deliberate choice for an action that propagates over sync.
@@ -392,6 +404,77 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
   `data.amount` as-is; only a stored (editing) tx is `fromMinor`'d. Also fixed receipt scan. Mobile was
   already correct (`setAmount` uses the major value directly).
 
+
+## Spaces on mobile (2026-08-16)
+
+Ported. `Space` and `SpaceRegistry` are byte-identical to the web copies —
+`SpaceRegistry` gained an injectable `sessionStore` so both platforms can share
+one file (RN has no `sessionStorage`; mobile injects an in-memory Map, so a cold
+start returns you to your own space rather than to one that may have been
+revoked while the app was closed). `useAppState()` returns `space.project()`,
+`SpaceBar` is mounted once in `App.js` above the navigator.
+
+**The read side was the easy half.** An audit of every write path reachable from
+inside a guest space found five that corrupted data and about a dozen that
+failed silently. The pattern is always the same and never throws: a screen takes
+an id out of the projection — so it is the OWNER's — and hands it to a service
+that writes to `store.getState()`. Every service resolves ids with `.find()` and
+returns early on a miss, so the failure mode is a closed form and an unchanged
+book, or an orphan row that belongs to no account.
+
+Corrupting, now fixed:
+
+| Path | What happened |
+|---|---|
+| Settings → Export | Backed up the OWNER's book; re-importing replaced the member's |
+| Settings → Preferences | Showed the owner's home currency as the member's selected chip; tapping it rewrote their own |
+| Regulars → Log now | Pushed a row with the owner's accountId + categoryId into the member's book. Two taps |
+| Debts → Delete | Counted linked transactions from the owner's ledger (0), then deleted the member's real ones |
+| Transaction form | Editing an owner's row and changing the account submitted as NEW — a duplicate in their book |
+| Family → Account access | Wrote the owner's accountIds into the member's family record; the push then published a blank space |
+
+Three new mobile-only domain classes carry the policy, because the reason these
+survived is that the policy lived in JSX no test could import:
+
+- **`SpaceGuard`** — the single may-I. `requireHome(what)` for personal screens,
+  `routeNewTransaction()` / `routeEditTransaction(id)` / `routeDeleteTransaction(id)` /
+  `routeLogRegular(item)` for writes. Returns a verdict `{ok, message}` rather
+  than a boolean: the message is part of the answer, because the callers that
+  had to invent their own invented "Transaction not found".
+- **`RegularLogSubmitter`** — extracted out of `RegularsScreen.js` precisely so a
+  node test can reach it. "Shared" means two unrelated things: an item of MINE on
+  an account shared WITH me (carries `sharedOwnerId`), and an item of the
+  OWNER's seen from inside their space (carries nothing). The old code tested
+  only the first.
+- **`BudgetView`** — `BudgetService` reads the local store, so a shared budget's
+  categoryIds expanded against the member's tree and every one rendered a spend
+  of exactly **0**. The owner already ships the right figure as `budget.spent`;
+  nothing read it until now.
+
+`useOwnState()` is a second hook for screens that are never about the space:
+Settings and Family. Deliberately a hook and not `useAppState().localState`, so a
+screen that must not see a projection is not one forgotten destructure away from
+one.
+
+Also space-aware now: Accounts (guest = one flat list of what was shared, groups
+hidden), Categories (the OWNER's tree, read-only — it is the tree a contribution
+must file under), Dashboard (both figures from one book, with `scopeNote`),
+Budgets (owner's spend + a caveat that the listed entries are a subset), Reports
+(still the member's own figures, and now says so).
+
+**The test that should have caught this didn't.** W3 asserted "no screen writes
+through the space projection" with a regex for `state.x =` and
+`state.<coll>.push(...)`. It passed over all five, including a literal
+`store.getState().transactions.push(tx)`, because it anchored on `state.`. It is
+now a structural check — a file on `useAppState()` that writes must show it
+consults the guard — backed by G/L/B blocks that exercise the routing against
+real objects. Mobile suite: **179 assertions** (30 domain + 10 family + 139
+session). Seven mutations verified, one of which (reverting the orphan-write fix)
+left all 126 assertions green and is what forced the extraction.
+
+**Not done:** editing budgets/debts/regulars/categories inside a guest space
+(phase 2), and space-aware Reports.
+
 ## Pending / action items
 
 **Yours (I can't do these):**
@@ -413,8 +496,10 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
    categories each need a `_kind` contribution payload and an `#authoriseContribution` branch.
    Budget is the first payload with no account, so it forces the
    `family_contributions.account_id NOT NULL` decision. Touches the security boundary.
-5. **Spaces on mobile.** Entirely absent — `Space`, `SpaceRegistry`, the switcher and the
-   `BaseView` scoping are all web-only. Bigger than the sync port was.
+5. **Space-aware Reports on mobile.** `ReportService` reads the local store in every method,
+   so inside a guest space the Reports tab shows the member's own figures. It now says so in a
+   banner rather than mislabelling them, but the real fix is a report source that can read a
+   snapshot. Same shape as `BudgetView`.
 6. **Owner-created spaces steps 3-5** — steps 1-2 shipped (multi-member named spaces).
    What remains needs `space_id` in the `family_shares` primary key (a Supabase migration you
    run) and `#authoriseContribution` resolving through space membership, and buys exactly one
@@ -425,7 +510,12 @@ Both had been failing for a while and were mistaken for app bugs. Neither was.
    behaviour change, not a cleanup. Decide it as part of the Spaces work.
 
 **Done this session** (was pending, now shipped): mobile shared accounts in Regulars; mobile
-conflict-backup restore UI; the stray `VoiceRecorder.js.overlay-note` file.
+conflict-backup restore UI; the stray `VoiceRecorder.js.overlay-note` file; **Spaces on mobile**
+(item 5 as it was written — see the section above).
+
+**Housekeeping, untouched:** `legacy-web/src/domain/services/*.js.tmp` — 14 tracked files that
+look like build leftovers. Not deleted without asking, in case they are load-bearing for
+something outside this repo.
 
 ## Memory
 

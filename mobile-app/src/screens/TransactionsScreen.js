@@ -45,7 +45,7 @@ function withinRange(iso, range) {
 }
 
 export default function TransactionsScreen({ navigation }) {
-  const { state, services } = useAppState();
+  const { state, services, inGuestSpace, guard } = useAppState();
   const { fx, categories, transactions: txService } = services;
   const home = state.user.homeCurrency;
   const dateFmt = state.user.dateFormat || 'auto';
@@ -138,12 +138,41 @@ export default function TransactionsScreen({ navigation }) {
     return next;
   });
 
+  /**
+   * Bulk delete, asking the guard about each row first.
+   *
+   * In a guest space the list is the OWNER's, and `TransactionService.delete`
+   * begins `if (!tx) return;` — so every id missed the member's own book and
+   * the whole operation was a no-op that cleared the selection and reported
+   * nothing. Rows the member may remove are withdrawn as contributions; the
+   * rest are counted and named in the result rather than dropped in silence.
+   */
   const bulkDelete = () => {
     if (!selected.size) return;
-    Alert.alert('Delete transactions', `Delete ${selected.size} selected?`, [
+    const ids = [...selected];
+    const verdicts = ids.map((txId) => [txId, guard?.routeDeleteTransaction(txId) ?? { ok: true, contribution: null }]);
+    const allowed = verdicts.filter(([, v]) => v.ok);
+    const refused = verdicts.filter(([, v]) => !v.ok);
+
+    if (!allowed.length) {
+      Alert.alert('Nothing deleted', refused[0]?.[1]?.message || 'None of those can be deleted here.');
+      return;
+    }
+    const note = refused.length
+      ? `\n\n${refused.length} of them can't be deleted here and will be left alone.`
+      : '';
+    Alert.alert('Delete transactions', `Delete ${allowed.length} selected?${note}`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => {
-        selected.forEach((id) => txService.delete(id));
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        for (const [txId, v] of allowed) {
+          if (v.contribution) {
+            try { await services.sync.deleteContribution(v.contribution.ownerId, v.contribution.txId); }
+            catch (_) { /* reported below via the refresh not showing it gone */ }
+          } else {
+            txService.delete(txId);
+          }
+        }
+        if (allowed.some(([, v]) => v.contribution)) services.sync.scheduleSharesRefresh?.(3000);
         setSelected(new Set()); setSelecting(false);
       } },
     ]);

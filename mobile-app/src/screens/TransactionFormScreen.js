@@ -26,15 +26,38 @@ const hijri = new HijriCalendarService();
 
 export default function TransactionFormScreen({ navigation, route }) {
   const { id } = route.params || {};
-  const { state, services } = useAppState();
+  // `localState`, deliberately, not the space projection.
+  //
+  // This form already had a complete model of "somebody else's book": when
+  // `sharedMode` is set it reads accounts and categories out of the owner's
+  // snapshot and submits through the contribution API. Handing it a projection
+  // on top of that gave it a SECOND, silent notion of the same thing — so in a
+  // guest space `state.accounts` was the owner's while `accountId` held a local
+  // id from `accounts.defaultId()`, the account field rendered its placeholder
+  // forever, the split chips offered accounts the composer would then reject,
+  // and the currency defaulted to the owner's. One book per form: this one
+  // reads the member's, and everything about the other person's arrives through
+  // `sharedMode`.
+  const { localState: state, services, guard } = useAppState();
   const { fx, composer, categories, paymentTypes, sync, receipts, accounts } = services;
 
   // Shared-account contribution: the row lives in the OWNER's book, so this
   // form submits through the sync contribution API, not the local composer.
   // sharedMode = { ownerId, accountId, editTxId? }. It can arrive as a route
-  // param (from the Family screen) OR be chosen in-form by picking a shared
-  // account from the account picker — so it is state, not just a param.
-  const [sharedMode, setSharedMode] = useState(route.params?.sharedMode || null);
+  // param (from the Family screen), be decided by the active space, OR be
+  // chosen in-form by picking a shared account — so it is state, not a param.
+  //
+  // Deciding it up front is what fixes the duplicate-row bug: previously an
+  // edit of an existing row acquired contribution mode LATER, by touching the
+  // account field, and the mode it acquired carried no `editTxId` — so
+  // submitting called submitContribution with a fresh id and left a second copy
+  // of the row in the owner's book.
+  const [routeVerdict] = useState(() => {
+    if (route.params?.sharedMode) return { ok: true, sharedMode: route.params.sharedMode };
+    if (!guard) return { ok: true, sharedMode: null };
+    return id ? guard.routeEditTransaction(id) : guard.routeNewTransaction();
+  });
+  const [sharedMode, setSharedMode] = useState(routeVerdict.ok ? routeVerdict.sharedMode : null);
   const share = sharedMode ? sync.shareByOwner?.(sharedMode.ownerId) : null;
   // Category name/colour come from the owner's snapshot when contributing.
   const ownerCats = sharedMode ? (share?.categories || []) : null;
@@ -153,7 +176,20 @@ export default function TransactionFormScreen({ navigation, route }) {
       if (kind === 'from') { setAccountId(res.accountId); return; }
       // main account (expense / income): shared choice flips to contribution mode
       if (res.ownerId) {
-        setSharedMode({ ownerId: res.ownerId, accountId: res.accountId });
+        // …but never for a row that already exists. Moving an entry from your
+        // own book into someone else's is a delete-here-and-contribute-there,
+        // not an account change: the old code flipped the mode, dropped the id
+        // on the way, and submitting then wrote a SECOND copy into the owner's
+        // book while the original stayed put.
+        if (editBase && !sharedMode?.editTxId) {
+          Alert.alert(
+            'Not an account change',
+            'That account belongs to someone else. Delete this entry and add it '
+            + 'to their account instead — moving it would leave a copy in both books.',
+          );
+          return;
+        }
+        setSharedMode((m) => ({ ownerId: res.ownerId, accountId: res.accountId, editTxId: m?.editTxId }));
         if (res.currency) setCurrency(res.currency);
         setType((t) => (t === 'transfer' ? 'expense' : t));
         setSplits(null);
@@ -406,6 +442,31 @@ export default function TransactionFormScreen({ navigation, route }) {
     }
   };
 
+  /**
+   * Withdraw a contribution from the owner's book.
+   *
+   * A member could reach this form to CREATE a contribution but had no way to
+   * remove one — the Delete button was hidden whenever `sharedMode` was set, so
+   * the only route back was the Family screen. The owner's client accepts the
+   * delete marker only for a row whose `addedBy` matches, which SpaceGuard has
+   * already checked before the form opened.
+   */
+  const confirmDeleteShared = () => {
+    Alert.alert('Withdraw this entry?', 'It will be removed from the owner\'s book.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Withdraw', style: 'destructive', onPress: async () => {
+        setBusy(true);
+        try {
+          await sync.deleteContribution(sharedMode.ownerId, sharedMode.editTxId);
+          sync.scheduleSharesRefresh?.(3000);
+          navigation.goBack();
+        } catch (e) {
+          Alert.alert('Could not withdraw', String(e?.message || e));
+        } finally { setBusy(false); }
+      } },
+    ]);
+  };
+
   const confirmDelete = () => {
     Alert.alert('Delete transaction?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
@@ -429,6 +490,25 @@ export default function TransactionFormScreen({ navigation, route }) {
   const typeOptions = sharedMode
     ? [{ id: 'expense', label: 'Expense' }, { id: 'income', label: 'Income' }]
     : [{ id: 'expense', label: 'Expense' }, { id: 'income', label: 'Income' }, { id: 'transfer', label: 'Transfer' }];
+
+  // Refused before anything is rendered — view-only access, someone else's
+  // entry, or a local row reached from a report while a guest space is active.
+  // Previously each of these opened the form fully populated and failed at the
+  // end: Save alerted "Transaction not found", and Delete closed the screen
+  // having removed nothing at all.
+  if (!routeVerdict.ok) {
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
+        <Card>
+          <Text style={{ color: colors.text, fontWeight: '600', marginBottom: 6 }}>Not here</Text>
+          <Text style={{ color: colors.subtle, fontSize: 13, lineHeight: 19 }}>
+            {routeVerdict.message}
+          </Text>
+        </Card>
+        <Button title="Back" kind="ghost" onPress={() => navigation.goBack()} />
+      </ScrollView>
+    );
+  }
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
@@ -740,6 +820,8 @@ export default function TransactionFormScreen({ navigation, route }) {
       />
       {editing && !sharedMode ? (
         <Button title="Delete" kind="danger" onPress={confirmDelete} style={{ marginTop: 8 }} />
+      ) : sharedMode?.editTxId ? (
+        <Button title="Withdraw" kind="danger" onPress={confirmDeleteShared} style={{ marginTop: 8 }} />
       ) : null}
       <View style={{ height: 32 }} />
     </ScrollView>

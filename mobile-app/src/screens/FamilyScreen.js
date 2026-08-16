@@ -9,7 +9,7 @@
  */
 import React, { useState } from 'react';
 import { ScrollView, View, Text, Alert, TouchableOpacity } from 'react-native';
-import { useAppState } from '../state/AppContext.js';
+import { useOwnState } from '../state/AppContext.js';
 import { Card, SectionTitle, Field, Input, Button, Dot, EmptyState } from '../ui/common.js';
 import { colors } from '../ui/theme.js';
 import { FAMILY_ACCESS_LEVELS, MEMBER_COLORS } from '../data/constants.js';
@@ -19,7 +19,13 @@ import { DateService } from '../domain/services/DateService.js';
 const accessLabel = (id) => FAMILY_ACCESS_LEVELS.find((l) => l.id === id)?.label || id;
 
 export default function FamilyScreen({ navigation }) {
-  const { state, services, user } = useAppState();
+  // useOwnState: this screen is about who *I* share with, which does not change
+  // with the space I am viewing. Under a projection the "Account access" list
+  // rendered the OWNER's accounts, so cycling a level wrote their accountIds
+  // into the member's own family record — and the subsequent push then
+  // published a member with a non-empty permission map over an empty account
+  // list, i.e. a blank space, with no error anywhere.
+  const { state, services, user, inGuestSpace } = useOwnState();
   const { fx } = services;
   const [editing, setEditing] = useState(null);
   const [viewShare, setViewShare] = useState(null); // { ownerId, accountId }
@@ -49,6 +55,19 @@ export default function FamilyScreen({ navigation }) {
         </Card>
       ) : null}
 
+      {/* Editing a member was never hidden here, so hiding only "Add member"
+          in a guest space produced the worst of both: half the screen live,
+          half of it missing. Now that the screen is unambiguously about the
+          member's own sharing, everything is live and the banner explains it. */}
+      {inGuestSpace ? (
+        <Text style={{
+          color: colors.subtle, fontSize: 12, lineHeight: 17,
+          backgroundColor: '#818cf815', borderRadius: 10, padding: 10, marginBottom: 12,
+        }}>
+          This is who <Text style={{ fontWeight: '700' }}>you</Text> share with — it
+          doesn't change with the space you're viewing.
+        </Text>
+      ) : null}
       <SectionTitle>Members</SectionTitle>
       <Button title="＋ Add member" onPress={() => setEditing({})} style={{ marginBottom: 12 }} />
       {members.length === 0 ? (
@@ -241,7 +260,9 @@ function MemberForm({ member, onDone, services, state }) {
     const permissions = Object.entries(perms).map(([accountId, access]) => ({ accountId, access }));
     const init = initials.trim().slice(0, 2).toUpperCase() || undefined;
     if (member) {
-      Object.assign(member, { name: name.trim(), email: email.trim().toLowerCase(), color, initials: init, permissions });
+      // Resolve out of real state first — `member` came from a projected list.
+    const target = (s.family || []).find((m) => m.id === member.id) || member;
+    Object.assign(target, { name: name.trim(), email: email.trim().toLowerCase(), color, initials: init, permissions });
     } else {
       s.family.push({
         id: IdGenerator.generate('fam'),

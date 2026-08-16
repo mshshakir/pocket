@@ -22,6 +22,7 @@ import { colors } from '../ui/theme.js';
 import { CURRENCIES } from '../data/constants.js';
 import { HijriCalendarService } from '../domain/services/HijriCalendarService.js';
 import { DateService } from '../domain/services/DateService.js';
+import { BudgetView } from '../domain/services/BudgetView.js';
 
 const hijri = new HijriCalendarService();
 
@@ -46,8 +47,21 @@ function periodMeta(b) {
 }
 
 export default function BudgetsScreen({ navigation }) {
-  const { state, services } = useAppState();
+  const { state, services, inGuestSpace, guard, space } = useAppState();
   const { fx, budgets, categories } = services;
+  /**
+   * Every figure below comes from here rather than from BudgetService, which
+   * reads the local store: a shared budget's category ids are the OWNER's, so
+   * expanding them against the member's tree matched nothing and every shared
+   * budget rendered a spend of exactly 0 — indistinguishable from "you haven't
+   * spent anything". The owner ships the real figure in the snapshot.
+   */
+  const view = BudgetView.for({ inGuestSpace, state, services });
+  const requireOwn = () => {
+    const v = guard?.requireHome('budgets') ?? { ok: true };
+    if (!v.ok) Alert.alert('Not here', v.message);
+    return v.ok;
+  };
   const [editing, setEditing] = useState(null);  // null | {} (new) | budget
   const [viewing, setViewing] = useState(null);   // budget id
 
@@ -69,11 +83,14 @@ export default function BudgetsScreen({ navigation }) {
     return (
       <BudgetDetail
         budget={b}
+        view={view}
+        inGuestSpace={inGuestSpace}
+        space={space}
         services={services}
         state={state}
         navigation={navigation}
         onBack={() => setViewing(null)}
-        onEdit={() => { setViewing(null); setEditing(b); }}
+        onEdit={() => { if (requireOwn()) { setViewing(null); setEditing(b); } }}
       />
     );
   }
@@ -82,26 +99,26 @@ export default function BudgetsScreen({ navigation }) {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
-      <Button title="＋ New budget" onPress={() => setEditing({})} style={{ marginBottom: 12 }} />
+      {inGuestSpace ? null : <Button title="＋ New budget" onPress={() => setEditing({})} style={{ marginBottom: 12 }} />}
       {list.length === 0 ? (
         <EmptyState title="No budgets" subtitle="Create one to watch a category's monthly spend." />
       ) : list.map((b) => {
-        const spend = budgets.currentSpend(b);
-        const eff = budgets.effectiveLimit(b);
+        const spend = view.spend(b);
+        const eff = view.rollover(b);
         const limit = eff.limit;
         const pct = limit > 0 ? Math.min(1, spend / limit) : 0;
         const over = spend >= limit;
-        const ids = budgets.targetCategoryIds(b);
-        const names = ids.map((id) => categories.fullName(id)).filter(Boolean);
+        const ids = view.categoryIds(b);
+        const names = ids.map((id) => view.categoryName(id)).filter(Boolean);
         const meta = periodMeta(b);
         const multi = ids.length > 1;
-        const hasSubs = !multi && ids[0] && categories.hasChildren(ids[0]);
-        const split = multi ? budgets.spendByCategory(b) : [];
+        const hasSubs = !multi && ids[0] && view.hasChildren(ids[0]);
+        const split = multi ? view.splitByCategory(b) : [];
         return (
           <TouchableOpacity key={b.id} activeOpacity={0.7} onPress={() => setViewing(b.id)}>
             <Card>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Dot color={categories.find(ids[0])?.color} />
+                <Dot color={view.category(ids[0])?.color} />
                 <Text style={{ flex: 1, fontWeight: '600', color: colors.text }} numberOfLines={1}>
                   {names[0] || 'Budget'}{multi ? `  +${names.length - 1}` : ''}
                   {hasSubs ? <Text style={{ fontSize: 11, color: colors.subtle }}>  · incl. subs</Text> : null}
@@ -162,19 +179,19 @@ export default function BudgetsScreen({ navigation }) {
 }
 
 /** BudgetDetail — the web BudgetDetailView: breakdown + period transactions. */
-function BudgetDetail({ budget: b, services, state, navigation, onBack, onEdit }) {
-  const { fx, budgets, categories } = services;
-  const spend = budgets.currentSpend(b);
-  const eff = budgets.effectiveLimit(b);
+function BudgetDetail({ budget: b, view, inGuestSpace, space, services, state, navigation, onBack, onEdit }) {
+  const { fx } = services;
+  const spend = view.spend(b);
+  const eff = view.rollover(b);
   const limit = eff.limit;
   const pct = limit > 0 ? Math.min(1, spend / limit) : 0;
   const over = spend >= limit;
   const meta = periodMeta(b);
-  const ids = budgets.targetCategoryIds(b);
+  const ids = view.categoryIds(b);
   const multi = ids.length > 1;
-  const split = budgets.spendByCategory(b);
-  const txns = budgets.periodTransactions(b);
-  const title = ids.map((id) => categories.find(id)?.name).filter(Boolean).join(', ') || 'Budget';
+  const split = view.splitByCategory(b);
+  const txns = view.transactions(b);
+  const title = ids.map((id) => view.category(id)?.name).filter(Boolean).join(', ') || 'Budget';
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
@@ -183,14 +200,24 @@ function BudgetDetail({ budget: b, services, state, navigation, onBack, onEdit }
           <Text style={{ color: colors.primary, fontWeight: '600' }}>‹ Budgets</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }} />
-        <Button title="Edit" kind="ghost" onPress={onEdit} />
+        {inGuestSpace ? null : <Button title="Edit" kind="ghost" onPress={onEdit} />}
       </View>
 
       <Card>
         <Text style={{ fontSize: 18, fontWeight: '700', color: colors.text }}>{title}</Text>
         <Text style={{ fontSize: 12, color: colors.subtle, marginTop: 2 }}>
-          {meta.label}{b.rollover ? ' · rollover on' : ''} · {Math.max(0, meta.daysLeft)} {meta.isHijri ? 'Hijri ' : ''}day{meta.daysLeft === 1 ? '' : 's'} left
+          {meta.label}{b.rollover && view.limitIsExact ? ' · rollover on' : ''} · {Math.max(0, meta.daysLeft)} {meta.isHijri ? 'Hijri ' : ''}day{meta.daysLeft === 1 ? '' : 's'} left
         </Text>
+        {/* The total is the owner's exact figure over their whole ledger; the
+            transaction list below it is only the accounts shared with you, so
+            the two do not add up and the screen has to say why. */}
+        {inGuestSpace ? (
+          <Text style={{ fontSize: 11, color: colors.subtle, marginTop: 4, lineHeight: 16 }}>
+            Spent is the owner's total for this budget. The entries listed below
+            are only {space?.scopeNote || 'the accounts shared with you'}
+            {b.rollover ? ', and rollover from earlier periods is not included' : ''}.
+          </Text>
+        ) : null}
         <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 12 }}>
           <Text style={{ fontSize: 24, fontWeight: '700', color: over ? colors.red : colors.text }}>
             {fx.formatMoney(spend, b.currency)}
@@ -244,10 +271,10 @@ function BudgetDetail({ budget: b, services, state, navigation, onBack, onEdit }
                 borderBottomWidth: i === txns.length - 1 ? 0 : 1, borderColor: colors.muted,
               }}
             >
-              <Dot color={categories.find(t.categoryId)?.color} />
+              <Dot color={view.category(t.categoryId)?.color} />
               <View style={{ flex: 1 }}>
                 <Text style={{ color: colors.text, fontWeight: '500' }} numberOfLines={1}>
-                  {t.payee || categories.fullName(t.categoryId) || 'Uncategorised'}
+                  {t.payee || view.categoryName(t.categoryId) || 'Uncategorised'}
                 </Text>
                 <Text style={{ fontSize: 12, color: colors.subtle }}>{DateService.label(t.date, state.user.dateFormat || 'auto')}</Text>
               </View>

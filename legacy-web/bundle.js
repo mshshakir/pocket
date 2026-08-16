@@ -2230,8 +2230,8 @@ var _PocketApp = (() => {
      * @param {'expense'|'income'|'transfer'|null} [type]
      * @returns {object[]} sorted by name
      */
-    visibleRoots(type = null) {
-      const cats = this.#store.getState().categories;
+    visibleRoots(type = null, list = null) {
+      const cats = list || this.#store.getState().categories;
       const match = (c) => !type || c.type === type;
       return cats.filter((c) => !c.parentId).filter((root) => match(root) || cats.some((c) => c.parentId === root.id && match(c))).sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -2252,8 +2252,8 @@ var _PocketApp = (() => {
      * @param {'expense'|'income'|'transfer'|null} [type]
      * @returns {object[]}
      */
-    orphans(type = null) {
-      const cats = this.#store.getState().categories;
+    orphans(type = null, list = null) {
+      const cats = list || this.#store.getState().categories;
       const ids = new Set(cats.map((c) => c.id));
       const match = (c) => !type || c.type === type;
       return cats.filter((c) => c.parentId && !ids.has(c.parentId) && match(c)).sort((a, b) => a.name.localeCompare(b.name));
@@ -7795,6 +7795,22 @@ This replaces your current grouping.`
 
   // src/domain/services/SpaceRegistry.js
   var STORAGE_KEY = "pocket.v1.space";
+  var defaultSessionStore = () => {
+    try {
+      if (typeof sessionStorage !== "undefined") return sessionStorage;
+    } catch (_) {
+    }
+    const mem = /* @__PURE__ */ new Map();
+    return {
+      getItem: (k) => mem.has(k) ? mem.get(k) : null,
+      setItem: (k, v) => {
+        mem.set(k, v);
+      },
+      removeItem: (k) => {
+        mem.delete(k);
+      }
+    };
+  };
   var SpaceRegistry = class {
     /** @type {import('../../core/Store.js').Store} */
     #store;
@@ -7806,6 +7822,8 @@ This replaces your current grouping.`
     #activeId = null;
     /** @type {Set<Function>} */
     #listeners = /* @__PURE__ */ new Set();
+    /** @type {{getItem:Function,setItem:Function,removeItem:Function}} */
+    #session;
     /**
      * Last resolved label of the active guest space.
      *
@@ -7822,10 +7840,11 @@ This replaces your current grouping.`
      * @param {object} deps.sync          SyncService — read only, for `sharedData`
      * @param {Function} deps.spaceFactory  ({id, share, state}) => Space
      */
-    constructor({ store, sync, spaceFactory }) {
+    constructor({ store, sync, spaceFactory, sessionStore = null }) {
       this.#store = store;
       this.#sync = sync;
       this.#spaceFactory = spaceFactory;
+      this.#session = sessionStore || defaultSessionStore();
       this.#activeId = this.#readPersisted();
     }
     // ── Query ────────────────────────────────────────────────────────────
@@ -7969,15 +7988,15 @@ This replaces your current grouping.`
     // ── Persistence (session-scoped) ─────────────────────────────────────
     #readPersisted() {
       try {
-        return sessionStorage.getItem(STORAGE_KEY) || null;
+        return this.#session.getItem(STORAGE_KEY) || null;
       } catch (_) {
         return null;
       }
     }
     #persist() {
       try {
-        if (this.#activeId) sessionStorage.setItem(STORAGE_KEY, this.#activeId);
-        else sessionStorage.removeItem(STORAGE_KEY);
+        if (this.#activeId) this.#session.setItem(STORAGE_KEY, this.#activeId);
+        else this.#session.removeItem(STORAGE_KEY);
       } catch (_) {
       }
     }

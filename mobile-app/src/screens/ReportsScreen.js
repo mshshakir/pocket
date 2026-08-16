@@ -22,7 +22,13 @@ const RANGES = [
 ];
 
 export default function ReportsScreen({ navigation }) {
-  const { state, services } = useAppState();
+  // `localState`, deliberately. ReportService reads the local store in every
+  // one of its methods and has no way to answer for someone else's snapshot,
+  // so under a projection this screen drew the member's own figures while
+  // labelling them with the OWNER's home currency — the numbers were their
+  // own money with the wrong symbol on them. Until reports are space-aware
+  // (phase 2) they are honestly the member's, and the banner says so.
+  const { localState: state, services, inGuestSpace, space } = useAppState();
   const { reports, fx, categories } = services;
   const home = state.user.homeCurrency;
   const showHijri = state.user.showHijri !== false;
@@ -45,6 +51,15 @@ export default function ReportsScreen({ navigation }) {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: 16 }}>
+      {inGuestSpace ? (
+        <Text style={{
+          color: colors.subtle, fontSize: 12, lineHeight: 17,
+          backgroundColor: '#818cf815', borderRadius: 10, padding: 10, marginBottom: 12,
+        }}>
+          These reports cover <Text style={{ fontWeight: '700' }}>your own</Text> money,
+          not {space?.label}'s.
+        </Text>
+      ) : null}
       <Segmented options={RANGES} value={range} onChange={setRange} />
 
       <Card>

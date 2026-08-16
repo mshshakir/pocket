@@ -35,10 +35,17 @@ export class DebtService {
 
   /**
    * Outstanding balance in the debt's currency (payments converted, never < 0).
-   * @param {object} debt @returns {number} minor units
+   *
+   * @param {object} debt
+   * @param {object[]} [ledger]  which transactions to measure against. Defaults
+   *   to the member's own. A debt shown inside a guest space belongs to the
+   *   OWNER, and its payments live in their snapshot — measured against the
+   *   local ledger it matched nothing, so the debt read as fully outstanding
+   *   however much of it had been paid.
+   * @returns {number} minor units
    */
-  remaining(debt) {
-    const txs = this.#store.getState().transactions.filter(
+  remaining(debt, ledger = null) {
+    const txs = (ledger || this.#store.getState().transactions).filter(
       (t) => t.debtId === debt.id && t.id !== debt.initialTxId);
     const paid = txs.reduce(
       (s, t) => s + this.#fx.convert(t.amount, t.currency || debt.currency, debt.currency), 0);

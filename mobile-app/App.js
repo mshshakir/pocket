@@ -27,6 +27,7 @@ import CategoriesScreen from './src/screens/CategoriesScreen.js';
 import RegularsScreen from './src/screens/RegularsScreen.js';
 import FamilyScreen from './src/screens/FamilyScreen.js';
 import { colors } from './src/ui/theme.js';
+import { SpaceBar } from './src/ui/SpaceBar.js';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -80,6 +81,10 @@ function Root() {
   }
   return (
     <NavigationContainer>
+      {/* One mount, above both header systems, so the space context is visible
+          on every tab and every pushed screen. Renders null unless someone
+          actually shares with you. */}
+      <SpaceBar />
       <Stack.Navigator
         screenOptions={{
           headerShadowVisible: false,
