@@ -17,7 +17,9 @@
  *   S1  onTxSwipeEnd() never consulted the axis lock, so horizontal drift
  *       accumulated during a vertical scroll fired the delete confirm.
  *   S2  A deliberate left swipe reveals the Delete button and destroys nothing.
- *   S3  ...and tapping that button is what actually deletes.
+ *   S3  ...and tapping that button deletes, after a confirmation. Declining
+ *       leaves the row revealed rather than hiding an undeleted row — the
+ *       animation runs only once the delete is agreed to.
  *   P1  Settings default account / payment type drive a fresh transaction form.
  *   P2  A default pointing at a deleted or archived account falls back safely.
  *   V1  A voice reply naming several categories becomes splits that sum EXACTLY
@@ -459,13 +461,30 @@ console.log('\n2026-08 session regression suite');
   ok('S2 a real Delete button is exposed',
      !!delBtn && delBtn.tagName === 'BUTTON', delBtn?.tagName);
 
-  // ── S3: tapping it deletes, without a confirm dialog ────────────────────
+  // ── S3: declining must not hide the row it did not delete ───────────────
+  w.confirm = () => { w.__confirmCalls = (w.__confirmCalls || 0) + 1; return false; };
   app.commitSwipeDelete();
   await wait(60);
-  ok('S3 tapping Delete removes the transaction',
+  ok('S3 declining keeps the transaction',
+     JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.length === 1,
+     String(JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.length));
+  // Animating before asking slid the row out and dropped it to opacity 0, so a
+  // cancelled delete left an invisible row in the list until the next render.
+  const content = wrapper.querySelector('.tx-row-content');
+  ok('S3 …and the row is still visible, not left at opacity 0',
+     content.style.opacity !== '0', `opacity ${content.style.opacity || '(unset)'}`);
+  ok('S3 …still revealed, so Delete is one tap away',
+     !!doc.querySelector('.tx-swipe-wrapper.is-open'));
+
+  // ── S3b: accepting deletes ──────────────────────────────────────────────
+  w.confirm = () => { w.__confirmCalls = (w.__confirmCalls || 0) + 1; return true; };
+  const before = w.__confirmCalls;
+  app.commitSwipeDelete();
+  await wait(60);
+  ok('S3b tapping Delete and confirming removes the transaction',
      JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.length === 0);
-  ok('S3 …and the tap itself was the confirmation', w.__confirmCalls === 0,
-     `${w.__confirmCalls}`);
+  ok('S3b …and asked exactly once, not twice',
+     w.__confirmCalls === before + 1, `${w.__confirmCalls - before} prompts`);
   w.close();
 }
 

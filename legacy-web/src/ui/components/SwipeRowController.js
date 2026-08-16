@@ -177,12 +177,22 @@ export class SwipeRowController {
   }
 
   /**
-   * Delete the revealed row. Reachable only from the button the swipe exposes,
-   * so the tap IS the confirmation — no dialog.
+   * Delete the revealed row.
+   *
+   * `onDelete` is asked FIRST and may return false to decline — that is what
+   * lets the app raise a confirmation. Animating before asking would slide the
+   * row out and drop it to opacity 0, so cancelling left an invisible row
+   * sitting in the list until the next full render.
    */
   commitDelete() {
     const open = this.#open;
     if (!open) return;
+
+    const proceed = this.#onDelete({
+      id: open.id, shareIndex: open.shareIndex, isOwnContrib: open.isOwnContrib,
+    });
+    if (proceed === false) return;   // declined — leave the row revealed
+
     this.#open = null;
     const content = open.wrapper?.querySelector('.tx-row-content');
     if (content) {
@@ -190,7 +200,6 @@ export class SwipeRowController {
       content.style.transform  = `translateX(-${REVEAL_PX}px)`;
       content.style.opacity    = '0';
     }
-    this.#onDelete({ id: open.id, shareIndex: open.shareIndex, isOwnContrib: open.isOwnContrib });
   }
 
   // ── Internals ────────────────────────────────────────────────────────

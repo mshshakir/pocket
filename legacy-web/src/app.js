@@ -228,14 +228,20 @@ export class Application {
       familyShareService: this.#familyShares,
       syncService:        this.#sync,
     });
-    // The controller owns the gesture; the app owns what deleting means. The
-    // revealed button is itself the confirmation, so these are the no-dialog
-    // variants of the delete methods.
+    // The controller owns the gesture; the app owns what deleting means.
+    //
+    // The confirmation is raised HERE rather than inside the delete methods, and
+    // returning false declines — the controller animates the row away only once
+    // this resolves, so cancelling leaves the row revealed instead of hiding an
+    // undeleted row. The delete methods are then called with confirm:false to
+    // avoid asking twice.
     this.#swipe = new SwipeRowController({
       onDelete: ({ id, shareIndex, isOwnContrib }) => {
+        if (!confirm('Delete this transaction?')) return false;
         if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
         else if (shareIndex >= 0)            this.deleteSharedTx(shareIndex, id, { confirm: false });
         else                                 this.deleteTx(id, { confirm: false });
+        return true;
       },
     });
   }
@@ -3215,9 +3221,9 @@ export class Application {
   onTxSwipeCancel()      { this.#swipe.cancel(); }
 
   /**
-   * The revealed Delete button was tapped. Reaching this point already required
-   * a deliberate swipe followed by a deliberate tap on an 80px target, so there
-   * is no confirm() dialog — the second tap IS the confirmation.
+   * The revealed Delete button was tapped. The reveal makes an ACCIDENTAL delete
+   * structurally impossible; the confirmation on top is a deliberate choice for
+   * a destructive, sync-propagating action. Declining leaves the row revealed.
    */
   commitSwipeDelete() { this.#swipe.commitDelete(); }
 

@@ -53,6 +53,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Swipe delete asks for confirmation again (2026-08-15)** — Mufaddal, after using it. The
+reveal still makes an ACCIDENTAL delete structurally impossible; the dialog on top is a
+deliberate choice for an action that propagates over sync.
+- The confirm lives in the app's `onDelete` callback, NOT inside `deleteTx` — the callback
+  returns false to decline and `SwipeRowController.commitDelete()` animates only after it
+  resolves. Asking after animating slid the row out at opacity 0, so cancelling left an
+  invisible, undeleted row in the list until the next render. Tested both ways.
+- The delete methods are still called with `confirm:false`, or the user is asked twice.
+
 **Phase B of the multi-space migration (2026-08-15).** Client is ready; the flip is phase C.
 Web 475 assertions (spaces 106 → 113), 4 more mutations verified.
 - **Phase A ran** (Mufaddal): `family_shares` gained `space_id text not null default 'default'`

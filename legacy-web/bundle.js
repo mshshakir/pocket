@@ -7526,12 +7526,22 @@ This replaces your current grouping.`
       this.#touch = null;
     }
     /**
-     * Delete the revealed row. Reachable only from the button the swipe exposes,
-     * so the tap IS the confirmation — no dialog.
+     * Delete the revealed row.
+     *
+     * `onDelete` is asked FIRST and may return false to decline — that is what
+     * lets the app raise a confirmation. Animating before asking would slide the
+     * row out and drop it to opacity 0, so cancelling left an invisible row
+     * sitting in the list until the next full render.
      */
     commitDelete() {
       const open = this.#open;
       if (!open) return;
+      const proceed = this.#onDelete({
+        id: open.id,
+        shareIndex: open.shareIndex,
+        isOwnContrib: open.isOwnContrib
+      });
+      if (proceed === false) return;
       this.#open = null;
       const content = open.wrapper?.querySelector(".tx-row-content");
       if (content) {
@@ -7539,7 +7549,6 @@ This replaces your current grouping.`
         content.style.transform = `translateX(-${REVEAL_PX}px)`;
         content.style.opacity = "0";
       }
-      this.#onDelete({ id: open.id, shareIndex: open.shareIndex, isOwnContrib: open.isOwnContrib });
     }
     // ── Internals ────────────────────────────────────────────────────────
     /** @param {{wrapper: HTMLElement, id: string}} g */
@@ -14083,9 +14092,11 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       });
       this.#swipe = new SwipeRowController({
         onDelete: ({ id, shareIndex, isOwnContrib }) => {
+          if (!confirm("Delete this transaction?")) return false;
           if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
           else if (shareIndex >= 0) this.deleteSharedTx(shareIndex, id, { confirm: false });
           else this.deleteTx(id, { confirm: false });
+          return true;
         }
       });
     }
@@ -16759,9 +16770,9 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#swipe.cancel();
     }
     /**
-     * The revealed Delete button was tapped. Reaching this point already required
-     * a deliberate swipe followed by a deliberate tap on an 80px target, so there
-     * is no confirm() dialog — the second tap IS the confirmation.
+     * The revealed Delete button was tapped. The reveal makes an ACCIDENTAL delete
+     * structurally impossible; the confirmation on top is a deliberate choice for
+     * a destructive, sync-propagating action. Declining leaves the row revealed.
      */
     commitSwipeDelete() {
       this.#swipe.commitDelete();
