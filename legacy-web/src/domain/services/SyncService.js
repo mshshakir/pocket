@@ -19,6 +19,7 @@ import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../../data/constants.js';
 import { RecurringService }  from './RecurringService.js';
 import { CurrencyService }   from './CurrencyService.js';
 import { LedgerMath }        from './LedgerMath.js';
+import { BudgetService }     from './BudgetService.js';
 
 /** Trailing-edge debounce applied after each local save. */
 const PUSH_DEBOUNCE_MS = 1000;
@@ -933,6 +934,30 @@ export class SyncService {
     }
   }
 
+  /**
+   * The shared budgets, each carrying the owner-computed spend for its current
+   * period. See the comment at the call site for why the figure travels rather
+   * than the inputs.
+   * @param {object} state
+   * @param {string[]} ids
+   * @returns {object[]}
+   */
+  #sharedBudgets(state, ids) {
+    if (!ids.length) return [];
+    const svc = new BudgetService();
+    return (state.budgets || [])
+      .filter((b) => ids.includes(b.id))
+      .map((b) => {
+        let spent = 0;
+        // A budget the owner has since broken (deleted category, bad period)
+        // must not take the whole push down with it.
+        try { spent = svc.currentSpend(b); } catch (e) {
+          console.warn('[SyncService] budget spend failed for', b.id, e);
+        }
+        return { ...b, spent };
+      });
+  }
+
   async #pushFamilyShares() {
     const state = this.#store.getState();
     if (!this.#sb || !this.#user) return;
@@ -941,9 +966,17 @@ export class SyncService {
       const permMap  = {};
       (member.permissions || []).forEach((p) => { permMap[p.accountId] = p.access; });
       const sharedIds = Object.keys(permMap);
-      // Un-sharing every account is a revocation, not a no-op: leaving the row
-      // in place would keep the member's stale snapshot alive forever.
-      if (!sharedIds.length) { await this.revokeMemberShare(member.email); continue; }
+      // Budgets are granted individually — they carry no accountId to inherit
+      // from — so they have their own map and their own shorter ladder.
+      const budgetPermMap = {};
+      (member.budgetPermissions || []).forEach((p) => { budgetPermMap[p.budgetId] = p.access; });
+      const sharedBudgetIds = Object.keys(budgetPermMap);
+      // Un-sharing EVERYTHING is a revocation, not a no-op: leaving the row in
+      // place would keep the member's stale snapshot alive forever. A member
+      // holding only budget grants still needs their space, so this checks both.
+      if (!sharedIds.length && !sharedBudgetIds.length) {
+        await this.revokeMemberShare(member.email); continue;
+      }
       const snapshot = {
         sharedBy:     state.user.name || this.#user.email,
         // Owner's home currency so members can embed correct exchangeRate /
@@ -955,6 +988,19 @@ export class SyncService {
           permMap[t.accountId] || (t.splits || []).some((s) => permMap[s.accountId]),
         ),
         categories:   state.categories,
+        // Debts and regular items carry an accountId, so they scope exactly the
+        // way transactions do — sharing an account shares what hangs off it.
+        debts:        (state.debts || []).filter((d) => permMap[d.accountId]),
+        regularItems: (state.regularItems || []).filter((r) => permMap[r.accountId]),
+        // Budgets need the SPEND SENT, not computed. BudgetService.currentSpend
+        // sums over ALL the owner's transactions; the member only receives the
+        // ones touching shared accounts, so computing it their side would
+        // understate it — by more, the more the owner spends elsewhere. Sending
+        // every transaction to fix that is the leak the filter above exists to
+        // prevent. Granting a budget IS the consent to disclose its total; a
+        // budget without its real spend is not worth sharing.
+        budgets:      this.#sharedBudgets(state, sharedBudgetIds),
+        budgetPermission: budgetPermMap,
         updatedAt:    new Date().toISOString(),
       };
       try {

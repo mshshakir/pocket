@@ -435,24 +435,36 @@ a leak while budgets travelled implicitly. Once the owner has explicitly ticked
 disclose — a budget without its true spend is not worth sharing. **Explicit
 sharing is the consent that makes the aggregate legitimate.**
 
-### 8.2 Storage
+### 8.2 Storage — revised during implementation
 
-`state.family[n].permissions` is currently `[{ accountId, access }]`. Rather than
-bolting on a parallel array, generalise the entry so the same machinery covers
-anything shareable:
+The doc originally proposed generalising the permission entry to
+`{ kind, id, access }` so accounts and budgets shared one mechanism. **On
+implementation that turned out to be the worse trade, and it was not done.**
+
+`state.family[].permissions` is read by `#authoriseContribution`
+(`SyncService.js:870-901`) — the owner's ONLY server-side enforcement point, and
+the subject of audit finding H9. Reshaping it to add a **read-only** feature
+would put a permission bug on the security boundary in exchange for tidiness.
+Budget grants therefore live in their own array, leaving that path untouched:
 
 ```js
-permissions: [
-  { kind: 'account', id: 'acc_1', access: 'edit' },
-  { kind: 'budget',  id: 'bg_7',  access: 'view' },
-]
+state.family[n] = {
+  …,
+  permissions:       [{ accountId, access }],   // unchanged
+  budgetPermissions: [{ budgetId,  access }],   // new
+}
 ```
 
-`StateMigrator` back-fills `kind: 'account'` on every legacy entry that has an
-`accountId`, and `FamilyShareService.setAccess(memberId, accountId, access)`
-becomes `setAccess(memberId, ref, access)` where `ref` is `{kind, id}`. Both
-platforms and the snapshot read this shape, so the migration has to land in
-`legacy-web` and `mobile-app` together.
+`StateMigrator` back-fills `budgetPermissions: []` on every member. The service
+gains a parallel set of methods (`budgetAccessFor`, `budgetSharedWith`,
+`sharedBudgetIds`, `setBudgetAccess`, `unshareBudget`) mirroring the account
+ones, so both directions still answer from one place.
+
+One subtlety this forces: **`wasLast` now means "nothing shared AT ALL"**, not
+"no accounts left". `wasLast` is what tells a caller to revoke the member's
+cloud row, and a member holding only a budget grant still needs their space —
+reading it off account grants alone would delete it. `#pushFamilyShares` makes
+the same check before revoking.
 
 ### 8.3 Access levels — budgets need their own ladder
 

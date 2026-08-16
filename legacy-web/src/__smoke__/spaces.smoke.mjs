@@ -24,6 +24,11 @@
  *   SP12 A space sharing SEVERAL accounts offers all the writable ones in the
  *        account dropdown — arriving via the switcher picks one arbitrarily, so
  *        pinning the form to it (which the lock did) stranded the other.
+ *   SP13 Transfers are not offered in a guest space, and are refused on submit.
+ *        A transfer is TWO linked rows; a contribution is one, so this path
+ *        would write a single leg with no counter-leg into the owner's book.
+ *   SP14 Budgets are shared individually and carry the OWNER's computed spend;
+ *        debts and regulars ride on their account's permission.
  *
  * Run:  node src/__smoke__/spaces.smoke.mjs
  */
@@ -79,7 +84,10 @@ function boot(state, { shares = [] } = {}) {
   // The cloud row mirrors local state, so adopting it is a no-op — the suite is
   // about spaces, not about sync. Returning no row at all would send #doPull
   // down the first-sign-in branch, which never pulls family shares.
-  const cloud = { shares, row: { id: 'me1', version: 1, data: JSON.parse(JSON.stringify(state)) } };
+  const cloud = {
+    shares, contributions: [], pushedShares: [],
+    row: { id: 'me1', version: 1, data: JSON.parse(JSON.stringify(state)) },
+  };
   const sb = () => ({
     auth: {
       onAuthStateChange(cb) { cloud.authCb = cb; },
@@ -96,10 +104,19 @@ function boot(state, { shares = [] } = {}) {
         async single() {
           return { data: JSON.parse(JSON.stringify(cloud.row)), error: null };
         },
-        update() { return q; },
-        async upsert() { return { data: [{ version: 1 }], error: null }; },
+        update(patch) { q._patch = patch; return q; },
+        async upsert(payload) {
+          if (table === 'family_contributions') cloud.contributions.push(payload);
+          if (table === 'family_shares')        cloud.pushedShares.push(payload);
+          if (table === 'user_data') cloud.row = { ...cloud.row, ...payload };
+          return { data: [{ version: (payload?.version ?? 1) }], error: null };
+        },
         delete() { return q; },
         then(res) {
+          if (q._patch) {
+            cloud.row = { ...cloud.row, ...q._patch };
+            return res({ data: [{ version: q._patch.version }], error: null });
+          }
           if (table === 'family_shares') return res({ data: cloud.shares, error: null });
           return res({ data: [], error: null });
         },
@@ -380,6 +397,204 @@ console.log('\nspaces suite');
      w2.document.querySelector('#txForm [name=accountId]')?.tagName === 'INPUT',
      w2.document.querySelector('#txForm [name=accountId]')?.tagName);
   w2.close();
+  w.close();
+}
+
+// ═══ SP13 — transfers must not reach a contribution ════════════════════════
+{
+  const w = boot(memberState(), { shares: [{ owner_id: 'abbas1', snapshot: snapshot() }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app, doc = w.document;
+  app.switchSpace('abbas1');
+  await wait(60);
+  app.openModal('transaction', {});
+  await wait(60);
+
+  // Scope to the TYPE toggle. Matching on button text alone also catches the
+  // payment-method chip labelled "Transfer" (BASE_TYPES includes it), which is
+  // a different control entirely — the first version of this test failed on it.
+  const typeButtons = [...doc.querySelectorAll('#txForm button')]
+    .filter((b) => (b.getAttribute('onclick') || '').includes('setTxType'))
+    .map((b) => b.textContent.trim());
+  ok('SP13 only Expense and Income are offered',
+     typeButtons.includes('Expense') && typeButtons.includes('Income')
+       && !typeButtons.includes('Transfer'), JSON.stringify(typeButtons));
+
+  // Defence in depth: a voice prefill can carry type 'transfer', so the submit
+  // path — the one that actually reaches the owner's ledger — must refuse too.
+  const form = doc.querySelector('#txForm');
+  form.querySelector('[name=type]').value = 'transfer';
+  form.querySelector('[name=amount]').value = '50';
+  const before = (w.__cloud.contributions || []).length;
+  await app.submitTx({ preventDefault() {}, target: form }, '');
+  await wait(60);
+  ok('SP13 submitting a transfer contribution is refused',
+     (w.__cloud.contributions || []).length === before,
+     `${(w.__cloud.contributions || []).length} contributions`);
+  ok('SP13 …and nothing landed in my own book either',
+     JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.length === 1,
+     String(JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.length));
+  w.close();
+}
+
+// ═══ SP14 — budgets, debts and regulars in a guest space ═══════════════════
+{
+  const withExtras = snapshot({
+    permission: { own1: 'edit' },
+    budgets: [{
+      id: 'ownbg', categoryId: 'owncat', amount: 100000, currency: 'AED',
+      period: 'gregorian', rollover: false,
+      // Computed by the OWNER over ALL their transactions — the member holds
+      // only the shared ones and would understate it.
+      spent: 73500,
+    }],
+    budgetPermission: { ownbg: 'view' },
+    debts: [{ id: 'owndebt', accountId: 'own1', name: 'Car loan', amount: 500000, currency: 'AED' }],
+    regularItems: [{ id: 'ownreg', accountId: 'own1', name: 'Rent', defaultAmount: 300000, currency: 'AED' }],
+  });
+  const w = boot(memberState(), { shares: [{ owner_id: 'abbas1', snapshot: withExtras }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app;
+  app.switchSpace('abbas1');
+  await wait(60);
+  const space = app.spaces.active();
+
+  ok('SP14 a granted budget appears in the space',
+     space.budgets.length === 1 && space.budgets[0].id === 'ownbg',
+     JSON.stringify(space.budgets.map((b) => b.id)));
+  ok('SP14 …carrying the OWNER\'s spend, not a locally-computed one',
+     space.budgets[0].spent === 73500, String(space.budgets[0].spent));
+  ok('SP14 …at the access level they granted',
+     space.budgetPermissionFor('ownbg') === 'view', space.budgetPermissionFor('ownbg'));
+  ok('SP14 debts on a shared account come through',
+     space.debts.length === 1 && space.debts[0].id === 'owndebt');
+  ok('SP14 regular items too', space.regularItems.length === 1);
+
+  const proj = space.project();
+  ok('SP14 the projection carries all three', proj.budgets.length === 1
+     && proj.debts.length === 1 && proj.regularItems.length === 1);
+  ok('SP14 my OWN budget is not visible while I stand in their book',
+     !proj.budgets.some((b) => b.id === 'mybg'), JSON.stringify(proj.budgets.map((b) => b.id)));
+
+  // Derived figures cover a subset, so the UI has to say so.
+  ok('SP14 the space reports itself as a partial view', space.isPartialView);
+  ok('SP14 …with a caveat naming how much it covers',
+     /1 account shared with you/.test(space.scopeNote), space.scopeNote);
+  w.close();
+}
+
+// ═══ SP15 — the owner's push: what a member is actually sent ═══════════════
+{
+  // Two accounts, only ONE shared. A budget spans a category that is spent on
+  // BOTH, which is exactly the case a member cannot compute for themselves.
+  const ownerState = memberState();
+  ownerState.user.name = 'Abbas';
+  ownerState.accounts = [acct('shared1', 'Shared Wallet'), acct('private1', 'Private Card')];
+  ownerState.categories = [{ id: 'cFood', name: 'Food', type: 'expense', parentId: null, color: '#f97316', icon: 'tag' }];
+  ownerState.transactions = [
+    { id: 'tA', accountId: 'shared1', categoryId: 'cFood', amount: 3000, currency: 'USD',
+      type: 'expense', date: '2026-08-05', paymentType: 'card', recordState: 'cleared', tags: [] },
+    { id: 'tB', accountId: 'private1', categoryId: 'cFood', amount: 4500, currency: 'USD',
+      type: 'expense', date: '2026-08-06', paymentType: 'card', recordState: 'cleared', tags: [] },
+  ];
+  ownerState.budgets = [{ id: 'bFood', categoryId: 'cFood', amount: 100000, currency: 'USD',
+                          period: 'gregorian', rollover: false }];
+  ownerState.debts = [
+    { id: 'dShared',  accountId: 'shared1',  name: 'Loan A', amount: 1000, currency: 'USD' },
+    { id: 'dPrivate', accountId: 'private1', name: 'Loan B', amount: 2000, currency: 'USD' },
+  ];
+  ownerState.regularItems = [
+    { id: 'rShared',  accountId: 'shared1',  name: 'Rent',   defaultAmount: 500, currency: 'USD' },
+    { id: 'rPrivate', accountId: 'private1', name: 'Gym',    defaultAmount: 100, currency: 'USD' },
+  ];
+  ownerState.family = [
+    {
+      id: 'm1', name: 'Zahra', email: 'zahra@x.com', initials: 'Z', color: '#8b5cf6',
+      permissions:       [{ accountId: 'shared1', access: 'edit' }],
+      budgetPermissions: [{ budgetId: 'bFood', access: 'view' }],
+    },
+    {
+      // Granted a budget and NOTHING else. They still need a space to stand in,
+      // so "no accounts shared" must not be read as a full revocation.
+      id: 'm2', name: 'Husain', email: 'husain@x.com', initials: 'H', color: '#10b981',
+      permissions:       [],
+      budgetPermissions: [{ budgetId: 'bFood', access: 'view' }],
+    },
+  ];
+
+  const w = boot(ownerState);
+  await wait(120);
+  await signIn(w);
+  const app = w.__app;
+
+  await app.sync.push();
+  await wait(120);
+
+  const forMember = (email) => w.__cloud.pushedShares
+    .filter((r) => r.member_email === email).at(-1)?.snapshot;
+  const pushed = forMember('zahra@x.com');
+  ok('SP15 a snapshot was published for the member', !!pushed,
+     JSON.stringify(w.__cloud.pushedShares.length));
+  ok('SP15 only the shared account travels',
+     pushed.accounts.length === 1 && pushed.accounts[0].id === 'shared1',
+     JSON.stringify(pushed.accounts.map((a) => a.id)));
+  ok('SP15 only its transactions travel',
+     pushed.transactions.length === 1 && pushed.transactions[0].id === 'tA',
+     JSON.stringify(pushed.transactions.map((t) => t.id)));
+
+  ok('SP15 the granted budget travels', pushed.budgets?.length === 1
+     && pushed.budgets[0].id === 'bFood', JSON.stringify(pushed.budgets));
+  // The load-bearing assertion. Spend covers BOTH accounts (3000 + 4500), while
+  // the member only receives the 3000 row — so a locally-computed figure would
+  // read 30.00 against a true 75.00. Sending every transaction to fix that is
+  // the leak the account filter exists to prevent; granting the budget is the
+  // consent to disclose the total.
+  ok('SP15 …carrying spend computed over ALL the owner\'s accounts',
+     pushed.budgets[0].spent === 7500, String(pushed.budgets[0].spent));
+  ok('SP15 …which is MORE than the member could compute themselves',
+     pushed.budgets[0].spent > pushed.transactions.reduce((n, t) => n + t.amount, 0),
+     `${pushed.budgets[0].spent} vs ${pushed.transactions.reduce((n, t) => n + t.amount, 0)}`);
+  ok('SP15 the budget access level travels',
+     pushed.budgetPermission?.bFood === 'view', JSON.stringify(pushed.budgetPermission));
+
+  ok('SP15 debts are filtered by their account',
+     pushed.debts?.length === 1 && pushed.debts[0].id === 'dShared',
+     JSON.stringify((pushed.debts || []).map((d) => d.id)));
+  ok('SP15 regular items too',
+     pushed.regularItems?.length === 1 && pushed.regularItems[0].id === 'rShared',
+     JSON.stringify((pushed.regularItems || []).map((r) => r.id)));
+
+  // A budget-only member must still receive a snapshot. Treating "no accounts"
+  // as a full revocation would silently delete their space.
+  const budgetOnly = forMember('husain@x.com');
+  ok('SP15 a budget-only member still gets a space', !!budgetOnly,
+     JSON.stringify(w.__cloud.pushedShares.map((r) => r.member_email)));
+  ok('SP15 …with no accounts', (budgetOnly?.accounts || []).length === 0,
+     JSON.stringify(budgetOnly?.accounts));
+  ok('SP15 …but the budget they were granted',
+     budgetOnly?.budgets?.length === 1 && budgetOnly.budgets[0].id === 'bFood',
+     JSON.stringify(budgetOnly?.budgets));
+
+  // `wasLast` is what tells a caller to revoke the member's cloud row. Reading
+  // it off account grants alone would destroy the space of a member who still
+  // holds a budget — the same failure as above, reached from the other side.
+  const shares = app.familyShares;
+  const r1 = shares.setAccess('m1', 'shared1', null);
+  ok('SP15 revoking the last ACCOUNT is not "last" while a budget remains',
+     r1.ok && r1.wasLast === false, JSON.stringify(r1));
+  const r2 = shares.setBudgetAccess('m1', 'bFood', null);
+  ok('SP15 …and revoking the budget too finally is', r2.ok && r2.wasLast === true,
+     JSON.stringify(r2));
+
+  // The budget ladder is its own — 'add' is meaningless for a limit.
+  const bad = shares.setBudgetAccess('m2', 'bFood', 'add');
+  ok('SP15 a budget rejects the account ladder\'s "add" level', bad.ok === false,
+     JSON.stringify(bad));
+  ok('SP15 the budget levels are view/edit/full',
+     JSON.stringify(shares.constructor.budgetLevels.map((l) => l.id)) === '["view","edit","full"]',
+     JSON.stringify(shares.constructor.budgetLevels.map((l) => l.id)));
   w.close();
 }
 

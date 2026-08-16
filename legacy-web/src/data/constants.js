@@ -178,6 +178,22 @@ export const FAMILY_ACCESS_LEVELS = Object.freeze([
   { id: 'full',  label: 'Full access', desc: 'View, add, edit & delete transactions', color: '#ef4444', icon: 'shield-check' },
 ]);
 
+/**
+ * Access levels for a SHARED BUDGET.
+ *
+ * Deliberately not FAMILY_ACCESS_LEVELS: every description there talks about
+ * transactions, so reusing it would offer a member "Can add — View + add new
+ * transactions" on a budget, which means nothing. A budget is a limit and a
+ * progress bar; the verbs that apply to it are see it, change it, remove it.
+ * There is no `add` — creating a budget in someone else's book is a different
+ * act from being granted one, and is out of scope.
+ */
+export const FAMILY_BUDGET_ACCESS_LEVELS = Object.freeze([
+  { id: 'view', label: 'View only',   desc: 'Can see the limit and how much is spent', color: '#3b82f6', icon: 'eye'          },
+  { id: 'edit', label: 'Can edit',    desc: 'Change the amount, period and categories', color: '#f59e0b', icon: 'pencil'      },
+  { id: 'full', label: 'Full access', desc: 'Edit and delete this budget',              color: '#ef4444', icon: 'shield-check' },
+]);
+
 // ── Account type → Lucide icon ──────────────────────────────────────────
 export const ACCOUNT_TYPE_ICONS = Object.freeze({
   cash:    'wallet',

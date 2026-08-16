@@ -93,6 +93,50 @@ export class Space {
     return this.isHome ? (this.#state.transactions || []) : (this.#share?.transactions || []);
   }
 
+  /**
+   * Budgets granted to you individually. Each carries `spent`, computed by the
+   * OWNER at push time — recomputing it here would understate it, because you
+   * only hold the transactions on accounts shared with you.
+   * @returns {object[]}
+   */
+  get budgets() {
+    return this.isHome ? (this.#state.budgets || []) : (this.#share?.budgets || []);
+  }
+
+  /** @returns {object[]} debts on accounts shared with you */
+  get debts() {
+    return this.isHome ? (this.#state.debts || []) : (this.#share?.debts || []);
+  }
+
+  /** @returns {object[]} regular items on accounts shared with you */
+  get regularItems() {
+    return this.isHome ? (this.#state.regularItems || []) : (this.#share?.regularItems || []);
+  }
+
+  /**
+   * @param {string} budgetId
+   * @returns {'owner'|'view'|'edit'|'full'|null}
+   */
+  budgetPermissionFor(budgetId) {
+    if (this.isHome) return 'owner';
+    return (this.#share?.budgetPermission || {})[budgetId] || null;
+  }
+
+  /**
+   * True when this space shows a PARTIAL view of the owner's activity — which
+   * is always, for a guest space. Reports and budget detail must say so: an
+   * unlabelled figure computed from a subset reads as a total.
+   * @returns {boolean}
+   */
+  get isPartialView() { return !this.isHome; }
+
+  /** @returns {string} the caveat to print next to a derived figure */
+  get scopeNote() {
+    if (this.isHome) return '';
+    const n = this.accounts.length;
+    return `across the ${n} account${n === 1 ? '' : 's'} shared with you`;
+  }
+
   /** @returns {string} the currency totals in this space convert to */
   get homeCurrency() {
     return this.isHome
@@ -158,12 +202,10 @@ export class Space {
       accounts:     this.accounts,
       categories:   this.categories,
       transactions: this.transactions,
-      // Budgets, debts and regular items are not in the snapshot yet (phase 1b
-      // adds them). Empty beats showing the member their OWN budgets while
-      // standing in someone else's book.
-      budgets:      [],
-      debts:        [],
-      regularItems: [],
+      budgets:      this.budgets,
+      debts:        this.debts,
+      regularItems: this.regularItems,
+      // Account groups are the owner's own filing system and are not shared.
       accountGroups: [],
       user: { ...this.#state.user, homeCurrency: this.homeCurrency },
       _space: this,

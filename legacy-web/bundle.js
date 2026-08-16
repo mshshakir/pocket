@@ -888,6 +888,11 @@ var _PocketApp = (() => {
     { id: "edit", label: "Can edit", desc: "View, add & edit (not delete)", color: "#f59e0b", icon: "pencil" },
     { id: "full", label: "Full access", desc: "View, add, edit & delete transactions", color: "#ef4444", icon: "shield-check" }
   ]);
+  var FAMILY_BUDGET_ACCESS_LEVELS = Object.freeze([
+    { id: "view", label: "View only", desc: "Can see the limit and how much is spent", color: "#3b82f6", icon: "eye" },
+    { id: "edit", label: "Can edit", desc: "Change the amount, period and categories", color: "#f59e0b", icon: "pencil" },
+    { id: "full", label: "Full access", desc: "Edit and delete this budget", color: "#ef4444", icon: "shield-check" }
+  ]);
   var ACCOUNT_TYPE_ICONS = Object.freeze({
     cash: "wallet",
     bank: "landmark",
@@ -1474,6 +1479,9 @@ var _PocketApp = (() => {
       if (!Array.isArray(state.regularItems)) state.regularItems = [];
       if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
       if (!Array.isArray(state.family)) state.family = [];
+      for (const m of state.family) {
+        if (!Array.isArray(m.budgetPermissions)) m.budgetPermissions = [];
+      }
       if (!state.merchantCategories || typeof state.merchantCategories !== "object") {
         state.merchantCategories = {};
       }
@@ -3979,6 +3987,27 @@ RULES:
         console.warn("[SyncService] revokeMemberShare error:", e);
       }
     }
+    /**
+     * The shared budgets, each carrying the owner-computed spend for its current
+     * period. See the comment at the call site for why the figure travels rather
+     * than the inputs.
+     * @param {object} state
+     * @param {string[]} ids
+     * @returns {object[]}
+     */
+    #sharedBudgets(state, ids) {
+      if (!ids.length) return [];
+      const svc = new BudgetService();
+      return (state.budgets || []).filter((b) => ids.includes(b.id)).map((b) => {
+        let spent = 0;
+        try {
+          spent = svc.currentSpend(b);
+        } catch (e) {
+          console.warn("[SyncService] budget spend failed for", b.id, e);
+        }
+        return { ...b, spent };
+      });
+    }
     async #pushFamilyShares() {
       const state = this.#store.getState();
       if (!this.#sb || !this.#user) return;
@@ -3989,7 +4018,12 @@ RULES:
           permMap[p.accountId] = p.access;
         });
         const sharedIds = Object.keys(permMap);
-        if (!sharedIds.length) {
+        const budgetPermMap = {};
+        (member.budgetPermissions || []).forEach((p) => {
+          budgetPermMap[p.budgetId] = p.access;
+        });
+        const sharedBudgetIds = Object.keys(budgetPermMap);
+        if (!sharedIds.length && !sharedBudgetIds.length) {
           await this.revokeMemberShare(member.email);
           continue;
         }
@@ -4004,6 +4038,19 @@ RULES:
             (t) => permMap[t.accountId] || (t.splits || []).some((s) => permMap[s.accountId])
           ),
           categories: state.categories,
+          // Debts and regular items carry an accountId, so they scope exactly the
+          // way transactions do — sharing an account shares what hangs off it.
+          debts: (state.debts || []).filter((d) => permMap[d.accountId]),
+          regularItems: (state.regularItems || []).filter((r) => permMap[r.accountId]),
+          // Budgets need the SPEND SENT, not computed. BudgetService.currentSpend
+          // sums over ALL the owner's transactions; the member only receives the
+          // ones touching shared accounts, so computing it their side would
+          // understate it — by more, the more the owner spends elsewhere. Sending
+          // every transaction to fix that is the leak the filter above exists to
+          // prevent. Granting a budget IS the consent to disclose its total; a
+          // budget without its real spend is not worth sharing.
+          budgets: this.#sharedBudgets(state, sharedBudgetIds),
+          budgetPermission: budgetPermMap,
           updatedAt: (/* @__PURE__ */ new Date()).toISOString()
         };
         try {
@@ -4569,7 +4616,7 @@ RULES:
 
   // src/domain/services/FamilyShareService.js
   var LEVELS = new Set(FAMILY_ACCESS_LEVELS.map((l) => l.id));
-  var FamilyShareService = class {
+  var FamilyShareService = class _FamilyShareService {
     /** @type {Store} */
     #store;
     constructor(store) {
@@ -4585,6 +4632,103 @@ RULES:
     /** @returns {object[]} the level descriptors, for rendering choices */
     static get levels() {
       return FAMILY_ACCESS_LEVELS;
+    }
+    /** @returns {object[]} budget level descriptors — a shorter, different ladder */
+    static get budgetLevels() {
+      return FAMILY_BUDGET_ACCESS_LEVELS;
+    }
+    // ── Budget grants ───────────────────────────────────────────────────
+    //
+    // Budgets are shared ONE AT A TIME, like accounts, because a budget has no
+    // accountId to inherit from: its shape is { categoryId | categoryIds[],
+    // amount, currency, period, rollover }. That left only "all of the owner's
+    // budgets" or "none", and neither is right.
+    //
+    // They live in their own `budgetPermissions` array rather than being folded
+    // into `permissions`. The design doc originally proposed generalising the
+    // entry to { kind, id, access }; on implementation that turned out to be the
+    // worse trade. `permissions` is read by #authoriseContribution — the owner's
+    // ONLY server-side enforcement point (audit H9) — and reshaping it to add a
+    // read-only feature puts a permission bug on the security boundary for no
+    // functional gain. A separate array leaves that path untouched.
+    /**
+     * @param {string} memberId
+     * @param {string} budgetId
+     * @returns {string|null} 'view'|'edit'|'full', or null for no access
+     */
+    budgetAccessFor(memberId, budgetId) {
+      const member = this.members().find((m) => m.id === memberId);
+      return (member?.budgetPermissions || []).find((p) => p.budgetId === budgetId)?.access || null;
+    }
+    /**
+     * @param {string} budgetId
+     * @returns {Array<{member:object, access:string}>}
+     */
+    budgetSharedWith(budgetId) {
+      return this.members().map((member) => ({ member, access: this.budgetAccessFor(member.id, budgetId) })).filter((row) => !!row.access);
+    }
+    /** @returns {Set<string>} budget ids shared with at least one member */
+    sharedBudgetIds() {
+      const out = /* @__PURE__ */ new Set();
+      for (const m of this.members()) {
+        for (const p of m.budgetPermissions || []) if (p.access) out.add(p.budgetId);
+      }
+      return out;
+    }
+    /**
+     * True when this member has nothing shared with them at all — no accounts
+     * AND no budgets. Only then is their cloud share row a lie that should be
+     * revoked; a budget-only member still needs a space to stand in.
+     * @param {object} member
+     * @returns {boolean}
+     */
+    static hasNothingShared(member) {
+      return !(member?.permissions || []).length && !(member?.budgetPermissions || []).length;
+    }
+    /**
+     * Grant, change or revoke a member's access to one budget.
+     * @param {string} memberId
+     * @param {string} budgetId
+     * @param {string|null} access  null revokes
+     * @returns {{ok:true, access:string|null, member:object, wasLast:boolean}|{ok:false, reason:string}}
+     */
+    setBudgetAccess(memberId, budgetId, access) {
+      const member = this.members().find((m) => m.id === memberId);
+      if (!member) return { ok: false, reason: "That member no longer exists" };
+      const levels = new Set(FAMILY_BUDGET_ACCESS_LEVELS.map((l) => l.id));
+      if (access !== null && !levels.has(access)) {
+        return { ok: false, reason: `Unknown access level "${access}"` };
+      }
+      if (!this.#store.getState().budgets?.some((b) => b.id === budgetId)) {
+        return { ok: false, reason: "That budget no longer exists" };
+      }
+      if (!Array.isArray(member.budgetPermissions)) member.budgetPermissions = [];
+      const idx = member.budgetPermissions.findIndex((p) => p.budgetId === budgetId);
+      if (access === null) {
+        if (idx >= 0) member.budgetPermissions.splice(idx, 1);
+      } else if (idx >= 0) {
+        member.budgetPermissions[idx].access = access;
+      } else {
+        member.budgetPermissions.push({ budgetId, access });
+      }
+      const wasLast = access === null && _FamilyShareService.hasNothingShared(member);
+      this.#store.flush();
+      return { ok: true, access, member, wasLast };
+    }
+    /**
+     * Stop sharing a budget with everyone — used when it is deleted.
+     * @param {string} budgetId
+     * @returns {Array<{member:object, wasLast:boolean}>}
+     */
+    unshareBudget(budgetId) {
+      const affected = [];
+      for (const member of this.members()) {
+        if (!(member.budgetPermissions || []).some((p) => p.budgetId === budgetId)) continue;
+        member.budgetPermissions = member.budgetPermissions.filter((p) => p.budgetId !== budgetId);
+        affected.push({ member, wasLast: _FamilyShareService.hasNothingShared(member) });
+      }
+      if (affected.length) this.#store.flush();
+      return affected;
     }
     /**
      * The access a member currently holds on one account.
@@ -4645,7 +4789,7 @@ RULES:
       } else {
         member.permissions.push({ accountId, access });
       }
-      const wasLast = access === null && member.permissions.length === 0;
+      const wasLast = access === null && _FamilyShareService.hasNothingShared(member);
       this.#store.flush();
       return { ok: true, access, member, wasLast };
     }
@@ -4659,7 +4803,7 @@ RULES:
       for (const member of this.members()) {
         if (!(member.permissions || []).some((p) => p.accountId === accountId)) continue;
         member.permissions = member.permissions.filter((p) => p.accountId !== accountId);
-        affected.push({ member, wasLast: member.permissions.length === 0 });
+        affected.push({ member, wasLast: _FamilyShareService.hasNothingShared(member) });
       }
       if (affected.length) this.#store.flush();
       return affected;
@@ -7104,6 +7248,46 @@ This replaces your current grouping.`
     get transactions() {
       return this.isHome ? this.#state.transactions || [] : this.#share?.transactions || [];
     }
+    /**
+     * Budgets granted to you individually. Each carries `spent`, computed by the
+     * OWNER at push time — recomputing it here would understate it, because you
+     * only hold the transactions on accounts shared with you.
+     * @returns {object[]}
+     */
+    get budgets() {
+      return this.isHome ? this.#state.budgets || [] : this.#share?.budgets || [];
+    }
+    /** @returns {object[]} debts on accounts shared with you */
+    get debts() {
+      return this.isHome ? this.#state.debts || [] : this.#share?.debts || [];
+    }
+    /** @returns {object[]} regular items on accounts shared with you */
+    get regularItems() {
+      return this.isHome ? this.#state.regularItems || [] : this.#share?.regularItems || [];
+    }
+    /**
+     * @param {string} budgetId
+     * @returns {'owner'|'view'|'edit'|'full'|null}
+     */
+    budgetPermissionFor(budgetId) {
+      if (this.isHome) return "owner";
+      return (this.#share?.budgetPermission || {})[budgetId] || null;
+    }
+    /**
+     * True when this space shows a PARTIAL view of the owner's activity — which
+     * is always, for a guest space. Reports and budget detail must say so: an
+     * unlabelled figure computed from a subset reads as a total.
+     * @returns {boolean}
+     */
+    get isPartialView() {
+      return !this.isHome;
+    }
+    /** @returns {string} the caveat to print next to a derived figure */
+    get scopeNote() {
+      if (this.isHome) return "";
+      const n = this.accounts.length;
+      return `across the ${n} account${n === 1 ? "" : "s"} shared with you`;
+    }
     /** @returns {string} the currency totals in this space convert to */
     get homeCurrency() {
       return this.isHome ? this.#state.user?.homeCurrency || "USD" : this.#share?.homeCurrency || this.#state.user?.homeCurrency || "USD";
@@ -7160,12 +7344,10 @@ This replaces your current grouping.`
         accounts: this.accounts,
         categories: this.categories,
         transactions: this.transactions,
-        // Budgets, debts and regular items are not in the snapshot yet (phase 1b
-        // adds them). Empty beats showing the member their OWN budgets while
-        // standing in someone else's book.
-        budgets: [],
-        debts: [],
-        regularItems: [],
+        budgets: this.budgets,
+        debts: this.debts,
+        regularItems: this.regularItems,
+        // Account groups are the owner's own filing system and are not shared.
         accountGroups: [],
         user: { ...this.#state.user, homeCurrency: this.homeCurrency },
         _space: this
@@ -10513,13 +10695,18 @@ This replaces your current grouping.`
           </button>
         </div>
 
-        <div class="grid grid-cols-3 gap-2 mb-4">
-          ${["expense", "income", "transfer"].map((t) => `
+        <div class="grid ${sharedBook ? "grid-cols-2" : "grid-cols-3"} gap-2 mb-4">
+          ${(sharedBook ? ["expense", "income"] : ["expense", "income", "transfer"]).map((t) => `
             <button type="button" onclick="window.__app.setTxType('${t}')"
                     class="btn ${type === t ? "btn-primary" : "btn-outline"} justify-center">
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join("")}
         </div>
+        ${sharedBook ? `
+        <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
+          Transfers aren't available here \u2014 a transfer is two linked rows, and a
+          contribution is one. Move money between their accounts from their own device.
+        </div>` : ""}
         <input type="hidden" name="type" value="${type}">
 
         <div class="card-muted p-3 mb-3">
@@ -13301,6 +13488,10 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     get spaces() {
       return this.#spaces;
     }
+    /** FamilyShareService — grants for accounts and budgets. */
+    get familyShares() {
+      return this.#familyShares;
+    }
     /** Which modal is open, if any — used by the smoke suites. */
     get modalActive() {
       return this.#modal?.active ?? null;
@@ -13485,6 +13676,9 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         const accountId = sharedMode ? sharedMode.accountId || data.accountId : data.accountId;
         const ownerHome = sharedAcc.homeCurrency || state.user.homeCurrency;
         const editingSharedId = sharedMode?.editTxId || null;
+        if (data.type === "transfer") {
+          return this.#toast.show("Transfers aren\u2019t available in a shared space");
+        }
         const tx = {
           id: editingSharedId || IdGenerator.generate("tx"),
           accountId,

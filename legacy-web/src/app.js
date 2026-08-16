@@ -713,6 +713,8 @@ export class Application {
   get paymentTypeService() { return this.#paymentTypeService; }
   /** The space registry — BaseView reads through this on every render. */
   get spaces() { return this.#spaces; }
+  /** FamilyShareService — grants for accounts and budgets. */
+  get familyShares() { return this.#familyShares; }
   /** Which modal is open, if any — used by the smoke suites. */
   get modalActive() { return this.#modal?.active ?? null; }
   /** The transaction modal instance, for suites that inspect sharedTxMode. */
@@ -917,6 +919,15 @@ export class Application {
       // than minting a new one) is what stops the owner ending up with both the
       // original and the "edited" copy.
       const editingSharedId = sharedMode?.editTxId || null;
+      // A transfer is TWO linked rows; a contribution is one. Writing
+      // `type: 'transfer'` through this path would put a single leg with no
+      // counter-leg into the owner's book, so money would appear or vanish from
+      // their ledger. The modal hides the Transfer tab in shared mode, but the
+      // type can also arrive from a voice prefill, so it is refused here too —
+      // this is the path that actually reaches the owner's data.
+      if (data.type === 'transfer') {
+        return this.#toast.show('Transfers aren\u2019t available in a shared space');
+      }
       const tx = {
         id:          editingSharedId || IdGenerator.generate('tx'),
         accountId:   accountId,

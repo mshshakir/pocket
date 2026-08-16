@@ -53,6 +53,35 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Spaces phase 1b (2026-08-15) — budgets/debts/regulars in a guest space, plus two bugs
+Mufaddal found in phase 1.** Suite now **436 assertions across 10 files**; spaces suite
+38 → 74, mutation-verified against 8 more reverts.
+- **Transfers are refused in a guest space.** He reported the transfer form showing his OWN
+  accounts. It was worse than a wrong dropdown: the contribution path writes ONE row, so a
+  transfer would have put a single leg with no counter-leg into the owner's book — money
+  appearing or vanishing from their ledger. The Transfer tab is now hidden in shared mode
+  AND `submitTx` refuses `type === 'transfer'` on the contribution branch, because a voice
+  prefill can also set it and that path is the one that actually reaches the owner's data.
+- **Multi-account spaces** (see the earlier note) — real dropdown instead of a pinned input.
+- **Budgets are shared INDIVIDUALLY**, with their own `view/edit/full` ladder
+  (`FAMILY_BUDGET_ACCESS_LEVELS`) — the account ladder's "add" is meaningless for a limit.
+  A budget has no `accountId`, so there was nothing to scope it by; per-budget grants replace
+  the all-or-nothing choice.
+- **The snapshot carries owner-computed `spent`.** `BudgetService.currentSpend()` sums over
+  ALL the owner's transactions; a member holds only the shared ones, so computing it their
+  side understates it — by more, the more the owner spends elsewhere. Sending every
+  transaction would be the leak the account filter exists to prevent. Granting a budget IS
+  the consent to disclose its total. Tested owner-side: spend 7500 while the member receives
+  only the 3000 row.
+- **Debts and regularItems** ride on their account's permission (they have an `accountId`),
+  filtered into the snapshot the same way transactions are.
+- **`budgetPermissions` is a SEPARATE array, not the generalised `{kind,id,access}` the
+  design doc proposed.** `permissions` is read by `#authoriseContribution`, the owner's only
+  server-side enforcement point (audit H9); reshaping it for a read-only feature would put a
+  permission bug on the security boundary for no functional gain. Doc §8.2 corrected.
+- **`wasLast` now means "nothing shared AT ALL"**, not "no accounts left" — it drives
+  `revokeMemberShare`, and a budget-only member still needs their space.
+
 **Spaces phase 1 (2026-08-15) — WEB ONLY, additive, all existing suites still green.**
 New suite `src/__smoke__/spaces.smoke.mjs` (38 assertions, in `npm run smoke`); 9 mutations
 tried, all 9 bite. Full suite is now **400 assertions across 10 files**.

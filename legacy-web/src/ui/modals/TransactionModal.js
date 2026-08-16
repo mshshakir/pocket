@@ -361,13 +361,18 @@ export class TransactionModal {
           </button>
         </div>
 
-        <div class="grid grid-cols-3 gap-2 mb-4">
-          ${['expense', 'income', 'transfer'].map((t) => `
+        <div class="grid ${sharedBook ? 'grid-cols-2' : 'grid-cols-3'} gap-2 mb-4">
+          ${(sharedBook ? ['expense', 'income'] : ['expense', 'income', 'transfer']).map((t) => `
             <button type="button" onclick="window.__app.setTxType('${t}')"
                     class="btn ${type === t ? 'btn-primary' : 'btn-outline'} justify-center">
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join('')}
         </div>
+        ${sharedBook ? `
+        <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
+          Transfers aren't available here — a transfer is two linked rows, and a
+          contribution is one. Move money between their accounts from their own device.
+        </div>` : ''}
         <input type="hidden" name="type" value="${type}">
 
         <div class="card-muted p-3 mb-3">

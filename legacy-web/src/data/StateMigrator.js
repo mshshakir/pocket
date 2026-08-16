@@ -54,6 +54,12 @@ export class StateMigrator {
     if (!Array.isArray(state.regularItems))  state.regularItems = [];
     if (!Array.isArray(state.accountGroups)) state.accountGroups = [];
     if (!Array.isArray(state.family))        state.family = [];
+    // Budget grants live beside account grants but in their own array — a
+    // budget has no accountId to inherit from. Back-filled so a member record
+    // written before per-budget sharing existed reads cleanly.
+    for (const m of state.family) {
+      if (!Array.isArray(m.budgetPermissions)) m.budgetPermissions = [];
+    }
     if (!state.merchantCategories || typeof state.merchantCategories !== 'object') {
       state.merchantCategories = {};
     }
