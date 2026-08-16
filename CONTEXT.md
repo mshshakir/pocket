@@ -53,6 +53,37 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+**Spaces phase 1 (2026-08-15) — WEB ONLY, additive, all existing suites still green.**
+New suite `src/__smoke__/spaces.smoke.mjs` (38 assertions, in `npm run smoke`); 9 mutations
+tried, all 9 bite. Full suite is now **400 assertions across 10 files**.
+- **The model.** `domain/services/Space.js` is a READ model over either local state (home) or
+  one `_sharedData` entry (guest). `SpaceRegistry.js` owns which is active. A shared account
+  used to be a *detour* — you stayed in your own book and reached sideways — which is why
+  every form that could target one had to remember to re-point its own category source.
+- **One chokepoint re-points the whole view layer:** `BaseView.state` now returns
+  `space.project()`. Home returns the REAL state object (identity, not a copy — a copy would
+  silently break anything that legitimately mutates through it); a guest space returns a
+  shallow copy with `accounts` / `categories` / `transactions` from the snapshot and
+  `budgets` / `debts` / `regularItems` emptied (phase 1b adds them).
+  `Store.getState()` is untouched, so the services and `SyncService` keep writing real state.
+- **Active space is SESSION state** (`sessionStorage`, key `pocket.v1.space`), never
+  `state.user` — it would sync to other devices where it is meaningless, and a revoked space
+  must not leave a persistent pointer. A test asserts it never reaches user state.
+- **Writes.** `Application.#HOME_ONLY_MODALS` refuses account/budget/category/debt/regular/
+  csv/reconcile/family in a guest space with a toast. A NEW transaction there is routed into
+  `sharedTxMode` **before** the modal opens, so the form comes up aimed at the owner's ledger
+  rather than being corrected afterwards by `onTxAccountChange`. View-only spaces refuse it.
+- **Revocation tells the user** (their answer to open question 4). `SpaceRegistry.reconcile()`
+  runs on every `state:changed`. Note `active()` self-heals too, so the state reset is NOT the
+  testable part — the message is. It caches `#lastLabel` while the space is live because by
+  the time revocation is noticed the snapshot is gone from `sharedData` and `sharedBy` can no
+  longer be read; without it the notice degrades to "Shared with me removed your access".
+- **Labels.** `user.spaceLabels[ownerId]` overrides `share.sharedBy`, stored in the MEMBER's
+  book so the owner's next push cannot overwrite it. Rename lives in `SpaceSheet`.
+- **Audit H1 was already fixed** — the note calling it a phase-2 blocker was stale. Every
+  `### ` finding in `AUDIT-2026-07.md` now carries a ✅. Spot-verified all four H1 sites.
+  `docs/SPACES-DESIGN.md` corrected accordingly; phase 2 is no longer blocked.
+
 **Mobile port of the 2026-08-15 work — and mobile had the SAME data-loss bug, worse.**
 New suite `mobile-app/test/session-2026-08.test.mjs` (31 assertions, wired into `npm test`);
 7 mutations tried, all 7 turn it red. `npm test` now runs domain (30) + family (10) + this.

@@ -51,6 +51,9 @@ import { CategoryField }       from './ui/components/CategoryField.js';
 import { VoiceRecorder }       from './ui/components/VoiceRecorder.js';
 import { VoiceOverlay }        from './ui/components/VoiceOverlay.js';
 import { SwipeRowController }  from './ui/components/SwipeRowController.js';
+import { Space }               from './domain/services/Space.js';
+import { SpaceRegistry }       from './domain/services/SpaceRegistry.js';
+import { SpaceSheet }          from './ui/components/SpaceSheet.js';
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 import { DashboardView }     from './ui/views/DashboardView.js';
@@ -148,6 +151,10 @@ export class Application {
   #importPlan     = null;
   /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
   #swipe              = null;
+  /** @type {SpaceRegistry} */
+  #spaces             = null;
+  /** @type {SpaceSheet} */
+  #spaceSheet         = null;
   #filterRenderTimer  = null;   // debounce for the transaction search box
   #voice              = null;   // { recorder, overlay, done } while a voice entry is in progress
   /** @type {ReceiptScanService|null} lazily built — see get receiptScanner() */
@@ -173,6 +180,13 @@ export class Application {
     this.#accountGroups      = new AccountGroupService(this.#store);
     this.#familyShares       = new FamilyShareService(this.#store);
     this.#fxRates            = new ExchangeRateService();
+    // Which book the UI is showing. Reads flow through it (BaseView.state);
+    // writes never do — the services keep talking to real local state.
+    this.#spaces             = new SpaceRegistry({
+      store: this.#store,
+      sync:  this.#sync,
+      spaceFactory: (opts) => new Space(opts),
+    });
     this.#toast       = new Toast();
     this.#modal       = new Modal();
     this.#nav         = new Navigation();
@@ -193,6 +207,7 @@ export class Application {
       familyShareService: this.#familyShares,
       syncService:        this.#sync,
     });
+    this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
     // The controller owns the gesture; the app owns what deleting means. The
     // revealed button is itself the confirmation, so these are the no-dialog
     // variants of the delete methods.
@@ -259,6 +274,7 @@ export class Application {
     this.#paymentSheet.mount(container);
     this.#accountGroupSheet.mount(container);
     this.#accountShareSheet.mount(container);
+    this.#spaceSheet.mount(container);
     this.#nav.mount({
       onNavigate: (id) => this.navigate(id),
       onAdd:      ()   => this.openModal('transaction', {}),
@@ -298,7 +314,13 @@ export class Application {
     this.#bus.on('route:changed', ({ route }) => this.#renderView(route));
     this.#bus.on('toast',         ({ message }) => this.#toast.show(message));
     // state:changed fires after pull/replaceState completes — full re-render
-    this.#bus.on('state:changed',  () => this.#render());
+    this.#bus.on('state:changed',  () => {
+      // A pull may have removed the space the user is standing in. Check before
+      // rendering, or the first frame after a revocation renders against a
+      // snapshot that is already gone.
+      this.#reconcileSpaces();
+      this.#render();
+    });
     // auth:changed → only update the auth pill + nav; full re-render happens
     // after restoreSession() resolves (via .then(#render)) to avoid showing
     // seed data briefly before the cloud pull completes
@@ -411,7 +433,43 @@ export class Application {
   // Modal operations
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Modals that create or edit something in the CURRENT book. In a guest space
+   * they have no meaning: the services they submit to write to real local
+   * state, so opening one there would quietly file the user's edit into their
+   * own book while the screen showed someone else's.
+   *
+   * Phase 1 refuses them rather than routing them. Making budgets, debts,
+   * categories and regulars editable in a guest space needs a contribution
+   * payload and an authorisation branch per kind — that is phase 2.
+   */
+  static #HOME_ONLY_MODALS = new Set([
+    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem',
+    'csv', 'reconcile', 'family', 'currencySetup',
+  ]);
+
   openModal(name, opts = {}) {
+    const space = this.#spaces?.active?.();
+    if (space && !space.isHome && Application.#HOME_ONLY_MODALS.has(name)) {
+      this.#toast.show(`Switch to your own space to change that — you're in ${space.label}`);
+      return;
+    }
+    // A new transaction inside a guest space is a CONTRIBUTION to the owner,
+    // not a row in the member's book. Route it before the modal opens, so the
+    // form comes up pointed at the right ledger instead of being corrected
+    // afterwards by the account-change handler.
+    if (space && !space.isHome && name === 'transaction' && !opts.id
+        && !opts.sharedTxMode && !opts.editTxId) {
+      const target = space.accounts.find((a) => space.canAdd(a.id));
+      if (!target) {
+        this.#toast.show(`You have view-only access to ${space.label}`);
+        return;
+      }
+      return this.#modal.open('transaction', {
+        ...opts,
+        sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id },
+      });
+    }
     // debtPayment needs to route to DebtModal in payment mode
     if (name === 'debtPayment') {
       this.#modal.open('debtPayment', { ...opts, mode: 'payment' });
@@ -653,6 +711,16 @@ export class Application {
   }
 
   get paymentTypeService() { return this.#paymentTypeService; }
+  /** The space registry — BaseView reads through this on every render. */
+  get spaces() { return this.#spaces; }
+  /** Which modal is open, if any — used by the smoke suites. */
+  get modalActive() { return this.#modal?.active ?? null; }
+  /** The transaction modal instance, for suites that inspect sharedTxMode. */
+  get txModal() { return this.#txModal; }
+  /** The Store singleton, so a suite can assert projection identity. */
+  get store() { return this.#store; }
+  /** SyncService, for suites that drive a pull directly. */
+  get sync() { return this.#sync; }
   /** Exposed so modals can resolve the Settings default-account preference. */
   get accountService() { return this.#accounts; }
   /**
@@ -1251,6 +1319,17 @@ export class Application {
    * @param {number} shareIndex
    * @returns {string|null}
    */
+  /**
+   * Positional index for an owner id — the inverse of #ownerIdForShare.
+   * The shared UI still addresses snapshots by array position; this is the one
+   * place that conversion happens, so the fragility stays contained.
+   * @param {string} ownerId
+   * @returns {number}
+   */
+  #shareIndexForOwner(ownerId) {
+    return (this.#sync.sharedData || []).findIndex((s) => s._ownerId === ownerId);
+  }
+
   #ownerIdForShare(shareIndex) {
     return (this.#sync.sharedData || [])[shareIndex]?._ownerId ?? null;
   }
@@ -3390,6 +3469,7 @@ export class Application {
     // Any revealed swipe row is about to have its DOM node replaced, so drop
     // the reference rather than leave the controller holding a detached node.
     this.#swipe?.reset();
+    this.#renderSpaceBar();
     // Inject live shared data so views can read state._sharedData
     const state = this.#store.getState();
     state._sharedData        = this.#sync.sharedData;
@@ -3400,6 +3480,93 @@ export class Application {
     // a stale route arg here was ignored and risked an active-state race (#24).
     this.#nav.render();
     lucide?.createIcons?.();
+  }
+
+  /**
+   * The space switcher bar.
+   *
+   * Stays hidden entirely when nobody shares anything with you — a solo user
+   * should never see a control for a concept they don't have. Inside a guest
+   * space it is deliberately loud: the whole screen is showing someone else's
+   * money, and that must never be ambiguous.
+   */
+  #renderSpaceBar() {
+    const el = document.getElementById('spaceBar');
+    if (!el) return;
+    if (!this.#spaces?.hasGuestSpaces) { el.innerHTML = ''; return; }
+
+    const space = this.#spaces.active();
+    const label = this.#esc(space.label);
+    if (space.isHome) {
+      el.innerHTML = `
+        <button class="w-full flex items-center gap-2 mb-4 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-sm"
+                onclick="window.__app.openSpaceSheet()">
+          <i data-lucide="wallet" style="width:15px;height:15px"></i>
+          <span class="font-medium">${label}</span>
+          <span class="text-xs text-zinc-500 ml-auto">Switch space</span>
+          <i data-lucide="chevron-down" style="width:14px;height:14px"></i>
+        </button>`;
+    } else {
+      const perm = space.canAddAnywhere ? 'You can add entries here' : 'View only';
+      el.innerHTML = `
+        <button class="w-full flex items-center gap-2 mb-4 px-3 py-2 rounded-xl text-sm"
+                style="background:#818cf815;border:1px solid #818cf855"
+                onclick="window.__app.openSpaceSheet()">
+          <i data-lucide="users" style="width:15px;height:15px;color:#818cf8"></i>
+          <span class="font-medium">${label}</span>
+          <span class="text-xs text-zinc-500">· ${this.#esc(perm)}</span>
+          <span class="text-xs ml-auto" style="color:#818cf8">Switch space</span>
+          <i data-lucide="chevron-down" style="width:14px;height:14px"></i>
+        </button>`;
+    }
+    lucide?.createIcons?.();
+  }
+
+  // ── Spaces ────────────────────────────────────────────────────────────
+
+  openSpaceSheet()  { this.#spaceSheet?.open(); }
+  closeSpaceSheet() { this.#spaceSheet?.close(); }
+  beginSpaceRename(id) { this.#spaceSheet?.beginRename(id); }
+  commitSpaceRename(id) { this.#spaceSheet?.commitRename(id); }
+  cancelSpaceRename()   { this.#spaceSheet?.cancelRename(); }
+
+  /**
+   * Switch books. Anything open belongs to the space being left, so it closes:
+   * a half-filled form pointed at the previous ledger is worse than no form.
+   * @param {string|null} spaceId
+   */
+  switchSpace(spaceId) {
+    if (!this.#spaces?.activate(spaceId)) { this.closeSpaceSheet(); return; }
+    this.closeSpaceSheet();
+    this.closeModal();
+    // Detail routes address a specific account/budget in the space we just
+    // left, so land somewhere that exists in either book.
+    if (['accountDetail', 'budgetDetail'].includes(this.#router.current)) {
+      this.#router.navigate('accounts');
+    }
+    this.#render();
+    this.#toast.show(`Now viewing ${this.#spaces.active().label}`);
+  }
+
+  /** Re-render after a label change, without switching. */
+  refreshAfterSpaceChange() { this.#render(); }
+
+  /**
+   * Called after every pull. If the space the user was standing in has been
+   * revoked, say so plainly rather than silently relocating them — they were
+   * looking at a screenful of someone else's data a moment ago.
+   */
+  #reconcileSpaces() {
+    const lost = this.#spaces?.reconcile?.();
+    if (!lost) return;
+    this.closeSpaceSheet();
+    this.closeModal();
+    if (['accountDetail', 'budgetDetail'].includes(this.#router.current)) {
+      this.#router.navigate('accounts');
+    }
+    // The caller re-renders; doing it here too would double-render every
+    // revocation.
+    this.#toast.show(`${lost.lostLabel} removed your access — switched back to your own space`);
   }
 
   #renderView(routeId) {

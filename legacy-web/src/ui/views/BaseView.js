@@ -46,10 +46,46 @@ export class BaseView {
 
   // ── Shared state accessors ───────────────────────────────────────────
 
+  /**
+   * State, scoped to the ACTIVE SPACE.
+   *
+   * This one getter re-points the entire view layer. In the home space it
+   * returns the real state object unchanged; in a guest space it returns a
+   * shallow projection whose `accounts`, `categories` and `transactions` come
+   * from the owner's snapshot instead.
+   *
+   * Views must treat this as READ-ONLY — they always did, but it matters more
+   * now: a write through the guest projection would land on an object the next
+   * pull throws away. Anything that mutates goes through the services, which
+   * deliberately keep reading the real `Store.getState()`.
+   * @returns {object}
+   */
   get state() {
+    const raw = this.#store.getState();
+    const space = window.__app?.spaces?.active?.();
+    return space ? space.project() : raw;
+  }
+
+  /** The unscoped local book. For the rare view that genuinely needs both. */
+  get localState() {
     return this.#store.getState();
   }
 
+  /** @returns {import('../../domain/services/Space.js').Space|null} */
+  get space() {
+    return window.__app?.spaces?.active?.() ?? null;
+  }
+
+  /** @returns {boolean} true when viewing someone else's book */
+  get inGuestSpace() {
+    const s = this.space;
+    return !!s && !s.isHome;
+  }
+
+  /**
+   * Totals convert to the OWNER's home currency inside their space — showing
+   * their balances in the member's currency would misrepresent their book.
+   */
   get homeCurrency() {
     return this.state.user.homeCurrency;
   }

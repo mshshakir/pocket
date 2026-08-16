@@ -273,13 +273,19 @@ true, applying the same optimistic-then-confirm pattern
 ### 5.3 Sanitisation
 
 `name`, `icon` and `color` arrive from another user's device and land in the
-owner's rendered UI. Audit finding **H1** (`share.icon`/`color`/`id` rendered
-unescaped, remotely triggerable by anyone you share with) is still **open** —
-see `AUDIT-2026-07.md`. Phase 2 must not ship before H1 is fixed, or it widens a
-live hole: today an attacker needs you to share *with* them, and after this they
-can inject a payload that the owner's category list renders directly.
+owner's rendered UI, so they must be escaped for the sink they reach.
 
-**This is a blocking dependency, not a nice-to-have.**
+**Status corrected 2026-08-15: audit finding H1 is already fixed.** An earlier
+revision of this doc called it a hard blocking prerequisite for phase 2, on the
+strength of a stale note. Spot-verified: `AccountsView.js:151-190`,
+`FamilyView.js:149-172`, `AccountDetailView.js:161-190` and
+`TransactionModal.js:553-570` all route shared-snapshot fields through
+`safeColor` / `safeIcon` / `escapeHtml` / `jsArg`. Every `### ` finding in
+`AUDIT-2026-07.md` now carries a ✅.
+
+Phase 2 is therefore **not** blocked on it. The standing rule still applies to
+any new code: a field that came from a share snapshot is untrusted input, and
+`TransactionRowRenderer.js` is the reference for doing it right.
 
 ## 6. Decisions taken
 
@@ -393,7 +399,6 @@ Revised phases:
 | **1b** | Snapshot gains `debts` + `regularItems` (filtered by account `permMap`) and `budgets` (filtered by the NEW per-budget grants, each carrying owner-computed `spent`). Those become **visible** in a guest space; Reports and BudgetDetailView labelled with their scope. Requires the `permissions` entry migration in §8.2 and a budget share UI. | snapshot shape + permission storage | medium |
 | **1c** | Delete `sharedMatch`, the three `_sharedData` fallbacks, positional `shareIndex`, `data-ownerid` | none | low |
 | **2** | **Editable**: `_kind` payloads for debt / regular / budget / category, each with an `#authoriseContribution` branch and permission rules. Budget is the first kind with no account, so it forces the `account_id` NOT NULL decision. | yes, on the security boundary | high |
-| **2 prereq** | Fix audit **H1** (escape `_sharedData` on render) | none | low, isolated |
 
 Splitting visible (1b) from editable (2) matters: 1b is a snapshot change nobody
 can abuse, while 2 lets another user's device propose writes into your budgets

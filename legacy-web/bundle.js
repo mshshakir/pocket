@@ -7036,6 +7036,409 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/Space.js
+  var Space = class _Space {
+    /** @type {string|null} */
+    #id;
+    /** @type {object|null} */
+    #share;
+    /** @type {object} */
+    #state;
+    /**
+     * @param {object} deps
+     * @param {string|null} deps.id     null for home, the owner's uuid for a guest space
+     * @param {object|null} [deps.share] the `_sharedData` entry, guest spaces only
+     * @param {object} deps.state       live local state (always the REAL state)
+     */
+    constructor({ id, share = null, state }) {
+      this.#id = id;
+      this.#share = share;
+      this.#state = state;
+    }
+    /** @param {object} state @returns {Space} */
+    static home(state) {
+      return new _Space({ id: null, state });
+    }
+    /** @param {object} share @param {object} state @returns {Space} */
+    static guest(share, state) {
+      return new _Space({ id: share._ownerId, share, state });
+    }
+    // ── Identity ─────────────────────────────────────────────────────────
+    /** @returns {string|null} null for home, owner id for a guest space */
+    get id() {
+      return this.#id;
+    }
+    /** @returns {boolean} */
+    get isHome() {
+      return this.#id === null;
+    }
+    /**
+     * Display name.
+     *
+     * `share.sharedBy` is the owner's own choice of name, published with every
+     * snapshot. A member-side override in `user.spaceLabels` wins, so you can
+     * call a space whatever makes sense to you without the owner's next push
+     * overwriting it.
+     * @returns {string}
+     */
+    get label() {
+      if (this.isHome) return this.#state.user?.name || "My money";
+      const override = (this.#state.user?.spaceLabels || {})[this.#id];
+      return override || this.#share?.sharedBy || "Shared with me";
+    }
+    // ── Data ─────────────────────────────────────────────────────────────
+    /** @returns {object[]} */
+    get accounts() {
+      return this.isHome ? this.#state.accounts || [] : this.#share?.accounts || [];
+    }
+    /**
+     * In a guest space this is the OWNER's whole tree — which is the point. A
+     * contribution lands in their book, so its categoryId has to be one of
+     * theirs; a local id is meaningless there.
+     * @returns {object[]}
+     */
+    get categories() {
+      return this.isHome ? this.#state.categories || [] : this.#share?.categories || [];
+    }
+    /** @returns {object[]} */
+    get transactions() {
+      return this.isHome ? this.#state.transactions || [] : this.#share?.transactions || [];
+    }
+    /** @returns {string} the currency totals in this space convert to */
+    get homeCurrency() {
+      return this.isHome ? this.#state.user?.homeCurrency || "USD" : this.#share?.homeCurrency || this.#state.user?.homeCurrency || "USD";
+    }
+    /** @returns {object|null} the raw snapshot, for callers that need `_ownerId` */
+    get share() {
+      return this.#share;
+    }
+    // ── Permissions ──────────────────────────────────────────────────────
+    /**
+     * @param {string} accountId
+     * @returns {'owner'|'view'|'add'|'edit'|'full'|null}
+     */
+    permissionFor(accountId) {
+      if (this.isHome) return "owner";
+      return (this.#share?.permission || {})[accountId] || null;
+    }
+    /** @param {string} accountId @returns {boolean} */
+    canAdd(accountId) {
+      const p = this.permissionFor(accountId);
+      return p === "owner" || p === "add" || p === "edit" || p === "full";
+    }
+    /** @param {string} accountId @returns {boolean} */
+    canEdit(accountId) {
+      const p = this.permissionFor(accountId);
+      return p === "owner" || p === "edit" || p === "full";
+    }
+    /** @param {string} accountId @returns {boolean} */
+    canDelete(accountId) {
+      const p = this.permissionFor(accountId);
+      return p === "owner" || p === "full";
+    }
+    /** @returns {boolean} true when at least one account here accepts new rows */
+    get canAddAnywhere() {
+      return this.accounts.some((a) => this.canAdd(a.id));
+    }
+    // ── Projection ───────────────────────────────────────────────────────
+    /**
+     * A state-shaped object scoped to this space, for the view layer.
+     *
+     * Home returns the real state object unchanged — no copy, so nothing that
+     * legitimately mutates through it breaks. A guest space returns a SHALLOW
+     * copy with the three collections substituted: views must treat it as
+     * read-only, or they would be writing into an object the next pull discards.
+     *
+     * `_space` rides along so a view can ask what it is looking at without
+     * reaching for the registry.
+     * @returns {object}
+     */
+    project() {
+      if (this.isHome) return this.#state;
+      return {
+        ...this.#state,
+        accounts: this.accounts,
+        categories: this.categories,
+        transactions: this.transactions,
+        // Budgets, debts and regular items are not in the snapshot yet (phase 1b
+        // adds them). Empty beats showing the member their OWN budgets while
+        // standing in someone else's book.
+        budgets: [],
+        debts: [],
+        regularItems: [],
+        accountGroups: [],
+        user: { ...this.#state.user, homeCurrency: this.homeCurrency },
+        _space: this
+      };
+    }
+  };
+
+  // src/domain/services/SpaceRegistry.js
+  var STORAGE_KEY = "pocket.v1.space";
+  var SpaceRegistry = class {
+    /** @type {import('../../core/Store.js').Store} */
+    #store;
+    /** @type {object} */
+    #sync;
+    /** @type {Function} */
+    #spaceFactory;
+    /** @type {string|null} owner id of the active space, null = home */
+    #activeId = null;
+    /** @type {Set<Function>} */
+    #listeners = /* @__PURE__ */ new Set();
+    /**
+     * Last resolved label of the active guest space.
+     *
+     * By the time a revocation is noticed the snapshot is already gone from
+     * `sharedData`, so `sharedBy` can no longer be read — the message would
+     * degrade to the generic "Shared with me removed your access", which tells
+     * the user nothing. Remembering it while the space is live is what lets the
+     * notice name the person.
+     */
+    #lastLabel = null;
+    /**
+     * @param {object} deps
+     * @param {object} deps.store
+     * @param {object} deps.sync          SyncService — read only, for `sharedData`
+     * @param {Function} deps.spaceFactory  ({id, share, state}) => Space
+     */
+    constructor({ store, sync, spaceFactory }) {
+      this.#store = store;
+      this.#sync = sync;
+      this.#spaceFactory = spaceFactory;
+      this.#activeId = this.#readPersisted();
+    }
+    // ── Query ────────────────────────────────────────────────────────────
+    /** @returns {object[]} the shared snapshots currently available */
+    #shares() {
+      return this.#sync?.sharedData || [];
+    }
+    /**
+     * Home first, then one guest space per owner sharing with you.
+     * @returns {import('./Space.js').Space[]}
+     */
+    all() {
+      const state = this.#store.getState();
+      return [
+        this.#spaceFactory({ id: null, share: null, state }),
+        ...this.#shares().map((share) => this.#spaceFactory({ id: share._ownerId, share, state }))
+      ];
+    }
+    /**
+     * The active space, falling back to home whenever the selected one is no
+     * longer available. This is the ONLY place that fallback lives, so a revoked
+     * share can never leave a view rendering against a snapshot that has gone.
+     * @returns {import('./Space.js').Space}
+     */
+    active() {
+      const state = this.#store.getState();
+      if (this.#activeId === null) return this.#spaceFactory({ id: null, share: null, state });
+      const share = this.#shares().find((s) => s._ownerId === this.#activeId);
+      if (share) {
+        const space = this.#spaceFactory({ id: this.#activeId, share, state });
+        this.#lastLabel = space.label;
+        return space;
+      }
+      {
+        this.#activeId = null;
+        this.#persist();
+        return this.#spaceFactory({ id: null, share: null, state });
+      }
+    }
+    /** @returns {string|null} */
+    get activeId() {
+      return this.#activeId;
+    }
+    /** @returns {boolean} */
+    get isHome() {
+      return this.#activeId === null;
+    }
+    /** @returns {boolean} true when there is anything to switch between */
+    get hasGuestSpaces() {
+      return this.#shares().length > 0;
+    }
+    // ── Mutation ─────────────────────────────────────────────────────────
+    /**
+     * Switch spaces.
+     * @param {string|null} spaceId  null (or an unknown id) selects home
+     * @returns {boolean} true if the active space changed
+     */
+    activate(spaceId) {
+      const next = spaceId && this.#shares().some((s) => s._ownerId === spaceId) ? spaceId : null;
+      if (next === this.#activeId) return false;
+      this.#activeId = next;
+      this.#lastLabel = next ? this.labelFor(next) : null;
+      this.#persist();
+      for (const cb of this.#listeners) {
+        try {
+          cb(this.active());
+        } catch (e) {
+          console.error("[SpaceRegistry] listener failed:", e);
+        }
+      }
+      return true;
+    }
+    /**
+     * Re-check the active space after a pull, and report if it went away.
+     *
+     * Answers the "tell the user, don't silently relocate them" requirement: the
+     * caller closes any open modal and shows the message. Returns null when
+     * nothing changed, so the common path costs nothing.
+     *
+     * @returns {{lostLabel: string, reason: 'revoked'}|null}
+     */
+    reconcile() {
+      if (this.#activeId === null) return null;
+      if (this.#shares().some((s) => s._ownerId === this.#activeId)) return null;
+      const label = this.#lastLabel || this.labelFor(this.#activeId);
+      this.#activeId = null;
+      this.#lastLabel = null;
+      this.#persist();
+      return { lostLabel: label, reason: "revoked" };
+    }
+    /**
+     * Display label for a space id, usable even after its snapshot has gone (the
+     * member-side override outlives the share).
+     * @param {string|null} spaceId
+     * @returns {string}
+     */
+    labelFor(spaceId) {
+      if (!spaceId) return this.#store.getState().user?.name || "My money";
+      const override = (this.#store.getState().user?.spaceLabels || {})[spaceId];
+      if (override) return override;
+      const share = this.#shares().find((s) => s._ownerId === spaceId);
+      return share?.sharedBy || "Shared with me";
+    }
+    /**
+     * Set (or clear) the member-side name for a space.
+     *
+     * Stored in the member's OWN book, so it syncs normally and needs no server
+     * change — and the owner's next push can't overwrite it.
+     * @param {string} spaceId
+     * @param {string} label  '' clears the override
+     */
+    setLabel(spaceId, label) {
+      if (!spaceId) return;
+      const state = this.#store.getState();
+      if (!state.user.spaceLabels || typeof state.user.spaceLabels !== "object") {
+        state.user.spaceLabels = {};
+      }
+      const trimmed = (label || "").trim().slice(0, 60);
+      if (trimmed) state.user.spaceLabels[spaceId] = trimmed;
+      else delete state.user.spaceLabels[spaceId];
+      this.#store.persist();
+    }
+    /** @param {Function} cb @returns {Function} unsubscribe */
+    onChange(cb) {
+      this.#listeners.add(cb);
+      return () => this.#listeners.delete(cb);
+    }
+    // ── Persistence (session-scoped) ─────────────────────────────────────
+    #readPersisted() {
+      try {
+        return sessionStorage.getItem(STORAGE_KEY) || null;
+      } catch (_) {
+        return null;
+      }
+    }
+    #persist() {
+      try {
+        if (this.#activeId) sessionStorage.setItem(STORAGE_KEY, this.#activeId);
+        else sessionStorage.removeItem(STORAGE_KEY);
+      } catch (_) {
+      }
+    }
+  };
+
+  // src/ui/components/SpaceSheet.js
+  var SpaceSheet = class extends OverlaySheet {
+    /** @type {object} */
+    #spaces;
+    /** @type {string|null} space id currently being renamed */
+    #renaming = null;
+    /** @param {{spaceRegistry: object}} deps */
+    constructor({ spaceRegistry }) {
+      super({ id: "spaceSheetRoot" });
+      this.#spaces = spaceRegistry;
+    }
+    open() {
+      this.#renaming = null;
+      this.render();
+      this.show();
+    }
+    /** @param {string|null} spaceId */
+    beginRename(spaceId) {
+      this.#renaming = spaceId;
+      this.render();
+      this.focusLater("#spaceLabelInput");
+    }
+    /** @param {string} spaceId */
+    commitRename(spaceId) {
+      const input = this.find("#spaceLabelInput");
+      this.#spaces.setLabel(spaceId, input?.value ?? "");
+      this.#renaming = null;
+      this.render();
+      window.__app?.refreshAfterSpaceChange?.();
+    }
+    cancelRename() {
+      this.#renaming = null;
+      this.render();
+    }
+    renderContent() {
+      const activeId = this.#spaces.activeId;
+      const rows = this.#spaces.all().map((space) => {
+        const isActive = (space.id ?? null) === activeId;
+        const count = space.accounts.length;
+        const sub = space.isHome ? `${count} account${count === 1 ? "" : "s"} \xB7 your own book` : `${count} account${count === 1 ? "" : "s"} shared with you`;
+        if (this.#renaming && this.#renaming === space.id) {
+          return `
+          <div class="p-2">
+            <label class="text-xs text-zinc-500">Name this space</label>
+            <input id="spaceLabelInput" class="input w-full mt-1"
+                   value="${this.esc(space.label)}"
+                   placeholder="${this.esc(space.share?.sharedBy || "Shared with me")}"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.commitSpaceRename('${this.js(space.id)}')}">
+            <div class="flex gap-2 mt-2">
+              <button class="btn btn-primary flex-1"
+                      onclick="window.__app.commitSpaceRename('${this.js(space.id)}')">Save</button>
+              <button class="btn btn-outline" onclick="window.__app.cancelSpaceRename()">Cancel</button>
+            </div>
+            <div class="text-xs text-zinc-500 mt-2">Leave it empty to go back to the name they set.</div>
+          </div>`;
+        }
+        return `
+        <div class="flex items-center gap-1">
+          <button class="sheet-row flex-1" onclick="window.__app.switchSpace(${space.id ? `'${this.js(space.id)}'` : "null"})">
+            <div class="icon-pill" style="background:${space.isHome ? "#0ea5e922" : "#818cf822"};color:${space.isHome ? "#0ea5e9" : "#818cf8"}">
+              <i data-lucide="${space.isHome ? "wallet" : "users"}"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium truncate">${this.esc(space.label)}</div>
+              <div class="text-xs text-zinc-500 truncate">${this.esc(sub)}</div>
+            </div>
+            ${isActive ? '<i data-lucide="check" style="width:16px;height:16px"></i>' : ""}
+          </button>
+          ${space.isHome ? "" : `
+            <button class="btn btn-ghost" title="Rename"
+                    onclick="window.__app.beginSpaceRename('${this.js(space.id)}')">
+              <i data-lucide="pencil" style="width:14px;height:14px"></i>
+            </button>`}
+        </div>`;
+      }).join("");
+      return `
+      <div class="sheet-head">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">Spaces</div>
+          <button class="btn btn-ghost" onclick="window.__app.closeSpaceSheet()"><i data-lucide="x"></i></button>
+        </div>
+        <div class="text-xs text-zinc-500 mt-1">
+          Switch between your own money and the accounts others share with you.
+        </div>
+      </div>
+      <div class="sheet-body">${rows}</div>`;
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -7065,9 +7468,42 @@ This replaces your current grouping.`
     onAfterRender() {
     }
     // ── Shared state accessors ───────────────────────────────────────────
+    /**
+     * State, scoped to the ACTIVE SPACE.
+     *
+     * This one getter re-points the entire view layer. In the home space it
+     * returns the real state object unchanged; in a guest space it returns a
+     * shallow projection whose `accounts`, `categories` and `transactions` come
+     * from the owner's snapshot instead.
+     *
+     * Views must treat this as READ-ONLY — they always did, but it matters more
+     * now: a write through the guest projection would land on an object the next
+     * pull throws away. Anything that mutates goes through the services, which
+     * deliberately keep reading the real `Store.getState()`.
+     * @returns {object}
+     */
     get state() {
+      const raw = this.#store.getState();
+      const space = window.__app?.spaces?.active?.();
+      return space ? space.project() : raw;
+    }
+    /** The unscoped local book. For the rare view that genuinely needs both. */
+    get localState() {
       return this.#store.getState();
     }
+    /** @returns {import('../../domain/services/Space.js').Space|null} */
+    get space() {
+      return window.__app?.spaces?.active?.() ?? null;
+    }
+    /** @returns {boolean} true when viewing someone else's book */
+    get inGuestSpace() {
+      const s = this.space;
+      return !!s && !s.isHome;
+    }
+    /**
+     * Totals convert to the OWNER's home currency inside their space — showing
+     * their balances in the member's currency would misrepresent their book.
+     */
     get homeCurrency() {
       return this.state.user.homeCurrency;
     }
@@ -12364,6 +12800,10 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     #importPlan = null;
     /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
     #swipe = null;
+    /** @type {SpaceRegistry} */
+    #spaces = null;
+    /** @type {SpaceSheet} */
+    #spaceSheet = null;
     #filterRenderTimer = null;
     // debounce for the transaction search box
     #voice = null;
@@ -12390,6 +12830,11 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#accountGroups = new AccountGroupService(this.#store);
       this.#familyShares = new FamilyShareService(this.#store);
       this.#fxRates = new ExchangeRateService();
+      this.#spaces = new SpaceRegistry({
+        store: this.#store,
+        sync: this.#sync,
+        spaceFactory: (opts) => new Space(opts)
+      });
       this.#toast = new Toast();
       this.#modal = new Modal();
       this.#nav = new Navigation();
@@ -12410,6 +12855,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         familyShareService: this.#familyShares,
         syncService: this.#sync
       });
+      this.#spaceSheet = new SpaceSheet({ spaceRegistry: this.#spaces });
       this.#swipe = new SwipeRowController({
         onDelete: ({ id, shareIndex, isOwnContrib }) => {
           if (shareIndex >= 0 && isOwnContrib) this.deleteSharedContrib(shareIndex, id, { confirm: false });
@@ -12447,6 +12893,7 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#paymentSheet.mount(container);
       this.#accountGroupSheet.mount(container);
       this.#accountShareSheet.mount(container);
+      this.#spaceSheet.mount(container);
       this.#nav.mount({
         onNavigate: (id) => this.navigate(id),
         onAdd: () => this.openModal("transaction", {}),
@@ -12480,7 +12927,10 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#modal.register("currencySetup", this.#currencySetupModal);
       this.#bus.on("route:changed", ({ route }) => this.#renderView(route));
       this.#bus.on("toast", ({ message }) => this.#toast.show(message));
-      this.#bus.on("state:changed", () => this.#render());
+      this.#bus.on("state:changed", () => {
+        this.#reconcileSpaces();
+        this.#render();
+      });
       this.#bus.on("auth:changed", ({ user, showSignIn }) => {
         this.#nav.renderAuthPill(user ?? null);
         if (!user) {
@@ -12567,7 +13017,45 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     // ──────────────────────────────────────────────────────────────────────────
     // Modal operations
     // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * Modals that create or edit something in the CURRENT book. In a guest space
+     * they have no meaning: the services they submit to write to real local
+     * state, so opening one there would quietly file the user's edit into their
+     * own book while the screen showed someone else's.
+     *
+     * Phase 1 refuses them rather than routing them. Making budgets, debts,
+     * categories and regulars editable in a guest space needs a contribution
+     * payload and an authorisation branch per kind — that is phase 2.
+     */
+    static #HOME_ONLY_MODALS = /* @__PURE__ */ new Set([
+      "account",
+      "budget",
+      "category",
+      "debt",
+      "debtPayment",
+      "regularItem",
+      "csv",
+      "reconcile",
+      "family",
+      "currencySetup"
+    ]);
     openModal(name, opts = {}) {
+      const space = this.#spaces?.active?.();
+      if (space && !space.isHome && _Application.#HOME_ONLY_MODALS.has(name)) {
+        this.#toast.show(`Switch to your own space to change that \u2014 you're in ${space.label}`);
+        return;
+      }
+      if (space && !space.isHome && name === "transaction" && !opts.id && !opts.sharedTxMode && !opts.editTxId) {
+        const target = space.accounts.find((a) => space.canAdd(a.id));
+        if (!target) {
+          this.#toast.show(`You have view-only access to ${space.label}`);
+          return;
+        }
+        return this.#modal.open("transaction", {
+          ...opts,
+          sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id }
+        });
+      }
       if (name === "debtPayment") {
         this.#modal.open("debtPayment", { ...opts, mode: "payment" });
       } else {
@@ -12784,6 +13272,26 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
     get paymentTypeService() {
       return this.#paymentTypeService;
+    }
+    /** The space registry — BaseView reads through this on every render. */
+    get spaces() {
+      return this.#spaces;
+    }
+    /** Which modal is open, if any — used by the smoke suites. */
+    get modalActive() {
+      return this.#modal?.active ?? null;
+    }
+    /** The transaction modal instance, for suites that inspect sharedTxMode. */
+    get txModal() {
+      return this.#txModal;
+    }
+    /** The Store singleton, so a suite can assert projection identity. */
+    get store() {
+      return this.#store;
+    }
+    /** SyncService, for suites that drive a pull directly. */
+    get sync() {
+      return this.#sync;
     }
     /** Exposed so modals can resolve the Settings default-account preference. */
     get accountService() {
@@ -13340,6 +13848,16 @@ alter publication supabase_realtime add table public.family_contributions;</div>
      * @param {number} shareIndex
      * @returns {string|null}
      */
+    /**
+     * Positional index for an owner id — the inverse of #ownerIdForShare.
+     * The shared UI still addresses snapshots by array position; this is the one
+     * place that conversion happens, so the fragility stays contained.
+     * @param {string} ownerId
+     * @returns {number}
+     */
+    #shareIndexForOwner(ownerId) {
+      return (this.#sync.sharedData || []).findIndex((s) => s._ownerId === ownerId);
+    }
     #ownerIdForShare(shareIndex) {
       return (this.#sync.sharedData || [])[shareIndex]?._ownerId ?? null;
     }
@@ -15298,6 +15816,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     // ──────────────────────────────────────────────────────────────────────────
     #render() {
       this.#swipe?.reset();
+      this.#renderSpaceBar();
       const state = this.#store.getState();
       state._sharedData = this.#sync.sharedData;
       state._currentUserEmail = this.#sync.currentUser?.email || null;
@@ -15305,6 +15824,100 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#renderView(route);
       this.#nav.render();
       lucide?.createIcons?.();
+    }
+    /**
+     * The space switcher bar.
+     *
+     * Stays hidden entirely when nobody shares anything with you — a solo user
+     * should never see a control for a concept they don't have. Inside a guest
+     * space it is deliberately loud: the whole screen is showing someone else's
+     * money, and that must never be ambiguous.
+     */
+    #renderSpaceBar() {
+      const el = document.getElementById("spaceBar");
+      if (!el) return;
+      if (!this.#spaces?.hasGuestSpaces) {
+        el.innerHTML = "";
+        return;
+      }
+      const space = this.#spaces.active();
+      const label = this.#esc(space.label);
+      if (space.isHome) {
+        el.innerHTML = `
+        <button class="w-full flex items-center gap-2 mb-4 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-sm"
+                onclick="window.__app.openSpaceSheet()">
+          <i data-lucide="wallet" style="width:15px;height:15px"></i>
+          <span class="font-medium">${label}</span>
+          <span class="text-xs text-zinc-500 ml-auto">Switch space</span>
+          <i data-lucide="chevron-down" style="width:14px;height:14px"></i>
+        </button>`;
+      } else {
+        const perm = space.canAddAnywhere ? "You can add entries here" : "View only";
+        el.innerHTML = `
+        <button class="w-full flex items-center gap-2 mb-4 px-3 py-2 rounded-xl text-sm"
+                style="background:#818cf815;border:1px solid #818cf855"
+                onclick="window.__app.openSpaceSheet()">
+          <i data-lucide="users" style="width:15px;height:15px;color:#818cf8"></i>
+          <span class="font-medium">${label}</span>
+          <span class="text-xs text-zinc-500">\xB7 ${this.#esc(perm)}</span>
+          <span class="text-xs ml-auto" style="color:#818cf8">Switch space</span>
+          <i data-lucide="chevron-down" style="width:14px;height:14px"></i>
+        </button>`;
+      }
+      lucide?.createIcons?.();
+    }
+    // ── Spaces ────────────────────────────────────────────────────────────
+    openSpaceSheet() {
+      this.#spaceSheet?.open();
+    }
+    closeSpaceSheet() {
+      this.#spaceSheet?.close();
+    }
+    beginSpaceRename(id) {
+      this.#spaceSheet?.beginRename(id);
+    }
+    commitSpaceRename(id) {
+      this.#spaceSheet?.commitRename(id);
+    }
+    cancelSpaceRename() {
+      this.#spaceSheet?.cancelRename();
+    }
+    /**
+     * Switch books. Anything open belongs to the space being left, so it closes:
+     * a half-filled form pointed at the previous ledger is worse than no form.
+     * @param {string|null} spaceId
+     */
+    switchSpace(spaceId) {
+      if (!this.#spaces?.activate(spaceId)) {
+        this.closeSpaceSheet();
+        return;
+      }
+      this.closeSpaceSheet();
+      this.closeModal();
+      if (["accountDetail", "budgetDetail"].includes(this.#router.current)) {
+        this.#router.navigate("accounts");
+      }
+      this.#render();
+      this.#toast.show(`Now viewing ${this.#spaces.active().label}`);
+    }
+    /** Re-render after a label change, without switching. */
+    refreshAfterSpaceChange() {
+      this.#render();
+    }
+    /**
+     * Called after every pull. If the space the user was standing in has been
+     * revoked, say so plainly rather than silently relocating them — they were
+     * looking at a screenful of someone else's data a moment ago.
+     */
+    #reconcileSpaces() {
+      const lost = this.#spaces?.reconcile?.();
+      if (!lost) return;
+      this.closeSpaceSheet();
+      this.closeModal();
+      if (["accountDetail", "budgetDetail"].includes(this.#router.current)) {
+        this.#router.navigate("accounts");
+      }
+      this.#toast.show(`${lost.lostLabel} removed your access \u2014 switched back to your own space`);
     }
     #renderView(routeId) {
       const view = this.#getOrCreateView(routeId);
