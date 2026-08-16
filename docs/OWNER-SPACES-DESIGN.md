@@ -30,14 +30,23 @@ create table public.family_shares (
 );
 ```
 
-**One row per person-pair.** That is the whole constraint. It means:
+**One row per person-pair.** That is the whole constraint, and it is narrower
+than it first looks. `#pushFamilyShares` (`SyncService.js:964`) already loops
+per member and upserts one row each, so:
 
-- Different people can already see differently-named spaces — the shipped fix
-  exploits exactly this.
-- **The same person cannot be in two of your spaces.** Share "Household" and
-  "Business" with Zahra and they collapse into one undifferentiated snapshot.
+- Different people can see differently-named spaces — the shipped fix exploits
+  exactly this.
+- **Several people CAN be in one space.** A space with three members is three
+  rows, one per email. No key collision, no schema change. This is the cheap
+  half, and it is the half that answers "how do I add another email?".
+- **The same person cannot be in TWO of your spaces.** Share "Household" and
+  "Business" with Zahra and both writes target `(you, zahra@…)` — they collapse.
 
-Everything expensive about this proposal follows from lifting that.
+> **Correction (2026-08-15).** An earlier revision of §7 treated multi-member
+> spaces and the schema change as one indivisible cost. They are not. Only the
+> second bullet above needs `space_id` in the primary key. Everything a user
+> would recognise as "make a Household space and add three people to it" is
+> reachable without touching the backend at all.
 
 ## 3. The model
 
@@ -142,7 +151,7 @@ Not everything needed the schema change. Delivered 2026-08-15:
 |---|---|---|
 | `state.spaces` + migration from member-first grants | medium | medium — must not lose a grant |
 | Space composer UI (contents + members) | medium | low |
-| `family_shares` primary key + `space_id` | small | **needs a backend migration you run** |
+| `family_shares` primary key + `space_id` | small | **needs a backend migration you run — ONLY for one person in two spaces** |
 | `#pushFamilyShares` emitting one row per space | small | low |
 | `#authoriseContribution` resolving via membership | small | **high — security boundary** |
 | Member side: several spaces from one owner | small | low — `SpaceRegistry` already keys by id |
@@ -157,15 +166,20 @@ Ship it as its own piece, in this order:
 
 1. `state.spaces` + migration, with `permissions` still derived and authoritative
    — **no behaviour change**, purely a shape the UI can read.
-2. The composer UI, still writing one space per member. Everything works; the
-   model is just visible.
-3. The `space_id` key change and multi-space push. This is the release where the
-   backend migration runs.
+2. The composer UI: create a space, put accounts and budgets in it, **add as many
+   members as you like**. Push fans out to one `family_shares` row per member,
+   which the existing key already supports. This is where the feature becomes
+   real to a user.
+3. The `space_id` key change and multi-space push — needed *only* so one person
+   can be in two of your spaces. This is the release where the backend migration
+   runs.
 4. `#authoriseContribution` via membership, with the adversarial tests in §4.3.
 5. Drop the derived arrays a release later.
 
-Steps 1 and 2 are reversible and carry no schema change; the commitment point is
-step 3.
+**Steps 1 and 2 deliver multi-member named spaces with no schema change and no
+change to the security boundary.** Step 3 buys one further thing — the same
+person in two spaces — at a materially higher price. It is entirely reasonable
+to stop after 2 and see whether anyone asks for it.
 
 ## 9. Open questions
 
