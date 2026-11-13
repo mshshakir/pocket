@@ -6,12 +6,15 @@
  *   +45000 salary                 → income
  *   250 lunch #wallet @food       → into the account starting "wallet", category starting "food"
  *   120 taxi yesterday            → dated yesterday
+ *   450 dinner 8/11               → dated 8 November (see EntryDate)
  *   5000 #boi > #mpesa            → transfer from BOI to MPesa
  *   5000 > #mpesa                 → transfer from the default account to MPesa
  *   5000 #boi > #mpesa =7750      → transfer where MPesa received 7,750 (cross-currency)
  *
  * Amounts may carry "₹", "rs" and thousands commas ("₹1,250.50").
  */
+import { EntryDate } from './EntryDate.ts';
+
 export type EntryType = 'expense' | 'income' | 'transfer';
 
 export interface ParsedEntry {
@@ -24,6 +27,7 @@ export interface ParsedEntry {
   receivedAmount: number | null; // transfer: amount that reached the destination, if typed
   categoryHint: string | null;
   daysAgo: number;
+  date: EntryDate | null;      // a typed date; wins over "yesterday"
 }
 
 export type ParseResult = { ok: true; entry: ParsedEntry } | { ok: false; reason: string };
@@ -50,6 +54,7 @@ export class EntryParser {
     let paymentType: string | null = null;
     let categoryHint: string | null = null;
     let daysAgo = 0;
+    let date: EntryDate | null = null;
     const before: string[] = []; // #account hints before the arrow
     const after: string[] = [];  // #account hints after the arrow
     const noteWords: string[] = [];
@@ -69,6 +74,10 @@ export class EntryParser {
         (arrow ? after : before).push(lower.slice(1));
       } else if (token.startsWith('@') && token.length > 1) {
         categoryHint = lower.slice(1);
+      } else if (EntryDate.looksLikeDate(token)) {
+        const parsed = EntryDate.parse(token);
+        if (parsed && 'invalid' in parsed) return { ok: false, reason: parsed.invalid };
+        date = parsed;
       } else if (lower === 'yesterday') {
         daysAgo = 1;
       } else if (paymentType === null && this.#paymentTypes.has(lower)) {
@@ -109,6 +118,7 @@ export class EntryParser {
         receivedAmount: received,
         categoryHint: isTransfer ? null : categoryHint,
         daysAgo,
+        date,
       },
     };
   }

@@ -4,13 +4,14 @@
  *   200 fruits
  *   80 clips
  *   1351 oct 2026 bill @electricity #boi
- *   #mpesa @groceries cash yesterday      ← a "shared" line: no amount
+ *   #mpesa @groceries cash 8/11           ← a "shared" line: no amount
  *
- * A shared line (only #account, @category, a payment type or "yesterday")
+ * A shared line (only #account, @category, a payment type, a date or "yesterday")
  * fills in whatever a line leaves out; a line's own choices always win.
  * Transfers keep their own accounts and need no category, so only
- * "yesterday" carries over to them. Lines with no amount are reported back.
+ * the date carries over to them. Lines with no amount are reported back.
  */
+import { EntryDate } from './EntryDate.ts';
 import { EntryParser } from './EntryParser.ts';
 
 /** One entry line, with the shared choices it lacked written onto it. */
@@ -35,6 +36,7 @@ interface SharedChoices {
   category: string | null;
   paymentType: string | null;
   yesterday: boolean;
+  date: string | null; // as typed, e.g. 8/11
 }
 
 export class EntryBatch {
@@ -68,7 +70,7 @@ export class EntryBatch {
       return { ok: false, reason: `Please send at most ${EntryBatch.MAX_LINES} lines at a time.` };
     }
 
-    const shared: SharedChoices = { account: null, category: null, paymentType: null, yesterday: false };
+    const shared: SharedChoices = { account: null, category: null, paymentType: null, yesterday: false, date: null };
     const entryLines: string[] = [];
     const invalid: InvalidLine[] = [];
     for (const line of lines) {
@@ -91,7 +93,10 @@ export class EntryBatch {
         }
         if (!own.paymentType && shared.paymentType) extra.push(shared.paymentType);
       }
-      if (!own.daysAgo && shared.yesterday) extra.push('yesterday');
+      if (!own.daysAgo && !own.date) {
+        if (shared.date) extra.push(shared.date);
+        else if (shared.yesterday) extra.push('yesterday');
+      }
       items.push({
         seed: EntryBatch.seedFor(messageId, i + 1),
         line,
@@ -102,11 +107,11 @@ export class EntryBatch {
     return { ok: true, items, invalid };
   }
 
-  /** A line of only #account, @category, payment type and "yesterday" words. */
+  /** A line of only #account, @category, payment type, date and "yesterday" words. */
   #isSharedLine(line: string): boolean {
     return line.split(/\s+/).every((word) => {
       const lower = word.toLowerCase();
-      return /^[#@]\S+$/.test(word) || lower === 'yesterday' || this.#paymentTypes.has(lower);
+      return /^[#@]\S+$/.test(word) || lower === 'yesterday' || EntryDate.looksLikeDate(word) || this.#paymentTypes.has(lower);
     });
   }
 
@@ -117,6 +122,7 @@ export class EntryBatch {
       if (word.startsWith('#')) shared.account = lower.slice(1);
       else if (word.startsWith('@')) shared.category = lower.slice(1);
       else if (lower === 'yesterday') shared.yesterday = true;
+      else if (EntryDate.looksLikeDate(word)) shared.date = word;
       else shared.paymentType = lower;
     }
   }
