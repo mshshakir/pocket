@@ -16,6 +16,19 @@ import { BotController, LocalClock, type TelegramMessage } from './lib/BotContro
 import { PocketStore } from './lib/PocketStore.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
 
+/** Reads secrets by name, ignoring capitalisation (TELEGRAM_BOT_TOKEN = Telegram_Bot_Token). */
+class SecretReader {
+  readonly #byLowerName: Map<string, string>;
+
+  constructor(env: Record<string, string>) {
+    this.#byLowerName = new Map(Object.entries(env).map(([k, v]) => [k.toLowerCase(), v]));
+  }
+
+  get(name: string): string {
+    return this.#byLowerName.get(name.toLowerCase()) ?? '';
+  }
+}
+
 class WebhookServer {
   readonly #secret: string;
   readonly #controller: BotController;
@@ -43,18 +56,20 @@ class WebhookServer {
   }
 }
 
+const secrets = new SecretReader(Deno.env.toObject());
+
 const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  secrets.get('SUPABASE_URL'),
+  secrets.get('SUPABASE_SERVICE_ROLE_KEY'),
   { auth: { persistSession: false } },
 );
 
 const server = new WebhookServer(
-  Deno.env.get('TELEGRAM_WEBHOOK_SECRET') ?? '',
+  secrets.get('TELEGRAM_WEBHOOK_SECRET'),
   new BotController(
     new PocketStore(supabase),
-    new TelegramClient(Deno.env.get('TELEGRAM_BOT_TOKEN') ?? ''),
-    new LocalClock(Deno.env.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
+    new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN')),
+    new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
   ),
 );
 
