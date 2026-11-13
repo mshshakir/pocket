@@ -68,6 +68,7 @@ with app sign-ins); set up custom SMTP if that becomes a problem.
 | `+45000 salary @wazifa` | income |
 | `250 lunch #wallet @rest` | into the account whose name starts with "wallet" |
 | `120 auto yesterday @rickshaw` | dated yesterday |
+| `450 dinner 8/11 @restaurant` | dated 8 November (day first); `8/11/2025` gives the year. Future dates are refused; without a year, a date more than 30 days ahead means last year (`28/12` in January) |
 | `5000 #boi > #mpesa` | transfer from BOI to MPesa (also `→`, `->`, or just two `#accounts`) |
 | `5000 > #mpesa` | transfer from your default account |
 | `5000 #boi > #mpesa =7750` | transfer where 7,750 arrived; without `=`, the live rate is used |
@@ -82,7 +83,7 @@ with app sign-ins); set up custom SMTP if that becomes a problem.
 ```
 
 Each line becomes its own entry with its own confirmation and buttons. A line with no amount
-(only `#account`, `@category`, a payment type or `yesterday`) applies to every line that doesn't
+(only `#account`, `@category`, a payment type, a date or `yesterday`) applies to every line that doesn't
 name its own; a line's own choices always win, and transfers keep their own accounts. Complete
 lines are saved at once; lines still missing a category are asked one at a time, and a shared
 category that needs choosing (e.g. a main category like `@food`) is asked once for all of them.

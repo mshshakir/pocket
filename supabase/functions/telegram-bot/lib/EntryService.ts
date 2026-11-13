@@ -118,6 +118,8 @@ export class EntryService {
     const parsed = new EntryParser(ws.paymentTypes).parse(req.text);
     if (!parsed.ok) return await this.#reject(req, parsed.reason);
     const { entry } = parsed;
+    const when = entry.date ? entry.date.resolve(this.#clock.isoDate()) : { ok: true as const, iso: this.#clock.isoDate(entry.daysAgo) };
+    if (!when.ok) return await this.#reject(req, when.reason);
 
     const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };
     const chosen = ws.resolve(entry.accountHint, fallback);
@@ -166,7 +168,7 @@ export class EntryService {
       account: from.account,
       toAccount: to?.account ?? null,
       category,
-      date: this.#clock.isoDate(entry.daysAgo),
+      date: when.iso,
       addedBy: link.email, // shown in the app as "Entered … by …"
     });
 
