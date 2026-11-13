@@ -81,5 +81,6 @@ Amounts are in the account's own currency (the source account for transfers); `â
 `rupees` and commas are accepted. Transfers are saved as the same linked out/in pair the app
 creates. Exchange rates come from the same live source the app uses (open.er-api.com).
 
-Commands: `/accounts` lists accounts; `/default` shows or changes the default account.
+Commands (also in the bot's menu button): `/help` shows the full guide; `/accounts` lists accounts;
+`/default` shows or changes the default account.
 Edit or delete entries in the app.

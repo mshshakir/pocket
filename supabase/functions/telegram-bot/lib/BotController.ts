@@ -4,6 +4,7 @@
  * `telegram_links` may log.
  */
 import { EntryParser } from './EntryParser.ts';
+import { HelpMenu } from './HelpMenu.ts';
 import type { PocketStore } from './PocketStore.ts';
 import type { TelegramClient } from './TelegramClient.ts';
 import type { ExchangeRates } from './ExchangeRates.ts';
@@ -32,23 +33,6 @@ export class LocalClock {
 }
 
 export class BotController {
-  static readonly #HELP = [
-    'Send an entry like:',
-    '• 500 diaper — expense of 500',
-    '• 500 diaper cash — with payment type',
-    '• +45000 salary — income',
-    '• 250 lunch #wallet — into the account whose name starts with "wallet"',
-    '• 250 lunch @food — with the category starting "food"',
-    '• 120 taxi yesterday — dated yesterday',
-    '• 5000 #boi > #mpesa — transfer between accounts',
-    '• 5000 > #mpesa — transfer from your default account',
-    '• 5000 #boi > #mpesa =7750 — transfer where 7,750 arrived (different currencies)',
-    '',
-    '/accounts lists the accounts you can add to.',
-    '/default shows the default account; /default <name> changes it.',
-    'Edit or delete entries in the Pocket app.',
-  ].join('\n');
-
   readonly #store: PocketStore;
   readonly #telegram: TelegramClient;
   readonly #clock: LocalClock;
@@ -75,7 +59,7 @@ export class BotController {
 
     const command = text.split(/[\s@]/)[0].toLowerCase();
     if (command === '/start' || command === '/help') {
-      await this.#telegram.reply(chatId, BotController.#HELP);
+      await this.#showHelp(chatId);
       return;
     }
 
@@ -104,7 +88,7 @@ export class BotController {
         return;
       }
       if (command.startsWith('/')) {
-        await this.#telegram.reply(chatId, BotController.#HELP);
+        await this.#showHelp(chatId);
         return;
       }
 
@@ -161,5 +145,11 @@ export class BotController {
       const reason = err instanceof Error ? err.message : 'Something went wrong.';
       await this.#telegram.reply(chatId, `⚠️ Not saved: ${reason}`, message.message_id);
     }
+  }
+
+  /** Sends the guide and (re)registers the menu commands, so the menu appears without extra setup. */
+  async #showHelp(chatId: number): Promise<void> {
+    await this.#telegram.setCommands(HelpMenu.COMMANDS);
+    await this.#telegram.reply(chatId, HelpMenu.GUIDE, undefined, true);
   }
 }

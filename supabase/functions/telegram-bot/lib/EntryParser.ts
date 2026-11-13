@@ -79,7 +79,7 @@ export class EntryParser {
     }
 
     if (amount === null || !(amount > 0)) {
-      return { ok: false, reason: 'I couldn\'t find an amount. Try something like: 500 diaper cash' };
+      return { ok: false, reason: 'I couldn\'t find an amount. Try something like: 500 diaper cash\nSend /help for all the ways to record.' };
     }
 
     // A transfer is an arrow, or two #accounts in one message.
