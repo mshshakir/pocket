@@ -12,6 +12,7 @@
  * webhook secret header is the gate instead.
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { BatchEntryService } from './lib/BatchEntryService.ts';
 import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
 import { EntryService } from './lib/EntryService.ts';
 import { ExchangeRates } from './lib/ExchangeRates.ts';
@@ -89,7 +90,11 @@ const entries = new EntryService(
 
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
-  new BotController(store, telegram, entries, new LinkService(store, telegram, auth)),
+  new BotController(
+    store, telegram, entries,
+    new LinkService(store, telegram, auth),
+    new BatchEntryService(store, telegram, entries),
+  ),
 );
 
 Deno.serve((req) => server.handle(req));

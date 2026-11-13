@@ -2,11 +2,14 @@
  * BotController — routes one Telegram update. Unlinked chats can only /link
  * (and answer with the emailed code). Linked chats get the commands (/help,
  * /accounts, /categories, /default, /cancel, /unlink), entry messages,
- * answers to a pending step, and button taps.
+ * answers to a pending step, and button taps. A message with several lines
+ * records one entry per line (BatchEntryService).
  */
+import type { BatchEntryService } from './BatchEntryService.ts';
 import { CategoryDirectory } from './CategoryDirectory.ts';
+import { EntryBatch } from './EntryBatch.ts';
 import { EntryParser } from './EntryParser.ts';
-import type { EntryService } from './EntryService.ts';
+import { EntryService } from './EntryService.ts';
 import { HelpMenu } from './HelpMenu.ts';
 import { LinkService } from './LinkService.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
@@ -30,12 +33,17 @@ export class BotController {
   readonly #telegram: TelegramClient;
   readonly #entries: EntryService;
   readonly #links: LinkService;
+  readonly #batches: BatchEntryService;
 
-  constructor(store: PocketStore, telegram: TelegramClient, entries: EntryService, links: LinkService) {
+  constructor(
+    store: PocketStore, telegram: TelegramClient, entries: EntryService,
+    links: LinkService, batches: BatchEntryService,
+  ) {
     this.#store = store;
     this.#telegram = telegram;
     this.#entries = entries;
     this.#links = links;
+    this.#batches = batches;
   }
 
   async handleMessage(message: TelegramMessage): Promise<void> {
@@ -79,10 +87,12 @@ export class BotController {
             replace: pending.replace, oldOwnerId: pending.owner_id,
             replyTo: message.message_id, categoryName: text,
             promptMessageId: pending.prompt_message_id, confirmMessageId: pending.confirm_message_id,
+            queue: pending.queue ?? [], shared: pending.shared ?? false,
           });
         }
         await this.#dropPending(chatId);
       }
+      if (EntryBatch.isBatch(text)) return void await this.#batches.record(link, chatId, message.message_id, text);
       await this.#entries.record({ link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id });
     } catch (err) {
       console.error('[telegram-bot]', err);
@@ -112,6 +122,7 @@ export class BotController {
           replace: pending.replace, oldOwnerId: pending.owner_id,
           categoryId: action === 'back' ? undefined : value, browseMains: action === 'back',
           promptMessageId: msg.message_id, confirmMessageId: pending.confirm_message_id,
+          queue: pending.queue ?? [], shared: pending.shared ?? false,
         });
       } else if (action === 'edit') {
         await this.#telegram.answer(cb.id);
@@ -180,18 +191,20 @@ export class BotController {
     await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
   }
 
-  /** Drops a waiting step; a category question is marked as not saved. */
+  /** Drops a waiting step; a category question, and any lines queued behind it, are marked as not saved. */
   async #dropPending(chatId: number): Promise<boolean> {
     const pending = await this.#store.getPending(chatId);
     if (!pending) return false;
     await this.#store.clearPending(chatId);
     if (pending.kind === 'category' && pending.prompt_message_id) {
-      await this.#telegram.edit(chatId, pending.prompt_message_id, `✖️ Not saved (no category chosen): “${pending.source_text ?? ''}”`);
+      const queued = (pending.queue ?? []).map((q) => `\n• “${q.line}”`).join('');
+      await this.#telegram.edit(chatId, pending.prompt_message_id,
+        `✖️ Not saved (no category chosen): “${pending.source_text ?? ''}”${queued ? `\nAlso not saved:${queued}` : ''}`);
     }
     return true;
   }
 
   static #reason(err: unknown): string {
-    return err instanceof Error ? err.message : 'Something went wrong.';
+    return EntryService.reason(err);
   }
 }
