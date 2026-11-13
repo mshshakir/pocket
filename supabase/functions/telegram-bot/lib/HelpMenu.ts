@@ -11,6 +11,7 @@ export class HelpMenu {
   static readonly COMMANDS: BotCommand[] = [
     { command: 'help', description: 'How to record expenses, income and transfers' },
     { command: 'accounts', description: 'List the accounts you can add to' },
+    { command: 'categories', description: 'List expense categories and subcategories' },
     { command: 'default', description: 'Show or change your default account' },
     { command: 'cancel', description: 'Drop the entry or edit in progress' },
   ];
@@ -33,6 +34,8 @@ export class HelpMenu {
     '<code>@travel</code> opens Travel so you can tap Taxi, Train, Bus…',
     'Forgot it? I\'ll show the main categories as buttons, then their subcategories. Nothing is saved until you choose one.',
     'Same name under two parents? Add the parent: <code>@childrentoiletries</code>',
+    'Names with spaces: join them, e.g. <code>@airtimemufaddal</code>',
+    '/categories lists them all; <code>/categories travel</code> shows one.',
     '',
     '<b>🔁 Transfer</b> — use &gt; between two accounts (no category needed)',
     '<code>5000 #boi &gt; #inrm</code>  from BOI to INR (Mufaddal)',
@@ -53,6 +56,8 @@ export class HelpMenu {
     '',
     '<b>⚙️ Commands</b>',
     '/accounts  list your accounts',
+    '/categories  list expense categories and subcategories',
+    '<code>/categories deeni</code>  just one main category',
     '/default  show the default account',
     '<code>/default mpesa</code>  change it',
     '/cancel  drop an entry waiting for a category, or an edit',

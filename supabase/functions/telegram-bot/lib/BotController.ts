@@ -1,8 +1,9 @@
 /**
  * BotController — routes one Telegram update: commands (/start, /help,
- * /accounts, /default, /cancel), entry messages, answers to a pending step,
- * and button taps. Only chats listed in `telegram_links` may log.
+ * /accounts, /categories, /default, /cancel), entry messages, answers to a
+ * pending step, and button taps. Only chats listed in `telegram_links` may log.
  */
+import { CategoryDirectory } from './CategoryDirectory.ts';
 import { EntryParser } from './EntryParser.ts';
 import type { EntryService } from './EntryService.ts';
 import { HelpMenu } from './HelpMenu.ts';
@@ -127,6 +128,15 @@ export class BotController {
     if (command === '/accounts') {
       const lines = accounts.map((a) => `• ${a.name}${a.id === link.default_account_id ? ' (default)' : ''}`);
       return void await this.#telegram.reply(chatId, lines.length ? lines.join('\n') : 'No accounts you can add to.');
+    }
+    if (command === '/categories') {
+      const filter = text.split(/\s+/).slice(1).join(' ');
+      const pages = new CategoryDirectory(book).pages(filter);
+      if (!pages.length) {
+        return void await this.#telegram.reply(chatId, `No main category matches "${filter}". Send /categories to see them all.`, messageId);
+      }
+      for (const page of pages) await this.#telegram.send(chatId, page, { html: true });
+      return;
     }
     if (command === '/default') {
       const hint = text.split(/\s+/).slice(1).join(' ').replace(/^#/, '').trim();
