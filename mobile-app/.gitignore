@@ -12,3 +12,6 @@ ios/
 # local env (real values live here; keep out of git — use `.env.example` as the template)
 .env
 .env.local
+
+# Google OAuth client secrets downloaded from Cloud Console — never commit
+client_secret_*.json
