@@ -1,14 +1,13 @@
 /**
- * BotController — handles one Telegram update: commands (/start, /help,
- * /accounts, /default) and entry messages. Only chats listed in
- * `telegram_links` may log.
+ * BotController — routes one Telegram update: commands (/start, /help,
+ * /accounts, /default, /cancel), entry messages, answers to a pending step,
+ * and button taps. Only chats listed in `telegram_links` may log.
  */
 import { EntryParser } from './EntryParser.ts';
+import type { EntryService } from './EntryService.ts';
 import { HelpMenu } from './HelpMenu.ts';
-import type { PocketStore } from './PocketStore.ts';
+import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import type { TelegramClient } from './TelegramClient.ts';
-import type { ExchangeRates } from './ExchangeRates.ts';
-import { TransactionFactory } from './TransactionFactory.ts';
 
 export interface TelegramMessage {
   message_id: number;
@@ -16,36 +15,24 @@ export interface TelegramMessage {
   text?: string;
 }
 
-/** Today's date (or N days ago) as YYYY-MM-DD in a fixed time zone. */
-export class LocalClock {
-  readonly #timeZone: string;
-
-  constructor(timeZone: string) {
-    this.#timeZone = timeZone;
-  }
-
-  isoDate(daysAgo = 0): string {
-    const when = new Date(Date.now() - daysAgo * 86_400_000);
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: this.#timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(when);
-  }
+export interface TelegramCallback {
+  id: string;
+  data?: string;
+  message?: TelegramMessage;
 }
 
 export class BotController {
   readonly #store: PocketStore;
   readonly #telegram: TelegramClient;
-  readonly #clock: LocalClock;
-  readonly #rates: ExchangeRates;
+  readonly #entries: EntryService;
 
-  constructor(store: PocketStore, telegram: TelegramClient, clock: LocalClock, rates: ExchangeRates) {
+  constructor(store: PocketStore, telegram: TelegramClient, entries: EntryService) {
     this.#store = store;
     this.#telegram = telegram;
-    this.#clock = clock;
-    this.#rates = rates;
+    this.#entries = entries;
   }
 
-  async handle(message: TelegramMessage): Promise<void> {
+  async handleMessage(message: TelegramMessage): Promise<void> {
     const chatId = message.chat.id;
     const text = (message.text || '').trim();
     if (!text) return;
@@ -57,99 +44,116 @@ export class BotController {
       return;
     }
 
-    const command = text.split(/[\s@]/)[0].toLowerCase();
-    if (command === '/start' || command === '/help') {
-      await this.#showHelp(chatId);
-      return;
-    }
-
     try {
-      const isOwner = await this.#store.isOwnerEmail(link.owner_id, link.member_email);
-      const { book } = await this.#store.loadBook(link.owner_id);
-      const accounts = book.writableAccounts(isOwner ? null : link.member_email);
+      const command = text.split(/[\s@]/)[0].toLowerCase();
+      if (command.startsWith('/')) return void await this.#command(command, text, link, chatId, message.message_id);
 
-      if (command === '/accounts') {
-        const lines = accounts.map((a) => `• ${a.name}${a.id === link.default_account_id ? ' (default)' : ''}`);
-        await this.#telegram.reply(chatId, lines.length ? lines.join('\n') : 'No accounts you can add to.');
-        return;
+      const pending = await this.#store.getPending(chatId);
+      if (pending?.kind === 'edit') {
+        return void await this.#entries.record({
+          link, chatId, seed: pending.seed_message_id, text, replace: true,
+          replyTo: message.message_id, confirmMessageId: pending.confirm_message_id,
+        });
       }
-      if (command === '/default') {
-        const hint = text.split(/\s+/).slice(1).join(' ').replace(/^#/, '').trim();
-        if (!hint) {
-          const current = accounts.find((a) => a.id === link.default_account_id);
-          await this.#telegram.reply(chatId,
-            `Default account: ${current?.name ?? 'none'}\nChange it with /default <account name>, e.g. /default boi`);
-          return;
+      if (pending?.kind === 'category' && pending.source_text) {
+        // A message with an amount is a new entry; anything else names the category.
+        if (!new EntryParser([]).parse(text).ok) {
+          return void await this.#entries.record({
+            link, chatId, seed: pending.seed_message_id, text: pending.source_text, replace: pending.replace,
+            replyTo: message.message_id, categoryName: text,
+            promptMessageId: pending.prompt_message_id, confirmMessageId: pending.confirm_message_id,
+          });
         }
-        const chosen = book.resolveAccount(hint, null, accounts);
-        if (!chosen.ok) return void await this.#telegram.reply(chatId, chosen.reason, message.message_id);
-        await this.#store.setDefaultAccount(chatId, chosen.value.id);
-        await this.#telegram.reply(chatId, `✅ Default account is now ${chosen.value.name}`, message.message_id);
-        return;
+        await this.#dropPending(chatId);
       }
-      if (command.startsWith('/')) {
-        await this.#showHelp(chatId);
-        return;
-      }
-
-      const parsed = new EntryParser(book.paymentTypes).parse(text);
-      if (!parsed.ok) return void await this.#telegram.reply(chatId, parsed.reason, message.message_id);
-      const { entry } = parsed;
-
-      const account = book.resolveAccount(entry.accountHint, link.default_account_id, accounts);
-      if (!account.ok) return void await this.#telegram.reply(chatId, account.reason, message.message_id);
-      let toAccount = null;
-      if (entry.type === 'transfer') {
-        const to = book.resolveAccount(entry.toAccountHint, null, accounts);
-        if (!to.ok) return void await this.#telegram.reply(chatId, to.reason, message.message_id);
-        toAccount = to.value;
-      }
-      const category = book.resolveCategory(entry.categoryHint, entry.type);
-      if (!category.ok) return void await this.#telegram.reply(chatId, category.reason, message.message_id);
-
-      const factory = new TransactionFactory(book, await this.#rates.current(book.fxRates));
-      const txs = await factory.build({
-        chatId,
-        messageId: message.message_id,
-        entry,
-        account: account.value,
-        toAccount,
-        category: category.value,
-        date: this.#clock.isoDate(entry.daysAgo),
-        addedBy: isOwner ? null : link.member_email.toLowerCase().trim(),
-      });
-
-      const result = await this.#store.writerFor(link, isOwner).save(txs);
-      if (result === 'duplicate') return;
-
-      const [tx, inLeg] = txs;
-      const money = (t: { amount: number; currency: string }) => factory.money.format(t.amount, t.currency);
-      const parts = tx.type === 'transfer'
-        ? [
-          `🔁 ${money(tx)} ${account.value.name} → ${toAccount!.name}`
-            + (inLeg.currency !== tx.currency ? ` (received ${money(inLeg)})` : ''),
-          tx.note || null,
-        ]
-        : [
-          `✅ ${tx.type === 'income' ? '+' : ''}${money(tx)}`,
-          tx.note || null,
-          tx.paymentType,
-          account.value.name,
-          category.value?.name ?? null,
-        ];
-      const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;
-      const pending = isOwner ? '' : '\nIt will appear once the owner\'s app syncs.';
-      await this.#telegram.reply(chatId, `${parts.filter(Boolean).join(' · ')}\n${when}${pending}`, message.message_id);
+      await this.#entries.record({ link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id });
     } catch (err) {
       console.error('[telegram-bot]', err);
-      const reason = err instanceof Error ? err.message : 'Something went wrong.';
-      await this.#telegram.reply(chatId, `⚠️ Not saved: ${reason}`, message.message_id);
+      await this.#telegram.reply(chatId, `⚠️ Not saved: ${BotController.#reason(err)}`, message.message_id);
     }
   }
 
-  /** Sends the guide and (re)registers the menu commands, so the menu appears without extra setup. */
-  async #showHelp(chatId: number): Promise<void> {
+  async handleCallback(cb: TelegramCallback): Promise<void> {
+    const msg = cb.message;
+    if (!msg) return void await this.#telegram.answer(cb.id);
+    const chatId = msg.chat.id;
+    const link = await this.#store.findLink(chatId);
+    if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not linked.');
+
+    const [action, value] = (cb.data || '').split(':');
+    try {
+      if (action === 'cat') {
+        const pending = await this.#store.getPending(chatId);
+        if (pending?.kind !== 'category' || pending.prompt_message_id !== msg.message_id || !pending.source_text) {
+          return void await this.#telegram.answer(cb.id, 'This choice has expired. Send the entry again.');
+        }
+        await this.#telegram.answer(cb.id);
+        await this.#entries.record({
+          link, chatId, seed: pending.seed_message_id, text: pending.source_text, replace: pending.replace,
+          categoryId: value, promptMessageId: msg.message_id, confirmMessageId: pending.confirm_message_id,
+        });
+      } else if (action === 'edit') {
+        await this.#telegram.answer(cb.id);
+        await this.#entries.startEdit(chatId, Number(value), msg.message_id);
+      } else if (action === 'del') {
+        const done = await this.#entries.remove(link, chatId, Number(value), msg.message_id, msg.text || '');
+        await this.#telegram.answer(cb.id, done ? 'Deleted' : 'Already removed');
+      } else {
+        await this.#telegram.answer(cb.id);
+      }
+    } catch (err) {
+      console.error('[telegram-bot] callback', err);
+      await this.#telegram.answer(cb.id, '⚠️ Not done');
+      await this.#telegram.send(chatId, `⚠️ ${BotController.#reason(err)}`, { replyTo: msg.message_id });
+    }
+  }
+
+  async #command(command: string, text: string, link: TelegramLink, chatId: number, messageId: number): Promise<void> {
+    if (command === '/start' || command === '/help') {
+      await this.#telegram.setCommands(HelpMenu.COMMANDS);
+      return void await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
+    }
+    if (command === '/cancel') {
+      const had = await this.#dropPending(chatId);
+      return void await this.#telegram.reply(chatId, had ? 'Cancelled. Nothing was changed.' : 'Nothing to cancel.', messageId);
+    }
+
+    const isOwner = await this.#store.isOwnerEmail(link.owner_id, link.member_email);
+    const { book } = await this.#store.loadBook(link.owner_id);
+    const accounts = book.writableAccounts(isOwner ? null : link.member_email);
+
+    if (command === '/accounts') {
+      const lines = accounts.map((a) => `• ${a.name}${a.id === link.default_account_id ? ' (default)' : ''}`);
+      return void await this.#telegram.reply(chatId, lines.length ? lines.join('\n') : 'No accounts you can add to.');
+    }
+    if (command === '/default') {
+      const hint = text.split(/\s+/).slice(1).join(' ').replace(/^#/, '').trim();
+      if (!hint) {
+        const current = accounts.find((a) => a.id === link.default_account_id);
+        return void await this.#telegram.reply(chatId,
+          `Default account: ${current?.name ?? 'none'}\nChange it with /default <account name>, e.g. /default boi`);
+      }
+      const chosen = book.resolveAccount(hint, null, accounts);
+      if (!chosen.ok) return void await this.#telegram.reply(chatId, chosen.reason, messageId);
+      await this.#store.setDefaultAccount(chatId, chosen.value.id);
+      return void await this.#telegram.reply(chatId, `✅ Default account is now ${chosen.value.name}`, messageId);
+    }
     await this.#telegram.setCommands(HelpMenu.COMMANDS);
-    await this.#telegram.reply(chatId, HelpMenu.GUIDE, undefined, true);
+    await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
+  }
+
+  /** Drops a waiting step; a category question is marked as not saved. */
+  async #dropPending(chatId: number): Promise<boolean> {
+    const pending = await this.#store.getPending(chatId);
+    if (!pending) return false;
+    await this.#store.clearPending(chatId);
+    if (pending.kind === 'category' && pending.prompt_message_id) {
+      await this.#telegram.edit(chatId, pending.prompt_message_id, `✖️ Not saved (no category chosen): “${pending.source_text ?? ''}”`);
+    }
+    return true;
+  }
+
+  static #reason(err: unknown): string {
+    return err instanceof Error ? err.message : 'Something went wrong.';
   }
 }

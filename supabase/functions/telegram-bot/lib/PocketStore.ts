@@ -1,12 +1,13 @@
 /**
  * PocketStore — the bot's data access. Reads the Telegram link table and the
- * owner's book, and provides the two ways an entry reaches Pocket:
+ * owner's book, keeps each chat's pending step (a category to pick, an entry
+ * to correct), and provides the two ways an entry reaches Pocket:
  *
- *   OwnerBookWriter            the owner logs their own entry → appended to
+ *   OwnerBookWriter            the owner logs their own entry → written to
  *                              `user_data` with the app's versioned
  *                              compare-and-swap, so a concurrent save by the
  *                              app is never overwritten.
- *   FamilyContributionWriter   a family member logs an entry → dropped into the
+ *   FamilyContributionWriter   a family member logs an entry → sent through the
  *                              owner's `family_contributions` inbox, where the
  *                              owner's app checks permissions and merges it.
  */
@@ -21,14 +22,30 @@ export interface TelegramLink {
   default_account_id: string | null;
 }
 
+/** What the bot is waiting for in a chat. */
+export interface PendingStep {
+  kind: 'category' | 'edit';
+  seed_message_id: number;          // the message whose entry this is (ids derive from it)
+  source_text: string | null;       // category step: the entry text awaiting a category
+  replace: boolean;                 // true when this corrects an existing entry
+  prompt_message_id: number | null; // category step: the picker message
+  confirm_message_id: number | null; // edit: the old confirmation to mark as edited
+}
+
 export type SaveResult = 'saved' | 'duplicate';
 
 export interface EntryWriter {
   /** Saves all rows of one entry (one row, or a transfer's two legs) together. */
-  save(txs: PocketTransaction[]): Promise<SaveResult>;
+  add(txs: PocketTransaction[]): Promise<SaveResult>;
+  /** Swaps an entry's rows (any of `oldIds` that exist) for `txs`. */
+  replace(oldIds: string[], txs: PocketTransaction[]): Promise<void>;
+  /** Removes an entry's rows; returns how many were found. */
+  remove(ids: string[]): Promise<number>;
 }
 
 export class PocketStore {
+  static readonly #PENDING_TTL_MS = 30 * 60 * 1000;
+
   readonly #sb: SupabaseClient;
 
   constructor(sb: SupabaseClient) {
@@ -49,6 +66,33 @@ export class PocketStore {
     if (error) throw error;
   }
 
+  // ── Pending steps ────────────────────────────────────────────────────
+
+  async getPending(chatId: number): Promise<PendingStep | null> {
+    const { data, error } = await this.#sb
+      .from('telegram_pending').select('*').eq('chat_id', chatId).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    if (Date.now() - Date.parse(data.created_at) > PocketStore.#PENDING_TTL_MS) {
+      await this.clearPending(chatId);
+      return null;
+    }
+    return data;
+  }
+
+  async setPending(chatId: number, step: PendingStep): Promise<void> {
+    const { error } = await this.#sb.from('telegram_pending')
+      .upsert({ chat_id: chatId, ...step, created_at: new Date().toISOString() });
+    if (error) throw error;
+  }
+
+  async clearPending(chatId: number): Promise<void> {
+    const { error } = await this.#sb.from('telegram_pending').delete().eq('chat_id', chatId);
+    if (error) throw error;
+  }
+
+  // ── Books ────────────────────────────────────────────────────────────
+
   async loadBook(ownerId: string): Promise<{ book: PocketBook; version: number; data: Record<string, unknown> }> {
     const { data, error } = await this.#sb
       .from('user_data').select('data, version').eq('id', ownerId).maybeSingle();
@@ -67,7 +111,7 @@ export class PocketStore {
   writerFor(link: TelegramLink, isOwner: boolean): EntryWriter {
     return isOwner
       ? new OwnerBookWriter(this, link.owner_id)
-      : new FamilyContributionWriter(this.#sb, link.owner_id, link.member_email);
+      : new FamilyContributionWriter(this.#sb, this, link.owner_id, link.member_email);
   }
 
   /** One compare-and-swap attempt; false when another device saved first. */
@@ -82,6 +126,8 @@ export class PocketStore {
   }
 }
 
+type TxRow = { id: string };
+
 export class OwnerBookWriter implements EntryWriter {
   static readonly #MAX_ATTEMPTS = 4;
 
@@ -93,45 +139,124 @@ export class OwnerBookWriter implements EntryWriter {
     this.#ownerId = ownerId;
   }
 
-  async save(txs: PocketTransaction[]): Promise<SaveResult> {
+  async add(txs: PocketTransaction[]): Promise<SaveResult> {
+    let duplicate = false;
+    await this.#mutate((rows) => {
+      duplicate = rows.some((t) => t.id === txs[0].id);
+      return duplicate ? null : [...rows, ...txs];
+    });
+    return duplicate ? 'duplicate' : 'saved';
+  }
+
+  async replace(oldIds: string[], txs: PocketTransaction[]): Promise<void> {
+    const drop = new Set(oldIds);
+    await this.#mutate((rows) => [...rows.filter((t) => !drop.has(t.id)), ...txs]);
+  }
+
+  async remove(ids: string[]): Promise<number> {
+    const drop = new Set(ids);
+    let removed = 0;
+    await this.#mutate((rows) => {
+      const kept = rows.filter((t) => !drop.has(t.id));
+      removed = rows.length - kept.length;
+      return removed ? kept : null;
+    });
+    return removed;
+  }
+
+  /** Applies `change` to the transaction list under compare-and-swap; null means "nothing to write". */
+  async #mutate(change: (rows: TxRow[]) => TxRow[] | null): Promise<void> {
     for (let attempt = 0; attempt < OwnerBookWriter.#MAX_ATTEMPTS; attempt++) {
-      const { book, version, data } = await this.#store.loadBook(this.#ownerId);
-      if (book.hasTransaction(txs[0].id)) return 'duplicate';
-      const transactions = Array.isArray(data.transactions) ? data.transactions : [];
-      const next = { ...data, transactions: [...transactions, ...txs] };
-      if (await this.#store.casUpdate(this.#ownerId, version, next)) return 'saved';
+      const { version, data } = await this.#store.loadBook(this.#ownerId);
+      const rows = (Array.isArray(data.transactions) ? data.transactions : []) as TxRow[];
+      const next = change(rows);
+      if (next === null) return;
+      if (await this.#store.casUpdate(this.#ownerId, version, { ...data, transactions: next })) return;
     }
-    throw new Error('The app was saving at the same moment. Please send it again.');
+    throw new Error('The app was saving at the same moment. Please try again.');
   }
 }
 
 export class FamilyContributionWriter implements EntryWriter {
   readonly #sb: SupabaseClient;
+  readonly #store: PocketStore;
   readonly #ownerId: string;
   readonly #memberEmail: string;
 
-  constructor(sb: SupabaseClient, ownerId: string, memberEmail: string) {
+  constructor(sb: SupabaseClient, store: PocketStore, ownerId: string, memberEmail: string) {
     this.#sb = sb;
+    this.#store = store;
     this.#ownerId = ownerId;
     this.#memberEmail = memberEmail.toLowerCase().trim();
   }
 
-  async save(txs: PocketTransaction[]): Promise<SaveResult> {
-    const { data: existing, error: lookupError } = await this.#sb
+  async add(txs: PocketTransaction[]): Promise<SaveResult> {
+    const { data: existing, error } = await this.#sb
       .from('family_contributions').select('id')
       .eq('owner_id', this.#ownerId).eq('tx_data->>id', txs[0].id).limit(1);
-    if (lookupError) throw lookupError;
+    if (error) throw error;
     if (existing?.length) return 'duplicate';
+    await this.#insert(txs);
+    return 'saved';
+  }
 
-    // One insert, so a transfer's two legs land together or not at all.
-    const { error } = await this.#sb.from('family_contributions').insert(txs.map((tx) => ({
+  async replace(oldIds: string[], txs: PocketTransaction[]): Promise<void> {
+    const markers = await this.#retract(oldIds, new Set(txs.map((t) => t.id)));
+    // One insert: the owner's app applies the markers before the new rows (audit H6).
+    await this.#insert([...markers, ...txs]);
+  }
+
+  async remove(ids: string[]): Promise<number> {
+    const { book } = await this.#store.loadBook(this.#ownerId);
+    const unsynced = await this.#dropUnsynced(ids);
+    const markers = await this.#retract(ids, new Set(), book);
+    if (markers.length) await this.#insert(markers);
+    return unsynced + markers.length;
+  }
+
+  /**
+   * Takes back rows: ones the owner's app hasn't merged yet are simply deleted
+   * from the inbox; merged ones get the same delete markers the app sends.
+   * Changing a merged row needs edit access, deleting one needs full access.
+   */
+  async #retract(ids: string[], reAdded: Set<string>, loaded?: PocketBook): Promise<Record<string, unknown>[]> {
+    const book = loaded ?? (await this.#store.loadBook(this.#ownerId)).book;
+    if (!loaded) await this.#dropUnsynced(ids);
+    const markers: Record<string, unknown>[] = [];
+    for (const id of ids) {
+      const accountId = book.accountOfTransaction(id);
+      if (!accountId) continue;
+      const replacing = reAdded.has(id);
+      const needed = replacing ? 'edit' : 'full';
+      if (!PocketBook.allows(book.accessFor(this.#memberEmail, accountId), needed)) {
+        throw new Error(`This entry is already in the owner's book, and changing it needs ${needed} access. Ask the owner to ${replacing ? 'edit' : 'delete'} it.`);
+      }
+      markers.push(replacing
+        ? { _delete: true, _replace: true, id: `rep_${id}_${Date.now()}`, targetId: id, accountId }
+        : { _delete: true, id: `del_${id}_${Date.now()}`, targetId: id, accountId });
+    }
+    return markers;
+  }
+
+  /** Deletes this member's not-yet-merged inbox rows for these ids; returns how many. */
+  async #dropUnsynced(ids: string[]): Promise<number> {
+    const { data, error } = await this.#sb.from('family_contributions')
+      .delete()
+      .eq('owner_id', this.#ownerId).eq('member_email', this.#memberEmail).eq('synced', false)
+      .in('tx_data->>id', ids)
+      .select('id');
+    if (error) throw error;
+    return data?.length ?? 0;
+  }
+
+  async #insert(rows: Record<string, unknown>[]): Promise<void> {
+    const { error } = await this.#sb.from('family_contributions').insert(rows.map((tx) => ({
       owner_id: this.#ownerId,
       member_email: this.#memberEmail,
-      account_id: tx.accountId,
+      account_id: (tx as { accountId?: string }).accountId,
       tx_data: tx,
       synced: false,
     })));
     if (error) throw error;
-    return 'saved';
   }
 }
