@@ -1,18 +1,21 @@
 /**
- * BotController — routes one Telegram update: commands (/start, /help,
- * /accounts, /categories, /default, /cancel), entry messages, answers to a
- * pending step, and button taps. Only chats listed in `telegram_links` may log.
+ * BotController — routes one Telegram update. Unlinked chats can only /link
+ * (and answer with the emailed code). Linked chats get the commands (/help,
+ * /accounts, /categories, /default, /cancel, /unlink), entry messages,
+ * answers to a pending step, and button taps.
  */
 import { CategoryDirectory } from './CategoryDirectory.ts';
 import { EntryParser } from './EntryParser.ts';
 import type { EntryService } from './EntryService.ts';
 import { HelpMenu } from './HelpMenu.ts';
+import { LinkService } from './LinkService.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import type { TelegramClient } from './TelegramClient.ts';
+import { Workspace } from './Workspace.ts';
 
 export interface TelegramMessage {
   message_id: number;
-  chat: { id: number };
+  chat: { id: number; type?: string };
   text?: string;
 }
 
@@ -26,33 +29,45 @@ export class BotController {
   readonly #store: PocketStore;
   readonly #telegram: TelegramClient;
   readonly #entries: EntryService;
+  readonly #links: LinkService;
 
-  constructor(store: PocketStore, telegram: TelegramClient, entries: EntryService) {
+  constructor(store: PocketStore, telegram: TelegramClient, entries: EntryService, links: LinkService) {
     this.#store = store;
     this.#telegram = telegram;
     this.#entries = entries;
+    this.#links = links;
   }
 
   async handleMessage(message: TelegramMessage): Promise<void> {
     const chatId = message.chat.id;
     const text = (message.text || '').trim();
     if (!text) return;
-
-    const link = await this.#store.findLink(chatId);
-    if (!link) {
-      await this.#telegram.reply(chatId,
-        `This chat isn't linked to Pocket yet.\nYour chat ID is ${chatId} — add it to the telegram_links table.`);
-      return;
+    if (message.chat.type && message.chat.type !== 'private') {
+      return void await this.#telegram.reply(chatId, 'Please message me directly, not in a group.');
     }
 
     try {
       const command = text.split(/[\s@]/)[0].toLowerCase();
-      if (command.startsWith('/')) return void await this.#command(command, text, link, chatId, message.message_id);
+      const argument = text.split(/\s+/).slice(1).join(' ');
+
+      // Linking works for any chat: a code answers a pending /link, /link starts one.
+      if (LinkService.isCode(text)) {
+        const request = await this.#store.getLinkRequest(chatId);
+        if (request) return void await this.#links.verify(chatId, request, text);
+      }
+      if (command === '/link') return void await this.#links.start(chatId, argument);
+
+      const link = await this.#store.findLink(chatId);
+      if (!link) {
+        return void await this.#telegram.reply(chatId,
+          'Welcome to Pocket! To connect this chat to your Pocket account, send /link followed by the email you sign in with, e.g.\n/link name@gmail.com');
+      }
+      if (command.startsWith('/')) return void await this.#command(command, argument, link, chatId, message.message_id);
 
       const pending = await this.#store.getPending(chatId);
       if (pending?.kind === 'edit') {
         return void await this.#entries.record({
-          link, chatId, seed: pending.seed_message_id, text, replace: true,
+          link, chatId, seed: pending.seed_message_id, text, replace: true, oldOwnerId: pending.owner_id,
           replyTo: message.message_id, confirmMessageId: pending.confirm_message_id,
         });
       }
@@ -60,7 +75,8 @@ export class BotController {
         // A message with an amount is a new entry; anything else names the category.
         if (!new EntryParser([]).parse(text).ok) {
           return void await this.#entries.record({
-            link, chatId, seed: pending.seed_message_id, text: pending.source_text, replace: pending.replace,
+            link, chatId, seed: pending.seed_message_id, text: pending.source_text,
+            replace: pending.replace, oldOwnerId: pending.owner_id,
             replyTo: message.message_id, categoryName: text,
             promptMessageId: pending.prompt_message_id, confirmMessageId: pending.confirm_message_id,
           });
@@ -79,9 +95,10 @@ export class BotController {
     if (!msg) return void await this.#telegram.answer(cb.id);
     const chatId = msg.chat.id;
     const link = await this.#store.findLink(chatId);
-    if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not linked.');
+    if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not connected. Send /link.');
 
-    const [action, value] = (cb.data || '').split(':');
+    // edit/del carry the book's owner id; buttons from before shared books meant your own book.
+    const [action, value, ownerId = link.user_id] = (cb.data || '').split(':');
     try {
       if (action === 'cat' || action === 'main' || action === 'back') {
         // cat: a subcategory (saves) · main: open its subcategories · back: all main categories
@@ -91,15 +108,16 @@ export class BotController {
         }
         await this.#telegram.answer(cb.id);
         await this.#entries.record({
-          link, chatId, seed: pending.seed_message_id, text: pending.source_text, replace: pending.replace,
+          link, chatId, seed: pending.seed_message_id, text: pending.source_text,
+          replace: pending.replace, oldOwnerId: pending.owner_id,
           categoryId: action === 'back' ? undefined : value, browseMains: action === 'back',
           promptMessageId: msg.message_id, confirmMessageId: pending.confirm_message_id,
         });
       } else if (action === 'edit') {
         await this.#telegram.answer(cb.id);
-        await this.#entries.startEdit(chatId, Number(value), msg.message_id);
+        await this.#entries.startEdit(link, chatId, Number(value), ownerId, msg.message_id);
       } else if (action === 'del') {
-        const done = await this.#entries.remove(link, chatId, Number(value), msg.message_id, msg.text || '');
+        const done = await this.#entries.remove(link, chatId, Number(value), ownerId, msg.message_id, msg.text || '');
         await this.#telegram.answer(cb.id, done ? 'Deleted' : 'Already removed');
       } else {
         await this.#telegram.answer(cb.id);
@@ -111,45 +129,53 @@ export class BotController {
     }
   }
 
-  async #command(command: string, text: string, link: TelegramLink, chatId: number, messageId: number): Promise<void> {
-    if (command === '/start' || command === '/help') {
-      await this.#telegram.setCommands(HelpMenu.COMMANDS);
-      return void await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
-    }
+  async #command(command: string, argument: string, link: TelegramLink, chatId: number, messageId: number): Promise<void> {
+    if (command === '/start' || command === '/help') return void await this.#help(chatId);
+    if (command === '/unlink') return void await this.#links.unlink(chatId);
     if (command === '/cancel') {
       const had = await this.#dropPending(chatId);
       return void await this.#telegram.reply(chatId, had ? 'Cancelled. Nothing was changed.' : 'Nothing to cancel.', messageId);
     }
 
-    const isOwner = await this.#store.isOwnerEmail(link.owner_id, link.member_email);
-    const { book } = await this.#store.loadBook(link.owner_id);
-    const accounts = book.writableAccounts(isOwner ? null : link.member_email);
+    const ws = await Workspace.load(this.#store, link);
+    const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };
+    const isDefault = (ownerId: string, accountId: string) =>
+      ownerId === link.default_owner_id && accountId === link.default_account_id;
 
     if (command === '/accounts') {
-      const lines = accounts.map((a) => `• ${a.name}${a.id === link.default_account_id ? ' (default)' : ''}`);
-      return void await this.#telegram.reply(chatId, lines.length ? lines.join('\n') : 'No accounts you can add to.');
+      const sections = ws.accesses.map((a) => {
+        const title = a.isOwn ? `Your accounts (${link.email})` : `Shared by ${a.label}`;
+        const rows = a.accounts.map((acc) => `• ${acc.name}${isDefault(a.ownerId, acc.id) ? ' (default)' : ''}`);
+        return [title, ...rows].join('\n');
+      });
+      return void await this.#telegram.reply(chatId, sections.length ? sections.join('\n\n') : 'No accounts you can add to yet.');
     }
     if (command === '/categories') {
-      const filter = text.split(/\s+/).slice(1).join(' ');
-      const pages = new CategoryDirectory(book).pages(filter);
+      const current = ws.resolve(null, fallback);
+      const book = current.ok ? current.value.access.book : ws.accesses[0]?.book;
+      const pages = book ? new CategoryDirectory(book).pages(argument) : [];
       if (!pages.length) {
-        return void await this.#telegram.reply(chatId, `No main category matches "${filter}". Send /categories to see them all.`, messageId);
+        return void await this.#telegram.reply(chatId, `No main category matches "${argument}". Send /categories to see them all.`, messageId);
       }
       for (const page of pages) await this.#telegram.send(chatId, page, { html: true });
       return;
     }
     if (command === '/default') {
-      const hint = text.split(/\s+/).slice(1).join(' ').replace(/^#/, '').trim();
+      const hint = argument.replace(/^#/, '').trim();
       if (!hint) {
-        const current = accounts.find((a) => a.id === link.default_account_id);
+        const current = ws.resolve(null, fallback);
         return void await this.#telegram.reply(chatId,
-          `Default account: ${current?.name ?? 'none'}\nChange it with /default <account name>, e.g. /default boi`);
+          `Default account: ${current.ok ? ws.label(current.value) : 'none'}\nChange it with /default <account name>, e.g. /default boi`);
       }
-      const chosen = book.resolveAccount(hint, null, accounts);
+      const chosen = ws.resolve(hint, null);
       if (!chosen.ok) return void await this.#telegram.reply(chatId, chosen.reason, messageId);
-      await this.#store.setDefaultAccount(chatId, chosen.value.id);
-      return void await this.#telegram.reply(chatId, `✅ Default account is now ${chosen.value.name}`, messageId);
+      await this.#store.setDefaultAccount(chatId, chosen.value.access.ownerId, chosen.value.account.id);
+      return void await this.#telegram.reply(chatId, `✅ Default account is now ${ws.label(chosen.value)}`, messageId);
     }
+    await this.#help(chatId);
+  }
+
+  async #help(chatId: number): Promise<void> {
     await this.#telegram.setCommands(HelpMenu.COMMANDS);
     await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
   }

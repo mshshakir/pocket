@@ -1,10 +1,11 @@
 /**
- * EntryService — records an entry from a message, asks for a category when
- * one is missing (nothing is saved until it is chosen), and handles the
- * ✏️ Edit / 🗑 Delete buttons on each confirmation.
+ * EntryService — records an entry from a message into the right book, asks
+ * for a category when one is missing (nothing is saved until it is chosen),
+ * and handles the ✏️ Edit / 🗑 Delete buttons on each confirmation.
  *
- * Categories are picked in two steps: a main category, then one of its
- * subcategories. Only a subcategory can be saved.
+ * The book is the one holding the chosen account: the person's own, or a
+ * space shared with them (see Workspace). Categories come from that book and
+ * are picked in two steps, main then subcategory; only a subcategory saves.
  *
  * Row ids derive from the "seed" message (the one that first carried the
  * entry), so an edit rewrites the same rows and a delete finds them again.
@@ -16,6 +17,7 @@ import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import type { Keyboard, TelegramClient } from './TelegramClient.ts';
 import { type PocketTransaction, TransactionFactory } from './TransactionFactory.ts';
 import type { LocalClock } from './LocalClock.ts';
+import { type AccountChoice, Workspace } from './Workspace.ts';
 
 export interface RecordRequest {
   link: TelegramLink;
@@ -23,6 +25,7 @@ export interface RecordRequest {
   seed: number;                     // message id the entry's row ids derive from
   text: string;                     // the entry as typed
   replace: boolean;                 // correcting an existing entry
+  oldOwnerId?: string | null;       // replace: the book the old entry is in
   replyTo?: number;                 // message to reply under
   categoryId?: string;              // chosen with a button (a main one opens its subcategories)
   browseMains?: boolean;            // "back" tapped: show the main categories again
@@ -48,21 +51,24 @@ export class EntryService {
 
   async record(req: RecordRequest): Promise<void> {
     const { link, chatId } = req;
-    const isOwner = await this.#store.isOwnerEmail(link.owner_id, link.member_email);
-    const { book } = await this.#store.loadBook(link.owner_id);
-    const accounts = book.writableAccounts(isOwner ? null : link.member_email);
+    const ws = await Workspace.load(this.#store, link);
 
-    const parsed = new EntryParser(book.paymentTypes).parse(req.text);
+    const parsed = new EntryParser(ws.paymentTypes).parse(req.text);
     if (!parsed.ok) return void await this.#telegram.reply(chatId, parsed.reason, req.replyTo);
     const { entry } = parsed;
 
-    const account = book.resolveAccount(entry.accountHint, link.default_account_id, accounts);
-    if (!account.ok) return void await this.#telegram.reply(chatId, account.reason, req.replyTo);
-    let toAccount = null;
+    const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };
+    const chosen = ws.resolve(entry.accountHint, fallback);
+    if (!chosen.ok) return void await this.#telegram.reply(chatId, chosen.reason, req.replyTo);
+    const from = chosen.value;
+    const { access } = from;
+    const book = access.book;
+
+    let to: AccountChoice | null = null;
     if (entry.type === 'transfer') {
-      const to = book.resolveAccount(entry.toAccountHint, null, accounts);
-      if (!to.ok) return void await this.#telegram.reply(chatId, to.reason, req.replyTo);
-      toAccount = to.value;
+      const target = ws.resolve(entry.toAccountHint, null, access); // same book only
+      if (!target.ok) return void await this.#telegram.reply(chatId, target.reason, req.replyTo);
+      to = target.value;
     }
 
     // Every expense and income needs a subcategory; transfers don't.
@@ -77,10 +83,10 @@ export class EntryService {
 
       if (req.browseMains) return void await askMains('Which category is this?');
       if (req.categoryId) {
-        const chosen = book.categoryById(req.categoryId);
-        if (!chosen) return void await askMains('That category no longer exists. Pick another:');
-        if (book.isMain(chosen)) return void await askSubs(chosen);
-        category = chosen;
+        const picked = book.categoryById(req.categoryId);
+        if (!picked) return void await askMains('Pick a category from this book:');
+        if (book.isMain(picked)) return void await askSubs(picked);
+        category = picked;
       } else if (typed) {
         const found = book.resolveCategory(typed, type);
         if (found.kind === 'main') return void await askSubs(found.main);
@@ -95,23 +101,29 @@ export class EntryService {
       chatId,
       messageId: req.seed,
       entry,
-      account: account.value,
-      toAccount,
+      account: from.account,
+      toAccount: to?.account ?? null,
       category,
       date: this.#clock.isoDate(entry.daysAgo),
-      addedBy: link.member_email.toLowerCase().trim(), // shown in the app as "Entered … by …"
+      addedBy: link.email, // shown in the app as "Entered … by …"
     });
 
-    const writer = this.#store.writerFor(link, isOwner);
-    if (req.replace) {
-      await writer.replace(await TransactionFactory.allIdsFor(chatId, req.seed), txs);
+    const writer = this.#store.writerFor(access.ownerId, link.email, access.isOwn);
+    const ids = await TransactionFactory.allIdsFor(chatId, req.seed);
+    if (req.replace && req.oldOwnerId && req.oldOwnerId !== access.ownerId) {
+      // The correction moved the entry to another book: take it out of the old one first.
+      const old = ws.access(req.oldOwnerId);
+      if (old) await this.#store.writerFor(old.ownerId, link.email, old.isOwn).remove(ids);
+      await writer.add(txs);
+    } else if (req.replace) {
+      await writer.replace(ids, txs);
     } else if (await writer.add(txs) === 'duplicate') {
       return;
     }
     await this.#store.clearPending(chatId);
 
-    const text = this.#confirmation(txs, factory, book, account.value.name, toAccount?.name ?? null, category, isOwner);
-    const buttons = EntryService.#entryButtons(req.seed);
+    const text = this.#confirmation(txs, factory, book, ws, from, to, category);
+    const buttons = EntryService.#entryButtons(req.seed, access.ownerId);
     if (req.promptMessageId) {
       await this.#telegram.edit(chatId, req.promptMessageId, text, buttons);
     } else {
@@ -123,10 +135,12 @@ export class EntryService {
   }
 
   /** ✏️ Edit tapped: wait for the corrected entry. */
-  async startEdit(chatId: number, seed: number, confirmMessageId: number): Promise<void> {
+  async startEdit(link: TelegramLink, chatId: number, seed: number, ownerId: string, confirmMessageId: number): Promise<void> {
+    const ws = await Workspace.load(this.#store, link);
+    if (!ws.access(ownerId)) throw new Error('You no longer have access to change this entry.');
     await this.#store.setPending(chatId, {
       kind: 'edit', seed_message_id: seed, source_text: null, replace: true,
-      prompt_message_id: null, confirm_message_id: confirmMessageId,
+      prompt_message_id: null, confirm_message_id: confirmMessageId, owner_id: ownerId,
     });
     await this.#telegram.send(chatId,
       '✏️ Send the corrected entry, written like a new one (e.g. 70 marol to modi street @taxi).\n'
@@ -134,10 +148,13 @@ export class EntryService {
       { replyTo: confirmMessageId, forceReply: 'Corrected entry' });
   }
 
-  /** 🗑 Delete tapped: remove the entry's rows and strike the confirmation. */
-  async remove(link: TelegramLink, chatId: number, seed: number, confirmMessageId: number, shownText: string): Promise<boolean> {
-    const isOwner = await this.#store.isOwnerEmail(link.owner_id, link.member_email);
-    const found = await this.#store.writerFor(link, isOwner).remove(await TransactionFactory.allIdsFor(chatId, seed));
+  /** 🗑 Delete tapped: remove the entry's rows from its book and strike the confirmation. */
+  async remove(link: TelegramLink, chatId: number, seed: number, ownerId: string, confirmMessageId: number, shownText: string): Promise<boolean> {
+    const ws = await Workspace.load(this.#store, link);
+    const access = ws.access(ownerId);
+    if (!access) throw new Error('You no longer have access to change this entry.');
+    const found = await this.#store.writerFor(access.ownerId, link.email, access.isOwn)
+      .remove(await TransactionFactory.allIdsFor(chatId, seed));
     const firstLine = shownText.split('\n')[0].replace(/^✅ |^🔁 /, '');
     await this.#telegram.edit(chatId, confirmMessageId, found ? `🗑 Deleted: ${firstLine}` : `🗑 Already removed: ${firstLine}`);
     return found > 0;
@@ -168,37 +185,38 @@ export class EntryService {
     }
     await this.#store.setPending(req.chatId, {
       kind: 'category', seed_message_id: req.seed, source_text: req.text, replace: req.replace,
-      prompt_message_id: promptId, confirm_message_id: req.confirmMessageId ?? null,
+      prompt_message_id: promptId, confirm_message_id: req.confirmMessageId ?? null, owner_id: req.oldOwnerId ?? null,
     });
   }
 
   #confirmation(
-    txs: PocketTransaction[], factory: TransactionFactory, book: PocketBook,
-    accountName: string, toName: string | null, category: Category | null, isOwner: boolean,
+    txs: PocketTransaction[], factory: TransactionFactory, book: PocketBook, ws: Workspace,
+    from: AccountChoice, to: AccountChoice | null, category: Category | null,
   ): string {
     const [tx, inLeg] = txs;
     const money = (t: PocketTransaction) => factory.money.format(t.amount, t.currency);
     const parts = tx.type === 'transfer'
       ? [
-        `🔁 ${money(tx)} ${accountName} → ${toName}` + (inLeg.currency !== tx.currency ? ` (received ${money(inLeg)})` : ''),
+        `🔁 ${money(tx)} ${from.account.name} → ${to!.account.name}` + (inLeg.currency !== tx.currency ? ` (received ${money(inLeg)})` : ''),
         tx.note || null,
+        from.access.isOwn ? null : `shared by ${from.access.label}`,
       ]
       : [
         `✅ ${tx.type === 'income' ? '+' : ''}${money(tx)}`,
         tx.note || null,
         category ? `🏷 ${book.categoryPath(category)}` : null,
         tx.paymentType,
-        accountName,
+        ws.label(from),
       ];
     const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;
-    const pending = isOwner ? '' : '\nIt will appear once the owner\'s app syncs.';
+    const pending = from.access.isOwn ? '' : '\nIt will appear once the owner\'s app syncs.';
     return `${parts.filter(Boolean).join(' · ')}\n${when}${pending}`;
   }
 
-  static #entryButtons(seed: number): Keyboard {
+  static #entryButtons(seed: number, ownerId: string): Keyboard {
     return [[
-      { text: '✏️ Edit', callback_data: `edit:${seed}` },
-      { text: '🗑 Delete', callback_data: `del:${seed}` },
+      { text: '✏️ Edit', callback_data: `edit:${seed}:${ownerId}` },
+      { text: '🗑 Delete', callback_data: `del:${seed}:${ownerId}` },
     ]];
   }
 }
