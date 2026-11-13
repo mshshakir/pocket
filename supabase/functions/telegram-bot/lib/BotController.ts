@@ -82,7 +82,8 @@ export class BotController {
 
     const [action, value] = (cb.data || '').split(':');
     try {
-      if (action === 'cat') {
+      if (action === 'cat' || action === 'main' || action === 'back') {
+        // cat: a subcategory (saves) · main: open its subcategories · back: all main categories
         const pending = await this.#store.getPending(chatId);
         if (pending?.kind !== 'category' || pending.prompt_message_id !== msg.message_id || !pending.source_text) {
           return void await this.#telegram.answer(cb.id, 'This choice has expired. Send the entry again.');
@@ -90,7 +91,8 @@ export class BotController {
         await this.#telegram.answer(cb.id);
         await this.#entries.record({
           link, chatId, seed: pending.seed_message_id, text: pending.source_text, replace: pending.replace,
-          categoryId: value, promptMessageId: msg.message_id, confirmMessageId: pending.confirm_message_id,
+          categoryId: action === 'back' ? undefined : value, browseMains: action === 'back',
+          promptMessageId: msg.message_id, confirmMessageId: pending.confirm_message_id,
         });
       } else if (action === 'edit') {
         await this.#telegram.answer(cb.id);
