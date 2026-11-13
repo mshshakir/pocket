@@ -15,9 +15,10 @@ Log Pocket transactions by messaging a Telegram bot.
 
 In Telegram, message **@BotFather** → `/newbot` → copy the **token**.
 
-## 2. Create the link table
+## 2. Create the tables
 
-Supabase dashboard → **SQL Editor** → run `supabase/migrations/0005_telegram_links.sql`.
+Supabase dashboard → **SQL Editor** → run `supabase/migrations/0005_telegram_links.sql`, then
+`supabase/migrations/0006_telegram_pending.sql` (the step each chat is waiting on).
 
 ## 3. Deploy the function
 
@@ -67,12 +68,11 @@ Send `/accounts` to check which accounts you can add to.
 
 | You send | Saved as |
 |---|---|
-| `500 diaper` | ₹500 expense, note "diaper", default payment type |
-| `500 diaper cash` | paid in cash (any payment type the app knows) |
-| `+45000 salary` | income |
-| `250 lunch #wallet` | into the account whose name starts with "wallet" |
-| `250 lunch @food` | category whose name starts with "food" |
-| `120 taxi yesterday` | dated yesterday |
+| `70 marol to modi street @taxi` | ₹70 expense, note "marol to modi street", category Taxi |
+| `500 diaper cash @toiletries` | paid in cash (any payment type the app knows) |
+| `+45000 salary @wazifa` | income |
+| `250 lunch #wallet @rest` | into the account whose name starts with "wallet" |
+| `120 auto yesterday @rickshaw` | dated yesterday |
 | `5000 #boi > #mpesa` | transfer from BOI to MPesa (also `→`, `->`, or just two `#accounts`) |
 | `5000 > #mpesa` | transfer from your default account |
 | `5000 #boi > #mpesa =7750` | transfer where 7,750 arrived; without `=`, the live rate is used |
@@ -81,6 +81,15 @@ Amounts are in the account's own currency (the source account for transfers); `�
 `rupees` and commas are accepted. Transfers are saved as the same linked out/in pair the app
 creates. Exchange rates come from the same live source the app uses (open.er-api.com).
 
+**Every expense and income needs a category.** Without one, the bot shows the most-used
+categories as buttons and saves nothing until one is tapped or typed. Same-named categories
+are told apart by parent (`@childrentoiletries`). Transfers need no category.
+
+**Each confirmation has ✏️ Edit and 🗑 Delete buttons.** Edit asks for the corrected entry and
+replaces the original rows in place; Delete removes them. For a family member, changes to an
+entry the owner's app has already merged follow the app's rules: editing needs edit access,
+deleting needs full access.
+
 Commands (also in the bot's menu button): `/help` shows the full guide; `/accounts` lists accounts;
-`/default` shows or changes the default account.
-Edit or delete entries in the app.
+`/default` shows or changes the default account; `/cancel` drops an entry waiting for a category,
+or an edit.

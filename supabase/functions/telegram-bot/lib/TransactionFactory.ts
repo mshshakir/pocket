@@ -69,6 +69,11 @@ export class TransactionFactory {
     return `tx_${hex.slice(0, 12)}`;
   }
 
+  /** Every id an entry from this message could have (single row, or a transfer's legs). */
+  static async allIdsFor(chatId: number, messageId: number): Promise<string[]> {
+    return Promise.all(['', 'out', 'in'].map((leg) => TransactionFactory.idFor(chatId, messageId, leg)));
+  }
+
   /** One row for an expense or income; two linked rows (out, in) for a transfer. */
   async build(input: BuildInput): Promise<PocketTransaction[]> {
     return input.entry.type === 'transfer' ? await this.#transfer(input) : [await this.#single(input)];
