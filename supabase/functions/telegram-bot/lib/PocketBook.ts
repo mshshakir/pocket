@@ -76,15 +76,15 @@ export class PocketBook {
   resolveAccount(hint: string | null, defaultId: string | null, candidates: Account[]): Resolution<Account> {
     if (!candidates.length) return { ok: false, reason: 'You don\'t have permission to add to any account.' };
     if (hint) {
-      const key = PocketBook.#squash(hint);
-      const exact = candidates.filter((a) => PocketBook.#squash(a.name) === key);
-      const prefix = candidates.filter((a) => PocketBook.#squash(a.name).startsWith(key));
+      const key = PocketBook.squash(hint);
+      const exact = candidates.filter((a) => PocketBook.squash(a.name) === key);
+      const prefix = candidates.filter((a) => PocketBook.squash(a.name).startsWith(key));
       const hits = exact.length ? exact : prefix;
       if (hits.length === 1) return { ok: true, value: hits[0] };
       return {
         ok: false,
         reason: hits.length
-          ? `"${hint}" matches more than one account:\n${hits.slice(0, 8).map((a) => `• ${a.name}`).join('\n')}\nType a bit more of the name, e.g. #${PocketBook.#squash(hits[0].name)}`
+          ? `"${hint}" matches more than one account:\n${hits.slice(0, 8).map((a) => `• ${a.name}`).join('\n')}\nType a bit more of the name, e.g. #${PocketBook.squash(hits[0].name)}`
           : `No account matches "${hint}". Send /accounts to see them.`,
       };
     }
@@ -132,12 +132,12 @@ export class PocketBook {
    * "childrentoiletries") and main category names ("travel" opens Travel).
    */
   resolveCategory(hint: string, type: string): CategoryResolution {
-    const key = PocketBook.#squash(hint);
+    const key = PocketBook.squash(hint);
     const subs = this.#subcategoriesOfType(type);
     const mains = this.mainCategories(type);
     const keysOf = (c: Category) => this.isMain(c)
-      ? [PocketBook.#squash(c.name)]
-      : [PocketBook.#squash(c.name), PocketBook.#squash(this.#parentName(c) + c.name)];
+      ? [PocketBook.squash(c.name)]
+      : [PocketBook.squash(c.name), PocketBook.squash(this.#parentName(c) + c.name)];
     const all = [...subs, ...mains];
     const exact = all.filter((c) => keysOf(c).some((k) => k === key));
     const prefix = all.filter((c) => keysOf(c).some((k) => k.startsWith(key)));
@@ -174,7 +174,8 @@ export class PocketBook {
     return c.parentId ? (this.categoryById(c.parentId)?.name ?? '') : '';
   }
 
-  static #squash(s: string): string {
+  /** Lower-case letters and digits only, so "INR (Mufaddal)" matches "inrm". */
+  static squash(s: string): string {
     return s.toLowerCase().replace(/[^a-z0-9؀-ۿ]/g, '');
   }
 }

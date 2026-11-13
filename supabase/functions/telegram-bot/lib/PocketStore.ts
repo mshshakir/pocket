@@ -1,7 +1,7 @@
 /**
- * PocketStore — the bot's data access. Reads the Telegram link table and the
- * owner's book, keeps each chat's pending step (a category to pick, an entry
- * to correct), and provides the two ways an entry reaches Pocket:
+ * PocketStore — the bot's data access: Telegram links and link requests,
+ * books and who shares with whom, each chat's pending step (a category to
+ * pick, an entry to correct), and the two ways an entry reaches a book:
  *
  *   OwnerBookWriter            the owner logs their own entry → written to
  *                              `user_data` with the app's versioned
@@ -15,11 +15,27 @@ import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 import { PocketBook } from './PocketBook.ts';
 import type { PocketTransaction } from './TransactionFactory.ts';
 
+/** A Telegram chat verified as one Pocket user (by an emailed sign-in code). */
 export interface TelegramLink {
   chat_id: number;
-  owner_id: string;
-  member_email: string;
+  user_id: string;                 // the Pocket user this chat belongs to
+  email: string;                   // their sign-in email, lower-case
+  default_owner_id: string | null; // book of the default account
   default_account_id: string | null;
+}
+
+/** A /link in progress: the code was emailed, the chat hasn't sent it yet. */
+export interface LinkRequest {
+  chat_id: number;
+  email: string;
+  attempts: number;
+  created_at: string;
+}
+
+/** Someone who shares a space with an email. */
+export interface Share {
+  ownerId: string;
+  ownerName: string;
 }
 
 /** What the bot is waiting for in a chat. */
@@ -30,6 +46,7 @@ export interface PendingStep {
   replace: boolean;                 // true when this corrects an existing entry
   prompt_message_id: number | null; // category step: the picker message
   confirm_message_id: number | null; // edit: the old confirmation to mark as edited
+  owner_id: string | null;          // edit: the book the entry being corrected is in
 }
 
 export type SaveResult = 'saved' | 'duplicate';
@@ -52,17 +69,61 @@ export class PocketStore {
     this.#sb = sb;
   }
 
+  // ── Links ────────────────────────────────────────────────────────────
+
   async findLink(chatId: number): Promise<TelegramLink | null> {
     const { data, error } = await this.#sb
-      .from('telegram_links').select('chat_id, owner_id, member_email, default_account_id')
+      .from('telegram_links').select('chat_id, user_id, email, default_owner_id, default_account_id')
       .eq('chat_id', chatId).maybeSingle();
     if (error) throw error;
     return data;
   }
 
-  async setDefaultAccount(chatId: number, accountId: string): Promise<void> {
-    const { error } = await this.#sb
-      .from('telegram_links').update({ default_account_id: accountId }).eq('chat_id', chatId);
+  /** Ties a chat to a verified user, replacing any earlier link of that chat. */
+  async saveLink(chatId: number, userId: string, email: string): Promise<void> {
+    await this.clearPending(chatId);
+    const { error } = await this.#sb.from('telegram_links').upsert({
+      chat_id: chatId, user_id: userId, email: email.toLowerCase().trim(),
+      default_owner_id: userId, default_account_id: null,
+    });
+    if (error) throw error;
+  }
+
+  async removeLink(chatId: number): Promise<boolean> {
+    const { data, error } = await this.#sb.from('telegram_links').delete().eq('chat_id', chatId).select('chat_id');
+    if (error) throw error;
+    return !!data?.length;
+  }
+
+  async setDefaultAccount(chatId: number, ownerId: string, accountId: string): Promise<void> {
+    const { error } = await this.#sb.from('telegram_links')
+      .update({ default_owner_id: ownerId, default_account_id: accountId }).eq('chat_id', chatId);
+    if (error) throw error;
+  }
+
+  // ── Link requests ────────────────────────────────────────────────────
+
+  async getLinkRequest(chatId: number): Promise<LinkRequest | null> {
+    const { data, error } = await this.#sb
+      .from('telegram_link_requests').select('*').eq('chat_id', chatId).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  async saveLinkRequest(chatId: number, email: string): Promise<void> {
+    const { error } = await this.#sb.from('telegram_link_requests').upsert({
+      chat_id: chatId, email, attempts: 0, created_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+  }
+
+  async countLinkAttempt(chatId: number, attempts: number): Promise<void> {
+    const { error } = await this.#sb.from('telegram_link_requests').update({ attempts }).eq('chat_id', chatId);
+    if (error) throw error;
+  }
+
+  async deleteLinkRequest(chatId: number): Promise<void> {
+    const { error } = await this.#sb.from('telegram_link_requests').delete().eq('chat_id', chatId);
     if (error) throw error;
   }
 
@@ -101,17 +162,33 @@ export class PocketStore {
     return { book: new PocketBook(data.data), version: data.version ?? 0, data: data.data };
   }
 
-  /** Whether `email` is the owner's own sign-in email (owner path vs member path). */
-  async isOwnerEmail(ownerId: string, email: string): Promise<boolean> {
-    const { data, error } = await this.#sb.auth.admin.getUserById(ownerId);
+  /** A user's book, or null if they have none yet. */
+  async tryLoadBook(ownerId: string): Promise<PocketBook | null> {
+    const { data, error } = await this.#sb.from('user_data').select('data').eq('id', ownerId).maybeSingle();
     if (error) throw error;
-    return (data.user?.email || '').toLowerCase().trim() === email.toLowerCase().trim();
+    return data ? new PocketBook(data.data) : null;
   }
 
-  writerFor(link: TelegramLink, isOwner: boolean): EntryWriter {
-    return isOwner
-      ? new OwnerBookWriter(this, link.owner_id)
-      : new FamilyContributionWriter(this.#sb, this, link.owner_id, link.member_email);
+  /** Owners who share a space with this email (their app keeps family_shares current). */
+  async sharesFor(email: string): Promise<Share[]> {
+    const { data, error } = await this.#sb.from('family_shares')
+      .select('owner_id, snapshot->>ownerName, snapshot->>sharedBy')
+      .eq('member_email', email.toLowerCase().trim());
+    if (error) throw error;
+    const byOwner = new Map<string, Share>();
+    for (const row of (data ?? []) as Array<{ owner_id: string; ownerName: string | null; sharedBy: string | null }>) {
+      if (!byOwner.has(row.owner_id)) {
+        byOwner.set(row.owner_id, { ownerId: row.owner_id, ownerName: row.ownerName || row.sharedBy || 'a family member' });
+      }
+    }
+    return [...byOwner.values()];
+  }
+
+  /** Writes to a book: directly when it is the person's own, else via the owner's inbox. */
+  writerFor(ownerId: string, email: string, isOwn: boolean): EntryWriter {
+    return isOwn
+      ? new OwnerBookWriter(this, ownerId)
+      : new FamilyContributionWriter(this.#sb, this, ownerId, email);
   }
 
   /** One compare-and-swap attempt; false when another device saved first. */
