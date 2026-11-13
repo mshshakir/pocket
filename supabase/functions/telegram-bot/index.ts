@@ -12,8 +12,10 @@
  * webhook secret header is the gate instead.
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { BotController, LocalClock, type TelegramMessage } from './lib/BotController.ts';
+import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
+import { EntryService } from './lib/EntryService.ts';
 import { ExchangeRates } from './lib/ExchangeRates.ts';
+import { LocalClock } from './lib/LocalClock.ts';
 import { PocketStore } from './lib/PocketStore.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
 
@@ -48,7 +50,9 @@ class WebhookServer {
     try {
       const update = await req.json();
       const message: TelegramMessage | undefined = update.message;
-      if (message?.chat?.id) await this.#controller.handle(message);
+      const callback: TelegramCallback | undefined = update.callback_query;
+      if (message?.chat?.id) await this.#controller.handleMessage(message);
+      else if (callback?.id) await this.#controller.handleCallback(callback);
     } catch (err) {
       console.error('[telegram-bot] update failed', err);
     }
@@ -65,14 +69,18 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
+const store = new PocketStore(supabase);
+const telegram = new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN'));
+const entries = new EntryService(
+  store,
+  telegram,
+  new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
+  new ExchangeRates(),
+);
+
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
-  new BotController(
-    new PocketStore(supabase),
-    new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN')),
-    new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
-    new ExchangeRates(),
-  ),
+  new BotController(store, telegram, entries),
 );
 
 Deno.serve((req) => server.handle(req));
