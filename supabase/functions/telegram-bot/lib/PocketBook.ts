@@ -8,10 +8,14 @@ export interface Category { id: string; name: string; type?: string; parentId?: 
 
 type Resolution<T> = { ok: true; value: T } | { ok: false; reason: string };
 
-/** A category lookup either finds one, or explains why and offers choices to tap. */
+/**
+ * A category lookup: a subcategory (selectable), a main category (open it to
+ * pick one of its subcategories), or a set of choices to show as buttons.
+ */
 export type CategoryResolution =
-  | { ok: true; value: Category }
-  | { ok: false; reason: string; options: Category[] };
+  | { kind: 'sub'; value: Category }
+  | { kind: 'main'; main: Category }
+  | { kind: 'choose'; reason: string; options: Category[] };
 
 export class PocketBook {
   static readonly #BASE_PAYMENT_TYPES = ['card', 'cash', 'cheque', 'online'];
@@ -91,55 +95,79 @@ export class PocketBook {
   }
 
   // ── Categories ───────────────────────────────────────────────────────
+  // Two levels: main categories (no parent) group subcategories. Only a
+  // subcategory can be saved on an entry; a main one is opened to choose.
 
   categoryById(id: string): Category | null {
     return (this.#data.categories || []).find((c: Category) => c.id === id) ?? null;
   }
 
+  /** A main category is one without a parent; it can't be saved on an entry. */
+  isMain(c: Category): boolean {
+    return !c.parentId || !this.categoryById(c.parentId);
+  }
+
+  /** Main categories that have subcategories of this type, most-used first. */
+  mainCategories(type: string): Category[] {
+    const uses = this.#uses(type);
+    const score = new Map<string, number>();
+    for (const sub of this.#subcategoriesOfType(type)) {
+      score.set(sub.parentId!, (score.get(sub.parentId!) ?? 0) + (uses.get(sub.id) ?? 0));
+    }
+    return [...score.keys()]
+      .map((id) => this.categoryById(id)!)
+      .sort((a, b) => (score.get(b.id)! - score.get(a.id)!) || a.name.localeCompare(b.name));
+  }
+
+  /** Subcategories of one main category for this type, most-used first. */
+  subcategories(mainId: string, type: string): Category[] {
+    const uses = this.#uses(type);
+    return this.#subcategoriesOfType(type)
+      .filter((c) => c.parentId === mainId)
+      .sort((a, b) => ((uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0)) || a.name.localeCompare(b.name));
+  }
+
   /**
-   * Match "@hint" against category names of this type. A name can be given
-   * alone ("taxi") or with its parent ("childrentoiletries") to tell
-   * same-named categories apart. Ambiguity returns the matches as options.
+   * Match "@hint" against subcategory names ("taxi", or with the parent:
+   * "childrentoiletries") and main category names ("travel" opens Travel).
    */
   resolveCategory(hint: string, type: string): CategoryResolution {
     const key = PocketBook.#squash(hint);
-    const all = this.#categoriesOfType(type);
-    const keysOf = (c: Category) => [PocketBook.#squash(c.name), PocketBook.#squash(this.#parentName(c) + c.name)];
+    const subs = this.#subcategoriesOfType(type);
+    const mains = this.mainCategories(type);
+    const keysOf = (c: Category) => this.isMain(c)
+      ? [PocketBook.#squash(c.name)]
+      : [PocketBook.#squash(c.name), PocketBook.#squash(this.#parentName(c) + c.name)];
+    const all = [...subs, ...mains];
     const exact = all.filter((c) => keysOf(c).some((k) => k === key));
     const prefix = all.filter((c) => keysOf(c).some((k) => k.startsWith(key)));
     const hits = exact.length ? exact : prefix;
-    if (hits.length === 1) return { ok: true, value: hits[0] };
-    if (hits.length > 1) {
-      return { ok: false, reason: `"${hint}" matches more than one category. Which one?`, options: hits.slice(0, 12) };
+    if (hits.length === 1) {
+      return this.isMain(hits[0]) ? { kind: 'main', main: hits[0] } : { kind: 'sub', value: hits[0] };
     }
-    return {
-      ok: false,
-      reason: `No category matches "${hint}". Pick one, or type a category name:`,
-      options: this.topCategories(type),
-    };
+    if (hits.length > 1) {
+      return { kind: 'choose', reason: `"${hint}" matches more than one category. Which one?`, options: hits.slice(0, 30) };
+    }
+    return { kind: 'choose', reason: `No category matches "${hint}". Pick one:`, options: mains };
   }
 
-  /** Most-used categories of a type, for quick buttons. */
-  topCategories(type: string, limit = 8): Category[] {
+  /** "Travel / Taxi", as the app shows it. */
+  categoryPath(c: Category): string {
+    const parent = this.#parentName(c);
+    return parent ? `${parent} / ${c.name}` : c.name;
+  }
+
+  #subcategoriesOfType(type: string): Category[] {
+    return (this.#data.categories || [])
+      .filter((c: Category) => (!c.type || c.type === type) && !this.isMain(c));
+  }
+
+  #uses(type: string): Map<string, number> {
     const uses = new Map<string, number>();
     for (const t of this.#data.transactions || []) {
       if (t.type === type && t.categoryId) uses.set(t.categoryId, (uses.get(t.categoryId) ?? 0) + 1);
     }
-    return this.#categoriesOfType(type)
-      .filter((c) => uses.has(c.id))
-      .sort((a, b) => (uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0))
-      .slice(0, limit);
-  }
-
-  /** "Taxi", or "Toiletries (Children)" when the name alone is ambiguous. */
-  categoryLabel(c: Category): string {
-    const twins = this.#categoriesOfType(c.type || '').filter((o) => o.name === c.name);
-    const parent = this.#parentName(c);
-    return twins.length > 1 && parent ? `${c.name} (${parent})` : c.name;
-  }
-
-  #categoriesOfType(type: string): Category[] {
-    return (this.#data.categories || []).filter((c: Category) => !c.type || !type || c.type === type);
+    return uses;
   }
 
   #parentName(c: Category): string {

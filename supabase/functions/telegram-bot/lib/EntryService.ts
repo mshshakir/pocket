@@ -3,6 +3,9 @@
  * one is missing (nothing is saved until it is chosen), and handles the
  * ✏️ Edit / 🗑 Delete buttons on each confirmation.
  *
+ * Categories are picked in two steps: a main category, then one of its
+ * subcategories. Only a subcategory can be saved.
+ *
  * Row ids derive from the "seed" message (the one that first carried the
  * entry), so an edit rewrites the same rows and a delete finds them again.
  */
@@ -21,13 +24,16 @@ export interface RecordRequest {
   text: string;                     // the entry as typed
   replace: boolean;                 // correcting an existing entry
   replyTo?: number;                 // message to reply under
-  categoryId?: string;              // chosen with a button
+  categoryId?: string;              // chosen with a button (a main one opens its subcategories)
+  browseMains?: boolean;            // "back" tapped: show the main categories again
   categoryName?: string;            // typed in answer to the category question
   promptMessageId?: number | null;  // the category question to turn into the confirmation
   confirmMessageId?: number | null; // an old confirmation to mark as edited
 }
 
 export class EntryService {
+  static readonly #MAX_BUTTONS = 40;
+
   readonly #store: PocketStore;
   readonly #telegram: TelegramClient;
   readonly #clock: LocalClock;
@@ -59,20 +65,29 @@ export class EntryService {
       toAccount = to.value;
     }
 
-    // Every expense and income needs a category; transfers don't.
+    // Every expense and income needs a subcategory; transfers don't.
     let category: Category | null = null;
     if (entry.type !== 'transfer') {
+      const type = entry.type;
       const typed = req.categoryName ?? entry.categoryHint;
+      const askMains = (reason: string) =>
+        this.#askCategory(req, book, reason, book.mainCategories(type), false);
+      const askSubs = (main: Category) =>
+        this.#askCategory(req, book, `${main.name} — which one?`, book.subcategories(main.id, type), true);
+
+      if (req.browseMains) return void await askMains('Which category is this?');
       if (req.categoryId) {
-        category = book.categoryById(req.categoryId);
+        const chosen = book.categoryById(req.categoryId);
+        if (!chosen) return void await askMains('That category no longer exists. Pick another:');
+        if (book.isMain(chosen)) return void await askSubs(chosen);
+        category = chosen;
       } else if (typed) {
-        const found = book.resolveCategory(typed, entry.type);
-        if (!found.ok) return void await this.#askCategory(req, book, found.reason, found.options);
+        const found = book.resolveCategory(typed, type);
+        if (found.kind === 'main') return void await askSubs(found.main);
+        if (found.kind === 'choose') return void await this.#askCategory(req, book, found.reason, found.options, true);
         category = found.value;
       }
-      if (!category) {
-        return void await this.#askCategory(req, book, 'Which category is this?', book.topCategories(entry.type));
-      }
+      if (!category) return void await askMains('Which category is this?');
     }
 
     const factory = new TransactionFactory(book, await this.#rates.current(book.fxRates));
@@ -84,7 +99,7 @@ export class EntryService {
       toAccount,
       category,
       date: this.#clock.isoDate(entry.daysAgo),
-      addedBy: isOwner ? null : link.member_email.toLowerCase().trim(),
+      addedBy: link.member_email.toLowerCase().trim(), // shown in the app as "Entered … by …"
     });
 
     const writer = this.#store.writerFor(link, isOwner);
@@ -128,13 +143,23 @@ export class EntryService {
     return found > 0;
   }
 
-  /** Asks for a category with buttons; the entry waits in the chat's pending step. */
-  async #askCategory(req: RecordRequest, book: PocketBook, reason: string, options: Category[]): Promise<void> {
-    const text = `🏷 ${reason}\nTap one, or type a category name. Send /cancel to drop this entry.\n\n“${req.text}”`;
+  /**
+   * Asks for a category with buttons; the entry waits in the chat's pending
+   * step. Main categories open their subcategories (›); subcategories save.
+   */
+  async #askCategory(req: RecordRequest, book: PocketBook, reason: string, options: Category[], back: boolean): Promise<void> {
+    const text = `🏷 ${reason}\nTap one, or type a name. Send /cancel to drop this entry.\n\n“${req.text}”`;
+    const shown = options.slice(0, EntryService.#MAX_BUTTONS);
+    const sameParent = shown.length > 0 && shown.every((c) => !book.isMain(c) && c.parentId === shown[0].parentId);
+    const label = (c: Category) => book.isMain(c) ? `${c.name} ›` : sameParent ? c.name : book.categoryPath(c);
     const buttons: Keyboard = [];
-    for (let i = 0; i < options.length; i += 2) {
-      buttons.push(options.slice(i, i + 2).map((c) => ({ text: book.categoryLabel(c), callback_data: `cat:${c.id}` })));
+    for (let i = 0; i < shown.length; i += 2) {
+      buttons.push(shown.slice(i, i + 2).map((c) => ({
+        text: label(c),
+        callback_data: `${book.isMain(c) ? 'main' : 'cat'}:${c.id}`,
+      })));
     }
+    if (back) buttons.push([{ text: '⬅️ All categories', callback_data: 'back' }]);
     let promptId = req.promptMessageId ?? null;
     if (promptId) {
       await this.#telegram.edit(req.chatId, promptId, text, buttons);
@@ -161,7 +186,7 @@ export class EntryService {
       : [
         `✅ ${tx.type === 'income' ? '+' : ''}${money(tx)}`,
         tx.note || null,
-        category ? `🏷 ${book.categoryLabel(category)}` : null,
+        category ? `🏷 ${book.categoryPath(category)}` : null,
         tx.paymentType,
         accountName,
       ];
