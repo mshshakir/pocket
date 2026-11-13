@@ -13,6 +13,7 @@
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { BotController, LocalClock, type TelegramMessage } from './lib/BotController.ts';
+import { ExchangeRates } from './lib/ExchangeRates.ts';
 import { PocketStore } from './lib/PocketStore.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
 
@@ -70,6 +71,7 @@ const server = new WebhookServer(
     new PocketStore(supabase),
     new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN')),
     new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
+    new ExchangeRates(),
   ),
 );
 

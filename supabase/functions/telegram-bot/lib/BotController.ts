@@ -6,6 +6,7 @@
 import { EntryParser } from './EntryParser.ts';
 import type { PocketStore } from './PocketStore.ts';
 import type { TelegramClient } from './TelegramClient.ts';
+import type { ExchangeRates } from './ExchangeRates.ts';
 import { TransactionFactory } from './TransactionFactory.ts';
 
 export interface TelegramMessage {
@@ -39,6 +40,9 @@ export class BotController {
     '• 250 lunch #wallet — into the account whose name starts with "wallet"',
     '• 250 lunch @food — with the category starting "food"',
     '• 120 taxi yesterday — dated yesterday',
+    '• 5000 #boi > #mpesa — transfer between accounts',
+    '• 5000 > #mpesa — transfer from your default account',
+    '• 5000 #boi > #mpesa =7750 — transfer where 7,750 arrived (different currencies)',
     '',
     '/accounts lists the accounts you can add to.',
     '/default shows the default account; /default <name> changes it.',
@@ -48,11 +52,13 @@ export class BotController {
   readonly #store: PocketStore;
   readonly #telegram: TelegramClient;
   readonly #clock: LocalClock;
+  readonly #rates: ExchangeRates;
 
-  constructor(store: PocketStore, telegram: TelegramClient, clock: LocalClock) {
+  constructor(store: PocketStore, telegram: TelegramClient, clock: LocalClock, rates: ExchangeRates) {
     this.#store = store;
     this.#telegram = telegram;
     this.#clock = clock;
+    this.#rates = rates;
   }
 
   async handle(message: TelegramMessage): Promise<void> {
@@ -108,33 +114,48 @@ export class BotController {
 
       const account = book.resolveAccount(entry.accountHint, link.default_account_id, accounts);
       if (!account.ok) return void await this.#telegram.reply(chatId, account.reason, message.message_id);
+      let toAccount = null;
+      if (entry.type === 'transfer') {
+        const to = book.resolveAccount(entry.toAccountHint, null, accounts);
+        if (!to.ok) return void await this.#telegram.reply(chatId, to.reason, message.message_id);
+        toAccount = to.value;
+      }
       const category = book.resolveCategory(entry.categoryHint, entry.type);
       if (!category.ok) return void await this.#telegram.reply(chatId, category.reason, message.message_id);
 
-      const factory = new TransactionFactory(book);
-      const tx = factory.build({
-        id: await TransactionFactory.idFor(chatId, message.message_id),
+      const factory = new TransactionFactory(book, await this.#rates.current(book.fxRates));
+      const txs = await factory.build({
+        chatId,
+        messageId: message.message_id,
         entry,
         account: account.value,
+        toAccount,
         category: category.value,
         date: this.#clock.isoDate(entry.daysAgo),
         addedBy: isOwner ? null : link.member_email.toLowerCase().trim(),
       });
 
-      const result = await this.#store.writerFor(link, isOwner).save(tx);
+      const result = await this.#store.writerFor(link, isOwner).save(txs);
       if (result === 'duplicate') return;
 
-      const sign = tx.type === 'income' ? '+' : '';
-      const parts = [
-        `✅ ${sign}${factory.money.format(tx.amount, tx.currency)}`,
-        tx.note || null,
-        tx.paymentType,
-        account.value.name,
-        category.value?.name ?? null,
-      ].filter(Boolean);
+      const [tx, inLeg] = txs;
+      const money = (t: { amount: number; currency: string }) => factory.money.format(t.amount, t.currency);
+      const parts = tx.type === 'transfer'
+        ? [
+          `🔁 ${money(tx)} ${account.value.name} → ${toAccount!.name}`
+            + (inLeg.currency !== tx.currency ? ` (received ${money(inLeg)})` : ''),
+          tx.note || null,
+        ]
+        : [
+          `✅ ${tx.type === 'income' ? '+' : ''}${money(tx)}`,
+          tx.note || null,
+          tx.paymentType,
+          account.value.name,
+          category.value?.name ?? null,
+        ];
       const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;
       const pending = isOwner ? '' : '\nIt will appear once the owner\'s app syncs.';
-      await this.#telegram.reply(chatId, `${parts.join(' · ')}\n${when}${pending}`, message.message_id);
+      await this.#telegram.reply(chatId, `${parts.filter(Boolean).join(' · ')}\n${when}${pending}`, message.message_id);
     } catch (err) {
       console.error('[telegram-bot]', err);
       const reason = err instanceof Error ? err.message : 'Something went wrong.';

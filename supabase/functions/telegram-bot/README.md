@@ -73,6 +73,13 @@ Send `/accounts` to check which accounts you can add to.
 | `250 lunch #wallet` | into the account whose name starts with "wallet" |
 | `250 lunch @food` | category whose name starts with "food" |
 | `120 taxi yesterday` | dated yesterday |
+| `5000 #boi > #mpesa` | transfer from BOI to MPesa (also `→`, `->`, or just two `#accounts`) |
+| `5000 > #mpesa` | transfer from your default account |
+| `5000 #boi > #mpesa =7750` | transfer where 7,750 arrived; without `=`, the live rate is used |
 
-Amounts in an account's own currency; `₹`, `rs`, `rupees` and commas are accepted.
+Amounts are in the account's own currency (the source account for transfers); `₹`, `rs`,
+`rupees` and commas are accepted. Transfers are saved as the same linked out/in pair the app
+creates. Exchange rates come from the same live source the app uses (open.er-api.com).
+
+Commands: `/accounts` lists accounts; `/default` shows or changes the default account.
 Edit or delete entries in the app.

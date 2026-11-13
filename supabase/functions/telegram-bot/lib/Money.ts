@@ -1,11 +1,11 @@
 /**
  * Money — minor-unit and FX rules mirrored from the app's CurrencyService,
- * using the owner's persisted fxRates table (units per USD).
+ * over a rate table in units per 1 USD.
  */
 export class Money {
   static readonly #ZERO_DECIMAL = new Set(['JPY', 'KRW', 'VND', 'CLP', 'PYG', 'ISK', 'RWF', 'UGX', 'XAF', 'XOF', 'XPF']);
   static readonly #THREE_DECIMAL = new Set(['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND']);
-  static readonly #SYMBOLS: Record<string, string> = { INR: '₹', USD: '$', EUR: '€', GBP: '£', AED: 'AED ' };
+  static readonly #SYMBOLS: Record<string, string> = { INR: '₹', USD: '$', EUR: '€', GBP: '£', AED: 'AED ', KES: 'KSh ' };
 
   readonly #rates: Record<string, number>;
 
@@ -27,6 +27,15 @@ export class Money {
   exchangeRate(currency: string, home: string): number {
     if (currency === home) return 1;
     return (this.#rates[currency] || 1) / (this.#rates[home] || 1);
+  }
+
+  /** Units of `to` per one unit of `from`; throws when either rate is missing. */
+  rate(from: string, to: string): number {
+    if (from === to) return 1;
+    const fromRate = this.#rates[from];
+    const toRate = this.#rates[to];
+    if (!fromRate || !toRate) throw new Error(`No exchange rate for ${from} → ${to}. Add the received amount, e.g. =7750`);
+    return toRate / fromRate;
   }
 
   /** Amount in home-currency minor units; throws when a rate is missing. */

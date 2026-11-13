@@ -24,7 +24,8 @@ export interface TelegramLink {
 export type SaveResult = 'saved' | 'duplicate';
 
 export interface EntryWriter {
-  save(tx: PocketTransaction): Promise<SaveResult>;
+  /** Saves all rows of one entry (one row, or a transfer's two legs) together. */
+  save(txs: PocketTransaction[]): Promise<SaveResult>;
 }
 
 export class PocketStore {
@@ -92,12 +93,12 @@ export class OwnerBookWriter implements EntryWriter {
     this.#ownerId = ownerId;
   }
 
-  async save(tx: PocketTransaction): Promise<SaveResult> {
+  async save(txs: PocketTransaction[]): Promise<SaveResult> {
     for (let attempt = 0; attempt < OwnerBookWriter.#MAX_ATTEMPTS; attempt++) {
       const { book, version, data } = await this.#store.loadBook(this.#ownerId);
-      if (book.hasTransaction(tx.id)) return 'duplicate';
+      if (book.hasTransaction(txs[0].id)) return 'duplicate';
       const transactions = Array.isArray(data.transactions) ? data.transactions : [];
-      const next = { ...data, transactions: [...transactions, tx] };
+      const next = { ...data, transactions: [...transactions, ...txs] };
       if (await this.#store.casUpdate(this.#ownerId, version, next)) return 'saved';
     }
     throw new Error('The app was saving at the same moment. Please send it again.');
@@ -115,20 +116,21 @@ export class FamilyContributionWriter implements EntryWriter {
     this.#memberEmail = memberEmail.toLowerCase().trim();
   }
 
-  async save(tx: PocketTransaction): Promise<SaveResult> {
+  async save(txs: PocketTransaction[]): Promise<SaveResult> {
     const { data: existing, error: lookupError } = await this.#sb
       .from('family_contributions').select('id')
-      .eq('owner_id', this.#ownerId).eq('tx_data->>id', tx.id).limit(1);
+      .eq('owner_id', this.#ownerId).eq('tx_data->>id', txs[0].id).limit(1);
     if (lookupError) throw lookupError;
     if (existing?.length) return 'duplicate';
 
-    const { error } = await this.#sb.from('family_contributions').insert({
+    // One insert, so a transfer's two legs land together or not at all.
+    const { error } = await this.#sb.from('family_contributions').insert(txs.map((tx) => ({
       owner_id: this.#ownerId,
       member_email: this.#memberEmail,
       account_id: tx.accountId,
       tx_data: tx,
       synced: false,
-    });
+    })));
     if (error) throw error;
     return 'saved';
   }
