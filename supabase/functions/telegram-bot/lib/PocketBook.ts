@@ -61,7 +61,12 @@ export class PocketBook {
       const prefix = candidates.filter((a) => PocketBook.#squash(a.name).startsWith(key));
       const hits = exact.length ? exact : prefix;
       if (hits.length === 1) return { ok: true, value: hits[0] };
-      return { ok: false, reason: hits.length ? `"#${hint}" matches more than one account.` : `No account matches "#${hint}".` };
+      return {
+        ok: false,
+        reason: hits.length
+          ? `"${hint}" matches more than one account:\n${hits.slice(0, 8).map((a) => `• ${a.name}`).join('\n')}\nType a bit more of the name, e.g. #${PocketBook.#squash(hits[0].name)}`
+          : `No account matches "${hint}". Send /accounts to see them.`,
+      };
     }
     const fallback = candidates.find((a) => a.id === defaultId);
     if (fallback) return { ok: true, value: fallback };

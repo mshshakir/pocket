@@ -1,6 +1,7 @@
 /**
  * BotController — handles one Telegram update: commands (/start, /help,
- * /accounts) and entry messages. Only chats listed in `telegram_links` may log.
+ * /accounts, /default) and entry messages. Only chats listed in
+ * `telegram_links` may log.
  */
 import { EntryParser } from './EntryParser.ts';
 import type { PocketStore } from './PocketStore.ts';
@@ -40,6 +41,7 @@ export class BotController {
     '• 120 taxi yesterday — dated yesterday',
     '',
     '/accounts lists the accounts you can add to.',
+    '/default shows the default account; /default <name> changes it.',
     'Edit or delete entries in the Pocket app.',
   ].join('\n');
 
@@ -79,6 +81,20 @@ export class BotController {
       if (command === '/accounts') {
         const lines = accounts.map((a) => `• ${a.name}${a.id === link.default_account_id ? ' (default)' : ''}`);
         await this.#telegram.reply(chatId, lines.length ? lines.join('\n') : 'No accounts you can add to.');
+        return;
+      }
+      if (command === '/default') {
+        const hint = text.split(/\s+/).slice(1).join(' ').replace(/^#/, '').trim();
+        if (!hint) {
+          const current = accounts.find((a) => a.id === link.default_account_id);
+          await this.#telegram.reply(chatId,
+            `Default account: ${current?.name ?? 'none'}\nChange it with /default <account name>, e.g. /default boi`);
+          return;
+        }
+        const chosen = book.resolveAccount(hint, null, accounts);
+        if (!chosen.ok) return void await this.#telegram.reply(chatId, chosen.reason, message.message_id);
+        await this.#store.setDefaultAccount(chatId, chosen.value.id);
+        await this.#telegram.reply(chatId, `✅ Default account is now ${chosen.value.name}`, message.message_id);
         return;
       }
       if (command.startsWith('/')) {

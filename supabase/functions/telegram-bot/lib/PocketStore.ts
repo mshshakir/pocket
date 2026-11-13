@@ -42,6 +42,12 @@ export class PocketStore {
     return data;
   }
 
+  async setDefaultAccount(chatId: number, accountId: string): Promise<void> {
+    const { error } = await this.#sb
+      .from('telegram_links').update({ default_account_id: accountId }).eq('chat_id', chatId);
+    if (error) throw error;
+  }
+
   async loadBook(ownerId: string): Promise<{ book: PocketBook; version: number; data: Record<string, unknown> }> {
     const { data, error } = await this.#sb
       .from('user_data').select('data, version').eq('id', ownerId).maybeSingle();
