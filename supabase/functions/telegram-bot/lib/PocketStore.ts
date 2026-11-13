@@ -38,6 +38,15 @@ export interface Share {
   ownerName: string;
 }
 
+/** A line of a several-line message, waiting its turn for a category. */
+export interface QueuedEntry {
+  seed: number;
+  line: string;        // as typed
+  text: string;        // with the message's shared choices added
+  shared: boolean;     // its category comes from the message's shared line
+  categoryId?: string; // set once the shared category has been picked
+}
+
 /** What the bot is waiting for in a chat. */
 export interface PendingStep {
   kind: 'category' | 'edit';
@@ -47,6 +56,8 @@ export interface PendingStep {
   prompt_message_id: number | null; // category step: the picker message
   confirm_message_id: number | null; // edit: the old confirmation to mark as edited
   owner_id: string | null;          // edit: the book the entry being corrected is in
+  queue: QueuedEntry[];             // category step: lines of the same message still to ask about
+  shared: boolean;                  // category step: this line's category is the message's shared one
 }
 
 export type SaveResult = 'saved' | 'duplicate';
@@ -69,7 +80,7 @@ export class PocketStore {
     this.#sb = sb;
   }
 
-  // ── Links ────────────────────────────────────────────────────────────
+  // ── Links ────────────────────────────────────────────────────────────────
 
   async findLink(chatId: number): Promise<TelegramLink | null> {
     const { data, error } = await this.#sb
@@ -101,7 +112,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  // ── Link requests ────────────────────────────────────────────────────
+  // ── Link requests ────────────────────────────────────────────────────────
 
   async getLinkRequest(chatId: number): Promise<LinkRequest | null> {
     const { data, error } = await this.#sb
@@ -127,7 +138,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  // ── Pending steps ────────────────────────────────────────────────────
+  // ── Pending steps ────────────────────────────────────────────────────────
 
   async getPending(chatId: number): Promise<PendingStep | null> {
     const { data, error } = await this.#sb
@@ -152,7 +163,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  // ── Books ────────────────────────────────────────────────────────────
+  // ── Books ────────────────────────────────────────────────────────────────
 
   async loadBook(ownerId: string): Promise<{ book: PocketBook; version: number; data: Record<string, unknown> }> {
     const { data, error } = await this.#sb

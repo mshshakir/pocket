@@ -24,7 +24,7 @@ In Telegram, message **@BotFather** → `/newbot` → copy the **token**.
 ## 2. Create the tables
 
 Supabase dashboard → **SQL Editor** → run, in order, `supabase/migrations/0005_telegram_links.sql`,
-`0006_telegram_pending.sql` and `0007_telegram_self_link.sql`.
+`0006_telegram_pending.sql`, `0007_telegram_self_link.sql` and `0008_telegram_batch.sql`.
 
 ## 3. Deploy the function
 
@@ -71,6 +71,22 @@ with app sign-ins); set up custom SMTP if that becomes a problem.
 | `5000 #boi > #mpesa` | transfer from BOI to MPesa (also `→`, `->`, or just two `#accounts`) |
 | `5000 > #mpesa` | transfer from your default account |
 | `5000 #boi > #mpesa =7750` | transfer where 7,750 arrived; without `=`, the live rate is used |
+
+**Several entries in one message**, one per line:
+
+```
+200 fruits
+80 clips
+1351 oct 2026 bill @electricity #boi
+#mpesa @groceries
+```
+
+Each line becomes its own entry with its own confirmation and buttons. A line with no amount
+(only `#account`, `@category`, a payment type or `yesterday`) applies to every line that doesn't
+name its own; a line's own choices always win, and transfers keep their own accounts. Complete
+lines are saved at once; lines still missing a category are asked one at a time, and a shared
+category that needs choosing (e.g. a main category like `@food`) is asked once for all of them.
+Lines without an amount are reported back unsaved. Up to 50 lines per message.
 
 Amounts are in the account's own currency (the source account for transfers); `₹`, `rs`,
 `rupees` and commas are accepted. Transfers are saved as the same linked out/in pair the app
