@@ -6,7 +6,7 @@
  *   TELEGRAM_BOT_TOKEN       from @BotFather
  *   TELEGRAM_WEBHOOK_SECRET  any long random string; also passed to setWebhook
  *   BOT_TIMEZONE             optional, defaults to Asia/Kolkata
- * SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically.
+ * SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and SUPABASE_ANON_KEY are provided automatically.
  *
  * Deploy with --no-verify-jwt: Telegram cannot send a Supabase JWT, so the
  * webhook secret header is the gate instead.
@@ -15,6 +15,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
 import { EntryService } from './lib/EntryService.ts';
 import { ExchangeRates } from './lib/ExchangeRates.ts';
+import { LinkService } from './lib/LinkService.ts';
 import { LocalClock } from './lib/LocalClock.ts';
 import { PocketStore } from './lib/PocketStore.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
@@ -69,6 +70,14 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
+// Sign-in codes for /link run on a separate client with the public key, as in the
+// app, so a verified user session can never replace the privileged one above.
+const auth = createClient(
+  secrets.get('SUPABASE_URL'),
+  secrets.get('SUPABASE_ANON_KEY'),
+  { auth: { persistSession: false, autoRefreshToken: false } },
+);
+
 const store = new PocketStore(supabase);
 const telegram = new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN'));
 const entries = new EntryService(
@@ -80,7 +89,7 @@ const entries = new EntryService(
 
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
-  new BotController(store, telegram, entries),
+  new BotController(store, telegram, entries, new LinkService(store, telegram, auth)),
 );
 
 Deno.serve((req) => server.handle(req));

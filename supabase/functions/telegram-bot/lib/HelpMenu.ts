@@ -14,6 +14,8 @@ export class HelpMenu {
     { command: 'categories', description: 'List expense categories and subcategories' },
     { command: 'default', description: 'Show or change your default account' },
     { command: 'cancel', description: 'Drop the entry or edit in progress' },
+    { command: 'link', description: 'Connect this chat to your Pocket account' },
+    { command: 'unlink', description: 'Disconnect this chat' },
   ];
 
   /** Telegram HTML: only <b>, <i>, <code> are used; < and > are escaped. */
@@ -45,7 +47,7 @@ export class HelpMenu {
     '',
     '<b>➕ Add to any entry</b>',
     '<code>cash</code>, <code>card</code>, <code>online</code>, <code>cheque</code>  payment type',
-    '<code>#name</code>  account, e.g. <code>#mpesa</code> (the start of its name is enough)',
+    '<code>#name</code>  account, e.g. <code>#mpesa</code> (the start of its name is enough). Accounts shared with you work too.',
     '<code>yesterday</code>  dates it yesterday',
     'Example: <code>250 lunch cash #mpesa @restaurant yesterday</code>',
     '',
@@ -55,12 +57,14 @@ export class HelpMenu {
     '🗑 <b>Delete</b> — removes the entry.',
     '',
     '<b>⚙️ Commands</b>',
-    '/accounts  list your accounts',
+    '/accounts  your accounts and those shared with you',
     '/categories  list expense categories and subcategories',
     '<code>/categories deeni</code>  just one main category',
     '/default  show the default account',
     '<code>/default mpesa</code>  change it',
     '/cancel  drop an entry waiting for a category, or an edit',
+    '<code>/link name@gmail.com</code>  connect a chat (a code is emailed to you)',
+    '/unlink  disconnect this chat',
     '/help  this guide',
     '',
     '<i>The word "to" in a note never makes a transfer — only &gt; or two #accounts do.</i>',

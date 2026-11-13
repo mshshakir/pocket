@@ -2,14 +2,20 @@
 
 Log Pocket transactions by messaging a Telegram bot.
 
-## How entries reach Pocket
+## Who can write where
 
-- **You (the owner):** the bot appends the transaction to your `user_data` book using the
-  same versioned save the app uses, so it never overwrites a save from the app. The app
-  picks it up live through its existing realtime listener.
-- **A family member:** the bot puts it in your `family_contributions` inbox. Your app checks
-  their permission (add/edit/full on that account) and merges it on its next sync, exactly
-  like an entry they make in the app.
+Each person connects their own chat with `/link their@email` and the 6-digit code Supabase emails
+them (the same sign-in code the Pocket app uses). No one else is involved, no accounts are created,
+and the replies never reveal whether an email has an account. A linked chat can write to:
+
+- **Their own book:** saved directly into their `user_data`, using the same versioned save the app
+  uses, so it never overwrites a save from the app.
+- **Books shared with them:** only accounts whose owner has given their email add, edit or full
+  access (the owner's own `family` permissions). These go through the owner's
+  `family_contributions` inbox, and the owner's app checks the permission again before merging.
+
+Nothing else is reachable, and every button tap is checked against the same rules.
+`/unlink` disconnects a chat.
 
 ## 1. Create the bot
 
@@ -17,8 +23,8 @@ In Telegram, message **@BotFather** → `/newbot` → copy the **token**.
 
 ## 2. Create the tables
 
-Supabase dashboard → **SQL Editor** → run `supabase/migrations/0005_telegram_links.sql`, then
-`supabase/migrations/0006_telegram_pending.sql` (the step each chat is waiting on).
+Supabase dashboard → **SQL Editor** → run, in order, `supabase/migrations/0005_telegram_links.sql`,
+`0006_telegram_pending.sql` and `0007_telegram_self_link.sql`.
 
 ## 3. Deploy the function
 
@@ -45,24 +51,13 @@ https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<project-ref>.supabas
 
 It should reply `"ok":true`.
 
-## 5. Link your chat
+## 5. Connect a chat
 
-Message your bot anything. It replies with your **chat ID**. Then in the SQL Editor:
+Anyone with a Pocket account messages the bot `/link their@email`, then sends the code from their
+email. Send `/accounts` to see their own accounts and those shared with them.
 
-```sql
-insert into telegram_links (chat_id, owner_id, member_email, default_account_id)
-values (
-  <chat-id>,
-  (select id from auth.users where email = '<owner-email>'),
-  '<email-of-the-person-using-this-chat>',
-  '<default-account-id or null>'
-);
-```
-
-For a family member, use the **owner's** email in `owner_id` and the **member's** email in
-`member_email`. They must already have add access to that account in the app.
-
-Send `/accounts` to check which accounts you can add to.
+Supabase's built-in mailer sends at most 2 sign-in emails per hour for the whole project (shared
+with app sign-ins); set up custom SMTP if that becomes a problem.
 
 ## Message format
 
@@ -81,9 +76,10 @@ Amounts are in the account's own currency (the source account for transfers); `�
 `rupees` and commas are accepted. Transfers are saved as the same linked out/in pair the app
 creates. Exchange rates come from the same live source the app uses (open.er-api.com).
 
-**Every expense and income needs a category.** Without one, the bot shows the most-used
-categories as buttons and saves nothing until one is tapped or typed. Same-named categories
-are told apart by parent (`@childrentoiletries`). Transfers need no category.
+**Every expense and income needs a subcategory.** Without one, the bot shows the main
+categories as buttons, then the chosen one's subcategories, and saves nothing until a
+subcategory is tapped or typed; a main category on its own is never saved. Same-named
+categories are told apart by parent (`@childrentoiletries`). Transfers need no category.
 
 **Each confirmation has ✏️ Edit and 🗑 Delete buttons.** Edit asks for the corrected entry and
 replaces the original rows in place; Delete removes them. For a family member, changes to an
@@ -91,5 +87,6 @@ entry the owner's app has already merged follow the app's rules: editing needs e
 deleting needs full access.
 
 Commands (also in the bot's menu button): `/help` shows the full guide; `/accounts` lists accounts;
+`/categories` lists expense categories; `/link` and `/unlink` connect or disconnect a chat;
 `/default` shows or changes the default account; `/cancel` drops an entry waiting for a category,
 or an edit.
