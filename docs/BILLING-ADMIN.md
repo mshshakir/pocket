@@ -76,6 +76,16 @@ where user_id = pocket_admin_user('someone@gmail.com')
 order by at desc;
 ```
 
+## AI (receipt scans and voice entries)
+
+AI runs on Pocket's own Gemini key, kept on the server: nobody enters a key in the app.
+Set it once in Supabase → **Edge Functions → Secrets** as `GEMINI_API_KEY` (create a key
+at aistudio.google.com/apikey). Changing it there takes effect at once. Until it is set,
+AI scans say "AI scanning isn't set up yet" and nobody is charged.
+
+Each scan or voice entry costs one credit, charged by the `ai` server function; if Gemini
+fails, the credit is refunded automatically.
+
 ## The rules
 
 The server enforces these: the app and the Telegram bot only explain them.

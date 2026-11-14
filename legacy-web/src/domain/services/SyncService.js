@@ -48,6 +48,7 @@ import { CurrencyService }   from './CurrencyService.js';
 import { LedgerMath }        from './LedgerMath.js';
 import { BudgetService }     from './BudgetService.js';
 import { PlanService }       from '../billing/PlanService.js';
+import { AiGateway }         from './AiGateway.js';
 
 /** Trailing-edge debounce applied after each local save. */
 const PUSH_DEBOUNCE_MS = 1000;
@@ -172,6 +173,11 @@ export class SyncService {
   /** Ask the server for the plan again (e.g. when Settings opens). */
   refreshPlan() {
     return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
+  }
+
+  /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
+  aiGateway() {
+    return new AiGateway(() => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null));
   }
 
   /** The cloud price list, for showing upgrade options. */

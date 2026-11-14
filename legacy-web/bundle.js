@@ -3237,33 +3237,38 @@ var _PocketApp = (() => {
   };
 
   // src/domain/services/ReceiptScanService.js
-  var GEMINI_MODEL = "gemini-2.5-flash-lite";
-  var GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   var ReceiptScanService = class {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
     #fx;
-    constructor() {
+    /** @type {{generate: (req: object) => Promise<string>}} */
+    #gateway;
+    /** @param {{generate: (req: object) => Promise<string>}} gateway  an AiGateway (or a stand-in in tests) */
+    constructor(gateway) {
       this.#store = Store.getInstance();
       this.#fx = new CurrencyService();
+      this.#gateway = gateway;
+    }
+    /** Swap the gateway (the signed-in person changed; tests). */
+    useGateway(gateway) {
+      this.#gateway = gateway;
     }
     // ── Public API ────────────────────────────────────────────────────────
     /**
      * Scan a receipt image/PDF with Gemini.
      *
      * @param {File} file  Image or PDF selected by the user.
+     * @param {{book: string}} where  whose book the entry is for (charges that space's AI)
      * @returns {Promise<Object>} Resolves with a prefill object ready to pass
      *   directly to `openModal('transaction', { prefill })`.
      *   Fields: type, amount (major units), currency, accountId, payee, note,
      *           date (YYYY-MM-DD), paymentType, and optionally categoryId or splits.
-     * @throws {Error} With a human-readable `.message` on any failure, including
-     *   the sentinel `'NO_API_KEY'` when no Gemini key is configured.
+     * @throws {Error} With a human-readable `.message` on any failure; AiError
+     *   (with `.code`) for sign-in, credits and access.
      */
-    async scan(file) {
+    async scan(file, { book } = {}) {
       const state = this.#store.getState();
-      const apiKey = state.user.geminiApiKey?.trim();
-      if (!apiKey) throw new Error("NO_API_KEY");
       let base64, mediaType;
       try {
         base64 = await this.#fileToBase64(file);
@@ -3279,40 +3284,13 @@ var _PocketApp = (() => {
       const today = DateService.todayIso();
       const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || "USD";
       const prompt2 = this.#buildPrompt(defaultCcy, catLines, fallbackId, fallbackName, today);
-      let res;
-      try {
-        res = await fetch(GEMINI_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                // Image FIRST — consistent with Google's own multimodal examples
-                { inline_data: { mime_type: mediaType, data: base64 } },
-                { text: prompt2 }
-              ]
-            }],
-            generationConfig: {
-              temperature: 0.1,
-              // low temperature → deterministic, follows format exactly
-              maxOutputTokens: 1024
-            }
-          })
-        });
-      } catch (networkErr) {
-        throw new Error("Network error \u2014 check your connection and try again.");
-      }
-      if (!res.ok) {
-        let msg = `API error ${res.status}`;
-        try {
-          const errBody = await res.json();
-          msg = errBody.error?.message || msg;
-        } catch (_) {
-        }
-        throw new Error(msg);
-      }
-      const body = await res.json();
-      const raw = (body.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      const raw = await this.#gateway.generate({
+        kind: "receipt",
+        book,
+        maxOutputTokens: 1024,
+        // Image FIRST — consistent with Google's own multimodal examples
+        parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt2 }]
+      });
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error("No JSON found in AI response. The model may have refused the request or returned an unexpected format.");
@@ -3334,13 +3312,12 @@ var _PocketApp = (() => {
      * categories ("sixty on groceries and forty on petrol").
      *
      * @param {File|Blob|{base64:string, mimeType:string}} audio
+     * @param {{book: string}} where  whose book the entry is for
      * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
-     * @throws {Error} '.message' human-readable; sentinel 'NO_API_KEY'.
+     * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
      */
-    async parseVoice(audio) {
+    async parseVoice(audio, { book } = {}) {
       const state = this.#store.getState();
-      const apiKey = state.user.geminiApiKey?.trim();
-      if (!apiKey) throw new Error("NO_API_KEY");
       let base64, mediaType;
       try {
         if (audio && typeof audio === "object" && typeof audio.base64 === "string") {
@@ -3358,34 +3335,12 @@ var _PocketApp = (() => {
       const today = DateService.todayIso();
       const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || "USD";
       const prompt2 = this.#buildVoicePrompt(defaultCcy, catLines, today);
-      let res;
-      try {
-        res = await fetch(GEMINI_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            contents: [{ parts: [
-              { inline_data: { mime_type: mediaType, data: base64 } },
-              { text: prompt2 }
-            ] }],
-            // 512 was enough for a single flat object; an itemised response with
-            // several categories needs the same headroom the receipt path has.
-            generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
-          })
-        });
-      } catch (_) {
-        throw new Error("Network error \u2014 check your connection and try again.");
-      }
-      if (!res.ok) {
-        let msg = `API error ${res.status}`;
-        try {
-          msg = (await res.json()).error?.message || msg;
-        } catch (_) {
-        }
-        throw new Error(msg);
-      }
-      const body = await res.json();
-      const raw = (body.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      const raw = await this.#gateway.generate({
+        kind: "voice",
+        book,
+        maxOutputTokens: 1024,
+        parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt2 }]
+      });
       const m = raw.match(/\{[\s\S]*\}/);
       if (!m) throw new Error("Couldn't understand that \u2014 try again, e.g. \u201Cspent 40 on groceries at Carrefour\u201D.");
       let obj;
@@ -4512,6 +4467,61 @@ RULES:
     }
   };
 
+  // src/domain/services/AiGateway.js
+  var AiError = class extends Error {
+    /**
+     * @param {string} message  a sentence for the person
+     * @param {'signed_out'|'no_credits'|'no_access'|'not_set_up'|'ai_failed'|'bad_request'|'network'} code
+     */
+    constructor(message, code) {
+      super(message);
+      this.code = code;
+    }
+  };
+  var AiGateway = class _AiGateway {
+    /** @type {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} */
+    #invoker;
+    /**
+     * @param {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} invoker
+     *   gives supabase.functions.invoke for the signed-in person, or null when signed out
+     *   (asked at each request, so the gateway follows sign-in and sign-out)
+     */
+    constructor(invoker) {
+      this.#invoker = invoker;
+    }
+    /**
+     * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number}} request
+     * @returns {Promise<string>} the model's text answer
+     * @throws {AiError}
+     */
+    async generate({ kind, book, parts, maxOutputTokens = 1024 }) {
+      const invoke = this.#invoker();
+      if (!invoke || !book) throw new AiError("Please sign in to use AI scanning and voice entry.", "signed_out");
+      let result;
+      try {
+        result = await invoke("ai", { body: { kind, book, ref: _AiGateway.#ref(), parts, maxOutputTokens } });
+      } catch (_) {
+        throw new AiError("Network error \u2014 check your connection and try again.", "network");
+      }
+      const { data, error } = result ?? {};
+      if (error) throw await _AiGateway.#explain(error);
+      if (typeof data?.text !== "string") throw new AiError("The AI returned nothing. Please try again.", "ai_failed");
+      return data.text;
+    }
+    /** A function error carries the server's JSON answer in its response. */
+    static async #explain(error) {
+      try {
+        const body = await error.context?.json?.();
+        if (body?.error) return new AiError(body.error, body.code || "ai_failed");
+      } catch (_) {
+      }
+      return new AiError(error.message || "The AI request failed. Please try again.", "ai_failed");
+    }
+    static #ref() {
+      return globalThis.crypto?.randomUUID?.() ?? `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+  };
+
   // src/domain/services/SyncService.js
   var PUSH_DEBOUNCE_MS = 1e3;
   var MAX_PUSH_WAIT_MS = 3e3;
@@ -4620,6 +4630,10 @@ RULES:
     /** Ask the server for the plan again (e.g. when Settings opens). */
     refreshPlan() {
       return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
+    }
+    /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
+    aiGateway() {
+      return new AiGateway(() => this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null);
     }
     /** The cloud price list, for showing upgrade options. */
     planCatalogue() {
@@ -12642,7 +12656,7 @@ This replaces your current grouping.`
         const label = p.charAt(0).toUpperCase() + p.slice(1);
         return `<button type="button" data-pay-chip="${this.#esc(p)}" onclick="window.__app.pickPaymentType('${Html.js(p)}')" class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
       }).join("");
-      const hasKey = !!state.user.geminiApiKey;
+      const signedIn = !!window.__app?.getSbUser?.();
       const isTransfer = type === "transfer";
       const moreOpen = !!(data.payee && data.payee !== "Transfer") || !!data.recurring;
       const types = sharedBook ? ["expense", "income"] : ["expense", "income", "transfer"];
@@ -12651,14 +12665,14 @@ This replaces your current grouping.`
         <div class="sheet-handle" aria-hidden="true"></div>
         <div class="flex items-center gap-1 mb-4">
           <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? "Edit transaction" : "New transaction"}</h3>
-          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${hasKey ? "Scan a receipt" : "Scan a receipt (add a Google AI key in Settings)"}"
+          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${signedIn ? "Scan a receipt" : "Scan a receipt (sign in first)"}"
                  aria-label="Scan a receipt">
             <i data-lucide="scan-line" style="color:#8b5cf6"></i>
             <span class="scan-label-text sr-only">Scan receipt</span>
             <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
           </label>
           <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.voiceEntry(this)"
-                  title="${hasKey ? "Speak the transaction" : "Speak the transaction (add a Google AI key in Settings)"}"
+                  title="${signedIn ? "Speak the transaction" : "Speak the transaction (sign in first)"}"
                   aria-label="Speak the transaction">
             <i data-lucide="mic" style="color:#10b981"></i>
           </button>
@@ -13674,41 +13688,18 @@ This replaces your current grouping.`
           `}
         </div>
 
-        <!-- AI Receipt Scanner -->
+        <!-- AI receipt scanning & voice entry: Pocket's own AI, paid from the plan -->
         <div class="card-muted p-3 mb-3">
-          <div class="flex items-start gap-3 mb-2">
-            <div class="icon-pill" style="background:#4285f422;color:#4285f4"><i data-lucide="scan-line"></i></div>
+          <div class="flex items-start gap-3">
+            <div class="icon-pill" style="background:#3b82f622;color:#3b82f6"><i data-lucide="scan-line"></i></div>
             <div class="flex-1">
-              <div class="font-medium text-sm">AI Receipt Scanner</div>
-              <div class="text-xs text-zinc-500">
-                Powered by <strong>Gemini 2.0 Flash</strong> (Google AI).
-                Free tier: 1,500 scans/day \u2014 no credit card needed.
-                Get a free key at
-                <a href="https://aistudio.google.com/apikey" target="_blank" class="underline">aistudio.google.com/apikey</a>.
-                Reads the receipt image, maps line items to your categories, and pre-fills splits automatically.
+              <div class="font-medium text-sm">AI receipt scanning &amp; voice entry</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                Scan a receipt or say an entry from the Add form. Each scan or voice entry uses one AI credit;
+                your allowance is under <strong>Your plan</strong>.${sbUser ? "" : " Sign in to use it."}
               </div>
             </div>
           </div>
-          <div class="flex gap-2 items-stretch">
-            <div class="relative flex-1">
-              <input id="geminiKeyInput" class="input pr-16" type="password"
-                     placeholder="AIzaSy..."
-                     value="${this.#esc(u.geminiApiKey || "")}"
-                     oninput="window.__app.setGeminiKey(this.value.trim())">
-              <button type="button"
-                      class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-                      onclick="(()=>{ const i=document.getElementById('geminiKeyInput'); i.type=i.type==='password'?'text':'password'; })()">
-                Show
-              </button>
-            </div>
-            <button type="button" class="btn btn-primary shrink-0" onclick="window.__app.saveGeminiKey()">
-              <i data-lucide="save"></i> Save
-            </button>
-          </div>
-          <div class="text-xs mt-1 ${u.geminiApiKey ? "text-emerald-600" : "text-zinc-500"}">
-            ${u.geminiApiKey ? '<i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Key saved \u2014 receipt scanning is enabled.' : "No key saved yet. Paste a key and press Save."}
-          </div>
-          <div class="text-xs text-zinc-500 mt-1">Key is stored only in your browser (localStorage). Only sent to <code>generativelanguage.googleapis.com</code>.</div>
         </div>
 
         <div class="text-xs text-zinc-500 text-center mt-4">Pocket \xB7 v2.0</div>
@@ -17206,8 +17197,26 @@ Leave empty to use your own name.`,
      * parseVoice() directly instead of faking a microphone.
      */
     get receiptScanner() {
-      if (!this.#receipts) this.#receipts = new ReceiptScanService();
+      if (!this.#receipts) this.#receipts = new ReceiptScanService(this.#sync.aiGateway());
       return this.#receipts;
+    }
+    /** Whose book an AI entry is for: the shared space being viewed, or your own. */
+    #aiBook() {
+      const space = this.#spaces?.active?.();
+      if (space && !space.isHome) return space.id;
+      return this.#sync.currentUser?.id ?? null;
+    }
+    /** Show an AI failure, and open the place that fixes it (sign-in, Your plan). */
+    #showAiError(e, what) {
+      if (e?.code === "signed_out") {
+        this.#toast.show(e.message);
+        this.openModal("auth");
+      } else if (e?.code === "no_credits") {
+        this.#toast.show(e.message);
+        this.openModal("settings");
+      } else {
+        this.#toast.show(`${what} failed: ${e?.message || "Unknown error"}`);
+      }
     }
     /**
      * The manage sheet — inline handlers inside it dispatch through
@@ -17315,30 +17324,6 @@ Leave empty to use your own name.`,
       this.#store.persist();
       this.#render();
       this.#toast.show(`Calendar mode: ${v}`);
-    }
-    setGeminiKey(v) {
-      this.#store.getState().user.geminiApiKey = v;
-      this.#store.persist();
-    }
-    /**
-     * Explicit "Save" for the AI key — persists the current input value and gives
-     * the user clear confirmation that the app has accepted it (the field also
-     * autosaves on input, but the button removes the "did it take?" doubt).
-     */
-    saveGeminiKey() {
-      const inp = document.getElementById("geminiKeyInput");
-      const v = (inp?.value || "").trim();
-      this.#store.getState().user.geminiApiKey = v;
-      this.#store.persist();
-      this.#modal.refresh?.();
-      lucide?.createIcons?.();
-      if (!v) {
-        this.#toast.show("API key cleared");
-      } else if (!/^AIza[\w-]{10,}$/.test(v)) {
-        this.#toast.show("Saved \u2014 but this doesn\u2019t look like a Google AI key");
-      } else {
-        this.#toast.show("\u2713 API key saved \u2014 receipt scanning enabled");
-      }
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Transaction CRUD
@@ -18305,9 +18290,10 @@ Leave empty to use your own name.`,
     /**
      * Receipt scan — UI coordinator.
      *
-     * Delegates all Gemini API interaction to ReceiptScanService (domain layer).
+     * Delegates all AI interaction to ReceiptScanService (domain layer), which
+     * goes through Pocket's `ai` server function (plan credits, no personal key).
      * This method is responsible only for:
-     *   1. Checking the API key and opening Settings if missing
+     *   1. Choosing whose book the entry is for (own, or the shared space shown)
      *   2. Updating the scan-label button text during the async call
      *   3. Opening a fresh pre-filled transaction modal on success
      *   4. Showing a specific error toast and restoring the button on failure
@@ -18315,30 +18301,19 @@ Leave empty to use your own name.`,
     async scanReceipt(input) {
       const file = input?.files?.[0];
       if (!file) return;
-      if (!this.#store.getState().user.geminiApiKey?.trim()) {
-        this.#toast.show("Add your free Google AI key in Settings first");
-        this.openModal("settings");
-        input.value = "";
-        return;
-      }
       const scanLabel = input.closest("label");
       const scanText = scanLabel?.querySelector(".scan-label-text");
       if (scanText) scanText.textContent = "Scanning\u2026";
-      this.#toast.show("Scanning receipt with Gemini AI\u2026");
+      this.#toast.show("Scanning receipt\u2026");
       try {
         const scanner = this.receiptScanner;
-        const prefill = await scanner.scan(file);
+        const prefill = await scanner.scan(file, { book: this.#aiBook() });
         this.closeModal();
         this.openModal("transaction", { prefill });
         this.#toast.show("Receipt scanned \xB7 review and save");
       } catch (e) {
-        if (e.message === "NO_API_KEY") {
-          this.#toast.show("Add your free Google AI key in Settings first");
-          this.openModal("settings");
-        } else {
-          this.#toast.show("Scan failed: " + (e.message || "Unknown error"));
-        }
-        if (scanText) scanText.textContent = "Scan receipt with Gemini AI";
+        this.#showAiError(e, "Scan");
+        if (scanText) scanText.textContent = "Scan receipt";
       } finally {
         input.value = "";
       }
@@ -18356,9 +18331,9 @@ Leave empty to use your own name.`,
      */
     async voiceEntry() {
       if (this.#voice) return;
-      if (!this.#store.getState().user.geminiApiKey?.trim()) {
-        this.#toast.show("Add your free Google AI key in Settings first");
-        this.openModal("settings");
+      if (!this.#sync.currentUser) {
+        this.#toast.show("Please sign in to use voice entry.");
+        this.openModal("auth");
         return;
       }
       const recorder = new VoiceRecorder();
@@ -18393,19 +18368,14 @@ Leave empty to use your own name.`,
           return;
         }
         try {
-          const prefill = await this.receiptScanner.parseVoice(blob);
+          const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook() });
           finish();
           this.closeModal();
           this.openModal("transaction", { prefill });
           this.#toast.show("Heard it \xB7 review and save");
         } catch (e) {
           finish();
-          if (e.message === "NO_API_KEY") {
-            this.#toast.show("Add your free Google AI key in Settings first");
-            this.openModal("settings");
-          } else {
-            this.#toast.show("Voice failed: " + (e.message || "Unknown error"));
-          }
+          this.#showAiError(e, "Voice");
         }
       };
       try {

@@ -43,3 +43,8 @@ jobs:
 
       - name: Deploy telegram-bot
         run: supabase functions deploy telegram-bot --remote="$PROJECT_REF" --no-verify-jwt --yes
+
+      # AI scans and voice entries. Only signed-in users may call it, so the
+      # sign-in (JWT) check stays on. Needs the GEMINI_API_KEY function secret.
+      - name: Deploy ai
+        run: supabase functions deploy ai --remote="$PROJECT_REF" --yes

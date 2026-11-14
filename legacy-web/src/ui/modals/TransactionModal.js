@@ -352,7 +352,7 @@ export class TransactionModal {
         + ` class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
     }).join('');
 
-    const hasKey    = !!state.user.geminiApiKey;
+    const signedIn  = !!window.__app?.getSbUser?.();
     const isTransfer = type === 'transfer';
     // Repeat and payee live under "More options"; open it when this entry
     // already uses one, so nothing set is hidden.
@@ -364,14 +364,14 @@ export class TransactionModal {
         <div class="sheet-handle" aria-hidden="true"></div>
         <div class="flex items-center gap-1 mb-4">
           <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
-          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${hasKey ? 'Scan a receipt' : 'Scan a receipt (add a Google AI key in Settings)'}"
+          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${signedIn ? 'Scan a receipt' : 'Scan a receipt (sign in first)'}"
                  aria-label="Scan a receipt">
             <i data-lucide="scan-line" style="color:#8b5cf6"></i>
             <span class="scan-label-text sr-only">Scan receipt</span>
             <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
           </label>
           <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.voiceEntry(this)"
-                  title="${hasKey ? 'Speak the transaction' : 'Speak the transaction (add a Google AI key in Settings)'}"
+                  title="${signedIn ? 'Speak the transaction' : 'Speak the transaction (sign in first)'}"
                   aria-label="Speak the transaction">
             <i data-lucide="mic" style="color:#10b981"></i>
           </button>

@@ -504,22 +504,14 @@ console.log('\n2026-08 session regression suite');
   const app = w.__app, doc = w.document, $ = (s) => doc.querySelector(s);
   const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
 
-  // Drive the real service through the app's scanner seam: only the network is
-  // stubbed, so the prompt, the parsing and the split reconciliation are all
-  // genuinely exercised.
-  const reply = (obj) => Promise.resolve({
-    ok: true,
-    json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }),
-  });
+  // Drive the real service through the app's scanner seam: only the AI call
+  // (the AiGateway to Pocket's server function) is stood in for, so the prompt,
+  // the parsing and the split reconciliation are all genuinely exercised.
+  let lastRequest = null;
   const heard = async (obj) => {
-    w.fetch = () => reply(obj);
-    return app.receiptScanner.parseVoice({ base64: 'x', mimeType: 'audio/webm' });
+    app.receiptScanner.useGateway({ generate: async (req) => { lastRequest = req; return JSON.stringify(obj); } });
+    return app.receiptScanner.parseVoice({ base64: 'x', mimeType: 'audio/webm' }, { book: 'u1' });
   };
-
-  // The service reads the key off state before it will call out at all.
-  const st0 = app.accountService ? null : null;
-  w.__app.setGeminiKey?.('test-key');
-  await wait(20);
 
   // ── V1: two amounts, two categories → a split ──────────────────────────
   let prefill = await heard({
@@ -611,6 +603,9 @@ console.log('\n2026-08 session regression suite');
   ok('V4 the old flat shape is still accepted',
      !legacy?._err && !legacy?.splits && legacy?.categoryId === 'c1' && legacy?.amount === 12,
      JSON.stringify(legacy));
+  ok('V5 voice goes through Pocket\'s AI with the book and the recording, no personal key',
+     lastRequest?.kind === 'voice' && lastRequest.book === 'u1'
+     && lastRequest.parts[0].inline_data?.mime_type === 'audio/webm' && typeof lastRequest.parts[1].text === 'string');
 
   w.close();
 }

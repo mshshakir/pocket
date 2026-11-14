@@ -250,43 +250,18 @@ export class SettingsModal {
           `}
         </div>
 
-        <!-- AI Receipt Scanner -->
+        <!-- AI receipt scanning & voice entry: Pocket's own AI, paid from the plan -->
         <div class="card-muted p-3 mb-3">
-          <div class="flex items-start gap-3 mb-2">
-            <div class="icon-pill" style="background:#4285f422;color:#4285f4"><i data-lucide="scan-line"></i></div>
+          <div class="flex items-start gap-3">
+            <div class="icon-pill" style="background:#3b82f622;color:#3b82f6"><i data-lucide="scan-line"></i></div>
             <div class="flex-1">
-              <div class="font-medium text-sm">AI Receipt Scanner</div>
-              <div class="text-xs text-zinc-500">
-                Powered by <strong>Gemini 2.0 Flash</strong> (Google AI).
-                Free tier: 1,500 scans/day — no credit card needed.
-                Get a free key at
-                <a href="https://aistudio.google.com/apikey" target="_blank" class="underline">aistudio.google.com/apikey</a>.
-                Reads the receipt image, maps line items to your categories, and pre-fills splits automatically.
+              <div class="font-medium text-sm">AI receipt scanning &amp; voice entry</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                Scan a receipt or say an entry from the Add form. Each scan or voice entry uses one AI credit;
+                your allowance is under <strong>Your plan</strong>.${sbUser ? '' : ' Sign in to use it.'}
               </div>
             </div>
           </div>
-          <div class="flex gap-2 items-stretch">
-            <div class="relative flex-1">
-              <input id="geminiKeyInput" class="input pr-16" type="password"
-                     placeholder="AIzaSy..."
-                     value="${this.#esc(u.geminiApiKey || '')}"
-                     oninput="window.__app.setGeminiKey(this.value.trim())">
-              <button type="button"
-                      class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-                      onclick="(()=>{ const i=document.getElementById('geminiKeyInput'); i.type=i.type==='password'?'text':'password'; })()">
-                Show
-              </button>
-            </div>
-            <button type="button" class="btn btn-primary shrink-0" onclick="window.__app.saveGeminiKey()">
-              <i data-lucide="save"></i> Save
-            </button>
-          </div>
-          <div class="text-xs mt-1 ${u.geminiApiKey ? 'text-emerald-600' : 'text-zinc-500'}">
-            ${u.geminiApiKey
-              ? '<i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Key saved — receipt scanning is enabled.'
-              : 'No key saved yet. Paste a key and press Save.'}
-          </div>
-          <div class="text-xs text-zinc-500 mt-1">Key is stored only in your browser (localStorage). Only sent to <code>generativelanguage.googleapis.com</code>.</div>
         </div>
 
         <div class="text-xs text-zinc-500 text-center mt-4">Pocket · v2.0</div>

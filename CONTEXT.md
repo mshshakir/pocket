@@ -56,6 +56,13 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · phase 4, AI through Pocket's key:** new edge function `supabase/functions/ai` (JWT
+  verified; AiRequest validates kind/book/ref/one file ≤ ~4.5 MB; AiCredits → pocket_ai_spend/refund;
+  GeminiClient with secret GEMINI_API_KEY, model fixed gemini-2.5-flash-lite, ≤1024 output tokens;
+  refund on Gemini failure). App: `AiGateway` (supabase.functions.invoke('ai')) injected into
+  ReceiptScanService (scan/parseVoice take {book}: active shared space or own). Personal Gemini key
+  field and setGeminiKey/saveGeminiKey removed. Tests: ai/test/handler_test.ts (deno), ai-gateway smoke.
+
 - **2026-11-14 · device owner (privacy fix):** the device book now records its owner (`pocket.v1.owner`,
   written by Repository with every save). On sign-in, a book owned by someone else (or, for older
   devices, whose baseline/journal belongs to someone else) is parked for them (`ParkedBooks`,

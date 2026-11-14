@@ -4,8 +4,8 @@
  * Responsibilities:
  *  - Build a structured prompt that injects real category IDs so the model never
  *    returns names that require fuzzy matching.
- *  - Call the Gemini 2.0 Flash REST endpoint with correct field names, part order,
- *    and generation config.
+ *  - Send it through the AiGateway: Pocket's `ai` server function asks Gemini
+ *    with Pocket's key and charges the plan's AI credits (no personal keys).
  *  - Parse and sanitise the response, validating every returned category ID against
  *    the real data set.
  *  - Return a fully-formed `prefill` object ready to pass to the transaction modal,
@@ -24,19 +24,21 @@ import { Store }          from '../../core/Store.js';
 import { CurrencyService } from './CurrencyService.js';
 import { DateService }     from './DateService.js';
 
-// gemini-2.0-flash and 2.0-flash-lite were deprecated and shut down (June 2026).
-// gemini-2.5-flash-lite is the lowest-cost current model with image (vision) input.
-const GEMINI_MODEL = 'gemini-2.5-flash-lite';
-const GEMINI_ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-
 export class ReceiptScanService {
   /** @type {Store} */           #store;
   /** @type {CurrencyService} */ #fx;
+  /** @type {{generate: (req: object) => Promise<string>}} */ #gateway;
 
-  constructor() {
-    this.#store = Store.getInstance();
-    this.#fx    = new CurrencyService();
+  /** @param {{generate: (req: object) => Promise<string>}} gateway  an AiGateway (or a stand-in in tests) */
+  constructor(gateway) {
+    this.#store   = Store.getInstance();
+    this.#fx      = new CurrencyService();
+    this.#gateway = gateway;
+  }
+
+  /** Swap the gateway (the signed-in person changed; tests). */
+  useGateway(gateway) {
+    this.#gateway = gateway;
   }
 
   // ── Public API ────────────────────────────────────────────────────────
@@ -45,17 +47,16 @@ export class ReceiptScanService {
    * Scan a receipt image/PDF with Gemini.
    *
    * @param {File} file  Image or PDF selected by the user.
+   * @param {{book: string}} where  whose book the entry is for (charges that space's AI)
    * @returns {Promise<Object>} Resolves with a prefill object ready to pass
    *   directly to `openModal('transaction', { prefill })`.
    *   Fields: type, amount (major units), currency, accountId, payee, note,
    *           date (YYYY-MM-DD), paymentType, and optionally categoryId or splits.
-   * @throws {Error} With a human-readable `.message` on any failure, including
-   *   the sentinel `'NO_API_KEY'` when no Gemini key is configured.
+   * @throws {Error} With a human-readable `.message` on any failure; AiError
+   *   (with `.code`) for sign-in, credits and access.
    */
-  async scan(file) {
+  async scan(file, { book } = {}) {
     const state   = this.#store.getState();
-    const apiKey  = state.user.geminiApiKey?.trim();
-    if (!apiKey) throw new Error('NO_API_KEY');
 
     // ── Step 1: read file as base64 ──────────────────────────────────
     let base64, mediaType;
@@ -76,46 +77,14 @@ export class ReceiptScanService {
     const defaultCcy    = state.user.defaultCurrency || state.user.homeCurrency || 'USD';
     const prompt        = this.#buildPrompt(defaultCcy, catLines, fallbackId, fallbackName, today);
 
-    // ── Step 3: call Gemini ──────────────────────────────────────────
-    // Pass the key via the request header, NOT the URL query string: URLs leak
-    // into proxy/browser history and Referer headers far more readily than
-    // headers do, and this is the user's personal API key.
-    let res;
-    try {
-      res = await fetch(GEMINI_ENDPOINT, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body:    JSON.stringify({
-          contents: [{
-            parts: [
-              // Image FIRST — consistent with Google's own multimodal examples
-              { inline_data: { mime_type: mediaType, data: base64 } },
-              { text: prompt },
-            ],
-          }],
-          generationConfig: {
-            temperature:    0.1,   // low temperature → deterministic, follows format exactly
-            maxOutputTokens: 1024,
-          },
-        }),
-      });
-    } catch (networkErr) {
-      throw new Error('Network error — check your connection and try again.');
-    }
+    // ── Step 3: ask the AI (server function: Pocket's key, plan credits) ─
+    const raw = await this.#gateway.generate({
+      kind: 'receipt', book, maxOutputTokens: 1024,
+      // Image FIRST — consistent with Google's own multimodal examples
+      parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt }],
+    });
 
-    // ── Step 4: check HTTP status ────────────────────────────────────
-    if (!res.ok) {
-      let msg = `API error ${res.status}`;
-      try {
-        const errBody = await res.json();
-        msg = errBody.error?.message || msg;
-      } catch (_) {}
-      throw new Error(msg);
-    }
-
-    // ── Step 5: parse response ───────────────────────────────────────
-    const body = await res.json();
-    const raw  = (body.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    // ── Step 4: parse response ───────────────────────────────────────
 
     // Extract the first complete JSON object — handles markdown fences,
     // preamble text, or any other model noise around the JSON.
@@ -144,13 +113,12 @@ export class ReceiptScanService {
    * categories ("sixty on groceries and forty on petrol").
    *
    * @param {File|Blob|{base64:string, mimeType:string}} audio
+   * @param {{book: string}} where  whose book the entry is for
    * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
-   * @throws {Error} '.message' human-readable; sentinel 'NO_API_KEY'.
+   * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
    */
-  async parseVoice(audio) {
+  async parseVoice(audio, { book } = {}) {
     const state  = this.#store.getState();
-    const apiKey = state.user.geminiApiKey?.trim();
-    if (!apiKey) throw new Error('NO_API_KEY');
 
     let base64, mediaType;
     try {
@@ -169,32 +137,12 @@ export class ReceiptScanService {
     const defaultCcy = state.user.defaultCurrency || state.user.homeCurrency || 'USD';
     const prompt     = this.#buildVoicePrompt(defaultCcy, catLines, today);
 
-    let res;
-    try {
-      res = await fetch(GEMINI_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          contents: [{ parts: [
-            { inline_data: { mime_type: mediaType, data: base64 } },
-            { text: prompt },
-          ] }],
-          // 512 was enough for a single flat object; an itemised response with
-          // several categories needs the same headroom the receipt path has.
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
-        }),
-      });
-    } catch (_) {
-      throw new Error('Network error — check your connection and try again.');
-    }
-    if (!res.ok) {
-      let msg = `API error ${res.status}`;
-      try { msg = (await res.json()).error?.message || msg; } catch (_) {}
-      throw new Error(msg);
-    }
-
-    const body = await res.json();
-    const raw  = (body.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    // 512 was enough for a single flat object; an itemised response with
+    // several categories needs the same headroom the receipt path has.
+    const raw = await this.#gateway.generate({
+      kind: 'voice', book, maxOutputTokens: 1024,
+      parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt }],
+    });
     const m    = raw.match(/\{[\s\S]*\}/);
     if (!m) throw new Error("Couldn't understand that — try again, e.g. “spent 40 on groceries at Carrefour”.");
     let obj;

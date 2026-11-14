@@ -852,8 +852,28 @@ export class Application {
    * parseVoice() directly instead of faking a microphone.
    */
   get receiptScanner() {
-    if (!this.#receipts) this.#receipts = new ReceiptScanService();
+    if (!this.#receipts) this.#receipts = new ReceiptScanService(this.#sync.aiGateway());
     return this.#receipts;
+  }
+
+  /** Whose book an AI entry is for: the shared space being viewed, or your own. */
+  #aiBook() {
+    const space = this.#spaces?.active?.();
+    if (space && !space.isHome) return space.id;
+    return this.#sync.currentUser?.id ?? null;
+  }
+
+  /** Show an AI failure, and open the place that fixes it (sign-in, Your plan). */
+  #showAiError(e, what) {
+    if (e?.code === 'signed_out') {
+      this.#toast.show(e.message);
+      this.openModal('auth');
+    } else if (e?.code === 'no_credits') {
+      this.#toast.show(e.message);
+      this.openModal('settings');
+    } else {
+      this.#toast.show(`${what} failed: ${e?.message || 'Unknown error'}`);
+    }
   }
 
   /**
@@ -969,32 +989,6 @@ export class Application {
     this.#store.persist();
     this.#render();
     this.#toast.show(`Calendar mode: ${v}`);
-  }
-
-  setGeminiKey(v) {
-    this.#store.getState().user.geminiApiKey = v;
-    this.#store.persist();
-  }
-
-  /**
-   * Explicit "Save" for the AI key — persists the current input value and gives
-   * the user clear confirmation that the app has accepted it (the field also
-   * autosaves on input, but the button removes the "did it take?" doubt).
-   */
-  saveGeminiKey() {
-    const inp = document.getElementById('geminiKeyInput');
-    const v   = (inp?.value || '').trim();
-    this.#store.getState().user.geminiApiKey = v;
-    this.#store.persist();
-    this.#modal.refresh?.();
-    lucide?.createIcons?.();
-    if (!v) {
-      this.#toast.show('API key cleared');
-    } else if (!/^AIza[\w-]{10,}$/.test(v)) {
-      this.#toast.show('Saved — but this doesn’t look like a Google AI key');
-    } else {
-      this.#toast.show('✓ API key saved — receipt scanning enabled');
-    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2097,9 +2091,10 @@ export class Application {
   /**
    * Receipt scan — UI coordinator.
    *
-   * Delegates all Gemini API interaction to ReceiptScanService (domain layer).
+   * Delegates all AI interaction to ReceiptScanService (domain layer), which
+   * goes through Pocket's `ai` server function (plan credits, no personal key).
    * This method is responsible only for:
-   *   1. Checking the API key and opening Settings if missing
+   *   1. Choosing whose book the entry is for (own, or the shared space shown)
    *   2. Updating the scan-label button text during the async call
    *   3. Opening a fresh pre-filled transaction modal on success
    *   4. Showing a specific error toast and restoring the button on failure
@@ -2108,38 +2103,24 @@ export class Application {
     const file = input?.files?.[0];
     if (!file) return;
 
-    // ── No API key → open Settings immediately (mirror reference behaviour) ──
-    if (!this.#store.getState().user.geminiApiKey?.trim()) {
-      this.#toast.show('Add your free Google AI key in Settings first');
-      this.openModal('settings');
-      input.value = '';
-      return;
-    }
-
     // ── Scanning feedback: update the button label (mirror reference) ─────
     const scanLabel = input.closest('label');
     const scanText  = scanLabel?.querySelector('.scan-label-text');
     if (scanText) scanText.textContent = 'Scanning…';
-    this.#toast.show('Scanning receipt with Gemini AI…');
+    this.#toast.show('Scanning receipt…');
 
     try {
       const scanner = this.receiptScanner;
-      const prefill = await scanner.scan(file);
+      const prefill = await scanner.scan(file, { book: this.#aiBook() });
 
       // Close the current modal (if open) and open a fresh, fully pre-filled one
       this.closeModal();
       this.openModal('transaction', { prefill });
       this.#toast.show('Receipt scanned · review and save');
     } catch (e) {
-      // ── Specific error for missing key (thrown by ReceiptScanService) ──
-      if (e.message === 'NO_API_KEY') {
-        this.#toast.show('Add your free Google AI key in Settings first');
-        this.openModal('settings');
-      } else {
-        this.#toast.show('Scan failed: ' + (e.message || 'Unknown error'));
-      }
+      this.#showAiError(e, 'Scan');
       // Restore button label on any failure
-      if (scanText) scanText.textContent = 'Scan receipt with Gemini AI';
+      if (scanText) scanText.textContent = 'Scan receipt';
     } finally {
       input.value = '';
     }
@@ -2159,10 +2140,10 @@ export class Application {
   async voiceEntry() {
     if (this.#voice) return;   // a recording is already in progress
 
-    // ── No API key → open Settings (mirror scanReceipt) ──
-    if (!this.#store.getState().user.geminiApiKey?.trim()) {
-      this.#toast.show('Add your free Google AI key in Settings first');
-      this.openModal('settings');
+    // Signed out: say so before asking for the microphone.
+    if (!this.#sync.currentUser) {
+      this.#toast.show('Please sign in to use voice entry.');
+      this.openModal('auth');
       return;
     }
 
@@ -2187,19 +2168,14 @@ export class Application {
       if (!blob || !blob.size) { finish(); this.#toast.show('No audio captured — please try again'); return; }
 
       try {
-        const prefill = await this.receiptScanner.parseVoice(blob);
+        const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook() });
         finish();
         this.closeModal();
         this.openModal('transaction', { prefill });
         this.#toast.show('Heard it · review and save');
       } catch (e) {
         finish();
-        if (e.message === 'NO_API_KEY') {
-          this.#toast.show('Add your free Google AI key in Settings first');
-          this.openModal('settings');
-        } else {
-          this.#toast.show('Voice failed: ' + (e.message || 'Unknown error'));
-        }
+        this.#showAiError(e, 'Voice');
       }
     };
 
