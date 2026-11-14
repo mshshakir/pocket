@@ -21,6 +21,7 @@
  * General topic, to the group itself. Replies go to the topic they came from.
  */
 import type { GroupSummaries } from './GroupSummaries.ts';
+import { HelpMenu } from './HelpMenu.ts';
 import type { LocalClock } from './LocalClock.ts';
 import { PlanAccess } from './PlanAccess.ts';
 import { PocketBook } from './PocketBook.ts';
@@ -93,7 +94,10 @@ export class GroupService {
     const command = text.split(/[\s@]/)[0].toLowerCase();
     const args = text.split(/\s+/).slice(1).map((a) => a.toLowerCase());
 
-    if (command === '/help' || command === '/start') return void await this.#say(at, GroupService.GUIDE, true);
+    if (command === '/help' || command === '/start') {
+      await this.#telegram.setCommands(HelpMenu.GROUP_COMMANDS, 'all_group_chats');
+      return void await this.#say(at, GroupService.GUIDE, true);
+    }
     if (command !== '/summary') {
       return void await this.#say(at, 'In groups I only post summaries of a shared space (/summary). Send entries to me in a private chat.');
     }
@@ -173,6 +177,7 @@ export class GroupService {
       return void await this.#say(at, `${ask}\n${list}\nSend /summary on <name>, e.g. /summary on ${PocketBook.squash(spaces[0].name)}`);
     }
     await this.#store.saveGroup(at.chatId, link.user_id, chosen.id, title, at.threadId);
+    await this.#telegram.setCommands(HelpMenu.GROUP_COMMANDS, 'all_group_chats');
     const saved = await this.#store.findGroup(at.chatId);
     const name = SummaryReport.esc(chosen.name);
     await this.#say(at, [

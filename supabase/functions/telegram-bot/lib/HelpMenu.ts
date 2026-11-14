@@ -18,6 +18,12 @@ export class HelpMenu {
     { command: 'unlink', description: 'Disconnect this chat' },
   ];
 
+  /** The menu in groups, where the bot only does summaries. */
+  static readonly GROUP_COMMANDS: BotCommand[] = [
+    { command: 'summary', description: 'Summary settings (on, off, now, time, weekly, zone, calendar)' },
+    { command: 'help', description: 'What I do in this group' },
+  ];
+
   /** Telegram HTML: only <b>, <i>, <code> are used; < and > are escaped. */
   static readonly GUIDE = [
     '<b>📒 Pocket bot — how to record</b>',
@@ -76,8 +82,16 @@ export class HelpMenu {
     '/unlink  disconnect this chat',
     '/help  this guide',
     '',
-    '<b>👪 Family group</b>',
-    'Add me to your family\'s Telegram group and send /summary on there: I\'ll post a daily summary of your shared space (Family plan). Entries still come here.',
+    '<b>👪 Family group summaries</b> (Family plan)',
+    'Add me to your family\'s Telegram group (or a topic in it) and send /summary on there. I\'ll post summaries of your shared space: daily, weekly and monthly, with the change from last week and last month. Only the shared space\'s accounts are included, never personal ones, and I don\'t read the group\'s messages. Entries still come here.',
+    'In the group:',
+    '/summary  settings · /summary now  today so far',
+    '<code>/summary time 8:30pm</code>  when (a morning time sums up the day before)',
+    '<code>/summary weekly friday</code>  the weekly day',
+    '<code>/summary zone Nairobi</code>  the time zone',
+    '<code>/summary calendar hijri</code>  Hijri or regular months',
+    '<code>/summary names off</code> · <code>/summary daily off</code> · <code>/summary weekly off</code> · <code>/summary monthly off</code>',
+    '/summary off  stop',
     '',
     '<i>The word "to" in a note never makes a transfer — only &gt; or two #accounts do.</i>',
     '<i>If a name matches several accounts, I\'ll list them; type a bit more (e.g. #inrm).</i>',

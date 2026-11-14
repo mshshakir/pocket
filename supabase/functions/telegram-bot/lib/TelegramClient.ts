@@ -70,9 +70,9 @@ export class TelegramClient {
     await this.#call('answerCallbackQuery', { callback_query_id: callbackId, text });
   }
 
-  /** Registers the commands shown in the chat's menu button. */
-  async setCommands(commands: BotCommand[]): Promise<void> {
-    await this.#call('setMyCommands', { commands });
+  /** Registers the commands shown in the menu button (private chats by default, or all groups). */
+  async setCommands(commands: BotCommand[], scope: 'default' | 'all_group_chats' = 'default'): Promise<void> {
+    await this.#call('setMyCommands', { commands, scope: scope === 'default' ? undefined : { type: scope } });
   }
 
   static #markup(opts: SendOptions) {

@@ -67,6 +67,8 @@ class FakeTelegram {
   send(chat: number, text: string, opts: { threadId?: number | null; keyboard?: { text: string; callback_data: string }[][] } = {}) {
     this.sent.push({ chat, text, thread: opts.threadId ?? null, keyboard: opts.keyboard }); return Promise.resolve(1);
   }
+  menus: string[] = [];
+  setCommands(_c: unknown, scope = 'default') { this.menus.push(scope); return Promise.resolve(); }
   answer(_id: string, text = '') { this.answers.push(text); return Promise.resolve(); }
   edit(_c: number, _m: number, text: string) { this.edits.push(text); return Promise.resolve(); }
   reply(chat: number, text: string) { this.sent.push({ chat, text, thread: null }); return Promise.resolve(); }
@@ -395,6 +397,14 @@ console.log('\ngroup summaries');
   const r = await runner.run();
   ok('W14 with a morning time, October\'s monthly arrives on the morning of 1 November',
     store.asked.includes('sp1:2026-10-01..2026-10-31') && tg.sent.some((m) => /October 2026/.test(m.text)) && r.posted === 3, JSON.stringify(r));
+}
+{
+  const { tg, say } = setup();
+  await say('/help');
+  ok('H1 /help in a group: the summary guide, and the group menu shows /summary', /\/summary time 8:30pm/.test(tg.last) && tg.menus.includes('all_group_chats'));
+  const { HelpMenu } = await import('../lib/HelpMenu.ts');
+  ok('H2 the private /help explains group summaries and their commands',
+    /Family group summaries/.test(HelpMenu.GUIDE) && /summary time 8:30pm/.test(HelpMenu.GUIDE) && /summary calendar hijri/.test(HelpMenu.GUIDE) && /never personal/.test(HelpMenu.GUIDE));
 }
 {
   ok('C1 clock: hour and weekday in India time', at('2026-11-15T15:45:00Z').hour() === 21 && at('2026-11-15T15:45:00Z').weekday() === 0
