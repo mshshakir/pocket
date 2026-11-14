@@ -25,6 +25,8 @@ export interface TelegramMessage {
   from?: { id: number };
   text?: string;
   migrate_to_chat_id?: number; // a group became a supergroup, with this new id
+  message_thread_id?: number;   // the topic (or reply thread) it was sent in
+  is_topic_message?: boolean;   // sent in a topic of a group with topics
 }
 
 export interface TelegramCallback {

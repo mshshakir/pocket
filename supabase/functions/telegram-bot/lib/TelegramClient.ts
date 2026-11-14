@@ -9,6 +9,7 @@ export interface SendOptions {
   html?: boolean;          // Telegram HTML; only for trusted, pre-escaped text
   keyboard?: Keyboard;     // inline buttons under the message
   forceReply?: string;     // open the reply box, with this placeholder
+  threadId?: number | null; // a topic in a group with topics
 }
 
 export class TelegramClient {
@@ -25,6 +26,7 @@ export class TelegramClient {
   async send(chatId: number, text: string, opts: SendOptions = {}): Promise<number> {
     const result = await this.#call('sendMessage', {
       chat_id: chatId,
+      message_thread_id: opts.threadId ?? undefined,
       text,
       parse_mode: opts.html ? 'HTML' : undefined,
       reply_parameters: opts.replyTo ? { message_id: opts.replyTo, allow_sending_without_reply: true } : undefined,
@@ -34,14 +36,18 @@ export class TelegramClient {
   }
 
   /**
-   * Sends a message and says whether the chat is gone for good (the bot was
-   * removed from the group, or the group no longer exists).
+   * Sends a message (into a topic, if given) and says whether the chat is gone
+   * for good (the bot was removed, or the group no longer exists) or only the
+   * topic is (deleted or closed).
    */
-  async post(chatId: number, text: string, html = false): Promise<{ ok: boolean; gone: boolean }> {
-    const res = await this.#raw('sendMessage', { chat_id: chatId, text, parse_mode: html ? 'HTML' : undefined });
-    if (res.ok) return { ok: true, gone: false };
+  async post(chatId: number, text: string, html = false, threadId: number | null = null): Promise<{ ok: boolean; gone: boolean; topicGone: boolean }> {
+    const res = await this.#raw('sendMessage', {
+      chat_id: chatId, message_thread_id: threadId ?? undefined, text, parse_mode: html ? 'HTML' : undefined,
+    });
+    if (res.ok) return { ok: true, gone: false, topicGone: false };
     const gone = res.status === 403 || (res.status === 400 && /chat not found|group chat was (upgraded|deactivated)/i.test(res.description));
-    return { ok: false, gone };
+    const topicGone = !gone && threadId != null && res.status === 400 && /thread|topic/i.test(res.description);
+    return { ok: false, gone, topicGone };
   }
 
   /** Shorthand kept for plain replies. */

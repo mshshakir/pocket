@@ -123,6 +123,10 @@ never are, and transfers are left out.
 3. In the group: `/summary` (settings), `/summary now` (today so far),
    `/summary daily|weekly|names on|off`, `/summary off`. Only the owner can change settings.
 
+In a group with **topics**, summaries go to the topic where `/summary on` was sent (send it again
+from another topic to move them; from General, they go to General). In an ordinary group they go to
+the group. If the chosen topic is deleted, they go to General from then on (migration 0023).
+
 Entries are still sent to the bot in a private chat; in a group it records nothing.
 
 How it runs: migration `0022_telegram_group_summaries.sql` adds `telegram_groups`, the

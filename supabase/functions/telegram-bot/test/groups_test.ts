@@ -34,10 +34,10 @@ class FakeStore {
   spacesOf(owner: string) { return Promise.resolve(owner === OWNER ? this.spaces : []); }
   findGroup(id: number) { return Promise.resolve(this.groupsMap.get(id) ?? null); }
   groups() { return Promise.resolve([...this.groupsMap.values()].map((g) => ({ ...g }))); }
-  saveGroup(chat: number, owner: string, space: string, title: string | null) {
+  saveGroup(chat: number, owner: string, space: string, title: string | null, thread: number | null = null) {
     const had = this.groupsMap.get(chat);
     this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, ...had,
-      chat_id: chat, owner_id: owner, space_id: space, title, paused_notice: false });
+      chat_id: chat, owner_id: owner, space_id: space, title, thread_id: thread, paused_notice: false });
     return Promise.resolve();
   }
   updateGroup(chat: number, patch: Partial<GroupLink>) { Object.assign(this.groupsMap.get(chat)!, patch); return Promise.resolve(); }
@@ -57,14 +57,16 @@ class FakeStore {
 }
 
 class FakeTelegram {
-  sent: { chat: number; text: string }[] = [];
+  sent: { chat: number; text: string; thread: number | null }[] = [];
   gone = new Set<number>();
-  send(chat: number, text: string) { this.sent.push({ chat, text }); return Promise.resolve(1); }
-  reply(chat: number, text: string) { this.sent.push({ chat, text }); return Promise.resolve(); }
-  post(chat: number, text: string) {
-    if (this.gone.has(chat)) return Promise.resolve({ ok: false, gone: true });
-    this.sent.push({ chat, text });
-    return Promise.resolve({ ok: true, gone: false });
+  deletedTopics = new Set<number>();
+  send(chat: number, text: string, opts: { threadId?: number | null } = {}) { this.sent.push({ chat, text, thread: opts.threadId ?? null }); return Promise.resolve(1); }
+  reply(chat: number, text: string) { this.sent.push({ chat, text, thread: null }); return Promise.resolve(); }
+  post(chat: number, text: string, _html = false, thread: number | null = null) {
+    if (this.gone.has(chat)) return Promise.resolve({ ok: false, gone: true, topicGone: false });
+    if (thread != null && this.deletedTopics.has(thread)) return Promise.resolve({ ok: false, gone: false, topicGone: true });
+    this.sent.push({ chat, text, thread });
+    return Promise.resolve({ ok: true, gone: false, topicGone: false });
   }
   get last() { return this.sent.at(-1)?.text ?? ''; }
 }
@@ -81,7 +83,11 @@ const setup = (clock = at('2026-11-14T16:00:00Z')) => {
   store.links.set(11, { chat_id: 11, user_id: OWNER, email: 'o@x.com', default_owner_id: null, default_account_id: null });
   store.links.set(22, { chat_id: 22, user_id: MEMBER, email: 'm@x.com', default_owner_id: null, default_account_id: null });
   const say = (text: string, from = 11) => service.handle({ message_id: 1, chat: { id: GROUP, type: 'group', title: 'Family' }, from: { id: from }, text });
-  return { store, tg, service, runner, say };
+  const sayIn = (thread: number, topic: boolean, text: string, from = 11) => service.handle({
+    message_id: 2, chat: { id: GROUP, type: 'supergroup', title: 'Family' }, from: { id: from }, text,
+    message_thread_id: thread, is_topic_message: topic,
+  });
+  return { store, tg, service, runner, say, sayIn };
 };
 
 console.log('\ngroup summaries');
@@ -177,6 +183,28 @@ console.log('\ngroup summaries');
   tg.gone.add(GROUP);
   const r = await runner.run();
   ok('S8 bot removed from the group: the group is forgotten', r.removed === 1 && !store.groupsMap.has(GROUP));
+}
+{
+  const { store, tg, runner, sayIn } = setup();
+  await sayIn(77, true, '/summary on');
+  ok('T1 /summary on in a topic: that topic is remembered, and the answer goes there',
+    store.groupsMap.get(GROUP)?.thread_id === 77 && tg.sent.at(-1)?.thread === 77 && /This topic will get/.test(tg.last), tg.last);
+  await runner.run();
+  ok('T2 the summary is posted in that topic', tg.sent.at(-1)?.thread === 77 && /Spent/.test(tg.last));
+  await sayIn(77, true, '/summary');
+  ok('T3 status says so', /Posted in this topic/.test(tg.last) && tg.sent.at(-1)?.thread === 77, tg.last);
+  await sayIn(88, true, '/summary on');
+  ok('T4 /summary on from another topic moves them there', store.groupsMap.get(GROUP)?.thread_id === 88);
+  await sayIn(88, false, '/summary on');
+  ok('T5 an ordinary group\'s reply thread is not a topic: the group itself', store.groupsMap.get(GROUP)?.thread_id === null && tg.sent.at(-1)?.thread === null);
+}
+{
+  const { store, tg, runner } = setup();
+  await store.saveGroup(GROUP, OWNER, 'sp1', 'Family', 77);
+  tg.deletedTopics.add(77);
+  const r = await runner.run();
+  ok('T6 the topic was deleted: posted in General instead, and General from then on',
+    r.posted === 1 && tg.sent.at(-1)?.thread === null && store.groupsMap.get(GROUP)?.thread_id === null && store.groupsMap.has(GROUP), JSON.stringify(r));
 }
 {
   ok('C1 clock: hour and weekday in India time', at('2026-11-15T15:45:00Z').hour() === 21 && at('2026-11-15T15:45:00Z').weekday() === 0

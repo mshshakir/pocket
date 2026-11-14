@@ -69,6 +69,7 @@ export interface GroupLink {
   owner_id: string;
   space_id: string;
   title: string | null;
+  thread_id: number | null;   // the topic summaries go to; null = the group / General
   daily: boolean;
   weekly: boolean;
   names: boolean;
@@ -275,15 +276,15 @@ export class PocketStore {
     return (data ?? []) as GroupLink[];
   }
 
-  /** Ties a group to a space, keeping its settings if it was tied before. */
-  async saveGroup(chatId: number, ownerId: string, spaceId: string, title: string | null): Promise<void> {
+  /** Ties a group (and the topic to post in, if any) to a space, keeping its settings if it was tied before. */
+  async saveGroup(chatId: number, ownerId: string, spaceId: string, title: string | null, threadId: number | null = null): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').upsert({
-      chat_id: chatId, owner_id: ownerId, space_id: spaceId, title, paused_notice: false,
+      chat_id: chatId, owner_id: ownerId, space_id: spaceId, title, thread_id: threadId, paused_notice: false,
     });
     if (error) throw error;
   }
 
-  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice'>>): Promise<void> {
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id'>>): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
     if (error) throw error;
   }

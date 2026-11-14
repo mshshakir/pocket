@@ -7,8 +7,10 @@
  *
  * Each summary is claimed in the database before it is sent, so overlapping
  * or repeated runs never post twice, and calling it early posts nothing.
- * A group whose owner's Family plan has ended is told once that summaries are
- * paused; a group the bot was removed from is forgotten.
+ * Summaries go to the topic chosen with /summary on (groups with topics), or
+ * to the group itself. If that topic was deleted, they go to General from
+ * then on. A group whose owner's Family plan has ended is told once that
+ * summaries are paused; a group the bot was removed from is forgotten.
  */
 import type { GroupSummaries } from './GroupSummaries.ts';
 import type { LocalClock } from './LocalClock.ts';
@@ -79,9 +81,14 @@ export class SummaryRunner {
     }
   }
 
-  /** Sends; forgets the group when the bot can no longer post there. */
+  /** Sends; moves to General if the topic is gone; forgets the group when the bot can no longer post there. */
   async #post(group: GroupLink, text: string, html: boolean, result: RunResult): Promise<boolean> {
-    const sent = await this.#telegram.post(group.chat_id, text, html);
+    let sent = await this.#telegram.post(group.chat_id, text, html, group.thread_id ?? null);
+    if (sent.topicGone) {
+      group.thread_id = null;
+      await this.#store.updateGroup(group.chat_id, { thread_id: null });
+      sent = await this.#telegram.post(group.chat_id, text, html, null);
+    }
     if (sent.gone) {
       await this.#store.removeGroup(group.chat_id);
       result.removed++;

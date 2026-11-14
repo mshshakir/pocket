@@ -63,7 +63,8 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `lib/GroupService.ts` (`/summary on [space]|off|now|daily/weekly/names on|off`, owner-only changes,
   Family plan `PlanAccess.canShare`); `GroupSummaries`, `SummaryReport`, `SummaryRunner`;
   `TelegramClient.post` reports a chat that's gone; supergroup migration moves the link. Groups never
-  record entries. Tests: `telegram-bot/test/groups_test.ts` (27). Verified on live data that space +
+  record entries. Topics (0023 `thread_id`): summaries go to the topic `/summary on` came from
+  (only when `is_topic_message`), else the group; deleted topic → General. Tests: `telegram-bot/test/groups_test.ts` (33). Verified on live data that space +
   personal spending = whole book.
 - **2026-11-14 · phase 5, Razorpay one-time payments (off until switched on):** migration 0021
   (`billing_settings.payments_enabled`, `payment_orders`, `pocket_payment_products/quote/fulfil`,
