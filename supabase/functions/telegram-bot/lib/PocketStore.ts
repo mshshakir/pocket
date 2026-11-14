@@ -71,6 +71,9 @@ export interface GroupLink {
   title: string | null;
   thread_id: number | null;   // the topic summaries go to; null = the group / General
   time_zone: string;          // 9 pm in this zone (IANA), Asia/Kolkata until chosen
+  monthly: boolean;
+  calendar: 'gregorian' | 'hijri'; // months for the monthly summary
+  last_monthly: string | null;
   daily: boolean;
   weekly: boolean;
   names: boolean;
@@ -285,7 +288,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone'>>): Promise<void> {
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone' | 'monthly' | 'calendar'>>): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
     if (error) throw error;
   }
@@ -303,10 +306,17 @@ export class PocketStore {
   }
 
   /** Marks a summary as sent for that day; false when it already was. */
-  async claimSummary(chatId: number, kind: 'daily' | 'weekly', day: string): Promise<boolean> {
+  async claimSummary(chatId: number, kind: 'daily' | 'weekly' | 'monthly', day: string): Promise<boolean> {
     const { data, error } = await this.#sb.rpc('pocket_group_claim', { p_chat: chatId, p_kind: kind, p_day: day });
     if (error) throw error;
     return data === true;
+  }
+
+  /** The owner's Hijri date offset (their app setting), for Hijri months. */
+  async hijriOffset(ownerId: string): Promise<number> {
+    const { data, error } = await this.#sb.from('book_settings').select('hijri_offset').eq('owner_id', ownerId).maybeSingle();
+    if (error) throw error;
+    return Number((data as { hijri_offset: number | null } | null)?.hijri_offset) || 0;
   }
 
   /** Totals for one shared space between two dates (inclusive); null when the space is gone. */

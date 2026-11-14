@@ -5,7 +5,8 @@
  *
  *   /summary on [space]   tie this group to one of your shared spaces (Family plan)
  *   /summary off          stop
- *   /summary daily|weekly|names on|off
+ *   /summary daily|weekly|monthly|names on|off
+ *   /summary calendar regular|hijri   months for the monthly summary
  *   /summary now          today's summary so far
  *   /summary time [city]  the time zone for 9 pm (buttons, or a typed city / zone)
  *   /summary              what this group gets
@@ -52,7 +53,7 @@ interface Place {
 export class GroupService {
   static readonly GUIDE = [
     '<b>Pocket in this group</b>',
-    'I post a summary of one shared space here: every evening at 9 pm, and a weekly one on Sunday evenings.',
+    'I post a summary of one shared space here: every evening at 9 pm, a weekly one on Sunday evenings, and a monthly one on the last evening of the month.',
     'Only entries in that space\'s accounts are included. Personal accounts never are, and I don\'t read this group\'s messages.',
     '',
     'Entries are still sent to me in a private chat.',
@@ -61,7 +62,8 @@ export class GroupService {
     '/summary  what this group gets',
     '/summary now  today so far',
     '/summary time  choose the time zone (or e.g. /summary time Nairobi)',
-    '/summary daily off · /summary weekly off · /summary names off',
+    '/summary calendar hijri  monthly summaries by Hijri months (or regular)',
+    '/summary daily off · /summary weekly off · /summary monthly off · /summary names off',
     '/summary off  stop',
   ].join('\n');
 
@@ -120,7 +122,13 @@ export class GroupService {
       await this.#store.updateGroup(chatId, { time_zone: zone });
       return void await this.#status(at, { ...group, time_zone: zone });
     }
-    if ((action === 'daily' || action === 'weekly' || action === 'names') && (value === 'on' || value === 'off')) {
+    if (action === 'calendar') {
+      const calendar = GroupService.#calendar(value);
+      if (!calendar) return void await this.#askCalendar(at, 'Monthly summaries by which calendar?');
+      await this.#store.updateGroup(chatId, { calendar });
+      return void await this.#status(at, { ...group, calendar });
+    }
+    if ((action === 'daily' || action === 'weekly' || action === 'monthly' || action === 'names') && (value === 'on' || value === 'off')) {
       await this.#store.updateGroup(chatId, { [action]: value === 'on' });
       return void await this.#status(at, { ...group, [action]: value === 'on' });
     }
@@ -149,30 +157,56 @@ export class GroupService {
     const name = SummaryReport.esc(chosen.name);
     await this.#say(at, [
       `✅ ${at.threadId ? 'This topic' : 'This group'} will get summaries of <b>${name}</b> (${chosen.accounts} ${chosen.accounts === 1 ? 'account' : 'accounts'}):`,
-      'every evening at 9 pm, and a weekly one on Sunday evenings.',
+      'every evening at 9 pm, a weekly one on Sunday evenings, and a monthly one on the last evening of the month.',
       `Only entries in ${name}'s accounts are included; personal accounts never are.`,
       '',
       'Settings: /summary · Today so far: /summary now',
     ].join('\n'), true);
     const current = (await this.#store.findGroup(at.chatId))?.time_zone ?? TimeZones.DEFAULT;
     await this.#askZone(at, `🕘 Which time zone should 9 pm be in? For now: ${SummaryReport.esc(TimeZones.label(current))}.`);
+    const saved = await this.#store.findGroup(at.chatId);
+    await this.#askCalendar(at, `📅 Monthly summaries by which calendar? For now: ${GroupService.#calendarName(saved?.calendar ?? 'gregorian')}.`);
   }
 
-  /** A tapped time-zone button. Only the person who turned summaries on may choose. */
+  async #askCalendar(at: Place, question: string): Promise<void> {
+    await this.#telegram.send(at.chatId, question, {
+      threadId: at.threadId, replyTo: at.replyTo,
+      keyboard: [[{ text: 'Regular months', callback_data: 'cal:gregorian' }, { text: 'Hijri months', callback_data: 'cal:hijri' }]],
+    });
+  }
+
+  static #calendar(typed: string): 'gregorian' | 'hijri' | null {
+    if (['hijri', 'islamic', 'misri'].includes(typed)) return 'hijri';
+    if (['regular', 'gregorian', 'english', 'normal'].includes(typed)) return 'gregorian';
+    return null;
+  }
+
+  static #calendarName(c: string): string {
+    return c === 'hijri' ? 'Hijri months' : 'regular months';
+  }
+
+  /** A tapped time-zone or calendar button. Only the person who turned summaries on may choose. */
   async handleCallback(cb: GroupCallback): Promise<void> {
-    const [kind, zone = ''] = (cb.data ?? '').split(/:(.*)/s);
+    const [kind, choice = ''] = (cb.data ?? '').split(/:(.*)/s);
     const msg = cb.message;
-    if (kind !== 'tz' || !msg) return void await this.#telegram.answer(cb.id);
+    if ((kind !== 'tz' && kind !== 'cal') || !msg) return void await this.#telegram.answer(cb.id);
     const group = await this.#store.findGroup(msg.chat.id);
     if (!group) return void await this.#telegram.answer(cb.id, 'Summaries are off for this group.');
     const link = cb.from ? await this.#store.findLink(cb.from.id) : null;
     if (!link || link.user_id !== group.owner_id) {
       return void await this.#telegram.answer(cb.id, 'Only the person who turned summaries on can choose.');
     }
-    if (!TimeZones.isValid(zone)) return void await this.#telegram.answer(cb.id, 'Unknown time zone');
-    await this.#store.updateGroup(msg.chat.id, { time_zone: zone });
+    if (kind === 'cal') {
+      const calendar = GroupService.#calendar(choice);
+      if (!calendar) return void await this.#telegram.answer(cb.id);
+      await this.#store.updateGroup(msg.chat.id, { calendar });
+      await this.#telegram.answer(cb.id, 'Saved');
+      return void await this.#telegram.edit(msg.chat.id, msg.message_id, `📅 Monthly summaries by ${GroupService.#calendarName(calendar)}.`);
+    }
+    if (!TimeZones.isValid(choice)) return void await this.#telegram.answer(cb.id, 'Unknown time zone');
+    await this.#store.updateGroup(msg.chat.id, { time_zone: choice });
     await this.#telegram.answer(cb.id, 'Saved');
-    await this.#telegram.edit(msg.chat.id, msg.message_id, `🕘 Summaries at 9 pm ${TimeZones.label(zone)} time.`);
+    await this.#telegram.edit(msg.chat.id, msg.message_id, `🕘 Summaries at 9 pm ${TimeZones.label(choice)} time.`);
   }
 
   async #askZone(at: Place, question: string): Promise<void> {
@@ -204,6 +238,7 @@ export class GroupService {
     await this.#say(at, [
       `📊 Summaries of <b>${SummaryReport.esc(space?.name ?? 'a space that no longer exists')}</b>`,
       `Daily at 9 pm: ${onOff(group.daily)} · Weekly on Sundays: ${onOff(group.weekly)} · Names: ${onOff(group.names)}`,
+      `Monthly: ${onOff(group.monthly ?? true)}, by ${GroupService.#calendarName(group.calendar ?? 'gregorian')} (change with /summary calendar)`,
       `Time zone: ${SummaryReport.esc(TimeZones.label(group.time_zone ?? TimeZones.DEFAULT))} (change with /summary time)`,
       where,
       '',

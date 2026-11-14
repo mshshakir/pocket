@@ -17,6 +17,7 @@ import type { SpaceSummary } from './PocketStore.ts';
 export class SummaryReport {
   static readonly #TOP_DAY = 4;
   static readonly #TOP_WEEK = 5;
+  static readonly #TOP_MONTH = 6;
 
   readonly #money: Money;
 
@@ -36,28 +37,47 @@ export class SummaryReport {
   weekly(from: string, to: string, s: SpaceSummary, previous: SpaceSummary | null, names: boolean): string {
     const head = `🗓 <b>${SummaryReport.esc(s.space)} · week of ${SummaryReport.#range(from, to)}</b>`;
     if (!s.entries) return `${head}\nNothing was logged in the shared accounts this week.`;
-    return [head, ...this.#body(s, SummaryReport.#TOP_WEEK, previous), ...this.#people(s, names)].join('\n');
+    return [head, ...this.#body(s, SummaryReport.#TOP_WEEK, previous, 'last week', false), ...this.#people(s, names)].join('\n');
   }
 
-  #body(s: SpaceSummary, top: number, previous: SpaceSummary | null): string[] {
+  /**
+   * A month, compared with the month before overall and per category.
+   * @param label "October 2026" · @param previousName "September"
+   */
+  monthly(label: string, previousName: string, s: SpaceSummary, previous: SpaceSummary | null, names: boolean): string {
+    const head = `📅 <b>${SummaryReport.esc(s.space)} · ${SummaryReport.esc(label)}</b>`;
+    if (!s.entries) return `${head}\nNothing was logged in the shared accounts this month.`;
+    return [head, ...this.#body(s, SummaryReport.#TOP_MONTH, previous, SummaryReport.esc(previousName), true), ...this.#people(s, names)].join('\n');
+  }
+
+  #body(s: SpaceSummary, top: number, previous: SpaceSummary | null, previousName = 'last week', perCategory = false): string[] {
     const lines: string[] = [];
     const n = s.entries;
-    lines.push(`Spent <b>${this.#amount(s.spent, s.currency)}</b> in ${n} ${n === 1 ? 'entry' : 'entries'}${this.#compare(s, previous)}`);
+    lines.push(`Spent <b>${this.#amount(s.spent, s.currency)}</b> in ${n} ${n === 1 ? 'entry' : 'entries'}${this.#compare(s, previous, previousName)}`);
     const cats = s.categories.filter((c) => c.amount > 0);
-    for (const c of cats.slice(0, top)) lines.push(`• ${SummaryReport.esc(c.name)} ${this.#amount(c.amount, s.currency)}`);
+    const before = new Map((previous?.categories ?? []).map((c) => [c.name, c.amount]));
+    for (const c of cats.slice(0, top)) {
+      const change = perCategory && previous ? SummaryReport.#change(c.amount, before.get(c.name) ?? 0) : '';
+      lines.push(`• ${SummaryReport.esc(c.name)} ${this.#amount(c.amount, s.currency)}${change ? ` (${change})` : ''}`);
+    }
     const rest = cats.slice(top).reduce((sum, c) => sum + c.amount, 0);
     if (rest > 0) lines.push(`• Other ${this.#amount(rest, s.currency)}`);
     if (s.received > 0) lines.push(`Received ${this.#amount(s.received, s.currency)}`);
     return lines;
   }
 
-  #compare(s: SpaceSummary, previous: SpaceSummary | null): string {
+  #compare(s: SpaceSummary, previous: SpaceSummary | null, previousName: string): string {
     if (!previous) return '';
     const last = this.#amount(previous.spent, s.currency);
-    if (previous.spent <= 0) return ` (last week ${last})`;
-    const change = Math.round(((s.spent - previous.spent) / previous.spent) * 100);
-    const word = change === 0 ? 'about the same' : `${change > 0 ? 'up' : 'down'} ${Math.abs(change)}%`;
-    return ` (last week ${last}, ${word})`;
+    const word = SummaryReport.#change(s.spent, previous.spent);
+    return word ? ` (${previousName} ${last}, ${word})` : ` (${previousName} ${last})`;
+  }
+
+  /** "up 22%", "down 4%", "about the same", "new" (nothing before), or '' when both are nothing. */
+  static #change(now: number, before: number): string {
+    if (before <= 0) return now > 0 ? 'new' : '';
+    const pct = Math.round(((now - before) / before) * 100);
+    return pct === 0 ? 'about the same' : `${pct > 0 ? 'up' : 'down'} ${Math.abs(pct)}%`;
   }
 
   #people(s: SpaceSummary, names: boolean): string[] {

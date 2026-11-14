@@ -5,6 +5,8 @@
  *
  *   daily   from 9 pm, once per day
  *   weekly  from 9 pm on Sundays, once per week (Monday to Sunday)
+ *   monthly from 9 pm on the last day of the month, by the group's calendar
+ *           (regular or Hijri), compared with the month before
  *
  * Each summary is claimed in the database before it is sent, so overlapping
  * or repeated runs never post twice, and calling it early posts nothing.
@@ -61,7 +63,9 @@ export class SummaryRunner {
   async #one(group: GroupLink, today: string, sunday: boolean, result: RunResult): Promise<void> {
     const dailyDue = group.daily && (group.last_daily ?? '') < today;
     const weeklyDue = sunday && group.weekly && (group.last_weekly ?? '') < today;
-    if (!dailyDue && !weeklyDue) return;
+    const months = group.monthly && (group.last_monthly ?? '') < today ? await this.#summaries.months(group) : null;
+    const monthlyDue = !!months?.isLastDay(today);
+    if (!dailyDue && !weeklyDue && !monthlyDue) return;
 
     if (!(await PlanAccess.load(this.#store, group.owner_id)).canShare) {
       if (!group.paused_notice) {
@@ -78,6 +82,10 @@ export class SummaryRunner {
     }
     if (weeklyDue && await this.#store.claimSummary(group.chat_id, 'weekly', today)) {
       const text = await this.#summaries.weekly(group, today);
+      if (text && await this.#post(group, text, true, result)) result.posted++;
+    }
+    if (monthlyDue && await this.#store.claimSummary(group.chat_id, 'monthly', today)) {
+      const text = await this.#summaries.monthly(group, today, months!);
       if (text && await this.#post(group, text, true, result)) result.posted++;
     }
   }

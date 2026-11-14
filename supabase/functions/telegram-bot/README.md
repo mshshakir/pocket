@@ -113,8 +113,10 @@ or an edit.
 
 The bot can post a summary of one **shared space** to a Telegram group: every evening at 9 pm in the
 group's time zone (asked with buttons when summaries are turned on, or `/summary time <city>`;
-India until chosen), and on Sunday evenings a weekly one (Monday to Sunday, compared
-with the week before). Only entries in that space's own accounts are counted. Personal accounts
+India until chosen), on Sunday evenings a weekly one (Monday to Sunday, compared
+with the week before), and on the last evening of each month a monthly one, compared with the month
+before overall and per category. Months follow the group's calendar, regular or Hijri (asked with
+buttons; `/summary calendar hijri|regular`; Hijri months use the owner's Hijri offset, as in the app). Only entries in that space's own accounts are counted. Personal accounts
 never are, and transfers are left out.
 
 1. Add the bot to the family's group. Keep BotFather's **Group Privacy** setting on (the default):
@@ -122,7 +124,7 @@ never are, and transfers are left out.
 2. The space's owner (Family plan, chat already linked with `/link`) sends `/summary on` in the
    group, or `/summary on <space name>` if they have several shared spaces.
 3. In the group: `/summary` (settings), `/summary now` (today so far),
-   `/summary daily|weekly|names on|off`, `/summary off`. Only the owner can change settings.
+   `/summary daily|weekly|monthly|names on|off`, `/summary calendar hijri|regular`, `/summary time <city>`, `/summary off`. Only the owner can change settings.
 
 In a group with **topics**, summaries go to the topic where `/summary on` was sent (send it again
 from another topic to move them; from General, they go to General). In an ordinary group they go to

@@ -4,6 +4,7 @@
  */
 import { LocalClock } from './LocalClock.ts';
 import type { GroupLink, PocketStore } from './PocketStore.ts';
+import { SummaryMonths } from './SummaryMonths.ts';
 import type { SummaryReport } from './SummaryReport.ts';
 
 export class GroupSummaries {
@@ -29,5 +30,23 @@ export class GroupSummaries {
       this.#store.spaceSummary(group.owner_id, group.space_id, LocalClock.shift(from, -7), LocalClock.shift(lastDay, -7)),
     ]);
     return s ? this.#report.weekly(from, lastDay, s, previous, group.names) : null;
+  }
+
+  /** The group's month (by its calendar) that `day` falls in. */
+  async months(group: GroupLink): Promise<SummaryMonths> {
+    const offset = group.calendar === 'hijri' ? await this.#store.hijriOffset(group.owner_id) : 0;
+    return SummaryMonths.for(group.calendar === 'hijri' ? 'hijri' : 'gregorian', offset);
+  }
+
+  /** The month ending on `lastDay`, compared with the month before. */
+  async monthly(group: GroupLink, lastDay: string, months?: SummaryMonths): Promise<string | null> {
+    const cal = months ?? await this.months(group);
+    const month = cal.month(lastDay);
+    const before = cal.previous(month);
+    const [s, previous] = await Promise.all([
+      this.#store.spaceSummary(group.owner_id, group.space_id, month.from, lastDay),
+      this.#store.spaceSummary(group.owner_id, group.space_id, before.from, before.to),
+    ]);
+    return s ? this.#report.monthly(month.label, before.short, s, previous, group.names) : null;
   }
 }

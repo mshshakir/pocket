@@ -65,7 +65,9 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `TelegramClient.post` reports a chat that's gone; supergroup migration moves the link. Groups never
   record entries. Topics (0023 `thread_id`): summaries go to the topic `/summary on` came from
   (only when `is_topic_message`), else the group; deleted topic → General. Time zones (0024 `time_zone`, default Asia/Kolkata; asked by buttons on `/summary on`, `/summary time <city>`;
-  `lib/TimeZones.ts`; runner checks each group in its own zone; cron now `7,37 * * * *`). Tests: `telegram-bot/test/groups_test.ts` (45). Verified on live data that space +
+  `lib/TimeZones.ts`; runner checks each group in its own zone; cron now `7,37 * * * *`). Monthly (0025 `monthly`, `calendar` gregorian|hijri, `last_monthly`;
+  `lib/SummaryMonths.ts`; posted on the month's last day with per-category change vs previous month).
+  Tests: `telegram-bot/test/groups_test.ts` (61). Verified on live data that space +
   personal spending = whole book.
 - **2026-11-14 · phase 5, Razorpay one-time payments (off until switched on):** migration 0021
   (`billing_settings.payments_enabled`, `payment_orders`, `pocket_payment_products/quote/fulfil`,
