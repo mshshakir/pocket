@@ -4560,12 +4560,13 @@ RULES:
     }
     /**
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
-     * @param {{email?: string}} [who]
+     * @param {{email?: string, code?: string}} [who]  code: a coupon code, if typed
      * @returns {Promise<{applied: boolean}>}
      * @throws {PaymentError}  code 'dismissed' when the person closed the window
      */
     async buy(product, who = {}) {
-      const order = await this.#call({ action: "order", product });
+      const code = (who.code ?? "").trim();
+      const order = await this.#call({ action: "order", product, ...code ? { code } : {} });
       const paid = await this.#checkout.open({ ...order, email: who.email });
       const result = await this.#call({ action: "verify", ...paid });
       return { applied: result.applied === true };
@@ -13492,8 +13493,9 @@ This replaces your current grouping.`
      * @param {object[]|null} catalogue  rows of the plans table, or null while loading
      * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
      * @param {string|null} [buying]  the product being paid for right now
+     * @param {string} [coupon]  the code typed so far
      */
-    html(plan, catalogue, offers = null, buying = null) {
+    html(plan, catalogue, offers = null, buying = null, coupon = "") {
       return `
       <div class="card-muted p-3 mb-3" id="planCard">
         <div class="flex items-center justify-between gap-2 mb-1">
@@ -13507,7 +13509,7 @@ This replaces your current grouping.`
             <i data-lucide="download"></i> Download my data
           </button>
         </div>
-        ${this.#offers(plan, catalogue, offers, buying)}
+        ${this.#offers(plan, catalogue, offers, buying, coupon)}
         ${this.#aiPack(plan, offers, buying)}
       </div>`;
     }
@@ -13561,7 +13563,7 @@ This replaces your current grouping.`
       for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
       return parts.join(" \xB7 ");
     }
-    #offers(plan, catalogue, offers, buying) {
+    #offers(plan, catalogue, offers, buying, coupon) {
       if (plan.isLifetime) return "";
       if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
       const paid = catalogue.filter((p) => p.code !== "free");
@@ -13581,6 +13583,7 @@ This replaces your current grouping.`
             <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
             ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
           </div>`).join("")}
+        ${selling ? this.#couponField(coupon) : ""}
         ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).
              Paying again for the same plan adds to its end date.${switching ? " Moving to a different plan starts it today; time left on the old one isn't carried over." : ""}</div>` : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
       </div>`;
@@ -13591,7 +13594,7 @@ This replaces your current grouping.`
       const shown = products.filter((o) => o.available || o.term !== "trial" && o.reason !== "lifetime").sort((a, b) => order[a.term] - order[b.term]);
       if (!shown.length) return "";
       const label = (o) => {
-        const price = _PlanCard.#inr(o.amountPaise);
+        const price = _PlanCard.#price(o);
         if (o.term === "trial") return trialDays ? `Try ${trialDays} days \xB7 ${price}` : `Try for ${price}`;
         const verb = plan.plan === o.plan && plan.state === "active" && plan.term !== "trial" ? "Add" : "Buy";
         return `${verb} 1 ${o.term} \xB7 ${price}`;
@@ -13612,14 +13615,29 @@ This replaces your current grouping.`
             <div class="font-semibold text-sm">AI pack</div>
             <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year.</div>
           </div>
-          ${this.#button(pack, _PlanCard.#inr(pack.amountPaise), buying, false)}
+          ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
         </div>
       </div>`;
     }
+    /** @param {string} label  safe HTML (built here from numbers and fixed words) */
     #button(o, label, buying, primary) {
       const busy = buying === o.product;
       return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy" ${buying ? "disabled" : ""}
-      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : Html.escape(label)}</button>`;
+      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : label}</button>`;
+    }
+    /** A box for a coupon code, applied to whichever item is bought next. */
+    #couponField(coupon) {
+      return `
+      <div class="flex items-center gap-2 mb-2">
+        <input class="input plan-coupon" placeholder="Have a code? Type it here" maxlength="32" autocomplete="off"
+          value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)">
+      </div>`;
+    }
+    /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
+    static #price(o) {
+      const now = _PlanCard.#inr(o.amountPaise);
+      if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
+      return `<s class="plan-was" title="${Html.escape(o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
     }
     static #inr(paise) {
       return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
@@ -13800,7 +13818,7 @@ This replaces your current grouping.`
         </div>`;
       })()}
 
-        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying) : ""}
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying, window.__app.coupon) : ""}
 
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
@@ -16748,6 +16766,8 @@ This replaces your current grouping.`
     #paymentOffers = null;
     /** The product being paid for right now (disables the buy buttons), or null. */
     #buying = null;
+    /** A coupon code typed in Your plan, used for the next purchase. */
+    #coupon = "";
     /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
     #payments = null;
     // ── Per-session UI state ──────────────────────────────────────────────────
@@ -17178,6 +17198,14 @@ This replaces your current grouping.`
     get buying() {
       return this.#buying;
     }
+    /** The coupon code typed so far. */
+    get coupon() {
+      return this.#coupon;
+    }
+    /** Remembers the typed code without redrawing (so typing isn't interrupted). */
+    setCoupon(value) {
+      this.#coupon = String(value ?? "").slice(0, 32);
+    }
     /**
      * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
@@ -17188,7 +17216,8 @@ This replaces your current grouping.`
       this.#buying = product;
       this.#modal.refresh();
       try {
-        await this.#payments.buy(product, { email: this.#sync.currentUser.email });
+        await this.#payments.buy(product, { email: this.#sync.currentUser.email, code: this.#coupon });
+        this.#coupon = "";
         this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : "Payment received \u2014 your plan is updated");
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");

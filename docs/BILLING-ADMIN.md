@@ -8,6 +8,35 @@ No code changes or deploys are needed.
 
 Money is stored in **paise** (₹1 = 100), so ₹169 is `16900`.
 
+## The admin dashboard: admin.html
+
+Open **/admin.html** on the Pocket site and sign in with your Google account. Only accounts in the
+table `admins` get in (you are added by migration 0028; add another with
+`insert into admins (user_id) select id from auth.users where email = 'them@gmail.com';`). The page's
+code is public, but every number and change goes through database functions that refuse anyone else.
+Every change made there is recorded in the **Audit log** tab.
+
+| Tab | What it does |
+|---|---|
+| Overview | Sign-ups (and per week), people active, plans, revenue (and per month), AI use, programme numbers |
+| Users | Everyone, their plan, AI credits, Telegram, family, last entry, what they've paid; give a plan, end it, add AI credits, unlimited AI; CSV |
+| Payments | Every order, with offers and coupon codes; CSV. Refunds are made in Razorpay |
+| Pricing & offers | Payments on/off, read-only days, AI price and pack, credit validity; plan prices; sales and coupon codes |
+| Programme | Applications and waitlist with each profile and a WhatsApp link; offer a place in a batch; batches; the daily ✓/✗ tracker and weekly call notes |
+| Audit log | What was changed, when, by whom |
+
+It never shows what anyone has recorded in Pocket.
+
+**Offers.** A *sale* lowers a price for everyone while it runs (a percentage, or a new price for one
+product). A *coupon* is a code typed at checkout (a percentage or an amount off), applied after any
+sale. Each can be limited to some products, dates and a number of uses; a use counts when the payment
+goes through.
+
+**Habit programme.** People apply on **/programme.html** (signed in) with their profile and consent;
+they join the waitlist. In the dashboard, offer a place in a batch, then send them the programme page
+link on WhatsApp: they pay ₹5,000 (or less with a coupon) through Razorpay, which confirms the place.
+If someone pays another way, use "Mark paid". A batch can't be offered beyond its places.
+
 ## Prices and what each plan includes: table `plans`
 
 Table Editor → `plans`. One row per plan: `free`, `sync`, `family`.

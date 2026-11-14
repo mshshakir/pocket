@@ -79,6 +79,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   duplicate/erroneous charges refunded.
 - **2026-11-14 · Homepage #reports section:** group summary mock (daily + monthly with % change) and the four
   downloadable reports (Transactions, By category, Month by month incl. Hijri, Account activity; PDF/Excel/CSV, free). Nav + footer link.
+- **2026-11-15 · Admin dashboard, offers, programme applications** (0028 a/b/c): `admins`, `admin_audit`,
+  `pocket_require_admin()`; `pocket_adm_*` (stats, users, user_action, payments, pricing, update_plan/settings,
+  save_offer, programme, save_batch, application, tracker, set_day, save_call, audit), all logged. `offers`
+  (sale | coupon) via `pocket_offer_price`; `pocket_payment_quote_with(user, product, code)` (old 2-arg quote
+  delegates); product `programme` payable when the application is `offered`; fulfil counts offer uses and
+  confirms the place. Programme tables: `programme_batches/applications/days/calls`; user RPCs
+  `pocket_programme_mine/apply/withdraw`. Web: `admin.html` + `src/admin/*` (AdminApp, AdminApi, Format,
+  BarChart, views/*), `programme.html` + `src/web/ProgrammePage.js`, shared `src/web/PocketSession.js`.
+  Checkout: coupon box + sale prices on the plan card. Tests: payments 23, admin.smoke 25, checkout 23.
 - **2026-11-14 · Privacy policy rewritten to be accurate:** operator can technically access synced data (not E2E);
   looks only on the user's request, for security, or by law. Covers Telegram bot/groups, payments, retention, deletion via
   contact page. Homepage privacy + catch-up wording updated (catch-up: "Send us your data and we will send you back a file…").
