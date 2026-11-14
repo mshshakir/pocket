@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>Pocket — Personal finance that respects your money & your privacy</title>
-<meta name="description" content="Pocket is a privacy-first personal finance app: multi-currency accounts, AI receipt scanning, smart budgets, the Hijri calendar, debts, reports, and real-time family sync." />
+<meta name="description" content="Pocket is a privacy-first personal finance app: multi-currency accounts, AI receipt scanning, smart budgets, the Hijri calendar, debts, reports, and real-time family sync — plus logging expenses by Telegram message." />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -30,7 +30,7 @@
 </head>
 <body class="overflow-x-hidden">
 
-<!-- ── Nav ─────────────────────────────────────────────────────────────── -->
+<!-- ── Nav ─────────────────────────────────────────────────────────────────────── -->
 <header class="sticky top-0 z-40 backdrop-blur bg-white/75 border-b border-zinc-200/70">
   <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
     <a href="#top" class="flex items-center gap-2">
@@ -39,6 +39,7 @@
     </a>
     <nav class="hidden md:flex items-center gap-7 text-sm text-zinc-600">
       <a href="#features" class="hover:text-zinc-900 transition">Features</a>
+      <a href="#telegram" class="hover:text-zinc-900 transition">Telegram</a>
       <a href="#how" class="hover:text-zinc-900 transition">How it works</a>
       <a href="#pricing" class="hover:text-zinc-900 transition">Pricing</a>
       <a href="#privacy" class="hover:text-zinc-900 transition">Privacy</a>
@@ -57,7 +58,7 @@
   </div>
 </header>
 
-<!-- ── Hero ────────────────────────────────────────────────────────────── -->
+<!-- ── Hero ────────────────────────────────────────────────────────────────────── -->
 <section id="top" class="relative overflow-hidden">
   <div class="blob" style="width:380px;height:380px;background:#a7f3d0;top:-80px;left:-60px"></div>
   <div class="blob" style="width:420px;height:420px;background:#bfdbfe;top:-40px;right:-80px"></div>
@@ -72,7 +73,8 @@
     </h1>
     <p class="mt-5 max-w-2xl mx-auto text-lg text-zinc-600">
       A beautiful personal-finance app with multi-currency accounts, AI receipt scanning, smart budgets,
-      the Hijri calendar, debts, rich reports, and real-time family sync — all in your browser.
+      the Hijri calendar, debts, rich reports, and real-time family sync — and you can log any expense
+      just by texting it on Telegram.
     </p>
     <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
       <a href="app.html#signin"
@@ -151,17 +153,17 @@
   </div>
 </section>
 
-<!-- ── Trust strip ─────────────────────────────────────────────────────── -->
+<!-- ── Trust strip ───────────────────────────────────────────────────────────────── -->
 <section class="max-w-6xl mx-auto px-5 py-8">
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">100+</div><div class="text-xs text-zinc-500 mt-1">currencies, live rates</div></div>
-    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">AI</div><div class="text-xs text-zinc-500 mt-1">receipt scanning</div></div>
+    <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">1 text</div><div class="text-xs text-zinc-500 mt-1">to log an expense on Telegram</div></div>
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">Real-time</div><div class="text-xs text-zinc-500 mt-1">family sync</div></div>
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">0 ads</div><div class="text-xs text-zinc-500 mt-1">your data stays yours</div></div>
   </div>
 </section>
 
-<!-- ── Features (bento) ────────────────────────────────────────────────── -->
+<!-- ── Features (bento) ──────────────────────────────────────────────────────────────── -->
 <section id="features" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
   <div class="text-center mb-12 reveal">
     <span class="text-xs font-semibold uppercase tracking-widest text-emerald-600">Everything you need</span>
@@ -239,7 +241,110 @@
   </div>
 </section>
 
-<!-- ── How it works ────────────────────────────────────────────────────── -->
+<!-- ── Telegram ────────────────────────────────────────────────────────────────────── -->
+<section id="telegram" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="grid md:grid-cols-2 gap-10 md:gap-14 items-center">
+
+    <!-- copy -->
+    <div class="reveal">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest" style="color:#229ED9">
+        <i data-lucide="send" style="width:14px;height:14px"></i> New · Pocket on Telegram
+      </span>
+      <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Log it the moment you spend it — just send a text</h2>
+      <p class="mt-4 text-zinc-600">
+        No app to open, no form to fill. Type what you spent into a Telegram chat and it lands in your
+        Pocket book instantly — on the right account, in the right category, with today's date.
+      </p>
+
+      <ul class="mt-6 space-y-3 text-sm text-zinc-700">
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#229ED922;color:#229ED9"><i data-lucide="message-square-text" style="width:16px;height:16px"></i></span>
+          <span><b>Plain words.</b> <code class="px-1.5 py-0.5 rounded bg-zinc-100 text-[13px]">70 auto to station @taxi</code> is an expense; put <b>+</b> in front for income.</span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#10b98122;color:#10b981"><i data-lucide="list-checks" style="width:16px;height:16px"></i></span>
+          <span><b>A whole shopping trip in one message.</b> One line per item, plus one shared line for the account or category.</span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#6366f122;color:#6366f1"><i data-lucide="arrow-right-left" style="width:16px;height:16px"></i></span>
+          <span><b>Transfers too</b>, even across currencies: <code class="px-1.5 py-0.5 rounded bg-zinc-100 text-[13px]">5000 #bank &gt; #wallet</code></span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#f59e0b22;color:#f59e0b"><i data-lucide="tags" style="width:16px;height:16px"></i></span>
+          <span><b>Forgot the category?</b> The bot shows yours as buttons — one tap and it's saved.</span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#ec489922;color:#ec4899"><i data-lucide="users" style="width:16px;height:16px"></i></span>
+          <span><b>Works for the family.</b> Log into accounts shared with you, and every entry shows who added it.</span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0" style="background:#64748b22;color:#64748b"><i data-lucide="pencil" style="width:16px;height:16px"></i></span>
+          <span><b>Typo? Fix it right there.</b> Every saved entry has ✏️ Edit and 🗑 Delete buttons.</span>
+        </li>
+      </ul>
+
+      <div class="mt-7 rounded-2xl bg-white border border-zinc-200 p-5">
+        <div class="text-xs font-semibold uppercase tracking-widest text-zinc-400">Set up in a minute</div>
+        <ol class="mt-3 space-y-2 text-sm text-zinc-700">
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-zinc-900 text-white grid place-items-center text-xs font-bold flex-shrink-0">1</span><span>Open the Pocket bot in Telegram.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-zinc-900 text-white grid place-items-center text-xs font-bold flex-shrink-0">2</span><span>Send <code class="px-1.5 py-0.5 rounded bg-zinc-100 text-[13px]">/link you@gmail.com</code> — the email you sign in to Pocket with.</span></li>
+          <li class="flex gap-3"><span class="w-6 h-6 rounded-full bg-zinc-900 text-white grid place-items-center text-xs font-bold flex-shrink-0">3</span><span>Reply with the code we email you. That's it — start texting.</span></li>
+        </ol>
+        <p class="mt-3 text-xs text-zinc-500">Only you can link your chat: the code goes to your inbox, and the bot only ever sees your own accounts and the ones shared with you.</p>
+      </div>
+    </div>
+
+    <!-- chat mock -->
+    <div class="reveal">
+      <div class="mx-auto max-w-sm rounded-[2rem] bg-zinc-900 p-2.5 shadow-2xl shadow-zinc-900/20">
+        <div class="rounded-[1.6rem] overflow-hidden" style="background:#e7ebf0">
+          <div class="flex items-center gap-3 px-4 py-3 bg-white border-b border-zinc-200">
+            <div class="w-9 h-9 rounded-full grid place-items-center text-white font-bold" style="background:#229ED9">P</div>
+            <div>
+              <div class="text-sm font-semibold leading-tight">Pocket</div>
+              <div class="text-[11px] text-zinc-400 leading-tight">bot</div>
+            </div>
+          </div>
+          <div class="px-3 py-4 space-y-2.5 text-[13px] leading-snug">
+            <!-- me -->
+            <div class="flex justify-end"><div class="max-w-[80%] rounded-2xl rounded-br-md px-3 py-2" style="background:#dcf8c6">70 auto to station @taxi</div></div>
+            <!-- bot -->
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">
+              ✅ ₹70 · auto to station · 🏷 Travel / Taxi · card · Wallet
+              <div class="mt-2 grid grid-cols-2 gap-1.5 text-[12px] font-medium" style="color:#229ED9">
+                <span class="rounded-lg bg-sky-50 py-1 text-center">✏️ Edit</span><span class="rounded-lg bg-sky-50 py-1 text-center">🗑 Delete</span>
+              </div>
+            </div></div>
+            <!-- me: several lines -->
+            <div class="flex justify-end"><div class="max-w-[80%] rounded-2xl rounded-br-md px-3 py-2 whitespace-pre-line" style="background:#dcf8c6">200 fruits
+80 milk
+120 bread and eggs
+#wallet @groceries</div></div>
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">✅ ₹200 · fruits · 🏷 Food / Groceries</div></div>
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">✅ ₹80 · milk · 🏷 Food / Groceries</div></div>
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">✅ ₹120 · bread and eggs · 🏷 Food / Groceries</div></div>
+            <!-- me: income -->
+            <div class="flex justify-end"><div class="max-w-[80%] rounded-2xl rounded-br-md px-3 py-2" style="background:#dcf8c6">+45000 salary yesterday</div></div>
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">
+              🏷 Which category is this?
+              <div class="mt-2 grid grid-cols-2 gap-1.5 text-[12px] font-medium" style="color:#229ED9">
+                <span class="rounded-lg bg-sky-50 py-1 text-center">Salary ›</span><span class="rounded-lg bg-sky-50 py-1 text-center">Business ›</span>
+              </div>
+            </div></div>
+          </div>
+          <div class="flex items-center gap-2 px-3 py-2.5 bg-white border-t border-zinc-200">
+            <div class="flex-1 rounded-full bg-zinc-100 px-3 py-1.5 text-[12px] text-zinc-400">Message</div>
+            <span class="w-8 h-8 rounded-full grid place-items-center text-white" style="background:#229ED9"><i data-lucide="send" style="width:15px;height:15px"></i></span>
+          </div>
+        </div>
+      </div>
+      <p class="mt-4 text-center text-xs text-zinc-500">Entries appear in the Pocket app straight away — on every device.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── How it works ──────────────────────────────────────────────────────────────────── -->
 <section id="how" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
   <div class="text-center mb-12 reveal">
     <span class="text-xs font-semibold uppercase tracking-widest text-indigo-600">Up and running in a minute</span>
@@ -254,7 +359,7 @@
     <div class="reveal text-center">
       <div class="mx-auto w-12 h-12 rounded-2xl bg-zinc-900 text-white grid place-items-center font-bold text-lg">2</div>
       <h3 class="mt-4 font-bold">Add your money</h3>
-      <p class="mt-2 text-sm text-zinc-600">Create accounts, scan a receipt, or import a CSV. Pick your home currency and you're set.</p>
+      <p class="mt-2 text-sm text-zinc-600">Create accounts, scan a receipt, import a CSV — or just text an expense to the Pocket bot on Telegram.</p>
     </div>
     <div class="reveal text-center">
       <div class="mx-auto w-12 h-12 rounded-2xl bg-zinc-900 text-white grid place-items-center font-bold text-lg">3</div>
@@ -265,7 +370,7 @@
 </section>
 
 
-<!-- ── Pricing ────────────────────────────────────────────────────────── -->
+<!-- ── Pricing ────────────────────────────────────────────────────────────────────── -->
 <section id="pricing" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
   <div class="text-center mb-12 reveal">
     <span class="text-xs font-semibold uppercase tracking-widest text-violet-600">Simple, honest pricing</span>
@@ -377,7 +482,7 @@
   </div>
 </section>
 
-<!-- ── Privacy ─────────────────────────────────────────────────────────── -->
+<!-- ── Privacy ─────────────────────────────────────────────────────────────────────── -->
 <section id="privacy" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
   <div class="card-soft p-8 md:p-12 relative overflow-hidden">
     <div class="blob" style="width:300px;height:300px;background:#bbf7d0;bottom:-120px;right:-80px;opacity:.4"></div>
@@ -398,7 +503,7 @@
   </div>
 </section>
 
-<!-- ── CTA band ────────────────────────────────────────────────────────── -->
+<!-- ── CTA band ────────────────────────────────────────────────────────────────────── -->
 <section class="max-w-6xl mx-auto px-5 pb-20">
   <div class="rounded-3xl bg-zinc-900 text-white p-10 md:p-16 text-center relative overflow-hidden">
     <div class="blob" style="width:320px;height:320px;background:#10b981;top:-100px;left:-60px;opacity:.25"></div>
@@ -414,7 +519,7 @@
   </div>
 </section>
 
-<!-- ── Footer ──────────────────────────────────────────────────────────── -->
+<!-- ── Footer ──────────────────────────────────────────────────────────────────────── -->
 <footer class="border-t border-zinc-200">
   <div class="max-w-6xl mx-auto px-5 py-10 flex flex-col md:flex-row items-center justify-between gap-4">
     <div class="flex items-center gap-2">
@@ -424,6 +529,7 @@
     </div>
     <div class="flex items-center gap-6 text-sm text-zinc-500">
       <a href="#features" class="hover:text-zinc-900">Features</a>
+      <a href="#telegram" class="hover:text-zinc-900">Telegram</a>
       <a href="privacy.html" class="hover:text-zinc-900">Privacy</a>
       <a href="app.html#signin" class="hover:text-zinc-900">Sign in</a>
       <a href="app.html" class="hover:text-zinc-900">Open app</a>
@@ -443,4 +549,3 @@
 </script>
 </body>
 </html>
-                        
