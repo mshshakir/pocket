@@ -2,7 +2,10 @@
  * PaymentHandler — one-time payments through Razorpay Checkout.
  *
  * From the app (signed in), POST JSON { action, ... }:
- *   products            → { products: [{ ...product, available, reason? }], keyId }
+ *   products { code? }  → { products: [{ ...product, available, reason?, coupon? }], keyId, coupon? }
+ *                         with a code, each item it applies to is priced with it
+ *                         (coupon: { code, products }); a code that isn't
+ *                         valid, or fits none of them, is refused (bad_coupon)
  *   order  { product, code? } → { orderId, keyId, amount, listAmount, coupon?, currency, name }
  *                         product 'programme' = the habit programme place offered to them
  *   verify { orderId, paymentId, signature } → { ok, applied }
@@ -79,7 +82,11 @@ export class PaymentHandler {
 
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     switch (body?.action) {
-      case 'products': return await this.#products(userId);
+      case 'products': {
+        const code = PaymentHandler.#code(body.code);
+        if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
+        return await this.#products(userId, code);
+      }
       case 'order': {
         const code = PaymentHandler.#code(body.code);
         if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
@@ -90,14 +97,28 @@ export class PaymentHandler {
     }
   }
 
-  async #products(userId: string): Promise<Response> {
+  async #products(userId: string, code: string | null): Promise<Response> {
     const products = await this.#store.products();
     const quotes = await Promise.all(products.map((p) => this.#store.quote(userId, p.product)));
-    return this.#json(200, {
-      keyId: this.#razorpay?.keyId ?? null,
-      products: products.map((p, i) => ({ ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason })),
+    const listed = products.map((p, i) => ({ ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason }));
+    if (!code) return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: listed });
+
+    // Price each item this person can buy with the code too.
+    const withCode = await Promise.all(products.map((p, i) =>
+      quotes[i].ok ? this.#store.quote(userId, p.product, code) : Promise.resolve(null)));
+    const broken = withCode.find((q) => q && !q.ok && PaymentHandler.#CODE_FAULTS.has(q.reason ?? ''));
+    if (broken) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS[broken.reason!]);
+    const applied = listed.map((p, i) => {
+      const q = withCode[i];
+      return q?.ok && q.coupon ? { ...p, amountPaise: q.amountPaise, listPaise: q.listPaise, sale: q.sale, coupon: q.coupon } : p;
     });
+    const fits = applied.filter((p) => 'coupon' in p).map((p) => p.product);
+    if (!fits.length) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_not_for_this);
+    return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: applied, coupon: { code, products: fits } });
   }
+
+  /** Refusals that mean the code itself is no good (not just "not for this item"). */
+  static readonly #CODE_FAULTS = new Set(['coupon_unknown', 'coupon_not_started', 'coupon_expired', 'coupon_used_up']);
 
   async #order(userId: string, product: string, coupon: string | null): Promise<Response> {
     const quote: Quote = await this.#store.quote(userId, product, coupon);

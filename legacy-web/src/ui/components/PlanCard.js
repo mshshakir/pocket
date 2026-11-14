@@ -117,9 +117,9 @@ export class PlanCard {
           <div class="text-sm font-medium">${plan.isPaid && plan.state === 'active' ? 'Plans' : 'Choose a plan'}</div>
           <div class="plan-terms">${tab('month', 'Monthly')}${tab('year', `Yearly${save ? ` <span class="plan-save">save ${save}%</span>` : ''}`)}</div>
         </div>
+        ${selling ? this.#couponField(coupon, ui) : ''}
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join('')}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        ${selling ? this.#couponField(coupon, ui.couponOpen) : ''}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling
           ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans starts the new one today; time left on the old one isn\'t carried over.' : ''}`
           : 'Online payment is coming soon.'}</div>
@@ -157,6 +157,7 @@ export class PlanCard {
           </div>
           <div class="text-right">
             ${price ? `<div class="plan-price">${price}<span class="plan-per">/${term}</span></div>` : '<div class="text-xs text-zinc-400">—</div>'}
+            ${PlanCard.#codeNote(product)}
             ${perMonth ? `<div class="text-[11px] text-zinc-500">about ${perMonth} a month</div>` : ''}
           </div>
         </div>
@@ -193,6 +194,7 @@ export class PlanCard {
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
             <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
+            ${PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, PlanCard.#price(pack), buying, false)}
         </div>
@@ -206,24 +208,48 @@ export class PlanCard {
       onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? 'Opening…' : label}</button>`;
   }
 
-  /** "Have a code?" — opens a box for a coupon code, applied to whatever is bought next. */
-  #couponField(coupon, open) {
-    if (!open && !coupon) {
-      return '<div class="mt-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+  /**
+   * The coupon code: a "Have a code?" link, then a box with Apply. Once a
+   * code is applied, it shows as a chip with Remove, and the plans below show
+   * their final amounts with it.
+   */
+  #couponField(coupon, ui) {
+    const applied = ui.couponApplied;
+    if (applied) {
+      return `
+        <div class="plan-code-on">
+          <i data-lucide="ticket-percent"></i>
+          <span><b>${Html.escape(applied)}</b> applied</span>
+          <button class="plan-trial ml-auto" onclick="window.__app.removeCoupon()">Remove</button>
+        </div>`;
     }
+    if (!ui.couponOpen && !coupon && !ui.couponError) {
+      return '<div class="mb-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+    }
+    const busy = !!ui.couponChecking;
     return `
-      <div class="flex items-center gap-2 mt-2">
-        <input class="input plan-coupon" placeholder="Code" maxlength="32" autocomplete="off"
-          value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)">
-        <span class="text-[11px] text-zinc-500 whitespace-nowrap">used at checkout</span>
+      <div class="mb-2">
+        <div class="flex items-center gap-2">
+          <input class="input plan-coupon flex-1" placeholder="Code" maxlength="32" autocomplete="off" ${busy ? 'disabled' : ''}
+            value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.applyCoupon()}">
+          <button class="btn btn-outline plan-buy" ${busy ? 'disabled' : ''} onclick="window.__app.applyCoupon()">${busy ? 'Checking…' : 'Apply'}</button>
+        </div>
+        ${ui.couponError ? `<div class="plan-code-error">${Html.escape(ui.couponError)}</div>` : ''}
       </div>`;
+  }
+
+  /** "You save ₹300 with LAUNCH20" under a price the code changed. */
+  static #codeNote(o) {
+    if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return '';
+    return `<div class="plan-code-note">You save ${PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
   }
 
   /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
   static #price(o) {
     const now = PlanCard.#inr(o.amountPaise);
     if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
-    return `<s class="plan-was" title="${Html.escape(o.sale ?? 'Offer')}">${PlanCard.#inr(o.listPaise)}</s> ${now}`;
+    return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? 'Offer')}">${PlanCard.#inr(o.listPaise)}</s> ${now}`;
   }
 
   static #inr(paise) {

@@ -164,6 +164,10 @@ export class Application {
   /** The plan chooser's Monthly/Yearly switch (null: follow the person's plan), code box, highlighted plan. */
   #planTerm          = null;
   #couponOpen        = false;
+  /** The code whose prices are showing, a refusal to show under the box, and a check in progress. */
+  #couponApplied     = null;
+  #couponError       = '';
+  #couponChecking    = false;
   #planHighlight     = null;
   static #PENDING_PLANS = 'pocket.pendingPlans';
   /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
@@ -682,12 +686,46 @@ export class Application {
   get coupon() { return this.#coupon; }
 
   /** Remembers the typed code without redrawing (so typing isn't interrupted). */
-  setCoupon(value) { this.#coupon = String(value ?? '').slice(0, 32); }
+  setCoupon(value) {
+    this.#coupon = String(value ?? '').slice(0, 32);
+    if (this.#couponError) this.#couponError = '';
+  }
 
-  /** How the plan chooser is set: Monthly/Yearly, code box open, a plan to point out. */
+  /** How the plan chooser is set: Monthly/Yearly, code box, a plan to point out, the applied code. */
   get planUi() {
     const term = this.#planTerm ?? (this.getPlan()?.term === 'month' ? 'month' : 'year');
-    return { term, couponOpen: this.#couponOpen, highlight: this.#planHighlight };
+    return {
+      term, couponOpen: this.#couponOpen, highlight: this.#planHighlight,
+      couponApplied: this.#couponApplied, couponError: this.#couponError, couponChecking: this.#couponChecking,
+    };
+  }
+
+  /** Checks the typed code and shows every price with it applied (or why it can't be used). */
+  async applyCoupon() {
+    const code = this.#coupon.trim();
+    if (!code || this.#couponChecking || !this.#sync.currentUser) return;
+    this.#payments ??= this.#sync.payments();
+    this.#couponChecking = true; this.#couponError = '';
+    this.#modal.refresh();
+    try {
+      const offers = await this.#payments.offers(code);
+      this.#paymentOffers = offers;
+      this.#couponApplied = offers.coupon?.code ?? null;
+      this.#coupon = this.#couponApplied ?? code;
+    } catch (e) {
+      this.#couponApplied = null;
+      this.#couponError = e?.message || 'That code couldn\'t be checked. Please try again.';
+    } finally {
+      this.#couponChecking = false;
+      this.#modal.refresh();
+    }
+  }
+
+  /** Takes the code off and shows the usual prices again. */
+  async removeCoupon() {
+    this.#coupon = ''; this.#couponApplied = null; this.#couponError = ''; this.#couponOpen = false;
+    this.#modal.refresh();
+    await this.#refreshPlanInfo();
   }
 
   setPlanTerm(term) {
@@ -742,8 +780,9 @@ export class Application {
     this.#buying = product;
     this.#modal.refresh();
     try {
-      await this.#payments.buy(product, { email: this.#sync.currentUser.email, code: this.#coupon });
-      this.#coupon = '';
+      const code = this.#couponApplied && this.#paymentOffers?.coupon?.products?.includes(product) ? this.#couponApplied : '';
+      await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
+      this.#coupon = ''; this.#couponApplied = null; this.#couponOpen = false;
       this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added' : 'Payment received — your plan is updated');
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
@@ -768,7 +807,13 @@ export class Application {
     ]);
     this.#planCatalogue = catalogue;
     this.#payments ??= this.#sync.payments();
-    this.#paymentOffers = plan?.paymentsOpen ? await this.#payments.offers().catch(() => null) : null;
+    let offers = null;
+    if (plan?.paymentsOpen) {
+      // Keep an applied code's prices showing; if it has stopped working, fall back to plain prices.
+      offers = this.#couponApplied ? await this.#payments.offers(this.#couponApplied).catch(() => null) : null;
+      if (!offers) { this.#couponApplied = null; offers = await this.#payments.offers().catch(() => null); }
+    }
+    this.#paymentOffers = offers;
     if (this.#modal.active === 'settings') this.#modal.refresh();
   }
 

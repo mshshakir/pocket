@@ -25,10 +25,17 @@ export class PaymentService {
     this.#checkout = checkout;
   }
 
-  /** @returns {Promise<{keyId: string|null, products: {product: string, name: string, plan?: string, term?: string, aiCredits?: number, amountPaise: number, available: boolean, reason?: string}[]}>} */
-  async offers() {
-    const data = await this.#call({ action: 'products' });
-    return { keyId: data.keyId ?? null, products: Array.isArray(data.products) ? data.products : [] };
+  /**
+   * What's for sale. With a coupon code, each item it applies to comes back
+   * at its final price (amountPaise) with the price before (listPaise).
+   * @param {string} [code]
+   * @returns {Promise<{keyId: string|null, coupon: {code: string, products: string[]}|null, products: {product: string, name: string, plan?: string, term?: string, aiCredits?: number, amountPaise: number, listPaise?: number, coupon?: string, available: boolean, reason?: string}[]}>}
+   * @throws {PaymentError}  code 'bad_coupon' when the code isn't valid or fits nothing
+   */
+  async offers(code = '') {
+    const c = String(code ?? '').trim();
+    const data = await this.#call({ action: 'products', ...(c ? { code: c } : {}) });
+    return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, products: Array.isArray(data.products) ? data.products : [] };
   }
 
   /**

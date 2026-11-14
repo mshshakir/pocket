@@ -165,5 +165,32 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C10 the code box escapes what was typed', !esc.includes('"><script>'));
 }
 
+{
+  // C11–C13: applying a code in Settings
+  const s = server({ products: (b) => !b.code ? { data: { keyId: 'k', products: [] }, error: null } : b.code === 'TEN'
+    ? { data: { keyId: 'k', coupon: { code: 'TEN', products: ['family_year'] }, products: [{ product: 'family_year', plan: 'family', term: 'year', amountPaise: 134910, listPaise: 149900, coupon: 'TEN', available: true }] }, error: null }
+    : refusal(409, { error: 'That code has expired.', code: 'bad_coupon' }) });
+  const svc = new PaymentService(() => s.invoke, {});
+  const got = await svc.offers(' TEN ');
+  ok('C11 a code goes with the price list request, tidied; the reply says what it applies to',
+     s.sent[0].code === 'TEN' && got.coupon.code === 'TEN' && got.products[0].amountPaise === 134910);
+  const bad = await svc.offers('OLD').catch((x) => x);
+  ok('C11 a refused code keeps the server\'s reason', bad.code === 'bad_coupon' && /expired/.test(bad.message));
+  await svc.offers('');
+  ok('C11 no code: none sent', !('code' in s.sent.at(-1)));
+
+  const card = new PlanCard();
+  const catalogue = [{ code: 'family', name: 'Family', sync: true, telegram: true, sharing: true, seats: 5, monthly_paise: 19900, yearly_paise: 149900 }];
+  const ent = Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true });
+  const html = card.html(ent, catalogue, got, null, 'TEN', { term: 'year', couponApplied: 'TEN' });
+  ok('C12 an applied code: a chip with Remove, no box', /TEN<\/b> applied/.test(html) && html.includes('removeCoupon()') && !html.includes('placeholder="Code"'));
+  ok('C12 the plan shows the final amount, the saving, and the button charges it',
+     /₹1,499<\/s> ₹1,349\.10/.test(html) && /You save ₹149\.90 with TEN/.test(html) && /Get Family · ₹1,349\.10</.test(html) && /about ₹112 a month/.test(html), html.replace(/\s+/g, ' ').match(/plan-price.{0,300}/)?.[0]);
+  const err = card.html(ent, catalogue, got, null, 'OLD', { term: 'year', couponError: 'That code has expired.' });
+  ok('C13 a refused code: the box stays with the reason under it', err.includes('placeholder="Code"') && /That code has expired\./.test(err) && err.includes('applyCoupon()'));
+  const checking = card.html(ent, catalogue, got, null, 'TEN', { term: 'year', couponChecking: true });
+  ok('C13 while checking, Apply says so and is disabled', /disabled[^>]*onclick="window.__app.applyCoupon\(\)">Checking…/.test(checking.replace(/\s+/g, ' ')));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

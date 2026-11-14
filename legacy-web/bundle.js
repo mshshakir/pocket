@@ -4553,10 +4553,17 @@ RULES:
       this.#invoker = invoker;
       this.#checkout = checkout;
     }
-    /** @returns {Promise<{keyId: string|null, products: {product: string, name: string, plan?: string, term?: string, aiCredits?: number, amountPaise: number, available: boolean, reason?: string}[]}>} */
-    async offers() {
-      const data = await this.#call({ action: "products" });
-      return { keyId: data.keyId ?? null, products: Array.isArray(data.products) ? data.products : [] };
+    /**
+     * What's for sale. With a coupon code, each item it applies to comes back
+     * at its final price (amountPaise) with the price before (listPaise).
+     * @param {string} [code]
+     * @returns {Promise<{keyId: string|null, coupon: {code: string, products: string[]}|null, products: {product: string, name: string, plan?: string, term?: string, aiCredits?: number, amountPaise: number, listPaise?: number, coupon?: string, available: boolean, reason?: string}[]}>}
+     * @throws {PaymentError}  code 'bad_coupon' when the code isn't valid or fits nothing
+     */
+    async offers(code = "") {
+      const c = String(code ?? "").trim();
+      const data = await this.#call({ action: "products", ...c ? { code: c } : {} });
+      return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, products: Array.isArray(data.products) ? data.products : [] };
     }
     /**
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
@@ -13587,9 +13594,9 @@ This replaces your current grouping.`
           <div class="text-sm font-medium">${plan.isPaid && plan.state === "active" ? "Plans" : "Choose a plan"}</div>
           <div class="plan-terms">${tab("month", "Monthly")}${tab("year", `Yearly${save ? ` <span class="plan-save">save ${save}%</span>` : ""}`)}</div>
         </div>
+        ${selling ? this.#couponField(coupon, ui) : ""}
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        ${selling ? this.#couponField(coupon, ui.couponOpen) : ""}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans starts the new one today; time left on the old one isn't carried over." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
     }
@@ -13621,6 +13628,7 @@ This replaces your current grouping.`
           </div>
           <div class="text-right">
             ${price ? `<div class="plan-price">${price}<span class="plan-per">/${term}</span></div>` : '<div class="text-xs text-zinc-400">\u2014</div>'}
+            ${_PlanCard.#codeNote(product)}
             ${perMonth ? `<div class="text-[11px] text-zinc-500">about ${perMonth} a month</div>` : ""}
           </div>
         </div>
@@ -13654,6 +13662,7 @@ This replaces your current grouping.`
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
             <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
+            ${_PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
         </div>
@@ -13665,23 +13674,46 @@ This replaces your current grouping.`
       return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy ${extra}" ${buying ? "disabled" : ""}
       onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : label}</button>`;
     }
-    /** "Have a code?" — opens a box for a coupon code, applied to whatever is bought next. */
-    #couponField(coupon, open) {
-      if (!open && !coupon) {
-        return '<div class="mt-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+    /**
+     * The coupon code: a "Have a code?" link, then a box with Apply. Once a
+     * code is applied, it shows as a chip with Remove, and the plans below show
+     * their final amounts with it.
+     */
+    #couponField(coupon, ui) {
+      const applied = ui.couponApplied;
+      if (applied) {
+        return `
+        <div class="plan-code-on">
+          <i data-lucide="ticket-percent"></i>
+          <span><b>${Html.escape(applied)}</b> applied</span>
+          <button class="plan-trial ml-auto" onclick="window.__app.removeCoupon()">Remove</button>
+        </div>`;
       }
+      if (!ui.couponOpen && !coupon && !ui.couponError) {
+        return '<div class="mb-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+      }
+      const busy = !!ui.couponChecking;
       return `
-      <div class="flex items-center gap-2 mt-2">
-        <input class="input plan-coupon" placeholder="Code" maxlength="32" autocomplete="off"
-          value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)">
-        <span class="text-[11px] text-zinc-500 whitespace-nowrap">used at checkout</span>
+      <div class="mb-2">
+        <div class="flex items-center gap-2">
+          <input class="input plan-coupon flex-1" placeholder="Code" maxlength="32" autocomplete="off" ${busy ? "disabled" : ""}
+            value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.applyCoupon()}">
+          <button class="btn btn-outline plan-buy" ${busy ? "disabled" : ""} onclick="window.__app.applyCoupon()">${busy ? "Checking\u2026" : "Apply"}</button>
+        </div>
+        ${ui.couponError ? `<div class="plan-code-error">${Html.escape(ui.couponError)}</div>` : ""}
       </div>`;
+    }
+    /** "You save ₹300 with LAUNCH20" under a price the code changed. */
+    static #codeNote(o) {
+      if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return "";
+      return `<div class="plan-code-note">You save ${_PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
     }
     /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
     static #price(o) {
       const now = _PlanCard.#inr(o.amountPaise);
       if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
-      return `<s class="plan-was" title="${Html.escape(o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
+      return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
     }
     static #inr(paise) {
       return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
@@ -16816,6 +16848,10 @@ This replaces your current grouping.`
     /** The plan chooser's Monthly/Yearly switch (null: follow the person's plan), code box, highlighted plan. */
     #planTerm = null;
     #couponOpen = false;
+    /** The code whose prices are showing, a refusal to show under the box, and a check in progress. */
+    #couponApplied = null;
+    #couponError = "";
+    #couponChecking = false;
     #planHighlight = null;
     static #PENDING_PLANS = "pocket.pendingPlans";
     /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
@@ -17258,11 +17294,49 @@ This replaces your current grouping.`
     /** Remembers the typed code without redrawing (so typing isn't interrupted). */
     setCoupon(value) {
       this.#coupon = String(value ?? "").slice(0, 32);
+      if (this.#couponError) this.#couponError = "";
     }
-    /** How the plan chooser is set: Monthly/Yearly, code box open, a plan to point out. */
+    /** How the plan chooser is set: Monthly/Yearly, code box, a plan to point out, the applied code. */
     get planUi() {
       const term = this.#planTerm ?? (this.getPlan()?.term === "month" ? "month" : "year");
-      return { term, couponOpen: this.#couponOpen, highlight: this.#planHighlight };
+      return {
+        term,
+        couponOpen: this.#couponOpen,
+        highlight: this.#planHighlight,
+        couponApplied: this.#couponApplied,
+        couponError: this.#couponError,
+        couponChecking: this.#couponChecking
+      };
+    }
+    /** Checks the typed code and shows every price with it applied (or why it can't be used). */
+    async applyCoupon() {
+      const code = this.#coupon.trim();
+      if (!code || this.#couponChecking || !this.#sync.currentUser) return;
+      this.#payments ??= this.#sync.payments();
+      this.#couponChecking = true;
+      this.#couponError = "";
+      this.#modal.refresh();
+      try {
+        const offers = await this.#payments.offers(code);
+        this.#paymentOffers = offers;
+        this.#couponApplied = offers.coupon?.code ?? null;
+        this.#coupon = this.#couponApplied ?? code;
+      } catch (e) {
+        this.#couponApplied = null;
+        this.#couponError = e?.message || "That code couldn't be checked. Please try again.";
+      } finally {
+        this.#couponChecking = false;
+        this.#modal.refresh();
+      }
+    }
+    /** Takes the code off and shows the usual prices again. */
+    async removeCoupon() {
+      this.#coupon = "";
+      this.#couponApplied = null;
+      this.#couponError = "";
+      this.#couponOpen = false;
+      this.#modal.refresh();
+      await this.#refreshPlanInfo();
     }
     setPlanTerm(term) {
       this.#planTerm = term === "month" ? "month" : "year";
@@ -17331,8 +17405,11 @@ This replaces your current grouping.`
       this.#buying = product;
       this.#modal.refresh();
       try {
-        await this.#payments.buy(product, { email: this.#sync.currentUser.email, code: this.#coupon });
+        const code = this.#couponApplied && this.#paymentOffers?.coupon?.products?.includes(product) ? this.#couponApplied : "";
+        await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
         this.#coupon = "";
+        this.#couponApplied = null;
+        this.#couponOpen = false;
         this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : "Payment received \u2014 your plan is updated");
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
@@ -17358,7 +17435,15 @@ This replaces your current grouping.`
       ]);
       this.#planCatalogue = catalogue;
       this.#payments ??= this.#sync.payments();
-      this.#paymentOffers = plan?.paymentsOpen ? await this.#payments.offers().catch(() => null) : null;
+      let offers = null;
+      if (plan?.paymentsOpen) {
+        offers = this.#couponApplied ? await this.#payments.offers(this.#couponApplied).catch(() => null) : null;
+        if (!offers) {
+          this.#couponApplied = null;
+          offers = await this.#payments.offers().catch(() => null);
+        }
+      }
+      this.#paymentOffers = offers;
       if (this.#modal.active === "settings") this.#modal.refresh();
     }
     async signInWithGoogle() {

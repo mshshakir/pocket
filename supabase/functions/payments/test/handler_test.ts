@@ -36,6 +36,10 @@ class FakeStore {
         : { ok: false, reason: 'no_place' });
     }
     if (code === 'BAD') return Promise.resolve({ ok: false, reason: 'coupon_unknown' });
+    if (code === 'OLD') return Promise.resolve({ ok: false, reason: 'coupon_expired' });
+    if (code === 'AIONLY' && product !== 'ai_pack') return Promise.resolve({ ok: false, reason: 'coupon_not_for_this' });
+    if (code === 'AIONLY') return Promise.resolve({ ok: true, ...PRODUCTS[2], listPaise: 10000, amountPaise: 5000, coupon: 'AIONLY', offerIds: [4] });
+    if (code === 'NOPE') return Promise.resolve({ ok: false, reason: 'coupon_not_for_this' });
     if (code === 'TEN') {
       const p = PRODUCTS.find((x) => x.product === product)!;
       return Promise.resolve({ ok: true, ...p, listPaise: p.amountPaise, amountPaise: Math.round(p.amountPaise * 0.9), coupon: 'TEN', offerIds: [3] });
@@ -188,6 +192,27 @@ console.log('\npayments function');
   s.offered = true;
   const j = await (await make(s).handle(app({ action: 'order', product: 'programme' }))).json();
   ok('P22 programme once offered: ₹5,000 order tied to the application', j.amount === 500000 && s.saved.at(-1)?.applicationId === 7 && /Habit programme/.test(j.name), JSON.stringify(j));
+}
+
+{
+  const s = new FakeStore(); s.trialUsed = true;
+  const j = await (await make(s).handle(app({ action: 'products', code: ' ten ' }))).json();
+  const sync = j.products.find((p: { product: string }) => p.product === 'sync_month');
+  const trial = j.products.find((p: { product: string }) => p.product === 'family_trial');
+  ok('P23 a code in the price list: each item it applies to shows the final amount and the list price',
+    sync.amountPaise === 15210 && sync.listPaise === 16900 && sync.coupon === 'TEN' && j.coupon.code === 'TEN' && j.coupon.products.includes('ai_pack'), JSON.stringify(j));
+  ok('P24 items this person can\'t buy aren\'t priced with the code', trial.available === false && !trial.coupon && s.quotedWith.filter((c) => c === 'TEN').length === 2);
+  const ai = await (await make(new FakeStore()).handle(app({ action: 'products', code: 'aionly' }))).json();
+  ok('P25 a code for some items only: those get it, the rest stay at their price',
+    ai.coupon.products.join() === 'ai_pack' && ai.products.find((p: { product: string }) => p.product === 'ai_pack').amountPaise === 5000
+    && ai.products.find((p: { product: string }) => p.product === 'sync_month').amountPaise === 16900, JSON.stringify(ai));
+  for (const [code, re] of [['BAD', /isn't valid/], ['OLD', /expired/], ['NOPE', /can't be used/], ['a b', /isn't valid/]] as [string, RegExp][]) {
+    const res = await make(new FakeStore()).handle(app({ action: 'products', code }));
+    const e = await res.json();
+    ok(`P26 code ${code}: refused with the reason`, res.status === 409 && e.code === 'bad_coupon' && re.test(e.error), JSON.stringify(e));
+  }
+  const plain = await (await make(new FakeStore()).handle(app({ action: 'products', code: '' }))).json();
+  ok('P27 an empty code is just the price list', !plain.coupon && plain.products.length === 3);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
