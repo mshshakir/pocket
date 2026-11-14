@@ -10,7 +10,7 @@
 --
 -- Service role / SQL editor only: not granted to app users.
 
--- ── field guards ─────────────────────────────────────────────────────────────────────
+-- ── field guards ─────────────────────────────────────────────────────────────────────────────────
 create or replace function public.pocket_assert_keys(what text, obj jsonb, allowed text[])
 returns void language plpgsql immutable as $$
 declare extra text[];
@@ -33,7 +33,7 @@ language sql immutable as $$
   select case when v is null or jsonb_typeof(v) = 'null' then null else (v #>> '{}')::numeric::bigint end
 $$;
 
--- ── import ───────────────────────────────────────────────────────────────────────
+-- ── import ─────────────────────────────────────────────────────────────────────────────
 create or replace function public.pocket_import_book(owner uuid) returns void
 language plpgsql as $$
 declare
@@ -46,6 +46,9 @@ declare
 begin
   select data into d from user_data where id = owner;
   if d is null then raise exception 'No user_data record for %', owner; end if;
+
+  -- Daily totals (0011) are rebuilt once at the end, not per row.
+  perform set_config('pocket.bulk_import', 'on', true);
 
   perform pocket_assert_keys('book', d, array['_transferDirBackfilled','accountGroups','accounts',
     'budgets','categories','debts','family','fxRates','fxRatesUpdatedAt','merchantCategories',
@@ -223,6 +226,11 @@ begin
       values (owner, el->>'id', j, sub->>'memberId', sub->>'access', sub->>'budgetAccess');
     end loop;
   end loop;
+
+  perform set_config('pocket.bulk_import', 'off', true);
+  if to_regproc('public.rebuild_daily_totals') is not null then
+    perform rebuild_daily_totals(owner);
+  end if;
 end $$;
 
 -- ── export (rebuilds the old record shape) ───────────────────────────────
@@ -320,7 +328,7 @@ language sql stable as $$
   where s.owner_id = owner
 $$;
 
--- ── verify ───────────────────────────────────────────────────────────────────────
+-- ── verify ─────────────────────────────────────────────────────────────────────────────
 -- Normalises a record for comparison: drops nulls, empty `splits`, empty top-level
 -- lists (a book with no spaces may have [] or no key at all), and turns
 -- timestamps into one format. Everything else must match exactly.
