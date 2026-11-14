@@ -8,11 +8,12 @@ Each person connects their own chat with `/link their@email` and the 6-digit cod
 them (the same sign-in code the Pocket app uses). No one else is involved, no accounts are created,
 and the replies never reveal whether an email has an account. A linked chat can write to:
 
-- **Their own book:** saved directly into their `user_data`, using the same versioned save the app
-  uses, so it never overwrites a save from the app.
+- **Their own book:** each entry is saved as its own rows, through the same `pocket_apply_changes`
+  function the app uses, so it never overwrites anything the app saved.
 - **Books shared with them:** only accounts whose owner has given their email add, edit or full
-  access (the owner's own `family` permissions). These go through the owner's
-  `family_contributions` inbox, and the owner's app checks the permission again before merging.
+  access (the owner's family permissions). Entries go straight into the owner's book. Adding needs
+  add access; changing an entry needs edit access and deleting needs full access, except that
+  anyone may fix or delete an entry they entered themselves on an account they can add to.
 
 Nothing else is reachable, and every button tap is checked against the same rules.
 `/unlink` disconnects a chat.
@@ -25,6 +26,7 @@ In Telegram, message **@BotFather** → `/newbot` → copy the **token**.
 
 Supabase dashboard → **SQL Editor** → run, in order, `supabase/migrations/0005_telegram_links.sql`,
 `0006_telegram_pending.sql`, `0007_telegram_self_link.sql` and `0008_telegram_batch.sql`.
+The books themselves live in the tables from `0009_relational_book.sql` to `0012_book_api.sql`.
 
 ## 3. Deploy the function
 
@@ -99,9 +101,8 @@ subcategory is tapped or typed; a main category on its own is never saved. Same-
 categories are told apart by parent (`@childrentoiletries`). Transfers need no category.
 
 **Each confirmation has ✏️ Edit and 🗑 Delete buttons.** Edit asks for the corrected entry and
-replaces the original rows in place; Delete removes them. For a family member, changes to an
-entry the owner's app has already merged follow the app's rules: editing needs edit access,
-deleting needs full access.
+replaces the original rows in place; Delete removes them. A family member can always fix or
+delete an entry they entered; anyone else's needs edit access to change and full access to delete.
 
 Commands (also in the bot's menu button): `/help` shows the full guide; `/accounts` lists accounts;
 `/categories` lists expense categories; `/link` and `/unlink` connect or disconnect a chat;

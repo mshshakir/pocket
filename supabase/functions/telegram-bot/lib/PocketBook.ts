@@ -1,5 +1,5 @@
 /**
- * PocketBook — read-only view over an owner's `user_data.data` blob: their
+ * PocketBook — read-only view over an owner's book (as `pocket_export_book` returns it): their
  * preferences, accounts, categories and family permissions. It resolves the
  * hints a message carries (#account, @category) against that data.
  */

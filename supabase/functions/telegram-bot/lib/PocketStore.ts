@@ -1,15 +1,16 @@
 /**
  * PocketStore — the bot's data access: Telegram links and link requests,
  * books and who shares with whom, each chat's pending step (a category to
- * pick, an entry to correct), and the two ways an entry reaches a book:
+ * pick, an entry to correct), and writing entries into a book.
  *
- *   OwnerBookWriter            the owner logs their own entry → written to
- *                              `user_data` with the app's versioned
- *                              compare-and-swap, so a concurrent save by the
- *                              app is never overwritten.
- *   FamilyContributionWriter   a family member logs an entry → sent through the
- *                              owner's `family_contributions` inbox, where the
- *                              owner's app checks permissions and merges it.
+ * Books are stored as rows (supabase/migrations 0009–0012). An entry is saved
+ * with `pocket_apply_changes`, the same function the web app uses, touching
+ * only that entry's rows — so nothing the app saved meanwhile is overwritten.
+ * The bot runs with the service key, which skips the database's row rules, so
+ * BookWriter applies the same sharing rules itself before writing:
+ *   add a new entry      add access (or better) on its account
+ *   change an entry      edit access — or add access when you entered it
+ *   delete an entry      full access — or add access when you entered it
  */
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 import { PocketBook } from './PocketBook.ts';
@@ -165,186 +166,161 @@ export class PocketStore {
 
   // ── Books ────────────────────────────────────────────────────────────────
 
-  async loadBook(ownerId: string): Promise<{ book: PocketBook; version: number; data: Record<string, unknown> }> {
-    const { data, error } = await this.#sb
-      .from('user_data').select('data, version').eq('id', ownerId).maybeSingle();
-    if (error) throw error;
-    if (!data) throw new Error('No Pocket data found for this owner yet. Open the app once to sync.');
-    return { book: new PocketBook(data.data), version: data.version ?? 0, data: data.data };
+  /** A book in the app's shape. Throws if the owner has none yet. */
+  async loadBook(ownerId: string): Promise<PocketBook> {
+    const book = await this.tryLoadBook(ownerId);
+    if (!book) throw new Error('No Pocket data found for this owner yet. Open the app once to sync.');
+    return book;
   }
 
   /** A user's book, or null if they have none yet. */
   async tryLoadBook(ownerId: string): Promise<PocketBook | null> {
-    const { data, error } = await this.#sb.from('user_data').select('data').eq('id', ownerId).maybeSingle();
+    const { data, error } = await this.#sb.rpc('pocket_export_book', { owner: ownerId });
     if (error) throw error;
-    return data ? new PocketBook(data.data) : null;
+    return data ? new PocketBook(data) : null;
   }
 
-  /** Owners who share a space with this email (their app keeps family_shares current). */
+  /** Owners whose family list includes this email (each may share accounts with them). */
   async sharesFor(email: string): Promise<Share[]> {
-    const { data, error } = await this.#sb.from('family_shares')
-      .select('owner_id, snapshot->>ownerName, snapshot->>sharedBy')
-      .eq('member_email', email.toLowerCase().trim());
+    const { data, error } = await this.#sb.from('family_members')
+      .select('owner_id, space_name')
+      .ilike('email', PocketStore.likeExact(email.toLowerCase().trim()))
+      .is('deleted_at', null);
     if (error) throw error;
-    const byOwner = new Map<string, Share>();
-    for (const row of (data ?? []) as Array<{ owner_id: string; ownerName: string | null; sharedBy: string | null }>) {
-      if (!byOwner.has(row.owner_id)) {
-        byOwner.set(row.owner_id, { ownerId: row.owner_id, ownerName: row.ownerName || row.sharedBy || 'a family member' });
-      }
-    }
-    return [...byOwner.values()];
+    const rows = (data ?? []) as Array<{ owner_id: string; space_name: string | null }>;
+    const owners = [...new Set(rows.map((r) => r.owner_id))];
+    if (!owners.length) return [];
+
+    const { data: settings, error: e2 } = await this.#sb.from('book_settings')
+      .select('owner_id, extra->>name').in('owner_id', owners);
+    if (e2) throw e2;
+    const names = new Map(((settings ?? []) as Array<{ owner_id: string; name: string | null }>)
+      .map((r) => [r.owner_id, r.name]));
+    return owners.map((ownerId) => ({
+      ownerId,
+      ownerName: names.get(ownerId) || rows.find((r) => r.owner_id === ownerId)?.space_name || 'a family member',
+    }));
   }
 
-  /** Writes to a book: directly when it is the person's own, else via the owner's inbox. */
+  /** Writes entries into a book as this person, under the sharing rules. */
   writerFor(ownerId: string, email: string, isOwn: boolean): EntryWriter {
-    return isOwn
-      ? new OwnerBookWriter(this, ownerId)
-      : new FamilyContributionWriter(this.#sb, this, ownerId, email);
+    return new BookWriter(this.#sb, ownerId, email, isOwn);
   }
 
-  /** One compare-and-swap attempt; false when another device saved first. */
-  async casUpdate(ownerId: string, expectedVersion: number, data: Record<string, unknown>): Promise<boolean> {
-    const { data: rows, error } = await this.#sb
-      .from('user_data')
-      .update({ data, version: expectedVersion + 1, updated_at: new Date().toISOString() })
-      .eq('id', ownerId).eq('version', expectedVersion)
-      .select('version');
-    if (error) throw error;
-    return !!rows?.length;
+  /** `ilike` pattern matching `s` exactly (emails can contain `_`). */
+  static likeExact(s: string): string {
+    return s.replace(/[\\%_]/g, (c) => `\\${c}`);
   }
 }
 
-type TxRow = { id: string };
-
-export class OwnerBookWriter implements EntryWriter {
-  static readonly #MAX_ATTEMPTS = 4;
-
-  readonly #store: PocketStore;
-  readonly #ownerId: string;
-
-  constructor(store: PocketStore, ownerId: string) {
-    this.#store = store;
-    this.#ownerId = ownerId;
-  }
-
-  async add(txs: PocketTransaction[]): Promise<SaveResult> {
-    let duplicate = false;
-    await this.#mutate((rows) => {
-      duplicate = rows.some((t) => t.id === txs[0].id);
-      return duplicate ? null : [...rows, ...txs];
-    });
-    return duplicate ? 'duplicate' : 'saved';
-  }
-
-  async replace(oldIds: string[], txs: PocketTransaction[]): Promise<void> {
-    const drop = new Set(oldIds);
-    await this.#mutate((rows) => [...rows.filter((t) => !drop.has(t.id)), ...txs]);
-  }
-
-  async remove(ids: string[]): Promise<number> {
-    const drop = new Set(ids);
-    let removed = 0;
-    await this.#mutate((rows) => {
-      const kept = rows.filter((t) => !drop.has(t.id));
-      removed = rows.length - kept.length;
-      return removed ? kept : null;
-    });
-    return removed;
-  }
-
-  /** Applies `change` to the transaction list under compare-and-swap; null means "nothing to write". */
-  async #mutate(change: (rows: TxRow[]) => TxRow[] | null): Promise<void> {
-    for (let attempt = 0; attempt < OwnerBookWriter.#MAX_ATTEMPTS; attempt++) {
-      const { version, data } = await this.#store.loadBook(this.#ownerId);
-      const rows = (Array.isArray(data.transactions) ? data.transactions : []) as TxRow[];
-      const next = change(rows);
-      if (next === null) return;
-      if (await this.#store.casUpdate(this.#ownerId, version, { ...data, transactions: next })) return;
-    }
-    throw new Error('The app was saving at the same moment. Please try again.');
-  }
+/** A stored transaction, as far as the sharing rules need it. */
+interface StoredTx {
+  id: string;
+  account_id: string;
+  added_by: string | null;
+  deleted_at: string | null;
 }
 
-export class FamilyContributionWriter implements EntryWriter {
+export class BookWriter implements EntryWriter {
+  static readonly #LEVELS = ['view', 'add', 'edit', 'full'];
+
   readonly #sb: SupabaseClient;
-  readonly #store: PocketStore;
   readonly #ownerId: string;
-  readonly #memberEmail: string;
+  readonly #email: string;
+  readonly #isOwn: boolean;
+  #grants: Map<string, string> | null = null;
 
-  constructor(sb: SupabaseClient, store: PocketStore, ownerId: string, memberEmail: string) {
+  constructor(sb: SupabaseClient, ownerId: string, email: string, isOwn: boolean) {
     this.#sb = sb;
-    this.#store = store;
     this.#ownerId = ownerId;
-    this.#memberEmail = memberEmail.toLowerCase().trim();
+    this.#email = email.toLowerCase().trim();
+    this.#isOwn = isOwn;
   }
 
   async add(txs: PocketTransaction[]): Promise<SaveResult> {
-    const { data: existing, error } = await this.#sb
-      .from('family_contributions').select('id')
-      .eq('owner_id', this.#ownerId).eq('tx_data->>id', txs[0].id).limit(1);
-    if (error) throw error;
-    if (existing?.length) return 'duplicate';
-    await this.#insert(txs);
+    // Telegram can deliver a message twice: an id already used (even by an
+    // entry since deleted) means this one was handled before.
+    if ((await this.#stored([txs[0].id])).length) return 'duplicate';
+    await this.#mayAdd(txs);
+    await this.#apply({ put: { transactions: txs } });
     return 'saved';
   }
 
   async replace(oldIds: string[], txs: PocketTransaction[]): Promise<void> {
-    const markers = await this.#retract(oldIds, new Set(txs.map((t) => t.id)));
-    // One insert: the owner's app applies the markers before the new rows (audit H6).
-    await this.#insert([...markers, ...txs]);
+    const live = (await this.#stored(oldIds)).filter((t) => !t.deleted_at);
+    for (const t of live) await this.#mayChange(t, 'edit');
+    await this.#mayAdd(txs);
+    const keep = new Set(txs.map((t) => t.id));
+    const gone = live.map((t) => t.id).filter((id) => !keep.has(id));
+    await this.#apply({ put: { transactions: txs }, ...(gone.length ? { remove: { transactions: gone } } : {}) });
   }
 
   async remove(ids: string[]): Promise<number> {
-    const { book } = await this.#store.loadBook(this.#ownerId);
-    const unsynced = await this.#dropUnsynced(ids);
-    const markers = await this.#retract(ids, new Set(), book);
-    if (markers.length) await this.#insert(markers);
-    return unsynced + markers.length;
+    const live = (await this.#stored(ids)).filter((t) => !t.deleted_at);
+    if (!live.length) return 0;
+    for (const t of live) await this.#mayChange(t, 'full');
+    await this.#apply({ remove: { transactions: live.map((t) => t.id) } });
+    return live.length;
   }
 
-  /**
-   * Takes back rows: ones the owner's app hasn't merged yet are simply deleted
-   * from the inbox; merged ones get the same delete markers the app sends.
-   * Changing a merged row needs edit access, deleting one needs full access.
-   */
-  async #retract(ids: string[], reAdded: Set<string>, loaded?: PocketBook): Promise<Record<string, unknown>[]> {
-    const book = loaded ?? (await this.#store.loadBook(this.#ownerId)).book;
-    if (!loaded) await this.#dropUnsynced(ids);
-    const markers: Record<string, unknown>[] = [];
-    for (const id of ids) {
-      const accountId = book.accountOfTransaction(id);
-      if (!accountId) continue;
-      const replacing = reAdded.has(id);
-      const needed = replacing ? 'edit' : 'full';
-      if (!PocketBook.allows(book.accessFor(this.#memberEmail, accountId), needed)) {
-        throw new Error(`This entry is already in the owner's book, and changing it needs ${needed} access. Ask the owner to ${replacing ? 'edit' : 'delete'} it.`);
+  // ── sharing rules (skipped for the owner) ────────────────────────────────────────
+
+  async #mayAdd(txs: PocketTransaction[]): Promise<void> {
+    if (this.#isOwn) return;
+    for (const tx of txs) {
+      if (!PocketBook.allows(await this.#access(tx.accountId), 'add')) {
+        throw new Error('You don\'t have permission to add to that account.');
       }
-      markers.push(replacing
-        ? { _delete: true, _replace: true, id: `rep_${id}_${Date.now()}`, targetId: id, accountId }
-        : { _delete: true, id: `del_${id}_${Date.now()}`, targetId: id, accountId });
     }
-    return markers;
   }
 
-  /** Deletes this member's not-yet-merged inbox rows for these ids; returns how many. */
-  async #dropUnsynced(ids: string[]): Promise<number> {
-    const { data, error } = await this.#sb.from('family_contributions')
-      .delete()
-      .eq('owner_id', this.#ownerId).eq('member_email', this.#memberEmail).eq('synced', false)
-      .in('tx_data->>id', ids)
-      .select('id');
-    if (error) throw error;
-    return data?.length ?? 0;
+  async #mayChange(tx: StoredTx, needed: 'edit' | 'full'): Promise<void> {
+    if (this.#isOwn) return;
+    const access = await this.#access(tx.account_id);
+    const mine = (tx.added_by || '').toLowerCase().trim() === this.#email;
+    if (PocketBook.allows(access, needed) || (mine && PocketBook.allows(access, 'add'))) return;
+    const verb = needed === 'edit' ? 'edit' : 'delete';
+    throw new Error(`Changing this entry needs ${needed} access. Ask the owner to ${verb} it.`);
   }
 
-  async #insert(rows: Record<string, unknown>[]): Promise<void> {
-    const { error } = await this.#sb.from('family_contributions').insert(rows.map((tx) => ({
-      owner_id: this.#ownerId,
-      member_email: this.#memberEmail,
-      account_id: (tx as { accountId?: string }).accountId,
-      tx_data: tx,
-      synced: false,
-    })));
+  /** This person's access to one of the owner's accounts ('' for none). */
+  async #access(accountId: string): Promise<string> {
+    if (!this.#grants) {
+      const { data: members, error } = await this.#sb.from('family_members').select('id')
+        .eq('owner_id', this.#ownerId).ilike('email', PocketStore.likeExact(this.#email))
+        .is('deleted_at', null);
+      if (error) throw error;
+      const ids = (members ?? []).map((m: { id: string }) => m.id);
+      this.#grants = new Map();
+      if (ids.length) {
+        const { data, error: e2 } = await this.#sb.from('member_account_permissions')
+          .select('account_id, access').eq('owner_id', this.#ownerId).in('member_id', ids);
+        if (e2) throw e2;
+        for (const p of (data ?? []) as Array<{ account_id: string; access: string }>) {
+          // Two family entries with one email: the stronger grant counts.
+          const had = this.#grants.get(p.account_id);
+          if (!had || BookWriter.#LEVELS.indexOf(p.access) > BookWriter.#LEVELS.indexOf(had)) {
+            this.#grants.set(p.account_id, p.access);
+          }
+        }
+      }
+    }
+    return this.#grants.get(accountId) ?? '';
+  }
+
+  // ── storage ────────────────────────────────────────────────────────────────────
+
+  async #stored(ids: string[]): Promise<StoredTx[]> {
+    if (!ids.length) return [];
+    const { data, error } = await this.#sb.from('transactions')
+      .select('id, account_id, added_by, deleted_at')
+      .eq('owner_id', this.#ownerId).in('id', ids);
     if (error) throw error;
+    return (data ?? []) as StoredTx[];
+  }
+
+  async #apply(changes: Record<string, unknown>): Promise<void> {
+    const { error } = await this.#sb.rpc('pocket_apply_changes', { book: this.#ownerId, changes });
+    if (error) throw new Error(error.message);
   }
 }
