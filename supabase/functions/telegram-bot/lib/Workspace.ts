@@ -7,8 +7,13 @@
  *
  * Accounts are resolved across all of them; an entry then goes to the book
  * that holds the chosen account.
+ *
+ * Plans (PlanAccess) narrow this further: their own book only while their plan
+ * includes Telegram, and a shared book only while its owner's Family plan
+ * covers them.
  */
 import { type Account, PocketBook } from './PocketBook.ts';
+import { PlanAccess } from './PlanAccess.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
 
 type Resolution<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -37,12 +42,13 @@ export class Workspace {
 
   /** The person's own book and every book shared with them, loaded in parallel. */
   static async load(store: PocketStore, link: TelegramLink): Promise<Workspace> {
-    const [own, shares] = await Promise.all([store.tryLoadBook(link.user_id), store.sharesFor(link.email)]);
+    const [plan, shares] = await Promise.all([PlanAccess.load(store, link.user_id), store.sharesFor(link.email)]);
+    const own = plan.ownBook ? await store.tryLoadBook(link.user_id) : null;
     const accesses: BookAccess[] = [];
     if (own) {
       accesses.push({ ownerId: link.user_id, isOwn: true, label: 'you', book: own, accounts: own.accounts });
     }
-    const others = shares.filter((share) => share.ownerId !== link.user_id);
+    const others = shares.filter((share) => share.ownerId !== link.user_id && plan.sharedBook(share.ownerId));
     const books = await Promise.all(others.map((share) => store.tryLoadBook(share.ownerId)));
     others.forEach((share, i) => {
       const book = books[i];

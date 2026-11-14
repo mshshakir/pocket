@@ -56,6 +56,17 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · 0020 plan enforcement (phase 2 + app side of 3):** guard trigger `zz_plan_guard`
+  on every book table (writes by signed-in users need own sync=write, or the owner's Family
+  coverage=write); `zz_plan_sharing` (family/permissions need sharing=write; seats enforced).
+  `pocket_get_changes`/`pocket_get_book` need sync≥read; `pocket_my_grants` lists only covered
+  owners, perms → 'view' in grace. Refusal = SQLSTATE PP402 (detail sync|shared|sharing|seats).
+  Server/SQL Editor (no auth.uid()) pass. Bot: `PlanAccess` (own book needs telegram=write;
+  shared needs coverage write; grace reply = download within 30 days). App: `PlanService`
+  (remembered per user, refreshed per pull ≥60s), SyncService gates pull/push ('plan-local',
+  'readonly' statuses; unknown plan → behave as before), `PlanBanner` (grace: download within N
+  days), Settings `PlanCard`. Decided: download within 30 days, then cloud copy closed (kept).
+
 - **2026-11-14 · 0019 AI pool:** `subscriptions.ai_unlimited` (on for the four comp accounts);
   `ai_credit_ledger.used_by`; `pocket_ai_spend(user, book, ref)` / `pocket_ai_refund(user, ref)`
   (service_role only). Own book: own unlimited, else own credits. Owner's shared space: owner

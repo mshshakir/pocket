@@ -149,16 +149,20 @@ export class Navigation {
 
   /**
    * Update the sync status badge inside the auth pill.
-   * @param {'local'|'syncing'|'synced'|'error'} status
+   * @param {'local'|'syncing'|'synced'|'error'|'readonly'|'plan-local'} status
+   *   readonly: the plan has ended; the cloud copy can be read, not changed.
+   *   plan-local: signed in, but the plan keeps the book on this device.
    */
   updateSyncIndicator(status) {
     const el = document.getElementById('syncIndicator');
     if (!el) return;
     const MAP = {
-      local:   { icon: 'hard-drive',  color: '#71717a', label: 'Local only' },
-      syncing: { icon: 'loader',      color: '#3b82f6', label: 'Syncing…'   },
-      synced:  { icon: 'cloud-check', color: '#10b981', label: 'Synced'     },
-      error:   { icon: 'cloud-off',   color: '#ef4444', label: 'Sync error' },
+      local:        { icon: 'hard-drive',  color: '#71717a', label: 'Local only' },
+      syncing:      { icon: 'loader',      color: '#3b82f6', label: 'Syncing…'   },
+      synced:       { icon: 'cloud-check', color: '#10b981', label: 'Synced'     },
+      error:        { icon: 'cloud-off',   color: '#ef4444', label: 'Sync error' },
+      readonly:     { icon: 'cloud',       color: '#d97706', label: 'Cloud read-only' },
+      'plan-local': { icon: 'hard-drive',  color: '#71717a', label: 'On this device' },
     };
     const s = MAP[status] || MAP.local;
     el.innerHTML = `

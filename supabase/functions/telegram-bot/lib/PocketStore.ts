@@ -178,6 +178,13 @@ export class PocketStore {
    * (settings, accounts, categories and their use counts, family permissions),
    * never the transactions themselves — see migration 0013.
    */
+  /** What this person's plan allows (pocket_entitlements_for, migration 0018). */
+  async entitlements(userId: string): Promise<unknown> {
+    const { data, error } = await this.#sb.rpc('pocket_entitlements_for', { p_user: userId });
+    if (error) throw error;
+    return data;
+  }
+
   async tryLoadBook(ownerId: string): Promise<PocketBook | null> {
     const { data, error } = await this.#sb.rpc('pocket_bot_book', { owner: ownerId });
     if (error) throw error;

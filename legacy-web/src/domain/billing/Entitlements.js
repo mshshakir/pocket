@@ -83,6 +83,7 @@ export class Entitlements {
   get planName()       { return this.#data.planName; }
   get state()          { return this.#data.state; }
   get term()           { return this.#data.term; }
+  get source()         { return this.#data.source; }
   get endsAt()         { return this.#data.endsAt ? new Date(this.#data.endsAt) : null; }
   get graceUntil()     { return this.#data.graceUntil ? new Date(this.#data.graceUntil) : null; }
   get seats()          { return this.#data.seats; }
@@ -141,7 +142,8 @@ export class Entitlements {
   /** Whether one more AI use is paid for, in your own book or in an owner's shared space. */
   canUseAi(sharedOwnerId = null) { return this.aiPayer(sharedOwnerId) !== null; }
 
+  /** A plain copy (the data is plain JSON, so a JSON round-trip copies it fully). */
   toJSON() {
-    return structuredClone({ ...this.#data, access: { ...this.#data.access }, coveredBy: [...this.#data.coveredBy] });
+    return JSON.parse(JSON.stringify(this.#data));
   }
 }

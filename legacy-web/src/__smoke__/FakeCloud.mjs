@@ -17,11 +17,32 @@
  *   rpc('pocket_get_shared')          the books shared with the caller
  *   rpc('pocket_get_shared_changes', {since})  the same as change sets per share,
  *                                     worked out like pocket_get_changes
+ *   rpc('pocket_entitlements')        the caller's plan (plans[userId], or Family for life);
+ *                                     with a plan that doesn't allow it, loading and
+ *                                     saving are refused with PP402 as in migration 0020
  *   channel().on('postgres_changes')  live updates, fired by emit()
  *
  * Tests read and seed books directly with book() / setBook().
  */
 const RANK = { view: 0, add: 1, edit: 2, full: 3, owner: 4 };
+
+/** What every user has unless a test sets plans[userId]: everything, for life. */
+const FAMILY_FOR_LIFE = Object.freeze({
+  plan: 'family', planName: 'Family', paidPlan: 'family', term: 'lifetime', source: 'comp', state: 'active',
+  endsAt: null, graceUntil: null, autoRenew: false,
+  access: { sync: 'write', telegram: 'write', sharing: 'write' },
+  seats: 5, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: true, trialAvailable: true,
+});
+
+/** The server's plan refusal (SQLSTATE PP402), as PostgREST reports it. */
+class PlanRefusal extends Error {
+  constructor(details, hint) {
+    super('PLAN_REQUIRED');
+    this.code = 'PP402';
+    this.details = details;
+    this.hint = hint;
+  }
+}
 const LISTS = ['accountGroups', 'accounts', 'categories', 'budgets', 'debts',
   'regularItems', 'family', 'spaces', 'transactions'];
 
@@ -49,6 +70,12 @@ export class FakeCloud {
    * @type {Map<string, object[]>}
    */
   servedShares = new Map();
+  /**
+   * Plans by user id, shaped like pocket_entitlements(). Users not listed have
+   * Family for life (so suites about other things are unaffected).
+   * @type {Map<string, object>}
+   */
+  plans = new Map();
 
   /** Seed (or replace) a book. */
   setBook(ownerId, state, email = `${ownerId}@x.com`) {
@@ -115,19 +142,40 @@ export class FakeCloud {
         try {
           return { data: cloud.#call(user, fn, args), error: null };
         } catch (e) {
-          return { data: null, error: { message: e.message } };
+          return { data: null, error: { message: e.message, code: e.code, details: e.details, hint: e.hint } };
         }
       },
     };
   }
 
   #call(user, fn, args) {
-    if (fn === 'pocket_get_book') return structuredClone(this.#books.get(user.id) ?? null);
-    if (fn === 'pocket_get_changes') return this.#changes(user, args.since ?? null);
+    if (fn === 'pocket_entitlements') return structuredClone(this.#planOf(user.id));
+    if (fn === 'pocket_get_book') { this.#mayRead(user); return structuredClone(this.#books.get(user.id) ?? null); }
+    if (fn === 'pocket_get_changes') { this.#mayRead(user); return this.#changes(user, args.since ?? null); }
     if (fn === 'pocket_get_shared') return this.#shared(user);
     if (fn === 'pocket_get_shared_changes') return this.#sharedChanges(user, args.since ?? null);
-    if (fn === 'pocket_apply_changes') return this.#apply(user, args.book, args.changes);
+    if (fn === 'pocket_apply_changes') { this.#mayWrite(user, args.book); return this.#apply(user, args.book, args.changes); }
     throw new Error(`unknown rpc ${fn}`);
+  }
+
+  #planOf(userId) {
+    return this.plans.get(userId) ?? FAMILY_FOR_LIFE;
+  }
+
+  #mayRead(user) {
+    if (this.#planOf(user.id).access.sync === 'none') {
+      throw new PlanRefusal('sync', 'The cloud copy needs a Sync or Family plan.');
+    }
+  }
+
+  #mayWrite(user, book) {
+    const plan = this.#planOf(user.id);
+    if (book === user.id) {
+      if (plan.access.sync !== 'write') throw new PlanRefusal('sync', 'Saving to the cloud needs a Sync or Family plan.');
+    } else if (this.plans.has(user.id)
+               && !plan.coveredBy.some((c) => c.ownerId === book && c.access === 'write')) {
+      throw new PlanRefusal('shared', 'This shared space is read-only: its owner\'s Family plan is not active.');
+    }
   }
 
   /** The caller's book as pocket_get_changes returns it. */

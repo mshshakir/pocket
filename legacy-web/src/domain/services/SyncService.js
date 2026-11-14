@@ -45,6 +45,7 @@ import { RecurringService }  from './RecurringService.js';
 import { CurrencyService }   from './CurrencyService.js';
 import { LedgerMath }        from './LedgerMath.js';
 import { BudgetService }     from './BudgetService.js';
+import { PlanService }       from '../billing/PlanService.js';
 
 /** Trailing-edge debounce applied after each local save. */
 const PUSH_DEBOUNCE_MS = 1000;
@@ -145,6 +146,8 @@ export class SyncService {
   /** @type {SyncBaseline} */ #baseline;
   /** True only for a user-initiated sign-out (not a failed token refresh). */
   #explicitSignOut = false;
+  /** The signed-in person's plan: whether the cloud copy may be saved or read. */
+  /** @type {PlanService} */ #plan;
 
   constructor() {
     this.#store    = Store.getInstance();
@@ -153,6 +156,32 @@ export class SyncService {
     this.#journal  = new SyncJournal();
     this.#baseline = new SyncBaseline();
     this.#shareCache = new ShareCache();
+    this.#plan = new PlanService((fn, args) => this.#sb.rpc(fn, args), { bus: this.#bus });
+  }
+
+  /** @returns {import('../billing/Entitlements.js').Entitlements} */
+  get plan() {
+    return this.#plan.current;
+  }
+
+  /** Ask the server for the plan again (e.g. when Settings opens). */
+  refreshPlan() {
+    return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
+  }
+
+  /** The cloud price list, for showing upgrade options. */
+  planCatalogue() {
+    return this.#sb ? this.#plan.catalogue(this.#sb) : Promise.resolve([]);
+  }
+
+  /**
+   * 'write' | 'read' | 'none': what the plan allows for this person's own cloud
+   * copy. While the plan is unknown (first start offline) the app carries on as
+   * before; the server refuses what the plan doesn't allow, and that refusal
+   * teaches the app the plan.
+   */
+  #cloudAccess() {
+    return this.#plan.isKnown ? this.#plan.current.access('sync') : 'write';
   }
 
   // ── Init ─────────────────────────────────────────────────────────────
@@ -286,7 +315,9 @@ export class SyncService {
     if (this.#user) return false;
     this.#user = user;
     // Both copies are read before the first load, so it can ask for changes only.
-    const [, cachedShares] = await Promise.all([this.#baseline.load(user.id), this.#shareCache.load(user.id)]);
+    const [, cachedShares] = await Promise.all([
+      this.#baseline.load(user.id), this.#shareCache.load(user.id), this.#plan.start(user.id),
+    ]);
     if (this.#user !== user) return false; // signed out meanwhile
     if (cachedShares) {
       this.#sharesBase = cachedShares.shares;
@@ -324,6 +355,7 @@ export class SyncService {
     this.#sharesCursor = null;
     this.#pendingRemovals.clear();
     this.#pendingAdditions.clear();
+    this.#plan.reset();
 
     if (wipeLocal) {
       this.#markClean();
@@ -462,6 +494,14 @@ export class SyncService {
   async #doPush() {
     if (!this.#sb || !this.#user) return;
 
+    // The plan decides whether the cloud copy may change. Without it, edits
+    // stay on this device (and in the journal), and go up once the plan does.
+    const access = this.#cloudAccess();
+    if (access !== 'write') {
+      this.#emitStatus(access === 'read' ? 'readonly' : 'plan-local');
+      return;
+    }
+
     // No successful load yet this session (offline sign-in, transient 5xx).
     // A diff against an unknown cloud copy can't be trusted, so hold the
     // change — #dirty stays set and the next pull carries it over.
@@ -493,6 +533,13 @@ export class SyncService {
       }
       this.#emitStatus('synced');
     } catch (e) {
+      if (PlanService.isPlanError(e)) {
+        // The server says the plan no longer allows saving: learn it, keep the edits here.
+        await this.#plan.refresh();
+        this.#emitStatus(this.#cloudAccess() === 'read' ? 'readonly' : 'plan-local');
+        this.#toast(PlanService.explain(e));
+        return;
+      }
       console.error('[SyncService] Cloud save error:', e);
       this.#emitStatus('error');
       this.#toast('Sync error: ' + (e.message || e));
@@ -579,6 +626,17 @@ export class SyncService {
   async #doPull() {
     if (!this.#sb || !this.#user) return false;
 
+    await this.#plan.refreshIfStale();
+    if (this.#cloudAccess() === 'none') {
+      // Free (or a plan that ended over the grace period ago): the book lives on
+      // this device. Books shared with this person still load if a Family plan covers them.
+      this.#loaded = false;
+      await this.#pullFamilyShares();
+      this.#emitStatus('plan-local');
+      this.#bus.emit('state:changed', this.#store.getState());
+      return false;
+    }
+
     // Save any pending local edit BEFORE reading, so the copy we read already
     // contains it.
     if (this.#dirty && !this.#flushing && this.#loaded) {
@@ -597,7 +655,7 @@ export class SyncService {
         this.#loaded = true;
         this.#dirty = true;
         await this.#doPush();
-        this.#emitStatus('synced');
+        if (this.#cloudAccess() === 'write') this.#emitStatus('synced');
         return true;
       }
 
@@ -621,10 +679,15 @@ export class SyncService {
 
       new RecurringService().process();
       await this.#pullFamilyShares();
-      this.#emitStatus(this.#dirty ? 'error' : 'synced');
+      this.#emitStatus(this.#cloudAccess() === 'read' ? 'readonly' : (this.#dirty ? 'error' : 'synced'));
       this.#bus.emit('state:changed', this.#store.getState());
       return false;
     } catch (e) {
+      if (PlanService.isPlanError(e)) {
+        await this.#plan.refresh();
+        this.#emitStatus('plan-local');
+        return false;
+      }
       console.error('[SyncService] Cloud load error:', e);
       this.#emitStatus('error');
       this.#toast('Sync error: ' + (e.message || e));
@@ -720,7 +783,13 @@ export class SyncService {
   /** Write to a shared book, remembering the rows as our own echo. */
   async #sendShared(ownerId, changes) {
     const { error } = await this.#sb.rpc('pocket_apply_changes', { book: ownerId, changes });
-    if (error) throw error;
+    if (error) {
+      if (PlanService.isPlanError(error)) {
+        this.#plan.refresh();
+        throw new Error(PlanService.explain(error));
+      }
+      throw error;
+    }
     const until = Date.now() + ECHO_WINDOW_MS;
     for (const k of BookDiff.touchedKeys(changes)) {
       const id = k.slice(k.indexOf(':') + 1);

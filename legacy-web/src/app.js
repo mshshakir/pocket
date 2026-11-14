@@ -87,6 +87,7 @@ import { RegularItemModal }     from './ui/modals/RegularItemModal.js';
 import { DayLogsModal }         from './ui/modals/DayLogsModal.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
+import { PlanBanner }           from './ui/components/PlanBanner.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -151,6 +152,9 @@ export class Application {
   #dayLogsModal      = null;  // DayLogsModal
   #currencySetupModal= null;  // CurrencySetupModal
   #exportModal       = null;  // ExportModal
+  #planBanner        = null;  // PlanBanner
+  /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
+  #planCatalogue     = null;
 
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
@@ -371,6 +375,12 @@ export class Application {
       }
     });
 
+    // Plans: the banner above every page, and Settings kept current.
+    this.#planBanner = new PlanBanner(document.getElementById('planBanner'), this.#bus);
+    this.#bus.on('plan:changed', () => {
+      if (this.#modal.active === 'settings') this.#modal.refresh();
+    });
+
     // 8. Initial render (shows locally-cached or seed data while Supabase loads)
     this.#render();
 
@@ -503,6 +513,7 @@ export class Application {
         sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id },
       });
     }
+    if (name === 'settings') this.#refreshPlanInfo();
     // debtPayment needs to route to DebtModal in payment mode
     if (name === 'debtPayment') {
       this.#modal.open('debtPayment', { ...opts, mode: 'payment' });
@@ -635,6 +646,30 @@ export class Application {
 
   isManagedMode() { return this.#sync.isManagedMode(); }
   getSbUser()     { return this.#sync.currentUser ?? null; }
+
+  // ── Plans ─────────────────────────────────────────────────────────────
+
+  /** @returns {import('./domain/billing/Entitlements.js').Entitlements} */
+  getPlan() { return this.#sync.plan; }
+
+  /** Plans on offer, or null while loading (Settings shows "Loading plans…"). */
+  get planCatalogue() { return this.#planCatalogue; }
+
+  /** Everything in this book as one file that Import JSON can bring back. */
+  downloadMyData() { this.exportJson(); }
+
+  dismissPlanBanner() { this.#planBanner?.dismiss(); }
+
+  /** Settings is opening: ask for the latest plan and price list, then redraw it. */
+  async #refreshPlanInfo() {
+    if (!this.#sync.currentUser) return;
+    const [, catalogue] = await Promise.all([
+      this.#sync.refreshPlan(),
+      this.#sync.planCatalogue().catch(() => []),
+    ]);
+    this.#planCatalogue = catalogue;
+    if (this.#modal.active === 'settings') this.#modal.refresh();
+  }
 
   async signInWithGoogle() { await this.#sync.signInWithGoogle(); }
 

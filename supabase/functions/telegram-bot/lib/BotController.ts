@@ -12,6 +12,7 @@ import { EntryParser } from './EntryParser.ts';
 import { EntryService } from './EntryService.ts';
 import { HelpMenu } from './HelpMenu.ts';
 import { LinkService } from './LinkService.ts';
+import { PlanAccess } from './PlanAccess.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import type { TelegramClient } from './TelegramClient.ts';
 import { Workspace } from './Workspace.ts';
@@ -72,6 +73,12 @@ export class BotController {
       }
       if (command.startsWith('/')) return void await this.#command(command, argument, link, chatId, message.message_id);
 
+      const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+      if (notice) {
+        await this.#dropPending(chatId);
+        return void await this.#telegram.reply(chatId, notice, message.message_id);
+      }
+
       const pending = await this.#store.getPending(chatId);
       if (pending?.kind === 'edit') {
         return void await this.#entries.record({
@@ -110,6 +117,13 @@ export class BotController {
     // edit/del carry the book's owner id; buttons from before shared books meant your own book.
     const [action, value, ownerId = link.user_id] = (cb.data || '').split(':');
     try {
+      if (action === 'cat' || action === 'main' || action === 'back' || action === 'edit' || action === 'del') {
+        const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+        if (notice) {
+          await this.#telegram.answer(cb.id, 'Not available on your plan');
+          return void await this.#telegram.send(chatId, notice, { replyTo: msg.message_id });
+        }
+      }
       if (action === 'cat' || action === 'main' || action === 'back') {
         // cat: a subcategory (saves) · main: open its subcategories · back: all main categories
         const pending = await this.#store.getPending(chatId);

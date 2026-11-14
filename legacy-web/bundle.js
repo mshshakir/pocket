@@ -4117,6 +4117,292 @@ RULES:
     }
   };
 
+  // src/domain/billing/Entitlements.js
+  var Entitlements = class _Entitlements {
+    static FEATURES = Object.freeze(["sync", "telegram", "sharing"]);
+    static STATES = Object.freeze(["free", "active", "grace", "lapsed"]);
+    static #LEVELS = Object.freeze(["none", "read", "write"]);
+    #data;
+    /** @param {object} data  the server's response, already validated by from() */
+    constructor(data) {
+      this.#data = Object.freeze(data);
+    }
+    /** The plan of someone not signed in, or before the server has answered. */
+    static free() {
+      return new _Entitlements({
+        plan: "free",
+        planName: "Free",
+        paidPlan: null,
+        term: null,
+        source: null,
+        state: "free",
+        endsAt: null,
+        graceUntil: null,
+        autoRenew: false,
+        access: { sync: "none", telegram: "none", sharing: "none" },
+        seats: 1,
+        seatsUsed: 1,
+        coveredBy: [],
+        aiCredits: 0,
+        aiUnlimited: false,
+        trialAvailable: true
+      });
+    }
+    /**
+     * Builds from pocket_entitlements() output. Anything missing or unknown
+     * falls back to the Free answer, never to more access.
+     * @param {object|null|undefined} raw
+     */
+    static from(raw) {
+      const base = _Entitlements.free().toJSON();
+      if (!raw || typeof raw !== "object") return new _Entitlements(base);
+      const level = (v) => _Entitlements.#LEVELS.includes(v) ? v : "none";
+      const access = {};
+      for (const f of _Entitlements.FEATURES) access[f] = level(raw.access?.[f]);
+      const whole = (v, d) => Number.isInteger(v) && v >= 0 ? v : d;
+      return new _Entitlements({
+        plan: typeof raw.plan === "string" ? raw.plan : base.plan,
+        planName: typeof raw.planName === "string" ? raw.planName : base.planName,
+        paidPlan: raw.paidPlan ?? null,
+        term: raw.term ?? null,
+        source: raw.source ?? null,
+        state: _Entitlements.STATES.includes(raw.state) ? raw.state : "free",
+        endsAt: raw.endsAt ?? null,
+        graceUntil: raw.graceUntil ?? null,
+        autoRenew: raw.autoRenew === true,
+        access,
+        seats: whole(raw.seats, 1),
+        seatsUsed: whole(raw.seatsUsed, 1),
+        coveredBy: Array.isArray(raw.coveredBy) ? raw.coveredBy.filter((c) => c && typeof c.ownerId === "string").map((c) => Object.freeze({
+          ownerId: c.ownerId,
+          ownerEmail: c.ownerEmail ?? "",
+          plan: c.plan ?? "",
+          access: level(c.access),
+          aiCredits: Number.isInteger(c.aiCredits) ? c.aiCredits : 0,
+          aiUnlimited: c.aiUnlimited === true
+        })) : [],
+        aiCredits: Number.isInteger(raw.aiCredits) ? raw.aiCredits : 0,
+        aiUnlimited: raw.aiUnlimited === true,
+        trialAvailable: raw.trialAvailable !== false
+      });
+    }
+    get plan() {
+      return this.#data.plan;
+    }
+    get planName() {
+      return this.#data.planName;
+    }
+    get state() {
+      return this.#data.state;
+    }
+    get term() {
+      return this.#data.term;
+    }
+    get source() {
+      return this.#data.source;
+    }
+    get endsAt() {
+      return this.#data.endsAt ? new Date(this.#data.endsAt) : null;
+    }
+    get graceUntil() {
+      return this.#data.graceUntil ? new Date(this.#data.graceUntil) : null;
+    }
+    get seats() {
+      return this.#data.seats;
+    }
+    get seatsUsed() {
+      return this.#data.seatsUsed;
+    }
+    get seatsLeft() {
+      return Math.max(0, this.#data.seats - this.#data.seatsUsed);
+    }
+    /** Own credits (for a Family owner, also the pool for their shared space). */
+    get aiCredits() {
+      return this.#data.aiCredits;
+    }
+    get aiUnlimited() {
+      return this.#data.aiUnlimited;
+    }
+    get trialAvailable() {
+      return this.#data.trialAvailable;
+    }
+    get isLifetime() {
+      return this.#data.term === "lifetime" && this.#data.state === "active";
+    }
+    /** The plan ended recently: its features still show, but nothing can change. */
+    get isReadOnly() {
+      return this.#data.state === "grace";
+    }
+    get isPaid() {
+      return this.#data.plan !== "free";
+    }
+    /** @param {'sync'|'telegram'|'sharing'} feature @returns {'write'|'read'|'none'} */
+    access(feature) {
+      if (!_Entitlements.FEATURES.includes(feature)) throw new Error(`Unknown feature: ${feature}`);
+      return this.#data.access[feature];
+    }
+    /** May use the feature fully (add, edit, delete). */
+    can(feature) {
+      return this.access(feature) === "write";
+    }
+    /** May at least see what the feature holds. */
+    canSee(feature) {
+      return this.access(feature) !== "none";
+    }
+    /**
+     * Access to another person's shared accounts through their Family plan.
+     * @param {string} ownerId
+     * @returns {'write'|'read'|'none'}
+     */
+    sharedAccess(ownerId) {
+      return this.#data.coveredBy.find((c) => c.ownerId === ownerId)?.access ?? "none";
+    }
+    /** @returns {{ownerId: string, ownerEmail: string, plan: string, access: string, aiCredits: number, aiUnlimited: boolean}[]} */
+    get coveredBy() {
+      return [...this.#data.coveredBy];
+    }
+    /**
+     * Who would pay for one AI use, mirroring pocket_ai_spend on the server.
+     * @param {string|null} [sharedOwnerId]  the owner, when working in their shared space
+     * @returns {'unlimited'|'family'|'own'|null}  null: no credits (or no access to that space)
+     */
+    aiPayer(sharedOwnerId = null) {
+      if (sharedOwnerId) {
+        const c = this.#data.coveredBy.find((x) => x.ownerId === sharedOwnerId);
+        if (!c || c.access !== "write") return null;
+        if (c.aiUnlimited || this.#data.aiUnlimited) return "unlimited";
+        if (c.aiCredits >= 1) return "family";
+        return this.#data.aiCredits >= 1 ? "own" : null;
+      }
+      if (this.#data.aiUnlimited) return "unlimited";
+      return this.#data.aiCredits >= 1 ? "own" : null;
+    }
+    /** Whether one more AI use is paid for, in your own book or in an owner's shared space. */
+    canUseAi(sharedOwnerId = null) {
+      return this.aiPayer(sharedOwnerId) !== null;
+    }
+    /** A plain copy (the data is plain JSON, so a JSON round-trip copies it fully). */
+    toJSON() {
+      return JSON.parse(JSON.stringify(this.#data));
+    }
+  };
+
+  // src/domain/billing/PlanService.js
+  var PlanService = class _PlanService {
+    static KEY = "pocket.v2.plan";
+    static ERROR_CODE = "PP402";
+    /** @type {(fn: string, args?: object) => Promise<{data: any, error: any}>} */
+    #rpc;
+    #bus;
+    #record;
+    #current = Entitlements.free();
+    /** True once this session has a server answer (not only the remembered one). */
+    #fresh = false;
+    /** When the server last answered (ms). */
+    #askedAt = 0;
+    #known = false;
+    /**
+     * @param {(fn: string, args?: object) => Promise<{data: any, error: any}>} rpc
+     * @param {object} [opts]
+     * @param {EventBus} [opts.bus]
+     * @param {import('../../core/KeyValueStore.js').KeyValueStore} [opts.store]
+     */
+    constructor(rpc, { bus = EventBus.getInstance(), store } = {}) {
+      this.#rpc = rpc;
+      this.#bus = bus;
+      this.#record = new UserRecord(_PlanService.KEY, store);
+    }
+    /** @returns {Entitlements} */
+    get current() {
+      return this.#current;
+    }
+    /** Whether the current answer came from the server this session. */
+    get isFresh() {
+      return this.#fresh;
+    }
+    /**
+     * Whether the plan is known at all: answered by the server this session, or
+     * remembered from a previous one. Unknown (first start, offline) means the
+     * app should carry on as before and let the server decide.
+     */
+    get isKnown() {
+      return this.#known;
+    }
+    /** Start a session: the remembered plan straight away, then the server's. */
+    async start(userId) {
+      this.#fresh = false;
+      this.#known = false;
+      const saved = await this.#record.load(userId);
+      if (saved?.plan) {
+        this.#known = true;
+        this.#set(Entitlements.from(saved.plan));
+      }
+      return this.refresh();
+    }
+    /**
+     * Ask the server again. On failure (offline) the last known plan stands.
+     * @returns {Promise<Entitlements>}
+     */
+    async refresh() {
+      try {
+        const { data, error } = await this.#rpc("pocket_entitlements");
+        if (error) throw error;
+        this.#fresh = true;
+        this.#known = true;
+        this.#askedAt = Date.now();
+        this.#set(Entitlements.from(data));
+        this.#record.save({ plan: this.#current.toJSON() });
+      } catch (e) {
+        console.warn("[PlanService] could not refresh the plan:", e?.message || e);
+      }
+      return this.#current;
+    }
+    /** Ask again only when the last answer is older than maxAgeMs (or there is none). */
+    refreshIfStale(maxAgeMs = 6e4) {
+      return Date.now() - this.#askedAt > maxAgeMs ? this.refresh() : Promise.resolve(this.#current);
+    }
+    /** Signed out: back to Free, and forget the remembered plan. */
+    reset() {
+      this.#fresh = false;
+      this.#known = false;
+      this.#askedAt = 0;
+      this.#record.clear();
+      this.#set(Entitlements.free());
+    }
+    /** The cloud price list (plans table), for showing options. */
+    async catalogue(client) {
+      const { data, error } = await client.from("plans").select("code, name, seats, sync, telegram, sharing, monthly_paise, yearly_paise, trial_paise, trial_days, sort, active").eq("active", true).order("sort");
+      if (error) throw error;
+      return data ?? [];
+    }
+    /** @param {any} err */
+    static isPlanError(err) {
+      return err?.code === _PlanService.ERROR_CODE;
+    }
+    /**
+     * A sentence for the person, from a server refusal.
+     * @param {any} err
+     */
+    static explain(err) {
+      if (err?.hint) return err.hint;
+      switch (err?.details) {
+        case "sharing":
+          return "Sharing with family needs a Family plan.";
+        case "seats":
+          return "Your Family plan is full. Remove someone to add another person.";
+        case "shared":
+          return "This shared space is read-only: its owner's Family plan is not active.";
+        default:
+          return "Saving to the cloud needs a Sync or Family plan.";
+      }
+    }
+    #set(next) {
+      const before = JSON.stringify(this.#current.toJSON());
+      this.#current = next;
+      if (JSON.stringify(next.toJSON()) !== before) this.#bus.emit("plan:changed", { plan: next });
+    }
+  };
+
   // src/domain/services/SyncService.js
   var PUSH_DEBOUNCE_MS = 1e3;
   var MAX_PUSH_WAIT_MS = 3e3;
@@ -4202,6 +4488,9 @@ RULES:
     #baseline;
     /** True only for a user-initiated sign-out (not a failed token refresh). */
     #explicitSignOut = false;
+    /** The signed-in person's plan: whether the cloud copy may be saved or read. */
+    /** @type {PlanService} */
+    #plan;
     constructor() {
       this.#store = Store.getInstance();
       this.#bus = EventBus.getInstance();
@@ -4209,6 +4498,28 @@ RULES:
       this.#journal = new SyncJournal();
       this.#baseline = new SyncBaseline();
       this.#shareCache = new ShareCache();
+      this.#plan = new PlanService((fn, args) => this.#sb.rpc(fn, args), { bus: this.#bus });
+    }
+    /** @returns {import('../billing/Entitlements.js').Entitlements} */
+    get plan() {
+      return this.#plan.current;
+    }
+    /** Ask the server for the plan again (e.g. when Settings opens). */
+    refreshPlan() {
+      return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
+    }
+    /** The cloud price list, for showing upgrade options. */
+    planCatalogue() {
+      return this.#sb ? this.#plan.catalogue(this.#sb) : Promise.resolve([]);
+    }
+    /**
+     * 'write' | 'read' | 'none': what the plan allows for this person's own cloud
+     * copy. While the plan is unknown (first start offline) the app carries on as
+     * before; the server refuses what the plan doesn't allow, and that refusal
+     * teaches the app the plan.
+     */
+    #cloudAccess() {
+      return this.#plan.isKnown ? this.#plan.current.access("sync") : "write";
     }
     // ── Init ─────────────────────────────────────────────────────────────
     /** @returns {boolean} true if Supabase is configured */
@@ -4324,7 +4635,11 @@ RULES:
     async #adoptSession(user) {
       if (this.#user) return false;
       this.#user = user;
-      const [, cachedShares] = await Promise.all([this.#baseline.load(user.id), this.#shareCache.load(user.id)]);
+      const [, cachedShares] = await Promise.all([
+        this.#baseline.load(user.id),
+        this.#shareCache.load(user.id),
+        this.#plan.start(user.id)
+      ]);
       if (this.#user !== user) return false;
       if (cachedShares) {
         this.#sharesBase = cachedShares.shares;
@@ -4361,6 +4676,7 @@ RULES:
       this.#sharesCursor = null;
       this.#pendingRemovals.clear();
       this.#pendingAdditions.clear();
+      this.#plan.reset();
       if (wipeLocal) {
         this.#markClean();
         this.#baseline.clear();
@@ -4487,6 +4803,11 @@ RULES:
     }
     async #doPush() {
       if (!this.#sb || !this.#user) return;
+      const access = this.#cloudAccess();
+      if (access !== "write") {
+        this.#emitStatus(access === "read" ? "readonly" : "plan-local");
+        return;
+      }
       if (!this.#loaded) {
         console.warn("[SyncService] Skipping push: cloud state not loaded yet");
         this.#emitStatus("error");
@@ -4512,6 +4833,12 @@ RULES:
         }
         this.#emitStatus("synced");
       } catch (e) {
+        if (PlanService.isPlanError(e)) {
+          await this.#plan.refresh();
+          this.#emitStatus(this.#cloudAccess() === "read" ? "readonly" : "plan-local");
+          this.#toast(PlanService.explain(e));
+          return;
+        }
         console.error("[SyncService] Cloud save error:", e);
         this.#emitStatus("error");
         this.#toast("Sync error: " + (e.message || e));
@@ -4604,6 +4931,14 @@ RULES:
     /** @returns {boolean} isFirstSignIn */
     async #doPull() {
       if (!this.#sb || !this.#user) return false;
+      await this.#plan.refreshIfStale();
+      if (this.#cloudAccess() === "none") {
+        this.#loaded = false;
+        await this.#pullFamilyShares();
+        this.#emitStatus("plan-local");
+        this.#bus.emit("state:changed", this.#store.getState());
+        return false;
+      }
       if (this.#dirty && !this.#flushing && this.#loaded) {
         this.#flushing = true;
         clearTimeout(this.#saveTimer);
@@ -4621,7 +4956,7 @@ RULES:
           this.#loaded = true;
           this.#dirty = true;
           await this.#doPush();
-          this.#emitStatus("synced");
+          if (this.#cloudAccess() === "write") this.#emitStatus("synced");
           return true;
         }
         const pending = this.#pendingLocalChanges();
@@ -4639,10 +4974,15 @@ RULES:
         }
         new RecurringService().process();
         await this.#pullFamilyShares();
-        this.#emitStatus(this.#dirty ? "error" : "synced");
+        this.#emitStatus(this.#cloudAccess() === "read" ? "readonly" : this.#dirty ? "error" : "synced");
         this.#bus.emit("state:changed", this.#store.getState());
         return false;
       } catch (e) {
+        if (PlanService.isPlanError(e)) {
+          await this.#plan.refresh();
+          this.#emitStatus("plan-local");
+          return false;
+        }
         console.error("[SyncService] Cloud load error:", e);
         this.#emitStatus("error");
         this.#toast("Sync error: " + (e.message || e));
@@ -4737,7 +5077,13 @@ RULES:
     /** Write to a shared book, remembering the rows as our own echo. */
     async #sendShared(ownerId, changes) {
       const { error } = await this.#sb.rpc("pocket_apply_changes", { book: ownerId, changes });
-      if (error) throw error;
+      if (error) {
+        if (PlanService.isPlanError(error)) {
+          this.#plan.refresh();
+          throw new Error(PlanService.explain(error));
+        }
+        throw error;
+      }
       const until = Date.now() + ECHO_WINDOW_MS;
       for (const k of BookDiff.touchedKeys(changes)) {
         const id = k.slice(k.indexOf(":") + 1);
@@ -5966,7 +6312,9 @@ RULES:
     }
     /**
      * Update the sync status badge inside the auth pill.
-     * @param {'local'|'syncing'|'synced'|'error'} status
+     * @param {'local'|'syncing'|'synced'|'error'|'readonly'|'plan-local'} status
+     *   readonly: the plan has ended; the cloud copy can be read, not changed.
+     *   plan-local: signed in, but the plan keeps the book on this device.
      */
     updateSyncIndicator(status) {
       const el = document.getElementById("syncIndicator");
@@ -5975,7 +6323,9 @@ RULES:
         local: { icon: "hard-drive", color: "#71717a", label: "Local only" },
         syncing: { icon: "loader", color: "#3b82f6", label: "Syncing\u2026" },
         synced: { icon: "cloud-check", color: "#10b981", label: "Synced" },
-        error: { icon: "cloud-off", color: "#ef4444", label: "Sync error" }
+        error: { icon: "cloud-off", color: "#ef4444", label: "Sync error" },
+        readonly: { icon: "cloud", color: "#d97706", label: "Cloud read-only" },
+        "plan-local": { icon: "hard-drive", color: "#71717a", label: "On this device" }
       };
       const s = MAP[status] || MAP.local;
       el.innerHTML = `
@@ -12824,6 +13174,103 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/PlanCard.js
+  var PlanCard = class {
+    /**
+     * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
+     * @param {object[]|null} catalogue  rows of the plans table, or null while loading
+     */
+    html(plan, catalogue) {
+      return `
+      <div class="card-muted p-3 mb-3" id="planCard">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="text-sm font-medium">Your plan</div>
+          <span class="chip ${this.#chipClass(plan)}">${Html.escape(this.#title(plan))}</span>
+        </div>
+        <div class="text-xs text-zinc-500 leading-relaxed">${this.#status(plan)}</div>
+        ${this.#details(plan)}
+        <div class="grid grid-cols-1 gap-2 mt-3">
+          <button class="btn ${plan.state === "grace" ? "btn-primary" : "btn-outline"} justify-center" onclick="window.__app.downloadMyData()">
+            <i data-lucide="download"></i> Download my data
+          </button>
+        </div>
+        ${this.#offers(plan, catalogue)}
+      </div>`;
+    }
+    #title(plan) {
+      if (plan.isLifetime) return `${plan.planName} \xB7 for life`;
+      if (plan.state === "grace") return `${plan.planName} \xB7 ended`;
+      if (plan.state === "lapsed") return "Free \xB7 plan ended";
+      return plan.planName;
+    }
+    #chipClass(plan) {
+      if (plan.state === "grace") return "plan-chip-warn";
+      return plan.isPaid ? "plan-chip-paid" : "";
+    }
+    #status(plan) {
+      const day = (d) => d.toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" });
+      switch (plan.state) {
+        case "active":
+          if (plan.isLifetime) return "Everything in your plan is included, with no end date.";
+          if (plan.term === "trial") return `Trial until ${day(plan.endsAt)}.`;
+          return plan.endsAt ? `${plan.toJSON().autoRenew ? "Renews" : "Active until"} ${day(plan.endsAt)}.` : "Active.";
+        case "grace":
+          return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ""}. Your cloud copy is read-only until <strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
+        case "lapsed":
+          return "Pocket keeps working on this device, with every export. Cloud sync and Telegram are paused; your cloud copy is kept and comes back when you renew.";
+        default:
+          return "Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with family come with Sync and Family.";
+      }
+    }
+    #details(plan) {
+      const rows = [];
+      if (plan.can("sharing") || plan.isReadOnly && plan.canSee("sharing")) {
+        rows.push(["People", `${plan.seatsUsed} of ${plan.seats}, you included`]);
+      }
+      for (const c of plan.coveredBy) {
+        rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Family plan${c.access === "read" ? " (ended, read-only)" : ""}`]);
+      }
+      rows.push(["AI scans & voice", this.#ai(plan)]);
+      return `
+      <div class="mt-2 divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
+        ${rows.map(([k, v]) => `
+          <div class="flex justify-between gap-3 py-1.5">
+            <span class="text-zinc-500">${k}</span><span class="text-right">${v}</span>
+          </div>`).join("")}
+      </div>`;
+    }
+    #ai(plan) {
+      if (plan.aiUnlimited) return "Unlimited";
+      const own = plan.aiCredits;
+      const pools = plan.coveredBy.filter((c) => c.access === "write" && (c.aiUnlimited || c.aiCredits > 0));
+      const parts = [`${own.toLocaleString()} credit${own === 1 ? "" : "s"}${plan.can("sharing") ? " (family pool)" : ""}`];
+      for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
+      return parts.join(" \xB7 ");
+    }
+    #offers(plan, catalogue) {
+      if (plan.isLifetime) return "";
+      if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
+      const paid = catalogue.filter((p) => p.code !== "free");
+      if (!paid.length) return "";
+      const inr = (paise) => (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
+      const what = (p) => [p.sync && "cloud sync", p.telegram && "Telegram", p.sharing && `sharing with up to ${p.seats - 1} family members`].filter(Boolean).join(", ");
+      return `
+      <div class="mt-3 text-xs">
+        <div class="field-label">Plans</div>
+        ${paid.map((p) => `
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5 mb-2 ${plan.plan === p.code && plan.state === "active" ? "plan-current" : ""}">
+            <div class="flex items-baseline justify-between gap-2">
+              <span class="font-semibold text-sm">${Html.escape(p.name)}</span>
+              <span class="tx-amount">${p.monthly_paise != null ? `${inr(p.monthly_paise)}/month` : ""}${p.yearly_paise != null ? ` \xB7 ${inr(p.yearly_paise)}/year` : ""}</span>
+            </div>
+            <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
+            ${p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
+          </div>`).join("")}
+        <div class="text-zinc-400">Online payment is coming soon.</div>
+      </div>`;
+    }
+  };
+
   // src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
@@ -12832,10 +13279,13 @@ This replaces your current grouping.`
     #fx;
     /** @type {HijriCalendarService} */
     #hijri;
+    /** @type {PlanCard} */
+    #planCard;
     constructor() {
       this.#store = Store.getInstance();
       this.#fx = new CurrencyService();
       this.#hijri = new HijriCalendarService();
+      this.#planCard = new PlanCard();
     }
     render() {
       const state = this.#store.getState();
@@ -12999,6 +13449,8 @@ This replaces your current grouping.`
         </div>`;
       })()}
 
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue) : ""}
+
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-start gap-3 mb-3">
@@ -13006,7 +13458,7 @@ This replaces your current grouping.`
             <div class="flex-1">
               <div class="font-medium text-sm">Cloud Sync &amp; Multi-device</div>
               <div class="text-xs text-zinc-500">
-                ${isSaaS ? "All your devices stay in sync. Sign in to access your data anywhere." : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
+                ${isSaaS ? !sbUser ? "Sign in to choose a plan. Sync and Family keep all your devices in sync." : window.__app.getPlan().can("sync") ? "All your devices stay in sync." : "Signed in. Your book stays on this device; cloud sync comes with Sync and Family." : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
               </div>
             </div>
             ${sbUser ? `<span class="chip" style="background:#10b98122;color:#10b981"><i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Connected</span>` : ""}
@@ -15789,6 +16241,91 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/PlanBanner.js
+  var PlanBanner = class _PlanBanner {
+    static #DISMISS_KEY = "pocket.planBanner.dismissed";
+    #el;
+    #plan = null;
+    #bus;
+    /** @param {HTMLElement|null} el */
+    constructor(el, bus = EventBus.getInstance()) {
+      this.#el = el;
+      this.#bus = bus;
+      this.#bus.on("plan:changed", ({ plan }) => this.show(plan));
+      this.#bus.on("auth:changed", ({ user }) => {
+        if (!user) this.show(null);
+      });
+    }
+    /** @param {import('../../domain/billing/Entitlements.js').Entitlements|null} plan */
+    show(plan) {
+      this.#plan = plan;
+      if (this.#el) this.#el.innerHTML = this.html(plan);
+      if (typeof lucide !== "undefined") lucide.createIcons();
+    }
+    dismiss() {
+      try {
+        sessionStorage.setItem(_PlanBanner.#DISMISS_KEY, "1");
+      } catch (_) {
+      }
+      this.show(this.#plan);
+    }
+    /** @param {import('../../domain/billing/Entitlements.js').Entitlements|null} plan @param {Date} [today] */
+    html(plan, today = /* @__PURE__ */ new Date()) {
+      if (!plan) return "";
+      if (plan.state === "grace" && plan.graceUntil) return this.#grace(plan, today);
+      if (plan.state === "lapsed" && plan.toJSON().paidPlan && !this.#dismissed()) return this.#lapsed(plan);
+      return "";
+    }
+    #grace(plan, today) {
+      const daysLeft = Math.max(0, Math.ceil((plan.graceUntil - today) / 864e5));
+      const ended = plan.endsAt ? ` on ${_PlanBanner.#day(plan.endsAt)}` : "";
+      return `
+      <div class="plan-banner plan-banner-warn" role="status">
+        <i data-lucide="cloud-download" class="plan-banner-icon"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold">Download your data within ${daysLeft} day${daysLeft === 1 ? "" : "s"}</div>
+          <div class="plan-banner-text">
+            Your ${Html.escape(plan.planName)} plan ended${ended}. Your cloud copy is read-only until
+            <strong>${_PlanBanner.#day(plan.graceUntil)}</strong>; after that it can't be opened until you renew.
+            Download a copy now to keep everything.
+          </div>
+          <div class="flex flex-wrap gap-2 mt-2">
+            <button class="btn btn-primary text-sm" onclick="window.__app.downloadMyData()">
+              <i data-lucide="download"></i> Download my data
+            </button>
+            <button class="btn btn-outline text-sm" onclick="window.__app.openModal('settings',{})">Renew</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    #lapsed(plan) {
+      return `
+      <div class="plan-banner" role="status">
+        <i data-lucide="hard-drive" class="plan-banner-icon"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold">Your plan has ended</div>
+          <div class="plan-banner-text">
+            Pocket keeps working on this device. Cloud sync and Telegram are paused; your cloud
+            copy is kept and comes back when you renew.
+          </div>
+        </div>
+        <button class="btn btn-ghost px-2" aria-label="Dismiss" onclick="window.__app.dismissPlanBanner()">
+          <i data-lucide="x"></i>
+        </button>
+      </div>`;
+    }
+    #dismissed() {
+      try {
+        return sessionStorage.getItem(_PlanBanner.#DISMISS_KEY) === "1";
+      } catch (_) {
+        return false;
+      }
+    }
+    static #day(d) {
+      return d.toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" });
+    }
+  };
+
   // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
@@ -15875,6 +16412,10 @@ This replaces your current grouping.`
     // CurrencySetupModal
     #exportModal = null;
     // ExportModal
+    #planBanner = null;
+    // PlanBanner
+    /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
+    #planCatalogue = null;
     // ── Per-session UI state ──────────────────────────────────────────────────
     #reportRange = "30";
     #importPlan = null;
@@ -16045,6 +16586,10 @@ This replaces your current grouping.`
           }
         }
       });
+      this.#planBanner = new PlanBanner(document.getElementById("planBanner"), this.#bus);
+      this.#bus.on("plan:changed", () => {
+        if (this.#modal.active === "settings") this.#modal.refresh();
+      });
       this.#render();
       if (this.#sync.init()) {
         this.#sync.restoreSession().then((result = {}) => {
@@ -16159,6 +16704,7 @@ This replaces your current grouping.`
           sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id }
         });
       }
+      if (name === "settings") this.#refreshPlanInfo();
       if (name === "debtPayment") {
         this.#modal.open("debtPayment", { ...opts, mode: "payment" });
       } else {
@@ -16280,6 +16826,32 @@ This replaces your current grouping.`
     }
     getSbUser() {
       return this.#sync.currentUser ?? null;
+    }
+    // ── Plans ─────────────────────────────────────────────────────────────
+    /** @returns {import('./domain/billing/Entitlements.js').Entitlements} */
+    getPlan() {
+      return this.#sync.plan;
+    }
+    /** Plans on offer, or null while loading (Settings shows "Loading plans…"). */
+    get planCatalogue() {
+      return this.#planCatalogue;
+    }
+    /** Everything in this book as one file that Import JSON can bring back. */
+    downloadMyData() {
+      this.exportJson();
+    }
+    dismissPlanBanner() {
+      this.#planBanner?.dismiss();
+    }
+    /** Settings is opening: ask for the latest plan and price list, then redraw it. */
+    async #refreshPlanInfo() {
+      if (!this.#sync.currentUser) return;
+      const [, catalogue] = await Promise.all([
+        this.#sync.refreshPlan(),
+        this.#sync.planCatalogue().catch(() => [])
+      ]);
+      this.#planCatalogue = catalogue;
+      if (this.#modal.active === "settings") this.#modal.refresh();
     }
     async signInWithGoogle() {
       await this.#sync.signInWithGoogle();

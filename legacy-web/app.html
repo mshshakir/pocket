@@ -168,6 +168,18 @@
                   border-bottom:1px solid #f4f4f5; }
   html.dark .sheet-header { background:rgba(12,12,15,.96); border-color:#1f1f23; }
   /* Export preview: scrolls both ways inside its box; header row stays visible. */
+  /* Plan notice above every page, and the plan chip in Settings */
+  .plan-banner { display:flex; align-items:flex-start; gap:.75rem; margin-bottom:1rem; padding:.85rem 1rem;
+    border-radius:1rem; border:1px solid #e4e4e7; background:#fafafa; font-size:.875rem; }
+  html.dark .plan-banner { border-color:#27272a; background:#18181b; }
+  .plan-banner-warn { border-color:#fcd34d; background:#fffbeb; }
+  html.dark .plan-banner-warn { border-color:#92400e; background:#271a0b; }
+  .plan-banner-icon { width:20px; height:20px; flex-shrink:0; margin-top:.1rem; color:#d97706; }
+  .plan-banner-text { color:#52525b; margin-top:.15rem; line-height:1.45; }
+  html.dark .plan-banner-text { color:#a1a1aa; }
+  .plan-chip-paid { background:#10b98122; color:#059669; }
+  .plan-chip-warn { background:#f59e0b22; color:#b45309; }
+  .plan-current { border-color:#10b981 !important; }
   .export-preview thead th { position:sticky; top:0; z-index:1; background:#18181b; color:#fafafa; }
   .export-preview tbody tr + tr td { border-top:1px solid #f4f4f5; }
   html.dark .export-preview tbody tr + tr td { border-top-color:#1f1f23; }
@@ -245,6 +257,8 @@
   <!-- Main content area -->
   <main class="md:pl-64 w-full">
     <div class="max-w-5xl mx-auto px-4 md:px-8 py-5 md:py-8 pb-28 md:pb-12">
+      <!-- Plan notice (only when a plan needs attention, e.g. download before the cloud copy closes) -->
+      <div id="planBanner"></div>
       <!-- Space switcher (hidden unless someone shares accounts with you) -->
       <div id="spaceBar"></div>
       <!-- Active view renders here -->

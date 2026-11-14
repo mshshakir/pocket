@@ -282,8 +282,13 @@ console.log('\n2026-08 session regression suite');
   // Eat the remaining quota so every further `pocket.v1` write fails, exactly
   // as it does in a full or InPrivate browser profile.
   const snapshot = w.localStorage.getItem('pocket.v1') || '';
-  w.localStorage.setItem('filler', 'x'.repeat(Math.max(0, 60000 - snapshot.length
-    - (w.localStorage.getItem('pocket.v2.baseline') || '').length - 200)));
+  // Everything already stored (book, baseline, remembered plan, …), keys included.
+  let used = 0;
+  for (let i = 0; i < w.localStorage.length; i++) {
+    const k = w.localStorage.key(i);
+    used += k.length + (w.localStorage.getItem(k) || '').length;
+  }
+  w.localStorage.setItem('filler', 'x'.repeat(Math.max(0, 60000 - used - 'filler'.length - 200)));
   let localWriteFailed = false;
   try { w.localStorage.setItem('pocket.v1', snapshot + ' '.repeat(400)); }
   catch (_) { localWriteFailed = true; }

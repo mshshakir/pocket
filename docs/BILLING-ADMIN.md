@@ -78,11 +78,21 @@ order by at desc;
 
 ## The rules
 
-- **No plan:** Free. Everything works on the device, including every export.
+The server enforces these: the app and the Telegram bot only explain them.
+
+- **No plan:** Free. Everything works on the device, including every export. Signing in
+  doesn't upload anything; the book stays on the device.
 - **Active:** the plan's features work fully.
-- **Ended within `grace_days`:** the features can be seen but nothing can be changed
-  (read-only).
-- **Ended longer ago:** Free. Their data is kept, never deleted.
+- **Ended within `grace_days` (30):** the cloud copy can be loaded but not changed
+  (read-only). A banner on every page tells the person to **download their data** before
+  the date it closes, with a "Download my data" button (a JSON file that Settings → Import
+  JSON brings back). The Telegram bot replies with the same instruction. New entries stay
+  on the device and go up if they renew.
+- **Ended longer ago:** Free. The cloud copy can't be opened, but it is kept, never
+  deleted, and comes back as soon as they pay again.
+- **Family members** write into the owner's shared space only while the owner's Family
+  plan is active. While it is in grace, they see it read-only. After that, it disappears
+  from their app until the owner renews.
 - **Family seats:** a Family plan covers its owner plus the first 4 family members they
   added. A 5th member is not covered until someone is removed.
 - **AI credits:**

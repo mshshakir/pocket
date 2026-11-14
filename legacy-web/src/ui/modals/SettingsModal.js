@@ -7,16 +7,19 @@ import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { CURRENCIES }      from '../../data/constants.js';
 import { BookCleaner }     from '../../domain/services/BookCleaner.js';
+import { PlanCard }        from '../components/PlanCard.js';
 
 export class SettingsModal {
   /** @type {Store} */                #store;
   /** @type {CurrencyService} */      #fx;
   /** @type {HijriCalendarService} */ #hijri;
+  /** @type {PlanCard} */             #planCard;
 
   constructor() {
     this.#store = Store.getInstance();
     this.#fx    = new CurrencyService();
     this.#hijri = new HijriCalendarService();
+    this.#planCard = new PlanCard();
   }
 
   render() {
@@ -181,6 +184,8 @@ export class SettingsModal {
         </div>`;
         })()}
 
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue) : ''}
+
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-start gap-3 mb-3">
@@ -189,7 +194,9 @@ export class SettingsModal {
               <div class="font-medium text-sm">Cloud Sync &amp; Multi-device</div>
               <div class="text-xs text-zinc-500">
                 ${isSaaS
-                  ? 'All your devices stay in sync. Sign in to access your data anywhere.'
+                  ? (!sbUser ? 'Sign in to choose a plan. Sync and Family keep all your devices in sync.'
+                     : window.__app.getPlan().can('sync') ? 'All your devices stay in sync.'
+                     : 'Signed in. Your book stays on this device; cloud sync comes with Sync and Family.')
                   : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
               </div>
             </div>
