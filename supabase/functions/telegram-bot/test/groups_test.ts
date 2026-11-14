@@ -36,7 +36,7 @@ class FakeStore {
   groups() { return Promise.resolve([...this.groupsMap.values()].map((g) => ({ ...g }))); }
   saveGroup(chat: number, owner: string, space: string, title: string | null, thread: number | null = null) {
     const had = this.groupsMap.get(chat);
-    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, ...had,
+    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, time_zone: 'Asia/Kolkata', ...had,
       chat_id: chat, owner_id: owner, space_id: space, title, thread_id: thread, paused_notice: false });
     return Promise.resolve();
   }
@@ -57,10 +57,16 @@ class FakeStore {
 }
 
 class FakeTelegram {
-  sent: { chat: number; text: string; thread: number | null }[] = [];
+  sent: { chat: number; text: string; thread: number | null; keyboard?: { text: string; callback_data: string }[][] }[] = [];
   gone = new Set<number>();
   deletedTopics = new Set<number>();
-  send(chat: number, text: string, opts: { threadId?: number | null } = {}) { this.sent.push({ chat, text, thread: opts.threadId ?? null }); return Promise.resolve(1); }
+  answers: string[] = [];
+  edits: string[] = [];
+  send(chat: number, text: string, opts: { threadId?: number | null; keyboard?: { text: string; callback_data: string }[][] } = {}) {
+    this.sent.push({ chat, text, thread: opts.threadId ?? null, keyboard: opts.keyboard }); return Promise.resolve(1);
+  }
+  answer(_id: string, text = '') { this.answers.push(text); return Promise.resolve(); }
+  edit(_c: number, _m: number, text: string) { this.edits.push(text); return Promise.resolve(); }
   reply(chat: number, text: string) { this.sent.push({ chat, text, thread: null }); return Promise.resolve(); }
   post(chat: number, text: string, _html = false, thread: number | null = null) {
     if (this.gone.has(chat)) return Promise.resolve({ ok: false, gone: true, topicGone: false });
@@ -116,7 +122,7 @@ console.log('\ngroup summaries');
   ok('G2 no Family plan: refused', /Family plan/.test(tg.last) && !store.groupsMap.size, tg.last);
   await say('/summary@PocketBot on');
   const g = store.groupsMap.get(GROUP);
-  ok('G3 the owner turns it on: tied to their one space with accounts', g?.owner_id === OWNER && g.space_id === 'sp1' && /Shakirs/.test(tg.last) && /personal accounts never are/.test(tg.last), tg.last);
+  ok('G3 the owner turns it on: tied to their one space with accounts', g?.owner_id === OWNER && g.space_id === 'sp1' && /Shakirs/.test(tg.sent.at(-2)!.text) && /personal accounts never are/.test(tg.sent.at(-2)!.text), tg.sent.at(-2)!.text);
   await say('/summary off', 22);
   ok('G4 someone else cannot change or stop it', store.groupsMap.has(GROUP) && /Only the person/.test(tg.last));
   await say('/summary on', 22);
@@ -188,7 +194,7 @@ console.log('\ngroup summaries');
   const { store, tg, runner, sayIn } = setup();
   await sayIn(77, true, '/summary on');
   ok('T1 /summary on in a topic: that topic is remembered, and the answer goes there',
-    store.groupsMap.get(GROUP)?.thread_id === 77 && tg.sent.at(-1)?.thread === 77 && /This topic will get/.test(tg.last), tg.last);
+    store.groupsMap.get(GROUP)?.thread_id === 77 && tg.sent.at(-2)?.thread === 77 && tg.sent.at(-1)?.thread === 77 && /This topic will get/.test(tg.sent.at(-2)!.text), tg.sent.at(-2)!.text);
   await runner.run();
   ok('T2 the summary is posted in that topic', tg.sent.at(-1)?.thread === 77 && /Spent/.test(tg.last));
   await sayIn(77, true, '/summary');
@@ -205,6 +211,53 @@ console.log('\ngroup summaries');
   const r = await runner.run();
   ok('T6 the topic was deleted: posted in General instead, and General from then on',
     r.posted === 1 && tg.sent.at(-1)?.thread === null && store.groupsMap.get(GROUP)?.thread_id === null && store.groupsMap.has(GROUP), JSON.stringify(r));
+}
+{
+  const { store, tg, service, say } = setup();
+  await say('/summary on');
+  const ask = tg.sent.at(-1)!;
+  const zones = (ask.keyboard ?? []).flat().map((b) => b.callback_data);
+  ok('Z1 turning on asks for the time zone with buttons (India for now)',
+    /Which time zone/.test(ask.text) && /India/.test(ask.text) && zones.includes('tz:Africa/Nairobi') && zones.includes('tz:Asia/Kolkata'), ask.text);
+  const tap = (from: number, data: string) => service.handleCallback({ id: 'c', from: { id: from }, data, message: { message_id: 9, chat: { id: GROUP } } });
+  await tap(22, 'tz:Africa/Nairobi');
+  ok('Z2 someone else tapping a button changes nothing', store.groupsMap.get(GROUP)?.time_zone === 'Asia/Kolkata' && /Only the person/.test(tg.answers.at(-1) ?? ''));
+  await tap(11, 'tz:Africa/Nairobi');
+  ok('Z3 the owner taps Kenya: saved, and the question becomes the answer',
+    store.groupsMap.get(GROUP)?.time_zone === 'Africa/Nairobi' && /9 pm Kenya \(Africa\/Nairobi\)/.test(tg.edits.at(-1) ?? ''), tg.edits.at(-1));
+  await tap(11, 'tz:Mars/Base');
+  ok('Z4 a made-up zone is refused', store.groupsMap.get(GROUP)?.time_zone === 'Africa/Nairobi');
+  await say('/summary time dubai');
+  ok('Z5 typed: "dubai" → Asia/Dubai, shown in the status', store.groupsMap.get(GROUP)?.time_zone === 'Asia/Dubai' && /Time zone: UAE/.test(tg.last), tg.last);
+  await say('/summary time Dar es Salaam');
+  ok('Z6 typed city with spaces', store.groupsMap.get(GROUP)?.time_zone === 'Africa/Dar_es_Salaam');
+  await say('/summary time atlantis');
+  ok('Z7 unknown place: asks again with buttons', store.groupsMap.get(GROUP)?.time_zone === 'Africa/Dar_es_Salaam' && /don't know/.test(tg.last) && !!tg.sent.at(-1)?.keyboard);
+  await say('/summary time UTC', 22);
+  ok('Z8 only the owner can change it by typing', store.groupsMap.get(GROUP)?.time_zone === 'Africa/Dar_es_Salaam');
+}
+{
+  // 16:00 UTC = 21:30 India, 19:00 Kenya.
+  const { store, tg, runner } = setup(at('2026-11-14T16:00:00Z'));
+  await store.saveGroup(-1, OWNER, 'sp1', 'India family');
+  await store.saveGroup(-2, OWNER, 'sp1', 'Kenya family');
+  await store.updateGroup(-2, { time_zone: 'Africa/Nairobi' });
+  await runner.run();
+  ok('Z9 each group at its own 9 pm: India posts, Kenya (7 pm) waits', tg.sent.some((m) => m.chat === -1) && !tg.sent.some((m) => m.chat === -2));
+  const later = setup(at('2026-11-14T18:10:00Z')); // 21:10 Kenya
+  await later.store.saveGroup(-2, OWNER, 'sp1', 'Kenya family');
+  await later.store.updateGroup(-2, { time_zone: 'Africa/Nairobi' });
+  ok('Z10 Kenya posts at its 9 pm', (await later.runner.run()).posted === 1);
+  // 02:30 UTC Sunday = 21:30 Saturday in New York: Saturday's daily, no weekly yet.
+  const ny = setup(at('2026-11-15T02:30:00Z'));
+  await ny.store.saveGroup(-3, OWNER, 'sp1', 'US family');
+  await ny.store.updateGroup(-3, { time_zone: 'America/New_York' });
+  const r = await ny.runner.run();
+  ok('Z11 days are counted in the group\'s zone (Saturday in New York, though Sunday in India)',
+    r.posted === 1 && ny.store.asked.at(-1) === 'sp1:2026-11-14..2026-11-14' && /Sat 14 Nov/.test(ny.tg.last), ny.tg.last);
+}
+{
+  ok('Z12 India time posts just after 9 with the :07/:37 schedule', at('2026-11-14T15:37:00Z').hour() === 21 && at('2026-11-14T15:07:00Z').hour() === 20);
 }
 {
   ok('C1 clock: hour and weekday in India time', at('2026-11-15T15:45:00Z').hour() === 21 && at('2026-11-15T15:45:00Z').weekday() === 0

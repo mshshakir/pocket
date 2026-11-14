@@ -111,8 +111,9 @@ or an edit.
 
 ## Family group summaries
 
-The bot can post a summary of one **shared space** to a Telegram group: every evening at 9 pm
-(India time, or `BOT_TIMEZONE`), and on Sunday evenings a weekly one (Monday to Sunday, compared
+The bot can post a summary of one **shared space** to a Telegram group: every evening at 9 pm in the
+group's time zone (asked with buttons when summaries are turned on, or `/summary time <city>`;
+India until chosen), and on Sunday evenings a weekly one (Monday to Sunday, compared
 with the week before). Only entries in that space's own accounts are counted. Personal accounts
 never are, and transfers are left out.
 
@@ -130,7 +131,7 @@ the group. If the chosen topic is deleted, they go to General from then on (migr
 Entries are still sent to the bot in a private chat; in a group it records nothing.
 
 How it runs: migration `0022_telegram_group_summaries.sql` adds `telegram_groups`, the
-`pocket_space_summary` totals and a pg_cron job that calls the `telegram-summaries` function every
-hour at :07. The function works out what is due and claims each summary in the database before
+`pocket_space_summary` totals and a pg_cron job that calls the `telegram-summaries` function
+(every half hour at :07 and :37 since 0024, so half-hour zones like India also post just after 9). The function works out what is due and claims each summary in the database before
 sending, so it posts once however often it is called. If the owner's Family plan ends, the group is
 told once that summaries are paused; if the bot is removed from the group, the link is deleted.

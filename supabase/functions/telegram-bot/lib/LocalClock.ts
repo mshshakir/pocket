@@ -12,6 +12,13 @@ export class LocalClock {
     this.#now = now;
   }
 
+  get timeZone(): string { return this.#timeZone; }
+
+  /** The same moment in another time zone. */
+  in(timeZone: string): LocalClock {
+    return new LocalClock(timeZone, this.#now);
+  }
+
   isoDate(daysAgo = 0): string {
     const when = new Date(this.#now() - daysAgo * 86_400_000);
     return new Intl.DateTimeFormat('en-CA', {

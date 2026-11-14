@@ -1,8 +1,9 @@
 /**
- * SummaryRunner — posts the group summaries that are due. Called every hour
- * (pg_cron → the telegram-summaries function); it decides what's due itself:
+ * SummaryRunner — posts the group summaries that are due. Called every half
+ * hour (pg_cron → the telegram-summaries function); it decides what's due
+ * itself, in each group's own time zone:
  *
- *   daily   from 9 pm local time, once per day
+ *   daily   from 9 pm, once per day
  *   weekly  from 9 pm on Sundays, once per week (Monday to Sunday)
  *
  * Each summary is claimed in the database before it is sent, so overlapping
@@ -16,6 +17,7 @@ import type { GroupSummaries } from './GroupSummaries.ts';
 import type { LocalClock } from './LocalClock.ts';
 import { PlanAccess } from './PlanAccess.ts';
 import type { GroupLink, PocketStore } from './PocketStore.ts';
+import { TimeZones } from './TimeZones.ts';
 import type { TelegramClient } from './TelegramClient.ts';
 
 export interface RunResult {
@@ -41,15 +43,14 @@ export class SummaryRunner {
     this.#clock = clock;
   }
 
+  /** @param clock now; each group is looked at in its own time zone */
   async run(): Promise<RunResult> {
     const result: RunResult = { posted: 0, paused: 0, removed: 0 };
-    if (this.#clock.hour() < SummaryRunner.POST_HOUR) return result;
-    const today = this.#clock.isoDate();
-    const sunday = this.#clock.weekday() === 0;
-
     for (const group of await this.#store.groups()) {
       try {
-        await this.#one(group, today, sunday, result);
+        const local = this.#clock.in(TimeZones.isValid(group.time_zone) ? group.time_zone : TimeZones.DEFAULT);
+        if (local.hour() < SummaryRunner.POST_HOUR) continue;
+        await this.#one(group, local.isoDate(), local.weekday() === 0, result);
       } catch (e) {
         console.error('[summaries] group', group.chat_id, e);
       }

@@ -31,6 +31,7 @@ export interface TelegramMessage {
 
 export interface TelegramCallback {
   id: string;
+  from?: { id: number };
   data?: string;
   message?: TelegramMessage;
 }
@@ -126,6 +127,14 @@ export class BotController {
   async handleCallback(cb: TelegramCallback): Promise<void> {
     const msg = cb.message;
     if (!msg) return void await this.#telegram.answer(cb.id);
+    if (msg.chat.type && msg.chat.type !== 'private') {
+      try {
+        return void await this.#groups.handleCallback(cb);
+      } catch (err) {
+        console.error('[telegram-bot] group callback', err);
+        return void await this.#telegram.answer(cb.id, '⚠️ Not done');
+      }
+    }
     const chatId = msg.chat.id;
     const link = await this.#store.findLink(chatId);
     if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not connected. Send /link.');

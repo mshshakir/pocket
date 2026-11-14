@@ -70,6 +70,7 @@ export interface GroupLink {
   space_id: string;
   title: string | null;
   thread_id: number | null;   // the topic summaries go to; null = the group / General
+  time_zone: string;          // 9 pm in this zone (IANA), Asia/Kolkata until chosen
   daily: boolean;
   weekly: boolean;
   names: boolean;
@@ -284,7 +285,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id'>>): Promise<void> {
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone'>>): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
     if (error) throw error;
   }
