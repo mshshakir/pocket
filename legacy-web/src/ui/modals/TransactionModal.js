@@ -352,19 +352,38 @@ export class TransactionModal {
         + ` class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
     }).join('');
 
+    const hasKey    = !!state.user.geminiApiKey;
+    const isTransfer = type === 'transfer';
+    // Repeat and payee live under "More options"; open it when this entry
+    // already uses one, so nothing set is hidden.
+    const moreOpen  = !!(data.payee && data.payee !== 'Transfer') || !!data.recurring;
+    const types     = sharedBook ? ['expense', 'income'] : ['expense', 'income', 'transfer'];
+
     return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ''}')" class="p-5">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">${editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
-          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="flex items-center gap-1 mb-4">
+          <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
+          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${hasKey ? 'Scan a receipt' : 'Scan a receipt (add a Google AI key in Settings)'}"
+                 aria-label="Scan a receipt">
+            <i data-lucide="scan-line" style="color:#8b5cf6"></i>
+            <span class="scan-label-text sr-only">Scan receipt</span>
+            <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
+          </label>
+          <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.voiceEntry(this)"
+                  title="${hasKey ? 'Speak the transaction' : 'Speak the transaction (add a Google AI key in Settings)'}"
+                  aria-label="Speak the transaction">
+            <i data-lucide="mic" style="color:#10b981"></i>
+          </button>
+          <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close">
             <i data-lucide="x"></i>
           </button>
         </div>
 
-        <div class="grid ${sharedBook ? 'grid-cols-2' : 'grid-cols-3'} gap-2 mb-4">
-          ${(sharedBook ? ['expense', 'income'] : ['expense', 'income', 'transfer']).map((t) => `
-            <button type="button" onclick="window.__app.setTxType('${t}')"
-                    class="btn ${type === t ? 'btn-primary' : 'btn-outline'} justify-center">
+        <div class="seg mb-4" style="grid-template-columns:repeat(${types.length},minmax(0,1fr))" role="tablist">
+          ${types.map((t) => `
+            <button type="button" role="tab" aria-selected="${type === t}" onclick="window.__app.setTxType('${t}')"
+                    class="${type === t ? 'on' : ''}">
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join('')}
         </div>
@@ -375,98 +394,80 @@ export class TransactionModal {
         </div>` : ''}
         <input type="hidden" name="type" value="${type}">
 
-        <div class="card-muted p-3 mb-3">
-          <div class="text-xs text-zinc-500 mb-1">Amount</div>
+        <div class="card-muted px-4 py-3 mb-4">
+          <label class="field-label" for="txAmount">Amount</label>
           <div class="flex gap-2 items-center">
-            <input class="input text-2xl font-semibold border-0 bg-transparent p-0 focus:ring-0"
-                   style="border:none" name="amount" type="number" step="${CurrencyService.stepFor(data.currency)}" required
+            <input id="txAmount" class="input tx-amount text-3xl font-semibold tracking-tight border-0 bg-transparent p-0 focus:ring-0"
+                   style="border:none;font-size:1.875rem" name="amount" type="number" inputmode="decimal"
+                   step="${CurrencyService.stepFor(data.currency)}" required
                    value="${amountValue || ''}" placeholder="0.00" autofocus
                    oninput="window.__app.onTxFormChange()">
             ${this.#currencyControl(data, state, type, isSharedMode)}
           </div>
         </div>
 
-        ${type === 'transfer' ? this.#transferFields(data, state) : ''}
+        ${isTransfer ? this.#transferFields(data, state) : ''}
         <!-- Split legs always target LOCAL accounts, so they label from the
              local book even when cats has been pointed at an owner's. -->
-        ${type !== 'transfer' && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ''}
-        ${type !== 'transfer' && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ''}
-
-        <div class="grid grid-cols-2 gap-3 mb-3">
-          <div>
-            <label class="text-xs text-zinc-500">Date</label>
-            <input class="input" type="date" name="date" value="${data.date}"
-                   oninput="window.__app.updateHijriPreview(this.value)">
-            <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
-          </div>
-          <div>
-            <label class="text-xs text-zinc-500">Payment</label>
-            <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
-            <div class="flex flex-wrap gap-2 mt-1">
-              ${paymentChips}
-              <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
-                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">＋ Add</button>
-              <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
-                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">⚙ Manage</button>
-            </div>
-          </div>
-        </div>
-
-        ${type !== 'transfer' ? this.#recurringSection(data) : ''}
+        ${!isTransfer && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ''}
+        ${!isTransfer && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ''}
 
         <div class="mb-3">
-          <label class="text-xs text-zinc-500">Payee / merchant</label>
-          <input class="input" name="payee" value="${this.#esc(data.payee || '')}"
-                 oninput="window.__app.suggestCategory(this.value)"
-                 placeholder="e.g. Whole Foods">
-          <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
+          <label class="field-label" for="txNote">Note</label>
+          <textarea id="txNote" class="textarea" name="note" rows="1" placeholder="e.g. andheri to airport road"
+                    style="min-height:2.6rem">${this.#esc(data.note || '')}</textarea>
         </div>
 
         <div class="mb-3">
-          <label class="text-xs text-zinc-500">Note</label>
-          <textarea class="textarea" name="note" rows="2" placeholder="optional...">${this.#esc(data.note || '')}</textarea>
+          <label class="field-label" for="txDate">Date</label>
+          <input id="txDate" class="input" type="date" name="date" value="${data.date}"
+                 oninput="window.__app.updateHijriPreview(this.value)">
+          <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
         </div>
 
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Receipt (optional)</label>
-          <label class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl">
-            <div class="icon-pill" style="background:#8b5cf622;color:#8b5cf6;flex-shrink:0"><i data-lucide="scan-line"></i></div>
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium scan-label-text">${state.user.geminiApiKey ? 'Scan receipt with Gemini AI' : 'Scan receipt with AI'}</div>
-              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? 'Reads items · assigns your categories · pre-fills splits' : 'Add free Google AI key in Settings to enable'}</div>
-            </div>
-            <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
-            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
-          </label>
+        <div class="mb-3">
+          <span class="field-label">Payment</span>
+          <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
+          <div class="chip-scroll">
+            ${paymentChips}
+            <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
+              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">＋ Add</button>
+            <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
+              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">⚙ Manage</button>
+          </div>
         </div>
 
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Voice (optional)</label>
-          <button type="button" onclick="window.__app.voiceEntry(this)"
-                  class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl w-full text-left">
-            <div class="icon-pill" style="background:#10b98122;color:#10b981;flex-shrink:0"><i data-lucide="mic"></i></div>
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium voice-label-text">🎤 Speak the transaction</div>
-              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? 'e.g. “spent 40 dirhams on groceries at Carrefour yesterday”' : 'Add free Google AI key in Settings to enable'}</div>
+        <details class="more-options mb-3" ${moreOpen ? 'open' : ''}>
+          <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
+            <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
+            More options
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? 'payee' : 'repeat, payee'}</span>
+          </summary>
+          <div class="pt-2">
+            ${!isTransfer ? this.#recurringSection(data) : ''}
+            <div class="mb-1">
+              <label class="field-label" for="txPayee">Payee / merchant</label>
+              <input id="txPayee" class="input" name="payee" value="${this.#esc(data.payee || '')}"
+                     oninput="window.__app.suggestCategory(this.value)"
+                     placeholder="e.g. Whole Foods">
+              <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
             </div>
-            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
-          </button>
-        </div>
+          </div>
+        </details>
 
         ${editing?.createdAt ? `<div class="text-xs text-zinc-400 mb-3">Entered ${new Date(editing.createdAt).toLocaleString()}${editing.addedBy ? ` by ${this.#esc(editing.addedBy)}` : ''}</div>` : ''}
 
-        <div class="flex items-center gap-2">
+        <div class="form-footer flex items-center gap-2">
           ${editing
-            ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>`
+            ? `<button type="button" class="btn btn-outline text-rose-500 px-3" onclick="window.__app.deleteTx('${editing.id}')" aria-label="Delete"><i data-lucide="trash-2"></i><span class="desk-only">Delete</span></button>`
             : canDeleteShared
-              ? `<button type="button" class="btn btn-outline text-rose-500"
+              ? `<button type="button" class="btn btn-outline text-rose-500 px-3" aria-label="Delete"
                          onclick="window.__app.deleteSharedTxContrib(${Number(this.#sharedTxMode.shareIndex) || 0},'${Html.js(sharedEditTx.id)}')">
-                   <i data-lucide="trash-2"></i> Delete
+                   <i data-lucide="trash-2"></i><span class="desk-only">Delete</span>
                  </button>`
               : ''}
-          <div class="flex-1"></div>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
+          <button type="submit" class="btn btn-primary flex-1 justify-center py-3 sm:py-2.5"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
   }
@@ -531,15 +532,15 @@ export class TransactionModal {
 
   #transferFields(data, state) {
     return `
-      <div class="grid grid-cols-2 gap-3 mb-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <div>
-          <label class="text-xs text-zinc-500">Account</label>
+          <label class="field-label">From account</label>
           <select class="select" name="accountId" onchange="window.__app.onTransferSourceChange(this.value)">
             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId===a.id?'selected':''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
           </select>
         </div>
         <div>
-          <label class="text-xs text-zinc-500">To account</label>
+          <label class="field-label">To account</label>
           <select class="select" name="transferToAccountId" onchange="window.__app.resetTransferFx()">
             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.transferToAccountId===a.id?'selected':''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
           </select>
@@ -625,11 +626,11 @@ export class TransactionModal {
          </select>`;
 
     return `
-      <div class="grid grid-cols-2 gap-3 mb-3">
-        <div><label class="text-xs text-zinc-500">Account</label>${accountSelect}</div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div><label class="field-label">Account</label>${accountSelect}</div>
         <div>
           <div class="flex items-center justify-between">
-            <label class="text-xs text-zinc-500">Category</label>
+            <label class="field-label">Category</label>
             <button type="button" onclick="window.__app.toggleSplits()" data-split-toggle
                     class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
                     style="${sharedBook ? 'display:none' : ''}">

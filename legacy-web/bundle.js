@@ -9369,22 +9369,27 @@ This replaces your current grouping.`
       const clickFn = isShared ? perm === "edit" || perm === "full" ? `window.__app.openSharedTxEdit(${idxNum},'${jsAcc}','${jsId}')` : null : `window.__app.openModal('transaction',{id:'${jsId}'})`;
       const deleteFn = isShared ? isOwnContrib ? `window.__app.deleteSharedContrib(${idxNum},'${jsId}')` : `window.__app.deleteSharedTx(${idxNum},'${jsId}')` : `window.__app.deleteTx('${jsId}')`;
       let subline = "";
+      let phoneTitle = "";
+      let phoneSub = "";
       if (t.type === "transfer" && t.transferPairId) {
         const pair = txs.find((x) => x.id === t.transferPairId);
         const other = pair ? this.#getAccount(pair.accountId) : null;
-        const arrow = sign === "-" ? "\u2192" : sign === "+" ? "\u2190" : "\u2194";
-        subline = `Transfer ${arrow} ${this.#esc(other?.name || "\u2014")}${pair && pair.currency !== t.currency ? ` \xB7 ${this.#fx.formatMoney(pair.amount, pair.currency)}` : ""}`;
+        const route = this.#transferRoute(t, sign, acc, other);
+        subline = `Transfer ${route.arrow} ${this.#esc(other?.name || "\u2014")}${pair && pair.currency !== t.currency ? ` \xB7 ${this.#fx.formatMoney(pair.amount, pair.currency)}` : ""}`;
+        phoneTitle = "Transfer";
+        phoneSub = route.text;
       } else if (Array.isArray(t.splits) && t.splits.length) {
-        if (account) {
-          subline = `Split \xB7 ${t.splits.length} categor${t.splits.length === 1 ? "y" : "ies"} \xB7 ${this.#esc(account.name)}`;
-        } else {
-          const uniqAccs = new Set(t.splits.map((s) => s.accountId || t.accountId));
-          subline = `Split across ${t.splits.length} categories \xB7 ${this.#esc(uniqAccs.size > 1 ? `${uniqAccs.size} accounts` : acc?.name || "")}`;
-        }
+        const uniqAccs = new Set(t.splits.map((s) => s.accountId || t.accountId));
+        const accLabel = account ? account.name : uniqAccs.size > 1 ? `${uniqAccs.size} accounts` : acc?.name || "";
+        subline = account ? `Split \xB7 ${t.splits.length} categor${t.splits.length === 1 ? "y" : "ies"} \xB7 ${this.#esc(account.name)}` : `Split across ${t.splits.length} categories \xB7 ${this.#esc(accLabel)}`;
+        phoneTitle = `Split \xB7 ${t.splits.length} categor${t.splits.length === 1 ? "y" : "ies"}`;
+        phoneSub = this.#esc(accLabel);
       } else {
         const catName = this.#esc(catFullName(t.categoryId) || "\u2014");
         const accName = this.#esc(acc?.name || "");
         subline = accName ? `${catName} \xB7 ${accName}` : catName;
+        phoneTitle = catName;
+        phoneSub = accName;
       }
       const state = this.#store.getState();
       const hijriDate = state.user?.showHijri ? this.#hijri.toHijri(t.date) : null;
@@ -9418,19 +9423,26 @@ This replaces your current grouping.`
         !isShared && t._fromFamily ? `<span class="chip" style="font-size:.58rem;padding:.1rem .3rem;background:#818cf822;color:#818cf8">family</span>` : ""
       ].filter(Boolean).join("");
       const rowBody = `
-      <div class="icon-pill" style="background:${safeColor}22;color:${safeColor}">
+      <div class="icon-pill desk-only" style="background:${safeColor}22;color:${safeColor}">
         <i data-lucide="${safeIcon}"></i>
       </div>
       <div class="flex-1 min-w-0">
-        <div class="font-medium truncate flex items-center gap-1.5">${title}${badges}</div>
-        <div class="text-xs text-zinc-500 truncate">
-          ${subline}${hijriDate ? ` \xB7 ${hijriDate.day} ${hijriShort[hijriDate.month]}` : ""}${t.addedBy ? ` \xB7 by ${this.#esc(t.addedBy)}` : ""}
+        <div class="desk-only">
+          <div class="font-medium truncate flex items-center gap-1.5">${title}${badges}</div>
+          <div class="text-xs text-zinc-500 truncate">
+            ${subline}${hijriDate ? ` \xB7 ${hijriDate.day} ${hijriShort[hijriDate.month]}` : ""}${t.addedBy ? ` \xB7 by ${this.#esc(t.addedBy)}` : ""}
+          </div>
+        </div>
+        <div class="phone-only">
+          <div class="text-sm font-medium truncate">${phoneTitle}</div>
+          ${phoneSub ? `<div class="text-xs text-zinc-500 truncate">${phoneSub}</div>` : ""}
         </div>
       </div>
-      <div class="text-right">
-        <div class="font-semibold ${color}">${sign}${this.#fx.formatMoney(displayAmount, displayCurrency)}</div>
+      <div class="tx-amount text-right">
+        <div class="tx-amount-main font-semibold ${color}">${sign}${this.#fx.formatMoney(displayAmount, displayCurrency)}</div>
         ${origLine}
-      </div>`;
+      </div>
+      ${this.#phoneDate(t.date, hijriDate, hijriShort)}`;
       const inner = clickFn ? `<button onclick="${clickFn}" class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900 transition">${rowBody}</button>` : `<div class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5">${rowBody}</div>`;
       return canDeleteRow ? `<div class="tx-swipe-wrapper"
              ontouchstart="window.__app.onTxSwipeStart(event,'${jsId}',${shareIndex !== null ? idxNum : -1},${isOwnContrib})"
@@ -9444,6 +9456,27 @@ This replaces your current grouping.`
            </button>
            ${inner}
          </div>` : inner;
+    }
+    /**
+     * Which way a transfer leg moved money. The leg's own sign says so in an
+     * account's view; in the global list the stored direction does
+     * (out: this account → the other; in: the other → this one).
+     * @returns {{arrow: string, text: string}} text is HTML-escaped
+     */
+    /** The row's date, right-aligned on phones (the list has no day headers there). */
+    #phoneDate(iso, hijriDate, hijriShort) {
+      if (!iso) return "";
+      const g = (/* @__PURE__ */ new Date(iso + "T12:00:00")).toLocaleDateString(void 0, { day: "numeric", month: "short" });
+      const h = hijriDate ? `<div>${hijriDate.day} ${this.#esc(hijriShort[hijriDate.month] || "")}</div>` : "";
+      return `<div class="phone-only tx-date shrink-0 text-right text-xs text-zinc-500 leading-snug"><div>${this.#esc(g)}</div>${h}</div>`;
+    }
+    #transferRoute(t, sign, acc, other) {
+      const here = this.#esc(acc?.name || "\u2014");
+      const there = this.#esc(other?.name || "\u2014");
+      const dir = sign === "-" ? "out" : sign === "+" ? "in" : t.transferDir;
+      if (dir === "out") return { arrow: "\u2192", text: `${here} \u2192 ${there}` };
+      if (dir === "in") return { arrow: "\u2190", text: `${there} \u2192 ${here}` };
+      return { arrow: "\u2194", text: `${here} \u2194 ${there}` };
     }
     #hijriBadge(iso) {
       const state = this.#store.getState();
@@ -9744,6 +9777,7 @@ This replaces your current grouping.`
       const groupByDate = sortKey.startsWith("date-");
       const dayGroups = {};
       const monthTotals = {};
+      const dayNets = {};
       if (groupByDate) {
         filtered.forEach((t) => {
           (dayGroups[t.date] = dayGroups[t.date] || []).push(t);
@@ -9752,6 +9786,8 @@ This replaces your current grouping.`
           const inHome = this.convert(t.amount, t.currency, home);
           if (t.type === "income") monthTotals[ym].income += inHome;
           if (t.type === "expense") monthTotals[ym].expense += inHome;
+          const delta = t.type === "income" ? inHome : t.type === "expense" ? -inHome : 0;
+          dayNets[t.date] = (dayNets[t.date] || 0) + delta;
         });
       }
       const activeCount = f.accountIds.length + f.categoryIds.length + f.types.length + f.paymentTypes.length + (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0) + (f.amountMin ? 1 : 0) + (f.amountMax ? 1 : 0) + (f.range !== "30" && !f.dateFrom && !f.dateTo ? 1 : 0);
@@ -9764,7 +9800,7 @@ This replaces your current grouping.`
             <i data-lucide="check-square"></i>
             <span class="hidden md:inline ml-1">Select</span>
           </button>
-          <button class="btn btn-primary" onclick="window.__app.openModal('transaction')">
+          <button class="btn btn-primary desk-only" onclick="window.__app.openModal('transaction')">
             <i data-lucide="plus"></i> Add
           </button>
         </div>
@@ -9772,7 +9808,7 @@ This replaces your current grouping.`
 
       ${this.#bulkBar()}
       ${this.#filterBar(f, activeCount, home)}
-      ${this.#txList(filtered, dayGroups, monthTotals, groupByDate, sortKey)}
+      ${this.#txList(filtered, dayGroups, monthTotals, groupByDate, sortKey, dayNets)}
     `;
     }
     // ── Private render helpers ───────────────────────────────────────────
@@ -9802,9 +9838,9 @@ This replaces your current grouping.`
       return `
       <div class="card mb-4">
         <div class="flex items-center gap-2 p-3">
-          <div class="relative flex-1">
+          <div class="relative flex-1 min-w-0">
             <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" style="width:15px;height:15px"></i>
-            <input class="input pl-9" placeholder="Search payee, note or category\u2026"
+            <input class="input pl-9" placeholder="Search\u2026"
                    value="${this.escapeHtml(f.search)}"
                    data-focus-key="txSearch"
                    oninput="window.__app.txFilterSetDebounced('search',this.value)" />
@@ -9815,7 +9851,7 @@ This replaces your current grouping.`
             <span class="hidden md:inline ml-1">Filters</span>
             ${activeCount ? `<span class="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">${activeCount}</span>` : ""}
           </button>
-          <select class="select w-auto shrink-0"
+          <select class="select w-auto shrink-0 max-w-[8.5rem] md:max-w-none"
                   onchange="window.__app.txFilterSet('sort',this.value)" title="Sort">
             ${TX_SORT_OPTIONS.map(([v, l]) => `<option value="${v}" ${f.sort === v ? "selected" : ""}>${l}</option>`).join("")}
           </select>
@@ -9896,7 +9932,7 @@ This replaces your current grouping.`
          </select>` : selected.length ? `<div class="text-xs text-zinc-400 mt-1">All selected</div>` : "";
       return `<div class="flex flex-wrap gap-1 mb-0.5">${chips}</div>${dropdown}`;
     }
-    #txList(filtered, dayGroups, monthTotals, groupByDate, sortKey) {
+    #txList(filtered, dayGroups, monthTotals, groupByDate, sortKey, dayNets = {}) {
       if (filtered.length === 0) {
         return `
         <div class="card p-10 text-center">
@@ -9907,23 +9943,26 @@ This replaces your current grouping.`
         </div>`;
       }
       if (groupByDate) {
-        const dateKeys = Object.keys(dayGroups);
-        let prevMonth = null;
-        return dateKeys.map((date) => {
+        const months = [];
+        for (const date of Object.keys(dayGroups)) {
           const ym = date.slice(0, 7);
-          const header = ym !== prevMonth ? this.#monthHeader(ym, monthTotals[ym]) : "";
-          prevMonth = ym;
-          return `${header}
-          <div class="mb-2">
-            <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1 px-1">${this.dateLabel(date)}</div>
+          if (months[months.length - 1]?.ym !== ym) months.push({ ym, dates: [] });
+          months[months.length - 1].dates.push(date);
+        }
+        return months.map(({ ym, dates }) => `
+        ${this.#monthHeader(ym, monthTotals[ym])}
+        <div class="month-block">
+          ${dates.map((date) => `
+          <div class="day-group mb-2">
+            ${this.#dayHeader(date, dayNets[date])}
             <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
               ${dayGroups[date].map((t) => this.#rowRenderer.render(t, {
-            multiSelect: this.#multiSelect,
-            selectedIds: this.#selectedIds
-          })).join("")}
+          multiSelect: this.#multiSelect,
+          selectedIds: this.#selectedIds
+        })).join("")}
             </div>
-          </div>`;
-        }).join("");
+          </div>`).join("")}
+        </div>`).join("");
       }
       const sortLabel = TX_SORT_OPTIONS.find(([v]) => v === sortKey)?.[1] || "Sorted";
       return `
@@ -9938,6 +9977,19 @@ This replaces your current grouping.`
       })).join("")}
         </div>
       </div>`;
+    }
+    /**
+     * A day's label with its net total (income − expense, home currency) on the
+     * right. Desktop only: on a phone each row shows its own date.
+     */
+    #dayHeader(date, net = 0) {
+      const home = this.homeCurrency;
+      const total = net ? `<span class="tx-amount text-xs font-medium ${net > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-500"}">${net > 0 ? "+" : "\u2212"}${this.formatMoney(Math.abs(net), home)}</span>` : "";
+      return `
+            <div class="day-head desk-only mb-1 px-1">
+              <span class="text-xs uppercase tracking-wider text-zinc-500">${this.dateLabel(date)}</span>
+              ${total}
+            </div>`;
     }
     #monthHeader(ym, tot) {
       if (!tot) return "";
@@ -12073,19 +12125,35 @@ This replaces your current grouping.`
         const label = p.charAt(0).toUpperCase() + p.slice(1);
         return `<button type="button" data-pay-chip="${this.#esc(p)}" onclick="window.__app.pickPaymentType('${Html.js(p)}')" class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
       }).join("");
+      const hasKey = !!state.user.geminiApiKey;
+      const isTransfer = type === "transfer";
+      const moreOpen = !!(data.payee && data.payee !== "Transfer") || !!data.recurring;
+      const types = sharedBook ? ["expense", "income"] : ["expense", "income", "transfer"];
       return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ""}')" class="p-5">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">${editing || sharedEditTx ? "Edit transaction" : "New transaction"}</h3>
-          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="flex items-center gap-1 mb-4">
+          <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? "Edit transaction" : "New transaction"}</h3>
+          <label class="btn btn-ghost px-2.5 cursor-pointer" title="${hasKey ? "Scan a receipt" : "Scan a receipt (add a Google AI key in Settings)"}"
+                 aria-label="Scan a receipt">
+            <i data-lucide="scan-line" style="color:#8b5cf6"></i>
+            <span class="scan-label-text sr-only">Scan receipt</span>
+            <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
+          </label>
+          <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.voiceEntry(this)"
+                  title="${hasKey ? "Speak the transaction" : "Speak the transaction (add a Google AI key in Settings)"}"
+                  aria-label="Speak the transaction">
+            <i data-lucide="mic" style="color:#10b981"></i>
+          </button>
+          <button type="button" class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close">
             <i data-lucide="x"></i>
           </button>
         </div>
 
-        <div class="grid ${sharedBook ? "grid-cols-2" : "grid-cols-3"} gap-2 mb-4">
-          ${(sharedBook ? ["expense", "income"] : ["expense", "income", "transfer"]).map((t) => `
-            <button type="button" onclick="window.__app.setTxType('${t}')"
-                    class="btn ${type === t ? "btn-primary" : "btn-outline"} justify-center">
+        <div class="seg mb-4" style="grid-template-columns:repeat(${types.length},minmax(0,1fr))" role="tablist">
+          ${types.map((t) => `
+            <button type="button" role="tab" aria-selected="${type === t}" onclick="window.__app.setTxType('${t}')"
+                    class="${type === t ? "on" : ""}">
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join("")}
         </div>
@@ -12096,94 +12164,76 @@ This replaces your current grouping.`
         </div>` : ""}
         <input type="hidden" name="type" value="${type}">
 
-        <div class="card-muted p-3 mb-3">
-          <div class="text-xs text-zinc-500 mb-1">Amount</div>
+        <div class="card-muted px-4 py-3 mb-4">
+          <label class="field-label" for="txAmount">Amount</label>
           <div class="flex gap-2 items-center">
-            <input class="input text-2xl font-semibold border-0 bg-transparent p-0 focus:ring-0"
-                   style="border:none" name="amount" type="number" step="${CurrencyService.stepFor(data.currency)}" required
+            <input id="txAmount" class="input tx-amount text-3xl font-semibold tracking-tight border-0 bg-transparent p-0 focus:ring-0"
+                   style="border:none;font-size:1.875rem" name="amount" type="number" inputmode="decimal"
+                   step="${CurrencyService.stepFor(data.currency)}" required
                    value="${amountValue || ""}" placeholder="0.00" autofocus
                    oninput="window.__app.onTxFormChange()">
             ${this.#currencyControl(data, state, type, isSharedMode)}
           </div>
         </div>
 
-        ${type === "transfer" ? this.#transferFields(data, state) : ""}
+        ${isTransfer ? this.#transferFields(data, state) : ""}
         <!-- Split legs always target LOCAL accounts, so they label from the
              local book even when cats has been pointed at an owner's. -->
-        ${type !== "transfer" && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ""}
-        ${type !== "transfer" && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ""}
-
-        <div class="grid grid-cols-2 gap-3 mb-3">
-          <div>
-            <label class="text-xs text-zinc-500">Date</label>
-            <input class="input" type="date" name="date" value="${data.date}"
-                   oninput="window.__app.updateHijriPreview(this.value)">
-            <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
-          </div>
-          <div>
-            <label class="text-xs text-zinc-500">Payment</label>
-            <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
-            <div class="flex flex-wrap gap-2 mt-1">
-              ${paymentChips}
-              <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
-                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\uFF0B Add</button>
-              <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
-                class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\u2699 Manage</button>
-            </div>
-          </div>
-        </div>
-
-        ${type !== "transfer" ? this.#recurringSection(data) : ""}
+        ${!isTransfer && this.#splitsEnabled ? this.#splitsArea(data, state.categories, type, state.accounts, amountValue) : ""}
+        ${!isTransfer && !this.#splitsEnabled ? this.#accountCategoryFields(data, state, cats, type, isSharedMode, catOwnerId, sharedBook) : ""}
 
         <div class="mb-3">
-          <label class="text-xs text-zinc-500">Payee / merchant</label>
-          <input class="input" name="payee" value="${this.#esc(data.payee || "")}"
-                 oninput="window.__app.suggestCategory(this.value)"
-                 placeholder="e.g. Whole Foods">
-          <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
+          <label class="field-label" for="txNote">Note</label>
+          <textarea id="txNote" class="textarea" name="note" rows="1" placeholder="e.g. andheri to airport road"
+                    style="min-height:2.6rem">${this.#esc(data.note || "")}</textarea>
         </div>
 
         <div class="mb-3">
-          <label class="text-xs text-zinc-500">Note</label>
-          <textarea class="textarea" name="note" rows="2" placeholder="optional...">${this.#esc(data.note || "")}</textarea>
+          <label class="field-label" for="txDate">Date</label>
+          <input id="txDate" class="input" type="date" name="date" value="${data.date}"
+                 oninput="window.__app.updateHijriPreview(this.value)">
+          <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
         </div>
 
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Receipt (optional)</label>
-          <label class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl">
-            <div class="icon-pill" style="background:#8b5cf622;color:#8b5cf6;flex-shrink:0"><i data-lucide="scan-line"></i></div>
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium scan-label-text">${state.user.geminiApiKey ? "Scan receipt with Gemini AI" : "Scan receipt with AI"}</div>
-              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? "Reads items \xB7 assigns your categories \xB7 pre-fills splits" : "Add free Google AI key in Settings to enable"}</div>
-            </div>
-            <input type="file" accept="image/*,application/pdf" class="hidden" onchange="window.__app.scanReceipt(this)">
-            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
-          </label>
+        <div class="mb-3">
+          <span class="field-label">Payment</span>
+          <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
+          <div class="chip-scroll">
+            ${paymentChips}
+            <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
+              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\uFF0B Add</button>
+            <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
+              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\u2699 Manage</button>
+          </div>
         </div>
 
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Voice (optional)</label>
-          <button type="button" onclick="window.__app.voiceEntry(this)"
-                  class="card-muted flex items-center gap-3 p-3 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl w-full text-left">
-            <div class="icon-pill" style="background:#10b98122;color:#10b981;flex-shrink:0"><i data-lucide="mic"></i></div>
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium voice-label-text">\u{1F3A4} Speak the transaction</div>
-              <div class="text-xs text-zinc-500">${state.user.geminiApiKey ? "e.g. \u201Cspent 40 dirhams on groceries at Carrefour yesterday\u201D" : "Add free Google AI key in Settings to enable"}</div>
+        <details class="more-options mb-3" ${moreOpen ? "open" : ""}>
+          <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
+            <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
+            More options
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? "payee" : "repeat, payee"}</span>
+          </summary>
+          <div class="pt-2">
+            ${!isTransfer ? this.#recurringSection(data) : ""}
+            <div class="mb-1">
+              <label class="field-label" for="txPayee">Payee / merchant</label>
+              <input id="txPayee" class="input" name="payee" value="${this.#esc(data.payee || "")}"
+                     oninput="window.__app.suggestCategory(this.value)"
+                     placeholder="e.g. Whole Foods">
+              <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
             </div>
-            <i data-lucide="chevron-right" class="text-zinc-400" style="flex-shrink:0"></i>
-          </button>
-        </div>
+          </div>
+        </details>
 
         ${editing?.createdAt ? `<div class="text-xs text-zinc-400 mb-3">Entered ${new Date(editing.createdAt).toLocaleString()}${editing.addedBy ? ` by ${this.#esc(editing.addedBy)}` : ""}</div>` : ""}
 
-        <div class="flex items-center gap-2">
-          ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteTx('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : canDeleteShared ? `<button type="button" class="btn btn-outline text-rose-500"
+        <div class="form-footer flex items-center gap-2">
+          ${editing ? `<button type="button" class="btn btn-outline text-rose-500 px-3" onclick="window.__app.deleteTx('${editing.id}')" aria-label="Delete"><i data-lucide="trash-2"></i><span class="desk-only">Delete</span></button>` : canDeleteShared ? `<button type="button" class="btn btn-outline text-rose-500 px-3" aria-label="Delete"
                          onclick="window.__app.deleteSharedTxContrib(${Number(this.#sharedTxMode.shareIndex) || 0},'${Html.js(sharedEditTx.id)}')">
-                   <i data-lucide="trash-2"></i> Delete
+                   <i data-lucide="trash-2"></i><span class="desk-only">Delete</span>
                  </button>` : ""}
-          <div class="flex-1"></div>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
+          <button type="submit" class="btn btn-primary flex-1 justify-center py-3 sm:py-2.5"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
     }
@@ -12237,15 +12287,15 @@ This replaces your current grouping.`
     }
     #transferFields(data, state) {
       return `
-      <div class="grid grid-cols-2 gap-3 mb-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <div>
-          <label class="text-xs text-zinc-500">Account</label>
+          <label class="field-label">From account</label>
           <select class="select" name="accountId" onchange="window.__app.onTransferSourceChange(this.value)">
             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.accountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
           </select>
         </div>
         <div>
-          <label class="text-xs text-zinc-500">To account</label>
+          <label class="field-label">To account</label>
           <select class="select" name="transferToAccountId" onchange="window.__app.resetTransferFx()">
             ${state.accounts.map((a) => `<option value="${this.#esc(a.id)}" ${data.transferToAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
           </select>
@@ -12301,11 +12351,11 @@ This replaces your current grouping.`
            ${sharedOpts ? `<optgroup label="Shared with me">${sharedOpts}</optgroup>` : ""}
          </select>`;
       return `
-      <div class="grid grid-cols-2 gap-3 mb-3">
-        <div><label class="text-xs text-zinc-500">Account</label>${accountSelect}</div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div><label class="field-label">Account</label>${accountSelect}</div>
         <div>
           <div class="flex items-center justify-between">
-            <label class="text-xs text-zinc-500">Category</label>
+            <label class="field-label">Category</label>
             <button type="button" onclick="window.__app.toggleSplits()" data-split-toggle
                     class="text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
                     style="${sharedBook ? "display:none" : ""}">

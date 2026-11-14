@@ -104,9 +104,6 @@
   .no-scrollbar::-webkit-scrollbar { display:none; }
   .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
   .icon-pill { width:36px; height:36px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
-  .fab { position:fixed; right:1rem; bottom:5.25rem; width:54px; height:54px; border-radius:9999px; background:#09090b; color:#fafafa; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 24px rgba(0,0,0,.18); z-index:30; }
-  html.dark .fab { background:#fafafa; color:#09090b; }
-  @media (min-width:768px) { .fab { display:none; } }
   [data-lucide] { width:18px; height:18px; stroke-width:1.75; }
 
   /* ── Swipe row actions (reveal, then tap Delete) ──
@@ -115,12 +112,62 @@
   .tx-swipe-wrapper { touch-action:pan-y; position:relative; overflow:hidden; }
   .tx-row-content { background:#ffffff; transition:transform .18s ease; will-change:transform; position:relative; z-index:1; }
   html.dark .tx-row-content { background:#0c0c0f; }
-  .tx-delete-bg { position:absolute; right:0; top:0; bottom:0; width:80px; background:#ef4444;
+  .tx-delete-bg { position:absolute; right:0; top:1px; bottom:1px; width:80px; background:#ef4444;
                   display:flex; align-items:center; justify-content:center; border:0; padding:0;
                   cursor:pointer; z-index:0; }
   /* Only reachable once revealed — keeps it out of the tab order while hidden. */
   .tx-swipe-wrapper:not(.is-open) .tx-delete-bg { pointer-events:none; }
   .tx-swipe-wrapper.is-open .tx-delete-bg:active { background:#dc2626; }
+
+  /* ── Phone / desktop only ── */
+  @media (max-width:767px) { .desk-only { display:none !important; } }
+  @media (min-width:768px) { .phone-only { display:none !important; } }
+
+  /* ── Transaction rows ──
+     Amounts in tabular figures so digits line up down the list. On phones
+     the amount leads the row (amount · category · account), after the
+     day-grouped ledgers on 21st.dev. */
+  .tx-amount { font-variant-numeric:tabular-nums; }
+  @media (max-width:767px) {
+    .tx-row-content { gap:.75rem !important; padding-top:.7rem !important; padding-bottom:.7rem !important; }
+    .tx-row-content .tx-amount { order:-1; flex:0 0 auto; min-width:6.5rem; text-align:left; }
+    .tx-row-content .tx-amount-main { font-size:.95rem; font-weight:600; }
+  }
+
+  /* Day headers (with the day's total) are desktop-only; on phones each
+     month is one continuous list and every row carries its own date. */
+  .day-head { display:flex; align-items:baseline; justify-content:space-between; gap:.5rem; }
+  @media (max-width:767px) {
+    .month-block { background:#ffffff; border:1px solid #e4e4e7; border-radius:14px; overflow:hidden; margin-bottom:.75rem; }
+    html.dark .month-block { background:#0c0c0f; border-color:#1f1f23; }
+    .month-block .day-group { margin:0 !important; }
+    .month-block .day-group .card { border:0; border-radius:0; background:transparent; }
+    .month-block .day-group + .day-group .card { border-top:1px solid #f4f4f5; }
+    html.dark .month-block .day-group + .day-group .card { border-top-color:#27272a; }
+  }
+
+  /* ── Transaction form ── */
+  .seg { display:grid; gap:4px; padding:4px; border-radius:12px; background:#f4f4f5; }
+  html.dark .seg { background:#18181b; }
+  .seg button { border-radius:9px; padding:.5rem .25rem; font-size:.875rem; font-weight:500; color:#71717a; transition:all .15s; }
+  .seg button.on { background:#ffffff; color:#09090b; box-shadow:0 1px 2px rgba(0,0,0,.08), 0 0 0 1px rgba(0,0,0,.04); }
+  html.dark .seg button.on { background:#27272a; color:#fafafa; }
+  .sheet-handle { width:40px; height:4px; border-radius:9999px; background:#d4d4d8; margin:-.5rem auto .75rem; }
+  html.dark .sheet-handle { background:#3f3f46; }
+  @media (min-width:640px) { .sheet-handle { display:none; } }
+  .field-label { display:block; font-size:.75rem; font-weight:500; color:#71717a; margin-bottom:.3rem; }
+  .chip-scroll { display:flex; gap:.5rem; overflow-x:auto; padding-bottom:2px; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+  .chip-scroll::-webkit-scrollbar { display:none; }
+  .chip-scroll > * { flex-shrink:0; }
+  .form-footer { position:sticky; bottom:0; z-index:2; margin:0 -1.25rem -1.25rem; padding:.75rem 1.25rem calc(.75rem + env(safe-area-inset-bottom));
+                 background:rgba(255,255,255,.96); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+                 border-top:1px solid #f4f4f5; }
+  html.dark .form-footer { background:rgba(12,12,15,.96); border-color:#1f1f23; }
+  .more-options > summary { list-style:none; cursor:pointer; }
+  .more-options > summary::-webkit-details-marker { display:none; }
+  .more-options[open] .more-chevron { transform:rotate(90deg); }
+  /* 16px text in form fields stops phones zooming in on focus. */
+  @media (max-width:767px) { #txForm .input, #txForm .select, #txForm .textarea { font-size:16px; } }
 
   /* ── Month divider ── */
   .month-divider { display:flex; align-items:center; gap:.6rem; padding:.25rem; margin:.75rem 0 .5rem; }
@@ -130,7 +177,7 @@
   /* ── Print ── */
   @media print {
     body { background:#fff !important; color:#09090b !important; }
-    header, aside, nav, .fab, .modal-backdrop, .toast { display:none !important; }
+    header, aside, nav, .modal-backdrop, .toast { display:none !important; }
     main { padding:0 !important; margin:0 !important; }
     .max-w-5xl { max-width:none !important; }
     .card, .card-muted { border-color:#e4e4e7 !important; background:#fff !important; page-break-inside:avoid; }
@@ -199,13 +246,6 @@
     <!-- Tab items injected by Navigation component -->
   </div>
 </nav>
-
-<!-- ── Mobile floating add button ── -->
-<button class="fab"
-        onclick="window.__app.openModal('transaction',{})"
-        aria-label="Add transaction">
-  <i data-lucide="plus" style="width:22px;height:22px"></i>
-</button>
 
 <!--
   Modal backdrop + card are programmatically created by Modal.mount().

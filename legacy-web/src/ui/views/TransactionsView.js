@@ -139,6 +139,7 @@ export class TransactionsView extends BaseView {
     // ── Day groups ────────────────────────────────────────────────────
     const dayGroups  = {};
     const monthTotals = {};
+    const dayNets     = {};   // income − expense per day, in the home currency
     if (groupByDate) {
       filtered.forEach((t) => {
         (dayGroups[t.date] = dayGroups[t.date] || []).push(t);
@@ -147,6 +148,8 @@ export class TransactionsView extends BaseView {
         const inHome = this.convert(t.amount, t.currency, home);
         if (t.type === 'income')  monthTotals[ym].income  += inHome;
         if (t.type === 'expense') monthTotals[ym].expense += inHome;
+        const delta = t.type === 'income' ? inHome : t.type === 'expense' ? -inHome : 0;
+        dayNets[t.date] = (dayNets[t.date] || 0) + delta;
       });
     }
 
@@ -167,7 +170,7 @@ export class TransactionsView extends BaseView {
             <i data-lucide="check-square"></i>
             <span class="hidden md:inline ml-1">Select</span>
           </button>
-          <button class="btn btn-primary" onclick="window.__app.openModal('transaction')">
+          <button class="btn btn-primary desk-only" onclick="window.__app.openModal('transaction')">
             <i data-lucide="plus"></i> Add
           </button>
         </div>
@@ -175,7 +178,7 @@ export class TransactionsView extends BaseView {
 
       ${this.#bulkBar()}
       ${this.#filterBar(f, activeCount, home)}
-      ${this.#txList(filtered, dayGroups, monthTotals, groupByDate, sortKey)}
+      ${this.#txList(filtered, dayGroups, monthTotals, groupByDate, sortKey, dayNets)}
     `;
   }
 
@@ -212,9 +215,9 @@ export class TransactionsView extends BaseView {
     return `
       <div class="card mb-4">
         <div class="flex items-center gap-2 p-3">
-          <div class="relative flex-1">
+          <div class="relative flex-1 min-w-0">
             <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" style="width:15px;height:15px"></i>
-            <input class="input pl-9" placeholder="Search payee, note or category…"
+            <input class="input pl-9" placeholder="Search…"
                    value="${this.escapeHtml(f.search)}"
                    data-focus-key="txSearch"
                    oninput="window.__app.txFilterSetDebounced('search',this.value)" />
@@ -225,7 +228,7 @@ export class TransactionsView extends BaseView {
             <span class="hidden md:inline ml-1">Filters</span>
             ${activeCount ? `<span class="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">${activeCount}</span>` : ''}
           </button>
-          <select class="select w-auto shrink-0"
+          <select class="select w-auto shrink-0 max-w-[8.5rem] md:max-w-none"
                   onchange="window.__app.txFilterSet('sort',this.value)" title="Sort">
             ${TX_SORT_OPTIONS.map(([v, l]) => `<option value="${v}" ${f.sort===v?'selected':''}>${l}</option>`).join('')}
           </select>
@@ -312,7 +315,7 @@ export class TransactionsView extends BaseView {
     return `<div class="flex flex-wrap gap-1 mb-0.5">${chips}</div>${dropdown}`;
   }
 
-  #txList(filtered, dayGroups, monthTotals, groupByDate, sortKey) {
+  #txList(filtered, dayGroups, monthTotals, groupByDate, sortKey, dayNets = {}) {
     if (filtered.length === 0) {
       return `
         <div class="card p-10 text-center">
@@ -324,23 +327,29 @@ export class TransactionsView extends BaseView {
     }
 
     if (groupByDate) {
-      const dateKeys = Object.keys(dayGroups);
-      let prevMonth = null;
-      return dateKeys.map((date) => {
-        const ym     = date.slice(0, 7);
-        const header = ym !== prevMonth ? this.#monthHeader(ym, monthTotals[ym]) : '';
-        prevMonth    = ym;
-        return `${header}
-          <div class="mb-2">
-            <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1 px-1">${this.dateLabel(date)}</div>
+      // Days are grouped per month. On a phone each month reads as one list —
+      // the day headers (and their totals) are desktop-only and every row
+      // carries its own date instead.
+      const months = [];
+      for (const date of Object.keys(dayGroups)) {
+        const ym = date.slice(0, 7);
+        if (months[months.length - 1]?.ym !== ym) months.push({ ym, dates: [] });
+        months[months.length - 1].dates.push(date);
+      }
+      return months.map(({ ym, dates }) => `
+        ${this.#monthHeader(ym, monthTotals[ym])}
+        <div class="month-block">
+          ${dates.map((date) => `
+          <div class="day-group mb-2">
+            ${this.#dayHeader(date, dayNets[date])}
             <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
               ${dayGroups[date].map((t) => this.#rowRenderer.render(t, {
                 multiSelect: this.#multiSelect,
                 selectedIds: this.#selectedIds,
               })).join('')}
             </div>
-          </div>`;
-      }).join('');
+          </div>`).join('')}
+        </div>`).join('');
     }
 
     const sortLabel = TX_SORT_OPTIONS.find(([v]) => v === sortKey)?.[1] || 'Sorted';
@@ -356,6 +365,22 @@ export class TransactionsView extends BaseView {
           })).join('')}
         </div>
       </div>`;
+  }
+
+  /**
+   * A day's label with its net total (income − expense, home currency) on the
+   * right. Desktop only: on a phone each row shows its own date.
+   */
+  #dayHeader(date, net = 0) {
+    const home = this.homeCurrency;
+    const total = net
+      ? `<span class="tx-amount text-xs font-medium ${net > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500'}">${net > 0 ? '+' : '−'}${this.formatMoney(Math.abs(net), home)}</span>`
+      : '';
+    return `
+            <div class="day-head desk-only mb-1 px-1">
+              <span class="text-xs uppercase tracking-wider text-zinc-500">${this.dateLabel(date)}</span>
+              ${total}
+            </div>`;
   }
 
   #monthHeader(ym, tot) {

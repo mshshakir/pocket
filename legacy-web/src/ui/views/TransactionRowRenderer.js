@@ -156,23 +156,32 @@ export class TransactionRowRenderer {
       : `window.__app.deleteTx('${jsId}')`;
 
     // ── Sub-line ──────────────────────────────────────────────────────
+    // Desktop: one sub-line under the title. Phone: the row reads
+    // amount · category · account, so it gets its own two lines.
     let subline = '';
+    let phoneTitle = '';
+    let phoneSub = '';
     if (t.type === 'transfer' && t.transferPairId) {
       const pair  = txs.find((x) => x.id === t.transferPairId);
       const other = pair ? this.#getAccount(pair.accountId) : null;
-      const arrow = sign === '-' ? '→' : sign === '+' ? '←' : '↔';
-      subline = `Transfer ${arrow} ${this.#esc(other?.name || '—')}${pair && pair.currency !== t.currency ? ` · ${this.#fx.formatMoney(pair.amount, pair.currency)}` : ''}`;
+      const route = this.#transferRoute(t, sign, acc, other);
+      subline = `Transfer ${route.arrow} ${this.#esc(other?.name || '—')}${pair && pair.currency !== t.currency ? ` · ${this.#fx.formatMoney(pair.amount, pair.currency)}` : ''}`;
+      phoneTitle = 'Transfer';
+      phoneSub   = route.text;
     } else if (Array.isArray(t.splits) && t.splits.length) {
-      if (account) {
-        subline = `Split · ${t.splits.length} categor${t.splits.length === 1 ? 'y' : 'ies'} · ${this.#esc(account.name)}`;
-      } else {
-        const uniqAccs = new Set(t.splits.map((s) => s.accountId || t.accountId));
-        subline = `Split across ${t.splits.length} categories · ${this.#esc(uniqAccs.size > 1 ? `${uniqAccs.size} accounts` : (acc?.name || ''))}`;
-      }
+      const uniqAccs = new Set(t.splits.map((s) => s.accountId || t.accountId));
+      const accLabel = account ? account.name : (uniqAccs.size > 1 ? `${uniqAccs.size} accounts` : (acc?.name || ''));
+      subline = account
+        ? `Split · ${t.splits.length} categor${t.splits.length === 1 ? 'y' : 'ies'} · ${this.#esc(account.name)}`
+        : `Split across ${t.splits.length} categories · ${this.#esc(accLabel)}`;
+      phoneTitle = `Split · ${t.splits.length} categor${t.splits.length === 1 ? 'y' : 'ies'}`;
+      phoneSub   = this.#esc(accLabel);
     } else {
       const catName = this.#esc(catFullName(t.categoryId) || '—');
       const accName = this.#esc(acc?.name || '');
       subline = accName ? `${catName} · ${accName}` : catName;
+      phoneTitle = catName;
+      phoneSub   = accName;
     }
 
     const state = this.#store.getState();
@@ -216,19 +225,26 @@ export class TransactionRowRenderer {
     ].filter(Boolean).join('');
 
     const rowBody = `
-      <div class="icon-pill" style="background:${safeColor}22;color:${safeColor}">
+      <div class="icon-pill desk-only" style="background:${safeColor}22;color:${safeColor}">
         <i data-lucide="${safeIcon}"></i>
       </div>
       <div class="flex-1 min-w-0">
-        <div class="font-medium truncate flex items-center gap-1.5">${title}${badges}</div>
-        <div class="text-xs text-zinc-500 truncate">
-          ${subline}${hijriDate ? ` · ${hijriDate.day} ${hijriShort[hijriDate.month]}` : ''}${t.addedBy ? ` · by ${this.#esc(t.addedBy)}` : ''}
+        <div class="desk-only">
+          <div class="font-medium truncate flex items-center gap-1.5">${title}${badges}</div>
+          <div class="text-xs text-zinc-500 truncate">
+            ${subline}${hijriDate ? ` · ${hijriDate.day} ${hijriShort[hijriDate.month]}` : ''}${t.addedBy ? ` · by ${this.#esc(t.addedBy)}` : ''}
+          </div>
+        </div>
+        <div class="phone-only">
+          <div class="text-sm font-medium truncate">${phoneTitle}</div>
+          ${phoneSub ? `<div class="text-xs text-zinc-500 truncate">${phoneSub}</div>` : ''}
         </div>
       </div>
-      <div class="text-right">
-        <div class="font-semibold ${color}">${sign}${this.#fx.formatMoney(displayAmount, displayCurrency)}</div>
+      <div class="tx-amount text-right">
+        <div class="tx-amount-main font-semibold ${color}">${sign}${this.#fx.formatMoney(displayAmount, displayCurrency)}</div>
         ${origLine}
-      </div>`;
+      </div>
+      ${this.#phoneDate(t.date, hijriDate, hijriShort)}`;
 
     const inner = clickFn
       ? `<button onclick="${clickFn}" class="tx-row-content w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900 transition">${rowBody}</button>`
@@ -251,6 +267,29 @@ export class TransactionRowRenderer {
            ${inner}
          </div>`
       : inner;
+  }
+
+  /**
+   * Which way a transfer leg moved money. The leg's own sign says so in an
+   * account's view; in the global list the stored direction does
+   * (out: this account → the other; in: the other → this one).
+   * @returns {{arrow: string, text: string}} text is HTML-escaped
+   */
+  /** The row's date, right-aligned on phones (the list has no day headers there). */
+  #phoneDate(iso, hijriDate, hijriShort) {
+    if (!iso) return '';
+    const g = new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    const h = hijriDate ? `<div>${hijriDate.day} ${this.#esc(hijriShort[hijriDate.month] || '')}</div>` : '';
+    return `<div class="phone-only tx-date shrink-0 text-right text-xs text-zinc-500 leading-snug"><div>${this.#esc(g)}</div>${h}</div>`;
+  }
+
+  #transferRoute(t, sign, acc, other) {
+    const here  = this.#esc(acc?.name || '—');
+    const there = this.#esc(other?.name || '—');
+    const dir = sign === '-' ? 'out' : sign === '+' ? 'in' : t.transferDir;
+    if (dir === 'out') return { arrow: '→', text: `${here} → ${there}` };
+    if (dir === 'in')  return { arrow: '←', text: `${there} → ${here}` };
+    return { arrow: '↔', text: `${here} ↔ ${there}` };
   }
 
   #hijriBadge(iso) {
