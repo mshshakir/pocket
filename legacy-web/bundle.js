@@ -13579,20 +13579,20 @@ This replaces your current grouping.`
               <span class="tx-amount">${p.monthly_paise != null ? `${_PlanCard.#inr(p.monthly_paise)}/month` : ""}${p.yearly_paise != null ? ` \xB7 ${_PlanCard.#inr(p.yearly_paise)}/year` : ""}</span>
             </div>
             <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
-            ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
+            ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
           </div>`).join("")}
         ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself.
              Paying again for the same plan adds to its end date.${switching ? " Moving to a different plan starts it today; time left on the old one isn't carried over." : ""}</div>` : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
       </div>`;
     }
     /** One button per product of a plan: trial (if still available), month, year. */
-    #buttons(products, plan, buying) {
+    #buttons(products, plan, buying, trialDays) {
       const order = { trial: 0, month: 1, year: 2 };
       const shown = products.filter((o) => o.available || o.term !== "trial" && o.reason !== "lifetime").sort((a, b) => order[a.term] - order[b.term]);
       if (!shown.length) return "";
       const label = (o) => {
         const price = _PlanCard.#inr(o.amountPaise);
-        if (o.term === "trial") return `Try for ${price}`;
+        if (o.term === "trial") return trialDays ? `Try ${trialDays} days \xB7 ${price}` : `Try for ${price}`;
         const verb = plan.plan === o.plan && plan.state === "active" && plan.term !== "trial" ? "Add" : "Buy";
         return `${verb} 1 ${o.term} \xB7 ${price}`;
       };
