@@ -71,16 +71,16 @@ export class PricingView extends AdminView {
       const what = o.percent_off ? `${o.percent_off}% off` : o.amount_off_paise ? `${Format.inr(o.amount_off_paise)} off` : `price ${Format.inr(o.sale_price_paise)}`;
       return `
         <tr>
-          <td>${o.kind === 'coupon' ? Format.pill(o.code, 'accent') : Format.pill('sale')}<div class="sub">${Format.esc(o.name)}</div></td>
+          <td>${o.kind === 'coupon' ? Format.pill(o.code, 'accent') : Format.pill('sale')}<div class="sub">${Format.esc(o.name)}</div>
+            <div class="row-actions">
+              <button data-action="offer-active" data-id="${o.id}" data-on="${!o.active}" class="btn btn-soft btn-sm">${o.active ? 'Switch off' : 'Switch on'}</button>
+              <button data-action="offer-delete" data-id="${o.id}" data-label="${Format.esc(o.kind === 'coupon' ? `code ${o.code}` : `sale "${o.name}"`)}" data-uses="${o.uses}" class="btn btn-danger btn-sm">Delete</button>
+            </div></td>
           <td>${what}</td>
           <td>${o.products?.length ? o.products.map((p) => Format.esc(p)).join(', ') : 'everything'}</td>
           <td>${Format.date(o.starts_at)} – ${o.ends_at ? Format.date(o.ends_at) : 'no end'}</td>
           <td class="num">${o.uses}${o.max_uses ? ` / ${o.max_uses}` : ''}</td>
           <td>${state}</td>
-          <td><div class="row-actions">
-            <button data-action="offer-active" data-id="${o.id}" data-on="${!o.active}" class="btn btn-soft btn-sm">${o.active ? 'Switch off' : 'Switch on'}</button>
-            <button data-action="offer-delete" data-id="${o.id}" data-label="${Format.esc(o.kind === 'coupon' ? `code ${o.code}` : `sale "${o.name}"`)}" data-uses="${o.uses}" class="btn btn-danger btn-sm">Delete</button>
-          </div></td>
         </tr>`;
     }).join('');
     return `
@@ -88,8 +88,8 @@ export class PricingView extends AdminView {
         <h3>Offers</h3>
         <p class="muted small">A sale changes the price for everyone while it runs. A coupon is a code people type at checkout; it applies after any sale. A use is counted when the payment goes through.</p>
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>Offer</th><th>Discount</th><th>For</th><th>When</th><th class="num">Used</th><th>State</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="7" class="muted">No offers yet.</td></tr>'}</tbody>
+          <thead><tr><th>Offer</th><th>Discount</th><th>For</th><th>When</th><th class="num">Used</th><th>State</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="6" class="muted">No offers yet.</td></tr>'}</tbody>
         </table></div>
       </div>`;
   }
