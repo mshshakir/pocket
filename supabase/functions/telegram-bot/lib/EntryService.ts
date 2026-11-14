@@ -284,8 +284,7 @@ export class EntryService {
         ws.label(from),
       ];
     const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;
-    const pending = from.access.isOwn ? '' : '\nIt will appear once the owner\'s app syncs.';
-    return `${parts.filter(Boolean).join(' · ')}\n${when}${pending}`;
+    return `${parts.filter(Boolean).join(' · ')}\n${when}`;
   }
 
   static #entryButtons(seed: number, ownerId: string): Keyboard {

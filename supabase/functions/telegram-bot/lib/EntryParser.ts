@@ -61,7 +61,7 @@ export class EntryParser {
 
     for (const token of tokens) {
       const lower = token.toLowerCase();
-      const match = amount === null ? EntryParser.#AMOUNT.exec(token) : null;
+      const match: RegExpExecArray | null = amount === null ? EntryParser.#AMOUNT.exec(token) : null;
       const recv = EntryParser.#RECEIVED.exec(token);
       if (token === '>') {
         arrow = true;
