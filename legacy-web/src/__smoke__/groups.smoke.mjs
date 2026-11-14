@@ -10,6 +10,7 @@
  */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -200,75 +201,41 @@ console.log('\naccount groups suite');
 
 // ═══ PART 2 — H7: the central push hook ═════════════════════════════════════
 {
-  const cloud = { row: { id: 'u1', data: null, version: 5 }, writes: [] };
-  const makeSb = () => ({
-    auth: { onAuthStateChange(cb) { cloud.authCb = cb; },
-            getSession: async () => ({ data: { session: null } }),
-            signOut: async () => {}, signInWithOAuth: async () => ({}) },
-    removeChannel() {},
-    channel() { const c = { on() { return c; }, subscribe(cb) { cb?.('SUBSCRIBED'); return c; }, send() {} }; return c; },
-    from(table) {
-      const q = {
-        _eq: {}, _patch: null,
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; }, order() { return q; }, delete() { return q; },
-        update(p) { q._patch = p; return q; },
-        async upsert() { return { error: null }; },
-        async single() {
-          return table === 'user_data' ? { data: cloud.row, error: null }
-                                       : { data: null, error: { code: 'PGRST116' } };
-        },
-        then(res) {
-          if (q._patch && table === 'user_data') {
-            const casOk = q._eq.version === undefined || q._eq.version === cloud.row.version;
-            if (casOk) {
-              cloud.writes.push(q._patch.version);
-              cloud.row = { ...cloud.row, ...q._patch };
-              return res({ data: [{ version: q._patch.version }], error: null });
-            }
-            return res({ data: [], error: null });
-          }
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
-
+  const cloud = new FakeCloud();
   const st = baseState();
-  cloud.row.data = st;
-  const w = boot(st, { supabase: { createClient: () => makeSb() } });
+  cloud.setBook('u1', st);
+  const w = boot(st, { supabase: { createClient: cloud.client({ id: 'u1', email: 'a@b.c' }) } });
   await wait(80);
   cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
   await wait(250);
 
   const app = w.__app;
-  const writesBefore = cloud.writes.length;
+  const writesBefore = cloud.saves;
 
   // A settings mutation that previously did NOT call schedulePush.
   app.toggleHijri();
   await wait(1400);
   ok('H7 a settings mutation now schedules a push',
-     cloud.writes.length > writesBefore,
-     `${writesBefore} → ${cloud.writes.length}`);
+     cloud.saves > writesBefore,
+     `${writesBefore} → ${cloud.saves}`);
 
   // Group changes go through the same hook.
-  const n2 = cloud.writes.length;
+  const n2 = cloud.saves;
   app.openAccountGroups();
   await wait(30);
   app.accountGroupSheet.groupByCurrency();
   await wait(1400);
-  ok('H7 a grouping change is pushed too', cloud.writes.length > n2,
-     `${n2} → ${cloud.writes.length}`);
+  ok('H7 a grouping change is pushed too', cloud.saves > n2,
+     `${n2} → ${cloud.saves}`);
   app.accountGroupSheet.close();
 
   // Once things settle, the hook must go quiet — an FX refresh or a pull
   // scheduling pushes of its own would ping-pong versions between devices.
   await wait(1400);
-  const n3 = cloud.writes.length;
+  const n3 = cloud.saves;
   await wait(1600);
   ok('H7 the hook goes quiet when nothing is being edited',
-     cloud.writes.length === n3, `${cloud.writes.length - n3} unexpected writes`);
+     cloud.saves === n3, `${cloud.saves - n3} unexpected writes`);
   w.close();
 }
 
