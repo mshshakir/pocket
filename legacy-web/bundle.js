@@ -3800,61 +3800,246 @@ RULES:
     }
   };
 
-  // src/core/SyncBaseline.js
-  var SyncBaseline = class _SyncBaseline {
-    static #KEY = "pocket.v2.baseline";
-    #userId = null;
-    #state = null;
-    #cursor = null;
-    /** Load the stored copy for this user (null when none). */
-    load(userId) {
-      this.#userId = userId;
-      this.#state = null;
-      this.#cursor = null;
+  // src/core/KeyValueStore.js
+  var KeyValueStore = class {
+    /** The store for this browser: IndexedDB when it exists, else localStorage. */
+    static default() {
       try {
-        const raw = localStorage.getItem(_SyncBaseline.#KEY);
-        const rec = raw ? JSON.parse(raw) : null;
-        if (rec?.userId === userId) {
-          this.#state = rec.state ?? null;
-          this.#cursor = this.#state ? rec.cursor ?? null : null;
-        }
+        if (typeof indexedDB !== "undefined" && indexedDB) return new IndexedDbStore();
       } catch (_) {
       }
-      return this.#state;
+      return new LocalStorageStore();
     }
-    /** @returns {string|null} where the next load continues from (null → load everything) */
-    get cursor() {
-      return this.#cursor;
+    /** @returns {Promise<any>} the value, or undefined */
+    async get(_key) {
+      throw new Error("not implemented");
+    }
+    /** @returns {Promise<boolean>} whether it was written */
+    async set(_key, _value) {
+      throw new Error("not implemented");
+    }
+    async remove(_key) {
+      throw new Error("not implemented");
+    }
+  };
+  var IndexedDbStore = class _IndexedDbStore extends KeyValueStore {
+    static #DB = "pocket";
+    static #STORE = "kv";
+    static #VERSION = 1;
+    /** @type {Promise<IDBDatabase>|null} */
+    #db = null;
+    async get(key) {
+      try {
+        return await this.#request("readonly", (s) => s.get(key));
+      } catch (e) {
+        console.warn("[KeyValueStore] read failed:", e);
+        return void 0;
+      }
+    }
+    async set(key, value) {
+      try {
+        await this.#request("readwrite", (s) => s.put(value, key));
+        return true;
+      } catch (e) {
+        console.warn("[KeyValueStore] write failed:", e);
+        return false;
+      }
+    }
+    async remove(key) {
+      try {
+        await this.#request("readwrite", (s) => s.delete(key));
+      } catch (_) {
+      }
+    }
+    #open() {
+      if (!this.#db) {
+        this.#db = new Promise((resolve, reject) => {
+          const req = indexedDB.open(_IndexedDbStore.#DB, _IndexedDbStore.#VERSION);
+          req.onupgradeneeded = () => {
+            if (!req.result.objectStoreNames.contains(_IndexedDbStore.#STORE)) {
+              req.result.createObjectStore(_IndexedDbStore.#STORE);
+            }
+          };
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+          req.onblocked = () => reject(new Error("IndexedDB is blocked"));
+        });
+        this.#db.catch(() => {
+          this.#db = null;
+        });
+      }
+      return this.#db;
+    }
+    /** Run one request in its own transaction; resolves once the transaction commits. */
+    async #request(mode, make) {
+      const db = await this.#open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(_IndexedDbStore.#STORE, mode);
+        const req = make(tx.objectStore(_IndexedDbStore.#STORE));
+        tx.oncomplete = () => resolve(req.result);
+        tx.onerror = () => reject(tx.error || req.error);
+        tx.onabort = () => reject(tx.error || new Error("aborted"));
+      });
+    }
+  };
+  var LocalStorageStore = class extends KeyValueStore {
+    async get(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw == null ? void 0 : JSON.parse(raw);
+      } catch (_) {
+        return void 0;
+      }
+    }
+    async set(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    async remove(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (_) {
+      }
+    }
+  };
+
+  // src/core/UserRecord.js
+  var UserRecord = class {
+    #key;
+    #store;
+    #userId = null;
+    #fields = null;
+    #writes = Promise.resolve();
+    /**
+     * @param {string} key
+     * @param {KeyValueStore} [store]
+     */
+    constructor(key, store = KeyValueStore.default()) {
+      this.#key = key;
+      this.#store = store;
+    }
+    /**
+     * Read this user's record.
+     * @param {string} userId
+     * @returns {Promise<object|null>} its fields, or null when none is stored
+     */
+    async load(userId) {
+      this.#userId = userId;
+      this.#fields = null;
+      let rec = await this.#store.get(this.#key);
+      if (rec === void 0 && !(this.#store instanceof LocalStorageStore)) rec = await this.#moveFromLocalStorage();
+      if (rec && typeof rec === "object" && rec.userId === userId) {
+        const { userId: _owner, ...fields } = rec;
+        this.#fields = fields;
+      }
+      return this.#fields;
+    }
+    /** @returns {object|null} the fields as last loaded or saved */
+    get fields() {
+      return this.#fields;
+    }
+    /**
+     * Replace the fields and write them out in the background.
+     * @param {object} fields  plain data; the caller must not mutate it afterwards
+     */
+    save(fields) {
+      this.#fields = fields;
+      const rec = { userId: this.#userId, ...fields };
+      this.#writes = this.#writes.then(() => this.#store.set(this.#key, rec)).catch(() => false);
+      return this.#writes;
+    }
+    /** Forget the record, here and in storage (sign-out). */
+    clear() {
+      this.#fields = null;
+      this.#userId = null;
+      this.#writes = this.#writes.then(() => this.#store.remove(this.#key)).catch(() => {
+      });
+      return this.#writes;
+    }
+    /** Resolves once every write made so far has finished. */
+    flushed() {
+      return this.#writes;
+    }
+    async #moveFromLocalStorage() {
+      const legacy = new LocalStorageStore();
+      const rec = await legacy.get(this.#key);
+      if (rec === void 0) return void 0;
+      if (await this.#store.set(this.#key, rec)) await legacy.remove(this.#key);
+      return rec;
+    }
+  };
+
+  // src/core/SyncBaseline.js
+  var SyncBaseline = class _SyncBaseline {
+    static KEY = "pocket.v2.baseline";
+    #record;
+    /** @param {import('./KeyValueStore.js').KeyValueStore} [store] */
+    constructor(store) {
+      this.#record = new UserRecord(_SyncBaseline.KEY, store);
+    }
+    /**
+     * Load the stored copy for this user.
+     * @returns {Promise<object|null>} the copy, or null when none
+     */
+    async load(userId) {
+      await this.#record.load(userId);
+      return this.state;
     }
     /** @returns {object|null} the copy the cloud last confirmed */
     get state() {
-      return this.#state;
+      return this.#record.fields?.state ?? null;
+    }
+    /** @returns {string|null} where the next load continues from (null → load everything) */
+    get cursor() {
+      return this.state ? this.#record.fields?.cursor ?? null : null;
     }
     /**
      * Record what the cloud now holds.
      * @param {object} state  already stripped of transient keys
      * @param {string|null} [cursor]  from a load; omitted after a save, keeping the current one
      */
-    set(state, cursor = this.#cursor) {
-      this.#state = BookDiff.clone(state);
-      this.#cursor = cursor;
-      try {
-        localStorage.setItem(
-          _SyncBaseline.#KEY,
-          JSON.stringify({ userId: this.#userId, state: this.#state, cursor: this.#cursor })
-        );
-      } catch (_) {
-      }
+    set(state, cursor = this.cursor) {
+      return this.#record.save({ state: BookDiff.clone(state), cursor });
     }
     /** Forget it (sign-out). */
     clear() {
-      this.#state = null;
-      this.#cursor = null;
-      this.#userId = null;
-      try {
-        localStorage.removeItem(_SyncBaseline.#KEY);
-      } catch (_) {
-      }
+      return this.#record.clear();
+    }
+    /** Resolves once the copy is written out. */
+    flushed() {
+      return this.#record.flushed();
+    }
+  };
+
+  // src/core/ShareCache.js
+  var ShareCache = class _ShareCache {
+    static KEY = "pocket.v2.shares";
+    #record;
+    /** @param {import('./KeyValueStore.js').KeyValueStore} [store] */
+    constructor(store) {
+      this.#record = new UserRecord(_ShareCache.KEY, store);
+    }
+    /** @returns {Promise<{shares: object[], cursor: string|null}|null>} */
+    async load(userId) {
+      const f = await this.#record.load(userId);
+      return Array.isArray(f?.shares) && f.cursor ? { shares: f.shares, cursor: f.cursor } : null;
+    }
+    /**
+     * @param {object[]} shares  as merged; the caller must not mutate them afterwards
+     * @param {string|null} cursor
+     */
+    save(shares, cursor) {
+      return this.#record.save({ shares, cursor });
+    }
+    clear() {
+      return this.#record.clear();
+    }
+    flushed() {
+      return this.#record.flushed();
     }
   };
 
@@ -3997,6 +4182,8 @@ RULES:
      */
     #sharesBase = null;
     #sharesCursor = null;
+    /** @type {ShareCache} keeps #sharesBase and its cursor between visits */
+    #shareCache;
     /** True when local edits have not yet been committed to the cloud. */
     #dirty = false;
     /** Timestamp of the edit that started the current uncommitted run. */
@@ -4021,6 +4208,7 @@ RULES:
       this.#fx = new CurrencyService();
       this.#journal = new SyncJournal();
       this.#baseline = new SyncBaseline();
+      this.#shareCache = new ShareCache();
     }
     // ── Init ─────────────────────────────────────────────────────────────
     /** @returns {boolean} true if Supabase is configured */
@@ -4136,7 +4324,12 @@ RULES:
     async #adoptSession(user) {
       if (this.#user) return false;
       this.#user = user;
-      this.#baseline.load(user.id);
+      const [, cachedShares] = await Promise.all([this.#baseline.load(user.id), this.#shareCache.load(user.id)]);
+      if (this.#user !== user) return false;
+      if (cachedShares) {
+        this.#sharesBase = cachedShares.shares;
+        this.#sharesCursor = cachedShares.cursor;
+      }
       this.#emitUser(user);
       this.#emitStatus("syncing");
       this.#bus.emit("auth:changed", { user });
@@ -4171,6 +4364,7 @@ RULES:
       if (wipeLocal) {
         this.#markClean();
         this.#baseline.clear();
+        this.#shareCache.clear();
         this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
       } else {
         const state = this.#store.getState();
@@ -4663,6 +4857,7 @@ RULES:
         if (!loaded) return;
         this.#sharesBase = loaded.shares;
         this.#sharesCursor = loaded.cursor;
+        this.#shareCache.save(loaded.shares, loaded.cursor);
         const shares = BookDiff.clone(loaded.shares);
         const rawIds = new Set(shares.flatMap((s) => (s.transactions || []).map((t) => t.id)));
         const ownersBefore = this.#sharedData.map((s) => s._ownerId).join(",");

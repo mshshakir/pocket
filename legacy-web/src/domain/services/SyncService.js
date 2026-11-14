@@ -33,6 +33,7 @@ import { Store }          from '../../core/Store.js';
 import { Repository }     from '../../core/Repository.js';
 import { SyncJournal }    from '../../core/SyncJournal.js';
 import { SyncBaseline }   from '../../core/SyncBaseline.js';
+import { ShareCache }     from '../../core/ShareCache.js';
 import { BookDiff }       from '../../core/BookDiff.js';
 import { BookDelta }      from '../../core/BookDelta.js';
 import { ShareDelta }     from '../../core/ShareDelta.js';
@@ -125,6 +126,8 @@ export class SyncService {
    */
   #sharesBase       = null;
   #sharesCursor     = null;
+  /** @type {ShareCache} keeps #sharesBase and its cursor between visits */
+  #shareCache;
 
   /** True when local edits have not yet been committed to the cloud. */
   #dirty = false;
@@ -149,6 +152,7 @@ export class SyncService {
     this.#fx       = new CurrencyService();
     this.#journal  = new SyncJournal();
     this.#baseline = new SyncBaseline();
+    this.#shareCache = new ShareCache();
   }
 
   // ── Init ─────────────────────────────────────────────────────────────
@@ -281,7 +285,13 @@ export class SyncService {
   async #adoptSession(user) {
     if (this.#user) return false;
     this.#user = user;
-    this.#baseline.load(user.id);
+    // Both copies are read before the first load, so it can ask for changes only.
+    const [, cachedShares] = await Promise.all([this.#baseline.load(user.id), this.#shareCache.load(user.id)]);
+    if (this.#user !== user) return false; // signed out meanwhile
+    if (cachedShares) {
+      this.#sharesBase = cachedShares.shares;
+      this.#sharesCursor = cachedShares.cursor;
+    }
     this.#emitUser(user);
     this.#emitStatus('syncing');
     this.#bus.emit('auth:changed', { user });
@@ -318,6 +328,7 @@ export class SyncService {
     if (wipeLocal) {
       this.#markClean();
       this.#baseline.clear();
+      this.#shareCache.clear();
       this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
     } else {
       const state = this.#store.getState();
@@ -844,6 +855,7 @@ export class SyncService {
       if (!loaded) return;
       this.#sharesBase = loaded.shares;
       this.#sharesCursor = loaded.cursor;
+      this.#shareCache.save(loaded.shares, loaded.cursor);
 
       // Working copies: the optimistic edits below must not touch the base.
       const shares = BookDiff.clone(loaded.shares);
