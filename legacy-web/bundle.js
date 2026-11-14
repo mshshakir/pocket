@@ -13049,78 +13049,12 @@ This replaces your current grouping.`
               ${sbUser ? `<button class="btn btn-outline justify-center" onclick="window.__app.signOut()"><i data-lucide="log-out"></i> Sign out</button>` : ""}
             </div>
 
-            <details class="text-xs">
-              <summary class="cursor-pointer text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 select-none">
-                <strong>One-time setup: SQL to run in Supabase \u2192</strong>
-              </summary>
-              <div class="mt-2 rounded-lg overflow-hidden">
-                <div class="bg-zinc-900 text-zinc-100 p-3 rounded-lg text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre js-sql-block">-- Run this once in Supabase \u2192 SQL Editor
-create table if not exists public.user_data (
-  id   uuid references auth.users on delete cascade primary key,
-  data jsonb not null default '{}',
-  version integer not null default 0,
-  updated_at timestamptz default now()
-);
-alter table public.user_data enable row level security;
-create policy "Users own their data"
-  on public.user_data for all
-  using  (auth.uid() = id)
-  with check (auth.uid() = id);
-create or replace function public.touch_updated_at()
-returns trigger language plpgsql as $$
-begin new.updated_at = now(); return new; end; $$;
-create trigger user_data_updated_at
-  before update on public.user_data
-  for each row execute function public.touch_updated_at();
--- Enable real-time for the table:
-alter publication supabase_realtime add table public.user_data;
-
--- \u2500\u2500 Family sharing table (run this too) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-create table if not exists public.family_shares (
-  owner_id     uuid references auth.users on delete cascade not null,
-  member_email text not null,
-  snapshot     jsonb not null default '{}',
-  updated_at   timestamptz default now(),
-  primary key (owner_id, member_email)
-);
-alter table public.family_shares enable row level security;
-create policy "owner_manages_shares"
-  on public.family_shares for all
-  using  (auth.uid() = owner_id)
-  with check (auth.uid() = owner_id);
-create policy "member_reads_shares"
-  on public.family_shares for select
-  using (member_email = lower((auth.jwt()->>'email')));
-create trigger family_shares_updated_at
-  before update on public.family_shares
-  for each row execute function public.touch_updated_at();
-
--- \u2500\u2500 Family contributions inbox (members write; the owner applies) \u2500\u2500\u2500\u2500
-create table if not exists public.family_contributions (
-  id           uuid primary key default gen_random_uuid(),
-  owner_id     uuid references auth.users on delete cascade not null,
-  member_email text not null,
-  account_id   text not null,
-  tx_data      jsonb not null,
-  synced       boolean not null default false,
-  created_at   timestamptz default now()
-);
-alter table public.family_contributions enable row level security;
-create policy "member_manages_own_contributions"
-  on public.family_contributions for all
-  using  (member_email = lower((auth.jwt()->>'email')))
-  with check (member_email = lower((auth.jwt()->>'email')));
-create policy "owner_manages_contributions"
-  on public.family_contributions for all
-  using  (auth.uid() = owner_id)
-  with check (auth.uid() = owner_id);
-alter publication supabase_realtime add table public.family_contributions;</div>
-                <button class="btn btn-outline w-full mt-1 justify-center text-xs"
-                        onclick="window.__app.copySql()">
-                  <i data-lucide="copy"></i> Copy SQL
-                </button>
-              </div>
-            </details>
+            <div class="text-xs text-zinc-500 leading-relaxed">
+              <strong class="text-zinc-700 dark:text-zinc-300">One-time setup:</strong>
+              in your Supabase project's SQL Editor, run each file in
+              <a href="https://github.com/mshshakir/pocket/tree/main/supabase/migrations" target="_blank" rel="noopener" class="underline">supabase/migrations</a>
+              in order, oldest first.
+            </div>
           `}
         </div>
 
@@ -16380,11 +16314,6 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       } else {
         this.#toast.show("Invalid URL or key");
       }
-    }
-    copySql() {
-      const el = document.querySelector(".js-sql-block");
-      if (!el) return;
-      navigator.clipboard.writeText(el.textContent).then(() => this.#toast.show("SQL copied"));
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Settings mutations

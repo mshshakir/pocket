@@ -677,12 +677,6 @@ export class Application {
     }
   }
 
-  copySql() {
-    const el = document.querySelector('.js-sql-block');
-    if (!el) return;
-    navigator.clipboard.writeText(el.textContent).then(() => this.#toast.show('SQL copied'));
-  }
-
   // ──────────────────────────────────────────────────────────────────────────
   // Settings mutations
   // ──────────────────────────────────────────────────────────────────────────

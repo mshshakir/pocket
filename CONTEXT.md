@@ -23,8 +23,11 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 - `mobile-app/` — React Native + Expo **SDK 54 (pinned ~54.0.36; Android only)**. `src/core`,
   `src/data`, `src/domain/services` are **verbatim copies** of `legacy-web/src`. When web domain
   changes, re-copy the file into mobile and run both suites.
-- Backend: one Supabase book. Versioned compare-and-swap on `user_data`; `family_shares` +
-  `family_contributions` tables; realtime channels (web + mobile both guard self-writes).
+- Backend: one Supabase project, relational book (since 2026-11-14): one row per account,
+  category, transaction, etc.; clients send change sets to `pocket_apply_changes` and load
+  deltas with `pocket_get_changes` / `pocket_get_shared_changes`. Signed-out (anon) callers
+  cannot run any `pocket_*` function (0017). The old `user_data` / `family_shares` /
+  `family_contributions` tables are archived in the `archive` schema (not exposed by the API).
 - Mobile rule: all expo-native imports in **screens** must be lazy `require()` (never top-level),
   so Expo Go / a build lacking the module can't crash the bundle.
 
@@ -52,6 +55,11 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `store.init(seed)`) and stub `global.fetch`.
 
 ## Recent changes
+
+- **2026-11-14 · 0017:** anon can no longer EXECUTE any `pocket_*` function (signed-in users and
+  service_role keep it). Pre-relational tables moved to schema `archive` and out of realtime;
+  nothing deleted. 52 stray `*.js.tmp` backups removed from `legacy-web/src`. Settings' self-host
+  setup SQL (which built the old tables) replaced by a pointer to `supabase/migrations`.
 
 **Mobile caught up with web on the share snapshot (2026-08-15)** — a phase C prerequisite,
 and a live bug. Mobile 106 assertions (30+10+66), 3 mutations verified.
