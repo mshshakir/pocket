@@ -4,6 +4,11 @@
  *
  * It mirrors the parts the app relies on:
  *   rpc('pocket_get_book')            the caller's book, or null before the first save
+ *   rpc('pocket_get_changes', {since}) the same as a change set: the head in full, and
+ *                                     the transactions changed or removed since the
+ *                                     cursor (worked out against what that cursor
+ *                                     served, so books edited directly still delta);
+ *                                     all of them when `since` is null or unknown
  *   rpc('pocket_apply_changes', …)    a change set, with the same sharing rules:
  *                                     owners change anything; members change only
  *                                     transactions, by their access to the account
@@ -24,6 +29,9 @@ export class FakeCloud {
   /** @type {Map<string, string>} owner id → email */
   #emails = new Map();
   #handlers = [];
+  /** @type {Map<string, {ownerId: string, rows: Map<string, string>}>} cursor → what it served */
+  #served = new Map();
+  #tick = 0;
 
   /** Every rpc call made, in order: { fn, args, userId }. */
   calls = [];
@@ -113,9 +121,34 @@ export class FakeCloud {
 
   #call(user, fn, args) {
     if (fn === 'pocket_get_book') return structuredClone(this.#books.get(user.id) ?? null);
+    if (fn === 'pocket_get_changes') return this.#changes(user, args.since ?? null);
     if (fn === 'pocket_get_shared') return this.#shared(user);
     if (fn === 'pocket_apply_changes') return this.#apply(user, args.book, args.changes);
     throw new Error(`unknown rpc ${fn}`);
+  }
+
+  /** The caller's book as pocket_get_changes returns it. */
+  #changes(user, since) {
+    const book = this.#books.get(user.id);
+    if (!book) return null;
+    const { transactions = [], ...head } = structuredClone(book);
+    const rows = new Map(transactions.map((t) => [t.id, JSON.stringify(t)]));
+    const cursor = `fake:${++this.#tick}`;
+    this.#served.set(cursor, { ownerId: user.id, rows });
+
+    const before = since ? this.#served.get(since) : null;
+    let put = transactions;
+    let remove = [];
+    if (before && before.ownerId === user.id) {
+      put = transactions.filter((t) => before.rows.get(t.id) !== rows.get(t.id));
+      remove = [...before.rows.keys()].filter((id) => !rows.has(id));
+    }
+    return { ...head, _delta: { cursor, full: since == null, count: transactions.length, put, remove } };
+  }
+
+  /** How many pocket_get_changes calls asked for the whole book. */
+  get fullLoads() {
+    return this.calls.filter((c) => c.fn === 'pocket_get_changes' && c.args.since == null).length;
   }
 
   // ── sharing ────────────────────────────────────────────────────────────────

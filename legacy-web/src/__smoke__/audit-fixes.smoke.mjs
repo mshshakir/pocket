@@ -325,7 +325,7 @@ console.log('\naudit regression suite');
   {
     cloud = new FakeCloud();
     cloud.setBook('u1', { ...baseState(), marker: 'CLOUD' });
-    cloud.failNext = 'pocket_get_book';
+    cloud.failNext = 'pocket_get_changes';
     const w = boot(baseState(), { supabase: { createClient: cloud.client(user) } });
     await wait(80);
     await signIn();                         // load runs and fails

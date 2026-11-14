@@ -3805,17 +3805,26 @@ RULES:
     static #KEY = "pocket.v2.baseline";
     #userId = null;
     #state = null;
+    #cursor = null;
     /** Load the stored copy for this user (null when none). */
     load(userId) {
       this.#userId = userId;
       this.#state = null;
+      this.#cursor = null;
       try {
         const raw = localStorage.getItem(_SyncBaseline.#KEY);
         const rec = raw ? JSON.parse(raw) : null;
-        if (rec?.userId === userId) this.#state = rec.state ?? null;
+        if (rec?.userId === userId) {
+          this.#state = rec.state ?? null;
+          this.#cursor = this.#state ? rec.cursor ?? null : null;
+        }
       } catch (_) {
       }
       return this.#state;
+    }
+    /** @returns {string|null} where the next load continues from (null → load everything) */
+    get cursor() {
+      return this.#cursor;
     }
     /** @returns {object|null} the copy the cloud last confirmed */
     get state() {
@@ -3824,22 +3833,62 @@ RULES:
     /**
      * Record what the cloud now holds.
      * @param {object} state  already stripped of transient keys
+     * @param {string|null} [cursor]  from a load; omitted after a save, keeping the current one
      */
-    set(state) {
+    set(state, cursor = this.#cursor) {
       this.#state = BookDiff.clone(state);
+      this.#cursor = cursor;
       try {
-        localStorage.setItem(_SyncBaseline.#KEY, JSON.stringify({ userId: this.#userId, state: this.#state }));
+        localStorage.setItem(
+          _SyncBaseline.#KEY,
+          JSON.stringify({ userId: this.#userId, state: this.#state, cursor: this.#cursor })
+        );
       } catch (_) {
       }
     }
     /** Forget it (sign-out). */
     clear() {
       this.#state = null;
+      this.#cursor = null;
       this.#userId = null;
       try {
         localStorage.removeItem(_SyncBaseline.#KEY);
       } catch (_) {
       }
+    }
+  };
+
+  // src/core/BookDelta.js
+  var BookDelta = class _BookDelta {
+    static #KEY = "_delta";
+    /**
+     * @param {object|null} previous  the last cloud copy (needed unless the response is full)
+     * @param {object} response       what pocket_get_changes returned (not null)
+     * @returns {{book: object, cursor: string|null}|null}  null when it can't be trusted
+     */
+    static merge(previous, response) {
+      const meta = response?.[_BookDelta.#KEY];
+      if (!meta || typeof meta !== "object") return null;
+      const head = { ...response };
+      delete head[_BookDelta.#KEY];
+      const transactions = meta.full ? BookDiff.clone(meta.put || []) : _BookDelta.#replay(previous, meta);
+      if (!transactions || transactions.length !== Number(meta.count)) return null;
+      return { book: { ...BookDiff.clone(head), transactions }, cursor: meta.cursor ?? null };
+    }
+    /** The previous copy's transactions with the changed ones swapped in and the deleted ones dropped. */
+    static #replay(previous, meta) {
+      if (!Array.isArray(previous?.transactions)) return null;
+      const transactions = BookDiff.clone(previous.transactions);
+      const at = new Map(transactions.map((t, i) => [t?.id, i]));
+      for (const tx of BookDiff.clone(meta.put || [])) {
+        if (at.has(tx.id)) transactions[at.get(tx.id)] = tx;
+        else {
+          at.set(tx.id, transactions.length);
+          transactions.push(tx);
+        }
+      }
+      const gone = new Set(meta.remove || []);
+      return gone.size ? transactions.filter((t) => !gone.has(t?.id)) : transactions;
     }
   };
 
@@ -4324,8 +4373,7 @@ RULES:
       }
       this.#emitStatus("syncing");
       try {
-        const { data: book, error } = await this.#sb.rpc("pocket_get_book");
-        if (error) throw error;
+        const { book, cursor } = await this.#loadBook();
         if (!book) {
           this.#loaded = true;
           this.#dirty = true;
@@ -4337,7 +4385,7 @@ RULES:
         const coldStart = !this.#loaded;
         const next = BookDiff.apply(BookDiff.clone(book), pending);
         this.#store.replaceState(next, (s) => this.#migrateDefaults(s));
-        this.#baseline.set(book);
+        this.#baseline.set(book, cursor);
         this.#loaded = true;
         if (BookDiff.changes(book, this.#snapshot())) {
           this.#dirty = true;
@@ -4357,6 +4405,31 @@ RULES:
         this.#toast("Sync error: " + (e.message || e));
         return false;
       }
+    }
+    /**
+     * The cloud's book: only what changed since the last load when this device
+     * has a trusted copy, otherwise all of it. `book` is null before the first save.
+     * @returns {Promise<{book: object|null, cursor: string|null}>}
+     */
+    async #loadBook() {
+      const since = this.#baseline.state ? this.#baseline.cursor : null;
+      if (since) {
+        const changes = await this.#readChanges(since);
+        if (!changes) return { book: null, cursor: null };
+        const merged2 = BookDelta.merge(this.#baseline.state, changes);
+        if (merged2) return merged2;
+        console.warn("[SyncService] local copy out of step with the cloud \u2014 loading the whole book");
+      }
+      const full = await this.#readChanges(null);
+      if (!full) return { book: null, cursor: null };
+      const merged = BookDelta.merge(null, full);
+      if (!merged) throw new Error("The cloud book could not be read");
+      return merged;
+    }
+    async #readChanges(since) {
+      const { data, error } = await this.#sb.rpc("pocket_get_changes", { since });
+      if (error) throw error;
+      return data;
     }
     // ── Live updates ──────────────────────────────────────────────────────
     /** True when a live-feed row is the echo of our own recent write. */

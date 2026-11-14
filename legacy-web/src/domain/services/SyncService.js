@@ -8,9 +8,11 @@
  * The cloud keeps a book as rows (one per transaction, account, category …;
  * see supabase/migrations 0009–0012). Saving sends only the items that changed
  * since the last sync, through one database function (`pocket_apply_changes`)
- * that also enforces the sharing rules. Loading reads the whole book back in
- * the app's usual shape (`pocket_get_book`), so the rest of the app is unaware
- * of the storage underneath.
+ * that also enforces the sharing rules. Loading asks only for what changed
+ * since the last load (`pocket_get_changes`, merged by BookDelta onto the
+ * copy kept in SyncBaseline), in the app's usual shape, so the rest of the app
+ * is unaware of the storage underneath. The whole book is read only on a
+ * device's first load, or when the copy here can't be trusted.
  *
  * Offline / reload safety: SyncBaseline keeps the copy the cloud last
  * confirmed. Whatever differs from it was changed here and not yet saved, so
@@ -31,6 +33,7 @@ import { Repository }     from '../../core/Repository.js';
 import { SyncJournal }    from '../../core/SyncJournal.js';
 import { SyncBaseline }   from '../../core/SyncBaseline.js';
 import { BookDiff }       from '../../core/BookDiff.js';
+import { BookDelta }      from '../../core/BookDelta.js';
 import { EventBus }       from '../../core/EventBus.js';
 import { SeedFactory }    from '../../data/seed.js';
 import { StateMigrator }  from '../../data/StateMigrator.js';
@@ -565,8 +568,7 @@ export class SyncService {
 
     this.#emitStatus('syncing');
     try {
-      const { data: book, error } = await this.#sb.rpc('pocket_get_book');
-      if (error) throw error;
+      const { book, cursor } = await this.#loadBook();
 
       if (!book) {
         // First sign-in: this device's book becomes the cloud book.
@@ -582,7 +584,7 @@ export class SyncService {
       const coldStart = !this.#loaded;
       const next = BookDiff.apply(BookDiff.clone(book), pending);
       this.#store.replaceState(next, (s) => this.#migrateDefaults(s));
-      this.#baseline.set(book);
+      this.#baseline.set(book, cursor);
       this.#loaded = true;
 
       // Anything that now differs from the cloud copy — the replayed edits, or
@@ -606,6 +608,33 @@ export class SyncService {
       this.#toast('Sync error: ' + (e.message || e));
       return false;
     }
+  }
+
+  /**
+   * The cloud's book: only what changed since the last load when this device
+   * has a trusted copy, otherwise all of it. `book` is null before the first save.
+   * @returns {Promise<{book: object|null, cursor: string|null}>}
+   */
+  async #loadBook() {
+    const since = this.#baseline.state ? this.#baseline.cursor : null;
+    if (since) {
+      const changes = await this.#readChanges(since);
+      if (!changes) return { book: null, cursor: null };
+      const merged = BookDelta.merge(this.#baseline.state, changes);
+      if (merged) return merged;
+      console.warn('[SyncService] local copy out of step with the cloud — loading the whole book');
+    }
+    const full = await this.#readChanges(null);
+    if (!full) return { book: null, cursor: null };
+    const merged = BookDelta.merge(null, full);
+    if (!merged) throw new Error('The cloud book could not be read');
+    return merged;
+  }
+
+  async #readChanges(since) {
+    const { data, error } = await this.#sb.rpc('pocket_get_changes', { since });
+    if (error) throw error;
+    return data;
   }
 
   // ── Live updates ──────────────────────────────────────────────────────
