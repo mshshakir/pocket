@@ -8,7 +8,7 @@
  *   offered     → the batch, a Pay button (Razorpay), or decline
  *   confirmed / completed → welcome
  *
- * The coach never sees anyone's Pocket data; this page collects only what is
+ * We never see anyone's Pocket data; this page collects only what is
  * needed to run the programme.
  */
 import { Html } from '../core/Html.js';
@@ -134,7 +134,7 @@ export class ProgrammePage {
       <form id="programmeForm" class="card p-6 space-y-4">
         <div class="text-sm text-zinc-500">Signed in as <b>${Html.escape(this.#user.email)}</b> · <a href="#" data-action="sign-out" class="underline">not you?</a></div>
         ${this.#field('fullName', 'Your name', `<input name="fullName" class="field" required minlength="2" value="${v('fullName')}">`)}
-        ${this.#field('whatsapp', 'WhatsApp number, with country code', `<input name="whatsapp" class="field" required placeholder="+91 98xxx xxxxx" value="${v('whatsapp')}">`, 'Your coach calls and messages you here.')}
+        ${this.#field('whatsapp', 'WhatsApp number, with country code', `<input name="whatsapp" class="field" required placeholder="+91 98xxx xxxxx" value="${v('whatsapp')}">`, 'We call and message you here for your check-ins.')}
         ${this.#field('telegram', 'Telegram username (optional)', `<input name="telegram" class="field" placeholder="@name" value="${v('telegram')}">`, 'For logging entries with the Pocket bot.')}
         ${this.#field('household', 'Who else will record money with you? (optional)', `<input name="household" class="field" placeholder="e.g. my wife; just me" value="${v('household')}">`)}
         ${this.#field('currentMethod', 'How do you keep track of money today?', `<input name="currentMethod" class="field" placeholder="e.g. notebook, an app, I don't" value="${v('currentMethod')}">`)}
@@ -146,7 +146,7 @@ export class ProgrammePage {
         </div>
         <label class="flex items-start gap-3 text-sm text-zinc-700">
           <input type="checkbox" name="consent" class="mt-1" required ${this.#app && this.#app.status !== 'withdrawn' ? 'checked' : ''}>
-          <span>I agree to the programme terms: ₹5,000 for 6 weeks, <b>not refundable once my place is confirmed</b>. My coach never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
+          <span>I agree to the programme terms: ₹5,000 for 6 weeks, <b>not refundable once my place is confirmed</b>. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
         </label>
         <div class="flex flex-wrap gap-3">
           <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : 'Apply'}</button>
