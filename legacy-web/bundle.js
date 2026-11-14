@@ -5748,6 +5748,7 @@ RULES:
       this.#active = name;
       this.#currentOpts = opts;
       view.onOpen?.(opts, this.#card);
+      this.#card.style.maxWidth = view.maxWidth || "";
       this.#card.innerHTML = view.render(opts);
       this.#backdrop.classList.add("open");
       document.body.style.overflow = "hidden";
@@ -5777,6 +5778,7 @@ RULES:
       const prev = this.#active;
       this.#active = null;
       this.#card.innerHTML = "";
+      this.#card.style.maxWidth = "";
       EventBus.getInstance().emit("modal:closed", { name: prev });
     }
     /** @returns {string|null} name of the currently open modal */
@@ -10992,11 +10994,8 @@ This replaces your current grouping.`
             <option value="30" ${this.#range === "30" ? "selected" : ""}>Last 30d</option>
             <option value="90" ${this.#range === "90" ? "selected" : ""}>Last 90d</option>
           </select>
-          <button class="btn btn-outline" onclick="window.__app.openModal('csv')">
+          <button class="btn btn-primary" onclick="window.__app.openModal('export')" title="PDF, Excel or CSV, with filters">
             <i data-lucide="download"></i> Export
-          </button>
-          <button class="btn btn-outline" onclick="window.print()" title="Save as PDF via browser print">
-            <i data-lucide="printer"></i> PDF
           </button>
         </div>
       </div>
@@ -11159,7 +11158,7 @@ This replaces your current grouping.`
       if (topEl) {
         const tops = this.#reports.topTransactions(5, days);
         topEl.innerHTML = tops.length === 0 ? `<div class="text-sm text-zinc-500 text-center py-4">No expenses in range.</div>` : `<div class="divide-y divide-zinc-100 dark:divide-zinc-800">
-            ${tops.map(({ t, value }) => {
+            ${tops.map(({ tx: t, value }) => {
           const cat = state.categories.find((c) => c.id === t.categoryId);
           return `
                 <button onclick="window.__app.openModal('transaction',{id:'${t.id}'})"
@@ -14409,6 +14408,1453 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     }
   };
 
+  // src/domain/export/ExportFilter.js
+  var ExportFilter = class _ExportFilter {
+    /** Period presets, in the order the export sheet offers them. */
+    static PERIODS = Object.freeze([
+      ["this-month", "This month"],
+      ["last-month", "Last month"],
+      ["30", "Last 30 days"],
+      ["90", "Last 90 days"],
+      ["this-year", "This year"],
+      ["last-year", "Last year"],
+      ["all", "All time"],
+      ["custom", "Custom dates"]
+    ]);
+    static TYPES = Object.freeze([["expense", "Expense"], ["income", "Income"], ["transfer", "Transfer"]]);
+    /** @param {object} [raw]  a saved filter (unknown or bad fields fall back to defaults) */
+    constructor(raw = {}) {
+      const list = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string" && x) : [];
+      const iso = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
+      this.period = _ExportFilter.PERIODS.some(([k]) => k === raw.period) ? raw.period : "this-month";
+      this.from = iso(raw.from);
+      this.to = iso(raw.to);
+      this.accountIds = list(raw.accountIds);
+      this.categoryIds = list(raw.categoryIds);
+      this.types = list(raw.types).filter((t) => _ExportFilter.TYPES.some(([k]) => k === t));
+      this.paymentTypes = list(raw.paymentTypes);
+      this.search = typeof raw.search === "string" ? raw.search.slice(0, 100) : "";
+    }
+    /** A copy with one field changed. */
+    with(field, value) {
+      return new _ExportFilter({ ...this.toJSON(), [field]: value });
+    }
+    /** A copy with `value` added to or removed from a list field. */
+    toggle(field, value) {
+      const cur = Array.isArray(this[field]) ? this[field] : [];
+      return this.with(field, cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value]);
+    }
+    toJSON() {
+      return {
+        period: this.period,
+        from: this.from,
+        to: this.to,
+        accountIds: [...this.accountIds],
+        categoryIds: [...this.categoryIds],
+        types: [...this.types],
+        paymentTypes: [...this.paymentTypes],
+        search: this.search
+      };
+    }
+    /**
+     * The first and last day covered (inclusive), as YYYY-MM-DD; null means open.
+     * @param {Date} [today]
+     * @returns {{from: string|null, to: string|null}}
+     */
+    range(today = /* @__PURE__ */ new Date()) {
+      const iso = (d) => DateService.toIso(d);
+      const y = today.getFullYear();
+      const m = today.getMonth();
+      switch (this.period) {
+        case "this-month":
+          return { from: iso(new Date(y, m, 1)), to: iso(today) };
+        case "last-month":
+          return { from: iso(new Date(y, m - 1, 1)), to: iso(new Date(y, m, 0)) };
+        case "this-year":
+          return { from: iso(new Date(y, 0, 1)), to: iso(today) };
+        case "last-year":
+          return { from: iso(new Date(y - 1, 0, 1)), to: iso(new Date(y - 1, 11, 31)) };
+        case "all":
+          return { from: null, to: null };
+        case "custom": {
+          const [a, b] = [this.from || null, this.to || null];
+          return a && b && a > b ? { from: b, to: a } : { from: a, to: b };
+        }
+        default: {
+          const start = new Date(today);
+          start.setDate(start.getDate() - (Number(this.period) - 1));
+          return { from: iso(start), to: iso(today) };
+        }
+      }
+    }
+    /** How many filters beyond the period are set. */
+    get activeCount() {
+      return (this.accountIds.length ? 1 : 0) + (this.categoryIds.length ? 1 : 0) + (this.types.length ? 1 : 0) + (this.paymentTypes.length ? 1 : 0) + (this.search.trim() ? 1 : 0);
+    }
+    /**
+     * A test for one ledger entry (see LedgerEntries).
+     * @param {object[]} categories  the book's categories, to include sub-categories
+     * @returns {(entry: object) => boolean}
+     */
+    matcher(categories, today = /* @__PURE__ */ new Date()) {
+      const { from, to } = this.range(today);
+      const accounts = new Set(this.accountIds);
+      const types = new Set(this.types);
+      const payments = new Set(this.paymentTypes);
+      const cats = this.categoryIds.length ? _ExportFilter.#withDescendants(this.categoryIds, categories) : null;
+      const needle = this.search.trim().toLowerCase();
+      return (e) => {
+        if (from && e.date < from) return false;
+        if (to && e.date > to) return false;
+        if (accounts.size && !accounts.has(e.accountId) && !(e.toAccountId && accounts.has(e.toAccountId))) return false;
+        if (types.size && !types.has(e.type)) return false;
+        if (payments.size && !payments.has(e.paymentType)) return false;
+        if (cats && !cats.has(e.categoryId)) return false;
+        if (needle && ![e.payee, e.note, e.categoryPath, e.accountName].some((s) => (s || "").toLowerCase().includes(needle))) {
+          return false;
+        }
+        return true;
+      };
+    }
+    static #withDescendants(ids, categories) {
+      const children = /* @__PURE__ */ new Map();
+      for (const c of categories || []) {
+        if (!children.has(c.parentId)) children.set(c.parentId, []);
+        children.get(c.parentId).push(c.id);
+      }
+      const out = /* @__PURE__ */ new Set();
+      const stack = [...ids];
+      while (stack.length) {
+        const id = stack.pop();
+        if (out.has(id)) continue;
+        out.add(id);
+        stack.push(...children.get(id) || []);
+      }
+      return out;
+    }
+  };
+
+  // src/domain/export/ExportFormat.js
+  var ExportFormat = class _ExportFormat {
+    static REPORTS = Object.freeze([
+      ["transactions", "Transactions"],
+      ["categories", "By category"],
+      ["months", "By month"],
+      ["accounts", "By account"]
+    ]);
+    /** Columns the transactions report can show, in their default order. */
+    static TX_COLUMNS = Object.freeze([
+      ["date", "Date"],
+      ["hijri", "Hijri date"],
+      ["type", "Type"],
+      ["account", "Account"],
+      ["category", "Category"],
+      ["payee", "Payee"],
+      ["note", "Note"],
+      ["payment", "Payment"],
+      ["original", "Original amount"],
+      ["amount", "Amount"],
+      ["addedBy", "Added by"]
+    ]);
+    static DEFAULT_TX_COLUMNS = Object.freeze(["date", "account", "category", "note", "payment", "amount"]);
+    static GROUPS = Object.freeze([
+      ["none", "No grouping"],
+      ["day", "Day"],
+      ["month", "Month"],
+      ["category", "Category"],
+      ["account", "Account"]
+    ]);
+    static ORIENTATIONS = Object.freeze([["auto", "Auto"], ["portrait", "Portrait"], ["landscape", "Landscape"]]);
+    static PAPERS = Object.freeze([["a4", "A4"], ["letter", "Letter"]]);
+    static CALENDARS = Object.freeze([["gregorian", "Gregorian"], ["hijri", "Hijri"]]);
+    constructor(raw = {}) {
+      const pick = (list, v, d) => list.some(([k]) => k === v) ? v : d;
+      const known = new Set(_ExportFormat.TX_COLUMNS.map(([k]) => k));
+      const cols = Array.isArray(raw.columns) ? [...new Set(raw.columns.filter((c) => known.has(c)))] : [];
+      this.report = pick(_ExportFormat.REPORTS, raw.report, "transactions");
+      this.columns = cols.length ? cols : [..._ExportFormat.DEFAULT_TX_COLUMNS];
+      this.groupBy = pick(_ExportFormat.GROUPS, raw.groupBy, "none");
+      this.calendar = pick(_ExportFormat.CALENDARS, raw.calendar, "gregorian");
+      this.orientation = pick(_ExportFormat.ORIENTATIONS, raw.orientation, "auto");
+      this.paper = pick(_ExportFormat.PAPERS, raw.paper, "a4");
+      this.showTotals = raw.showTotals !== false;
+      this.title = typeof raw.title === "string" ? raw.title.slice(0, 80) : "";
+    }
+    with(field, value) {
+      return new _ExportFormat({ ...this.toJSON(), [field]: value });
+    }
+    /** Show or hide a column; a newly shown one goes back to its usual place. */
+    toggleColumn(key) {
+      if (this.columns.includes(key)) {
+        return this.columns.length > 1 ? this.with("columns", this.columns.filter((c) => c !== key)) : this;
+      }
+      const order = _ExportFormat.TX_COLUMNS.map(([k]) => k);
+      const next = [...this.columns, key].sort((a, b) => {
+        const ia = this.columns.indexOf(a), ib = this.columns.indexOf(b);
+        if (ia >= 0 && ib >= 0) return ia - ib;
+        return order.indexOf(a) - order.indexOf(b);
+      });
+      return this.with("columns", next);
+    }
+    /** Move a shown column one place left (-1) or right (+1). */
+    moveColumn(key, step) {
+      const cols = [...this.columns];
+      const i = cols.indexOf(key);
+      const j = i + step;
+      if (i < 0 || j < 0 || j >= cols.length) return this;
+      [cols[i], cols[j]] = [cols[j], cols[i]];
+      return this.with("columns", cols);
+    }
+    toJSON() {
+      return {
+        report: this.report,
+        columns: [...this.columns],
+        groupBy: this.groupBy,
+        calendar: this.calendar,
+        orientation: this.orientation,
+        paper: this.paper,
+        showTotals: this.showTotals,
+        title: this.title
+      };
+    }
+    static label(list, key) {
+      return list.find(([k]) => k === key)?.[1] ?? key;
+    }
+  };
+
+  // src/domain/export/LedgerEntries.js
+  var LedgerEntries = class {
+    #state;
+    #fx;
+    #hijri;
+    #accounts;
+    #categories;
+    /**
+     * @param {object} state  a book (or a shared space's projection of one)
+     * @param {{fx?: CurrencyService, hijri?: HijriCalendarService}} [deps]
+     */
+    constructor(state, { fx = new CurrencyService(), hijri = new HijriCalendarService() } = {}) {
+      this.#state = state;
+      this.#fx = fx;
+      this.#hijri = hijri;
+      this.#accounts = new Map((state.accounts || []).map((a) => [a.id, a]));
+      this.#categories = new Map((state.categories || []).map((c) => [c.id, c]));
+    }
+    get homeCurrency() {
+      return this.#state.user?.homeCurrency || this.#state.homeCurrency || "USD";
+    }
+    /** @returns {object[]} rows, oldest first */
+    all() {
+      const txs = this.#state.transactions || [];
+      const byId = new Map(txs.map((t) => [t.id, t]));
+      const rows = [];
+      for (const t of txs) {
+        if (!t?.date) continue;
+        if (t.type === "transfer") {
+          const pair = t.transferPairId ? byId.get(t.transferPairId) : null;
+          if (pair && t.transferDir === "in") continue;
+          if (pair && !t.transferDir && pair.transferDir === "out") continue;
+          rows.push(this.#transferRow(t, pair));
+          continue;
+        }
+        const slices = Array.isArray(t.splits) && t.splits.length ? t.splits.map((s) => ({ accountId: s.accountId || t.accountId, categoryId: s.categoryId || null, amount: Number(s.amount) || 0 })) : [{ accountId: t.accountId, categoryId: t.categoryId || null, amount: Number(t.amount) || 0 }];
+        slices.forEach((s, i) => rows.push(this.#row(t, s, slices.length > 1 ? i + 1 : 0)));
+      }
+      return rows.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+    }
+    /** "Travel / Taxi" for a sub-category, "Travel" for a main one. */
+    categoryPath(id) {
+      const c = this.#categories.get(id);
+      if (!c) return "";
+      const parent = c.parentId ? this.#categories.get(c.parentId) : null;
+      return parent ? `${parent.name} / ${c.name}` : c.name;
+    }
+    /** The main category of a category (itself when it has no parent). */
+    mainCategory(id) {
+      const c = this.#categories.get(id);
+      if (!c) return null;
+      return c.parentId && this.#categories.get(c.parentId) || c;
+    }
+    account(id) {
+      return this.#accounts.get(id) || null;
+    }
+    #row(t, slice, part) {
+      const home = this.homeCurrency;
+      const homeAmount = this.#fx.convert(slice.amount, t.currency, home);
+      const sign = t.type === "income" ? 1 : t.type === "expense" ? -1 : 0;
+      return {
+        id: part ? `${t.id}#${part}` : t.id,
+        txId: t.id,
+        order: part,
+        date: t.date,
+        hijri: this.#hijriLabel(t),
+        type: t.type,
+        accountId: slice.accountId,
+        accountName: this.account(slice.accountId)?.name || "",
+        toAccountId: null,
+        categoryId: slice.categoryId,
+        categoryPath: this.categoryPath(slice.categoryId) || (t.type === "income" || t.type === "expense" ? "Uncategorised" : ""),
+        payee: t.payee || "",
+        note: t.note || "",
+        paymentType: t.paymentType || "",
+        amount: slice.amount,
+        currency: t.currency,
+        homeAmount,
+        signedHome: sign * homeAmount,
+        addedBy: t.addedBy || "",
+        split: part > 0
+      };
+    }
+    #transferRow(t, pair) {
+      const out = t.transferDir === "in" && pair ? pair : t;
+      const into = out === t ? pair : t;
+      const from = this.account(out.accountId);
+      const to = into ? this.account(into.accountId) : null;
+      return {
+        id: out.id,
+        txId: out.id,
+        order: 0,
+        date: out.date,
+        hijri: this.#hijriLabel(out),
+        type: "transfer",
+        accountId: out.accountId,
+        accountName: `${from?.name || "\u2014"} \u2192 ${to?.name || "\u2014"}`,
+        fromAccountId: out.accountId,
+        toAccountId: into?.accountId || null,
+        categoryId: null,
+        categoryPath: "",
+        payee: out.payee && out.payee !== "Transfer" ? out.payee : "",
+        note: out.note || into?.note || "",
+        paymentType: out.paymentType || "transfer",
+        amount: Number(out.amount) || 0,
+        currency: out.currency,
+        receivedAmount: into ? Number(into.amount) || 0 : null,
+        receivedCurrency: into?.currency || null,
+        homeAmount: this.#fx.convert(Number(out.amount) || 0, out.currency, this.homeCurrency),
+        signedHome: 0,
+        addedBy: out.addedBy || "",
+        split: false
+      };
+    }
+    #hijriLabel(t) {
+      const h = t.hijriDate && typeof t.hijriDate === "object" ? t.hijriDate : this.#hijri.toHijri(t.date);
+      if (!h) return { year: 0, month: 0, day: 0, label: "" };
+      const name = this.#hijri.monthsShort[h.month] || "";
+      return { year: h.year, month: h.month, day: h.day, label: `${h.day} ${name} ${h.year}` };
+    }
+  };
+
+  // src/domain/export/reports/BaseReport.js
+  var BaseReport = class {
+    /** @type {import('../LedgerEntries.js').LedgerEntries} */
+    ledger;
+    /** @type {import('../ExportFilter.js').ExportFilter} */
+    filter;
+    /** @type {import('../ExportFormat.js').ExportFormat} */
+    format;
+    state;
+    today;
+    hijri;
+    constructor({ ledger, filter, format, state, today = /* @__PURE__ */ new Date(), hijri = new HijriCalendarService() }) {
+      this.ledger = ledger;
+      this.filter = filter;
+      this.format = format;
+      this.state = state;
+      this.today = today;
+      this.hijri = hijri;
+    }
+    get home() {
+      return this.ledger.homeCurrency;
+    }
+    /** @returns {import('../ReportTable.js').ReportTable} */
+    build() {
+      throw new Error("build() not implemented");
+    }
+    /** The entries this report covers. */
+    entries() {
+      const match = this.filter.matcher(this.state.categories || [], this.today);
+      return this.ledger.all().filter(match);
+    }
+    title(fallback) {
+      return this.format.title.trim() || fallback;
+    }
+    /** "1 Nov 2026 – 14 Nov 2026 · Accounts: BOI, Cash · Types: Expense". */
+    subtitle() {
+      const { from, to } = this.filter.range(this.today);
+      const d = (iso) => (/* @__PURE__ */ new Date(`${iso}T12:00:00`)).toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" });
+      const period = from && to ? `${d(from)} \u2013 ${d(to)}` : from ? `From ${d(from)}` : to ? `Until ${d(to)}` : "All time";
+      const names = (ids, find) => {
+        const list = ids.map(find).filter(Boolean);
+        return list.length > 3 ? `${list.slice(0, 3).join(", ")} +${list.length - 3} more` : list.join(", ");
+      };
+      const parts = [period];
+      const f = this.filter;
+      if (f.accountIds.length) parts.push(`Accounts: ${names(f.accountIds, (id) => this.ledger.account(id)?.name)}`);
+      if (f.categoryIds.length) parts.push(`Categories: ${names(f.categoryIds, (id) => this.ledger.categoryPath(id))}`);
+      if (f.types.length) parts.push(`Types: ${f.types.map((t) => t[0].toUpperCase() + t.slice(1)).join(", ")}`);
+      if (f.paymentTypes.length) parts.push(`Payment: ${f.paymentTypes.join(", ")}`);
+      if (f.search.trim()) parts.push(`Search: \u201C${f.search.trim()}\u201D`);
+      return parts.join(" \xB7 ");
+    }
+    /** "pocket-transactions-2026-11-01-to-2026-11-14". */
+    fileStem(slug) {
+      const { from, to } = this.filter.range(this.today);
+      const span = from || to ? `-${from || "start"}-to-${to || "today"}` : "-all-time";
+      return `pocket-${slug}${span}`;
+    }
+    /** Month label and sort key for an entry, in the format's calendar. */
+    monthOf(e) {
+      if (this.format.calendar === "hijri" && e.hijri?.year) {
+        const name = this.hijri.monthsLong[e.hijri.month] || "";
+        return { key: `${String(e.hijri.year).padStart(4, "0")}-${String(e.hijri.month).padStart(2, "0")}`, label: `${name} ${e.hijri.year}` };
+      }
+      const [y, m] = e.date.split("-").map(Number);
+      return { key: e.date.slice(0, 7), label: new Date(y, m - 1, 1).toLocaleDateString(void 0, { month: "long", year: "numeric" }) };
+    }
+    /** A money column in the home currency. */
+    money(key, label, extra = {}) {
+      return { key, label, kind: "money", align: "right", weight: 1.1, currency: this.home, ...extra };
+    }
+    static sum(rows, key) {
+      return rows.reduce((n, r) => n + (Number(r[key]) || 0), 0);
+    }
+  };
+
+  // src/domain/export/ReportTable.js
+  var ReportTable = class {
+    constructor({ title, subtitle = "", columns, sections, total = null, notes = [], fileStem = "pocket-report" }) {
+      this.title = title;
+      this.subtitle = subtitle;
+      this.columns = columns;
+      this.sections = sections.filter((s) => s.rows.length || s.subtotal);
+      this.total = total;
+      this.notes = notes;
+      this.fileStem = fileStem;
+    }
+    /** Number of data rows (not counting section headings, subtotals or the total). */
+    get rowCount() {
+      return this.sections.reduce((n, s) => n + s.rows.length, 0);
+    }
+    get isEmpty() {
+      return this.rowCount === 0;
+    }
+    /** A file name like "pocket-transactions-2026-11-01-to-2026-11-14.pdf". */
+    fileName(ext) {
+      return `${this.fileStem}.${ext}`;
+    }
+  };
+
+  // src/domain/export/reports/TransactionsReport.js
+  var TransactionsReport = class extends BaseReport {
+    #fx = new CurrencyService();
+    build() {
+      const entries = this.entries();
+      const columns = this.#columns();
+      const rows = entries.map((e) => this.#row(e));
+      const amountCol = columns.find((c) => c.key === "amount");
+      const sections = this.#group(entries, rows, columns, amountCol);
+      const income = entries.filter((e) => e.type === "income").reduce((n, e) => n + e.homeAmount, 0);
+      const expense = entries.filter((e) => e.type === "expense").reduce((n, e) => n + e.homeAmount, 0);
+      const transfers = entries.filter((e) => e.type === "transfer").length;
+      const fmt = (v) => this.#fx.formatMoney(v, this.home);
+      const notes = [`${entries.length.toLocaleString()} entr${entries.length === 1 ? "y" : "ies"} \xB7 Income ${fmt(income)} \xB7 Expense ${fmt(expense)} \xB7 Net ${fmt(income - expense)}`];
+      if (transfers) notes.push(`Transfers (${transfers}) are listed but not counted in totals.`);
+      const total = this.format.showTotals && amountCol ? this.#labelled(columns, `Total \xB7 ${entries.length.toLocaleString()} entries`, { amount: income - expense }, true) : null;
+      return new ReportTable({
+        title: this.title("Transactions"),
+        subtitle: this.subtitle(),
+        columns,
+        sections,
+        total,
+        notes,
+        fileStem: this.fileStem("transactions")
+      });
+    }
+    #columns() {
+      const defs = {
+        date: { kind: "date", align: "left", weight: 0.9 },
+        hijri: { kind: "text", align: "left", weight: 1, nowrap: true },
+        type: { kind: "text", align: "left", weight: 0.7 },
+        account: { kind: "text", align: "left", weight: 1.3 },
+        category: { kind: "text", align: "left", weight: 1.4 },
+        payee: { kind: "text", align: "left", weight: 1.2 },
+        note: { kind: "text", align: "left", weight: 2.2 },
+        payment: { kind: "text", align: "left", weight: 0.8 },
+        original: { kind: "text", align: "right", weight: 1 },
+        amount: { kind: "money", align: "right", weight: 1.1, currency: this.home },
+        addedBy: { kind: "text", align: "left", weight: 1.3 }
+      };
+      return this.format.columns.map((key) => ({
+        key,
+        label: key === "amount" ? `Amount (${this.home})` : ExportFormat.label(ExportFormat.TX_COLUMNS, key),
+        ...defs[key]
+      }));
+    }
+    #row(e) {
+      const foreign = e.currency !== this.home;
+      return {
+        date: e.date,
+        hijri: e.hijri?.label || "",
+        type: e.type[0].toUpperCase() + e.type.slice(1),
+        account: e.accountName,
+        category: e.type === "transfer" ? "Transfer" : `${e.categoryPath}${e.split ? " (split)" : ""}`,
+        payee: e.payee,
+        note: e.note.replace(/\s*\n\s*/g, " \xB7 "),
+        payment: e.paymentType ? e.paymentType[0].toUpperCase() + e.paymentType.slice(1) : "",
+        original: foreign ? this.#fx.formatMoney(e.amount, e.currency) : "",
+        amount: e.type === "transfer" ? e.homeAmount : e.signedHome,
+        addedBy: e.addedBy,
+        _transfer: e.type === "transfer"
+      };
+    }
+    #group(entries, rows, columns, amountCol) {
+      const by = this.format.groupBy;
+      if (by === "none") return [{ label: null, rows, subtotal: null }];
+      const keyOf = (e) => {
+        switch (by) {
+          case "day":
+            return { key: e.date, label: (/* @__PURE__ */ new Date(`${e.date}T12:00:00`)).toLocaleDateString(void 0, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) + (e.hijri?.label ? ` \xB7 ${e.hijri.label}` : "") };
+          case "month":
+            return this.monthOf(e);
+          case "category":
+            return e.type === "transfer" ? { key: "~transfer", label: "Transfers" } : { key: this.ledger.mainCategory(e.categoryId)?.name || "Uncategorised", label: this.ledger.mainCategory(e.categoryId)?.name || "Uncategorised" };
+          case "account":
+            return { key: e.accountName, label: e.accountName };
+          default:
+            return { key: "", label: "" };
+        }
+      };
+      const groups = /* @__PURE__ */ new Map();
+      entries.forEach((e, i) => {
+        const { key, label } = keyOf(e);
+        if (!groups.has(key)) groups.set(key, { label, rows: [], entries: [] });
+        groups.get(key).rows.push(rows[i]);
+        groups.get(key).entries.push(e);
+      });
+      const ordered = [...groups.entries()].sort(([a], [b]) => by === "day" || by === "month" ? a.localeCompare(b) : a.localeCompare(b, void 0, { sensitivity: "base" }));
+      return ordered.map(([, g]) => {
+        const net = g.entries.reduce((n, e) => n + e.signedHome, 0);
+        const subtotal = this.format.showTotals && amountCol ? this.#labelled(columns, `Subtotal \xB7 ${g.rows.length}`, { amount: net }, true) : null;
+        return { label: g.label, rows: g.rows, subtotal };
+      });
+    }
+    /** A totals row with its label in the first text column that isn't the amount. */
+    #labelled(columns, label, values, strong) {
+      const first = columns.find((c) => c.key !== "amount");
+      return { ...values, _strong: strong, _label: label, _labelKey: first?.key ?? null };
+    }
+  };
+
+  // src/domain/export/reports/CategoryReport.js
+  var CategoryReport = class extends BaseReport {
+    build() {
+      const entries = this.entries().filter((e) => e.type === "expense" || e.type === "income");
+      const columns = [
+        { key: "category", label: "Category", kind: "text", align: "left", weight: 2.6 },
+        { key: "count", label: "Entries", kind: "count", align: "right", weight: 0.7 },
+        this.money("amount", `Amount (${this.home})`),
+        { key: "share", label: "Share", kind: "percent", align: "right", weight: 0.7 }
+      ];
+      const sections = [["expense", "Expenses"], ["income", "Income"]].map(([type, label]) => this.#section(entries.filter((e) => e.type === type), label)).filter(Boolean);
+      const fx = new CurrencyService();
+      const sum = (t) => entries.filter((e) => e.type === t).reduce((n, e) => n + e.homeAmount, 0);
+      const income = sum("income"), expense = sum("expense");
+      return new ReportTable({
+        title: this.title("Spending and income by category"),
+        subtitle: this.subtitle(),
+        columns,
+        sections,
+        notes: [`Income ${fx.formatMoney(income, this.home)} \xB7 Expense ${fx.formatMoney(expense, this.home)} \xB7 Net ${fx.formatMoney(income - expense, this.home)}`],
+        fileStem: this.fileStem("categories")
+      });
+    }
+    #section(entries, label) {
+      if (!entries.length) return null;
+      const total = entries.reduce((n, e) => n + e.homeAmount, 0);
+      const mains = /* @__PURE__ */ new Map();
+      for (const e of entries) {
+        const main = this.ledger.mainCategory(e.categoryId);
+        const mainKey = main?.id ?? "~none";
+        if (!mains.has(mainKey)) mains.set(mainKey, { name: main?.name || "Uncategorised", count: 0, amount: 0, subs: /* @__PURE__ */ new Map() });
+        const m = mains.get(mainKey);
+        m.count += 1;
+        m.amount += e.homeAmount;
+        if (main && e.categoryId && e.categoryId !== main.id) {
+          const subName = this.ledger.categoryPath(e.categoryId).split(" / ").pop();
+          const s = m.subs.get(e.categoryId) || { name: subName, count: 0, amount: 0 };
+          s.count += 1;
+          s.amount += e.homeAmount;
+          m.subs.set(e.categoryId, s);
+        }
+      }
+      const share = (v) => total ? v / total : 0;
+      const rows = [];
+      for (const m of [...mains.values()].sort((a, b) => b.amount - a.amount)) {
+        rows.push({ category: m.name, count: m.count, amount: m.amount, share: share(m.amount), _strong: true });
+        for (const s of [...m.subs.values()].sort((a, b) => b.amount - a.amount)) {
+          rows.push({ category: s.name, count: s.count, amount: s.amount, share: share(s.amount), _level: 1 });
+        }
+      }
+      const subtotal = this.format.showTotals ? { category: `Total ${label.toLowerCase()}`, count: entries.length, amount: total, share: 1, _strong: true } : null;
+      return { label, rows, subtotal };
+    }
+  };
+
+  // src/domain/export/reports/MonthsReport.js
+  var MonthsReport = class extends BaseReport {
+    build() {
+      const entries = this.entries().filter((e) => e.type === "expense" || e.type === "income");
+      const columns = [
+        { key: "month", label: this.format.calendar === "hijri" ? "Hijri month" : "Month", kind: "text", align: "left", weight: 1.6 },
+        { key: "count", label: "Entries", kind: "count", align: "right", weight: 0.7 },
+        this.money("income", `Income (${this.home})`),
+        this.money("expense", `Expense (${this.home})`),
+        this.money("net", `Net (${this.home})`)
+      ];
+      const months = /* @__PURE__ */ new Map();
+      for (const e of entries) {
+        const { key, label } = this.monthOf(e);
+        if (!months.has(key)) months.set(key, { month: label, count: 0, income: 0, expense: 0 });
+        const m = months.get(key);
+        m.count += 1;
+        m[e.type] += e.homeAmount;
+      }
+      const rows = [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, m]) => ({ ...m, net: m.income - m.expense }));
+      const total = this.format.showTotals && rows.length ? {
+        month: "Total",
+        count: BaseReport.sum(rows, "count"),
+        income: BaseReport.sum(rows, "income"),
+        expense: BaseReport.sum(rows, "expense"),
+        net: BaseReport.sum(rows, "net"),
+        _strong: true
+      } : null;
+      return new ReportTable({
+        title: this.title(this.format.calendar === "hijri" ? "Income and expense by Hijri month" : "Income and expense by month"),
+        subtitle: this.subtitle(),
+        columns,
+        sections: [{ label: null, rows, subtotal: null }],
+        total,
+        fileStem: this.fileStem("months")
+      });
+    }
+  };
+
+  // src/domain/export/reports/AccountsReport.js
+  var AccountsReport = class extends BaseReport {
+    #fx = new CurrencyService();
+    build() {
+      const entries = this.entries();
+      const money = (key, label) => ({ key, label, kind: "money", align: "right", weight: 1.1, currencyKey: "currency" });
+      const columns = [
+        { key: "account", label: "Account", kind: "text", align: "left", weight: 1.8 },
+        { key: "currency", label: "Currency", kind: "text", align: "left", weight: 0.7 },
+        money("moneyIn", "Money in"),
+        money("moneyOut", "Money out"),
+        money("transferIn", "Transfers in"),
+        money("transferOut", "Transfers out"),
+        money("net", "Net change")
+      ];
+      const byAccount = /* @__PURE__ */ new Map();
+      const slot = (id) => {
+        const acc = this.ledger.account(id);
+        if (!acc) return null;
+        if (!byAccount.has(id)) {
+          byAccount.set(id, { account: acc.name, currency: acc.currency, moneyIn: 0, moneyOut: 0, transferIn: 0, transferOut: 0 });
+        }
+        return byAccount.get(id);
+      };
+      const inAcc = (amount, from, acc) => acc.currency === from ? amount : this.#fx.convert(amount, from, acc.currency);
+      const wanted = new Set(this.filter.accountIds);
+      const counts = (id) => !wanted.size || wanted.has(id);
+      for (const e of entries) {
+        if (e.type === "transfer") {
+          const out = counts(e.fromAccountId) ? slot(e.fromAccountId) : null;
+          if (out) out.transferOut += inAcc(e.amount, e.currency, out);
+          const into = e.toAccountId && counts(e.toAccountId) ? slot(e.toAccountId) : null;
+          if (into) {
+            into.transferIn += e.receivedAmount != null && e.receivedCurrency ? inAcc(e.receivedAmount, e.receivedCurrency, into) : inAcc(e.amount, e.currency, into);
+          }
+          continue;
+        }
+        const a = slot(e.accountId);
+        if (!a) continue;
+        if (e.type === "income") a.moneyIn += inAcc(e.amount, e.currency, a);
+        if (e.type === "expense") a.moneyOut += inAcc(e.amount, e.currency, a);
+      }
+      const rows = [...byAccount.values()].map((a) => ({ ...a, net: a.moneyIn - a.moneyOut + a.transferIn - a.transferOut })).sort((a, b) => a.account.localeCompare(b.account, void 0, { sensitivity: "base" }));
+      return new ReportTable({
+        title: this.title("Account activity"),
+        subtitle: this.subtitle(),
+        columns,
+        sections: [{ label: null, rows, subtotal: null }],
+        notes: ["Amounts are in each account\u2019s own currency."],
+        fileStem: this.fileStem("accounts")
+      });
+    }
+  };
+
+  // src/domain/export/ReportBuilder.js
+  var ReportBuilder = class _ReportBuilder {
+    static #REPORTS = {
+      transactions: TransactionsReport,
+      categories: CategoryReport,
+      months: MonthsReport,
+      accounts: AccountsReport
+    };
+    /**
+     * @param {object} state   the book (or a shared space's projection)
+     * @param {import('./ExportFilter.js').ExportFilter} filter
+     * @param {import('./ExportFormat.js').ExportFormat} format
+     * @param {Date} [today]
+     * @returns {import('./ReportTable.js').ReportTable}
+     */
+    static build(state, filter, format, today = /* @__PURE__ */ new Date()) {
+      const Report = _ReportBuilder.#REPORTS[format.report] || TransactionsReport;
+      return new Report({ ledger: new LedgerEntries(state), filter, format, state, today }).build();
+    }
+  };
+
+  // src/domain/export/CellText.js
+  var CellText = class _CellText {
+    #fx;
+    #dateFmt;
+    constructor({ fx = new CurrencyService() } = {}) {
+      this.#fx = fx;
+      this.#dateFmt = new Intl.DateTimeFormat(void 0, { day: "numeric", month: "short", year: "numeric" });
+    }
+    /** The currency of a money cell. */
+    currency(col, row) {
+      return col.currencyKey && row[col.currencyKey] || col.currency || "USD";
+    }
+    /** Major units of a money cell (e.g. 1798.5 for ₹1,798.50). */
+    major(col, row) {
+      if (_CellText.isLabel(col, row)) return null;
+      const v = row[col.key];
+      return v == null || v === "" ? null : this.#fx.fromMinor(Number(v), this.currency(col, row));
+    }
+    /** Decimal places of a money cell's currency (0 for JPY, 3 for KWD …). */
+    digits(col, row) {
+      return this.#fx.minorDigits(this.currency(col, row));
+    }
+    /** Whether this cell holds a row label (e.g. "Subtotal · 4") rather than a value. */
+    /** Money, counts and percentages: right-aligned, never wrapped. */
+    static isNumeric(col) {
+      return col.kind === "money" || col.kind === "count" || col.kind === "percent";
+    }
+    /** Short fixed-format values (dates, Hijri dates) that read badly split over two lines. */
+    static keepsOneLine(col) {
+      return col.kind === "date" || Boolean(col.nowrap);
+    }
+    static isLabel(col, row) {
+      return row._labelKey === col.key;
+    }
+    /** Display text: money with its symbol, dates spelled out, percentages. */
+    text(col, row) {
+      if (_CellText.isLabel(col, row)) return row._label;
+      const v = row[col.key];
+      if (v == null || v === "") return "";
+      switch (col.kind) {
+        case "money":
+          return this.#fx.formatMoney(Number(v), this.currency(col, row));
+        case "date":
+          return this.#dateFmt.format(/* @__PURE__ */ new Date(`${v}T12:00:00`));
+        case "percent":
+          return `${(Number(v) * 100).toFixed(1)}%`;
+        case "count":
+          return Number(v).toLocaleString();
+        default:
+          return String(v);
+      }
+    }
+    /** Plain value for CSV: numbers without symbols or grouping, ISO dates. */
+    plain(col, row) {
+      if (_CellText.isLabel(col, row)) return row._label;
+      const v = row[col.key];
+      if (v == null || v === "") return "";
+      switch (col.kind) {
+        case "money":
+          return this.major(col, row).toFixed(this.digits(col, row));
+        case "percent":
+          return (Number(v) * 100).toFixed(1);
+        default:
+          return String(v);
+      }
+    }
+  };
+
+  // src/domain/export/writers/ReportWriter.js
+  var ReportWriter = class {
+    cells;
+    constructor({ cells = new CellText() } = {}) {
+      this.cells = cells;
+    }
+    /** File extension, e.g. "pdf". */
+    get extension() {
+      throw new Error("extension not implemented");
+    }
+    /**
+     * @param {import('../ReportTable.js').ReportTable} table
+     * @param {import('../ExportFormat.js').ExportFormat} format
+     * @returns {Promise<Blob>}
+     */
+    async write(_table, _format) {
+      throw new Error("write() not implemented");
+    }
+    /** "Generated 14 Nov 2026, 14:05 · Pocket". */
+    static generatedLine(now = /* @__PURE__ */ new Date()) {
+      return `Generated ${now.toLocaleString(void 0, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })} \xB7 Pocket`;
+    }
+  };
+
+  // src/domain/export/VendorLibrary.js
+  var VendorLibrary = class _VendorLibrary {
+    static #loading = /* @__PURE__ */ new Map();
+    static #fonts = null;
+    /** @returns {Promise<{jsPDF: Function, autoTable: Function}>} */
+    static async pdf() {
+      await _VendorLibrary.#script("vendor/jspdf.umd.min.js");
+      await _VendorLibrary.#script("vendor/jspdf.plugin.autotable.min.js");
+      const jsPDF = window.jspdf?.jsPDF;
+      const autoTable = window.autoTable || window.jspdf_autotable?.autoTable;
+      if (!jsPDF || !autoTable) throw new Error("The PDF library did not load");
+      return { jsPDF, autoTable };
+    }
+    /** @returns {Promise<Function>} writeXlsxFile */
+    static async excel() {
+      await _VendorLibrary.#script("vendor/write-excel-file.min.js");
+      if (typeof window.writeXlsxFile !== "function") throw new Error("The Excel library did not load");
+      return window.writeXlsxFile;
+    }
+    /** Noto Sans regular and semibold as base64, for jsPDF's virtual file system. */
+    static async fonts() {
+      if (!_VendorLibrary.#fonts) {
+        _VendorLibrary.#fonts = Promise.all(["NotoSans-Regular.ttf", "NotoSans-SemiBold.ttf"].map(async (name) => {
+          const res = await fetch(_VendorLibrary.#url(`vendor/fonts/${name}`));
+          if (!res.ok) throw new Error(`Font ${name}: HTTP ${res.status}`);
+          return { name, base64: _VendorLibrary.#base64(new Uint8Array(await res.arrayBuffer())) };
+        })).catch((e) => {
+          _VendorLibrary.#fonts = null;
+          throw e;
+        });
+      }
+      return _VendorLibrary.#fonts;
+    }
+    static #url(path) {
+      return new URL(path, document.baseURI).href;
+    }
+    static #script(path) {
+      const src = _VendorLibrary.#url(path);
+      if (!_VendorLibrary.#loading.has(src)) {
+        _VendorLibrary.#loading.set(src, new Promise((resolve, reject) => {
+          const el = document.createElement("script");
+          el.src = src;
+          el.async = true;
+          el.onload = () => resolve();
+          el.onerror = () => {
+            _VendorLibrary.#loading.delete(src);
+            reject(new Error(`Could not load ${path}`));
+          };
+          document.head.appendChild(el);
+        }));
+      }
+      return _VendorLibrary.#loading.get(src);
+    }
+    static #base64(bytes) {
+      let bin = "";
+      const CHUNK = 32768;
+      for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      return btoa(bin);
+    }
+  };
+
+  // src/domain/export/writers/PdfWriter.js
+  var PdfWriter = class _PdfWriter extends ReportWriter {
+    static #FONT = "NotoSans";
+    static #MARGIN = 36;
+    // pt (½ inch)
+    static #INK = [9, 9, 11];
+    static #MUTED_INK = [113, 113, 122];
+    static #LINE = [228, 228, 231];
+    static #HEAD = [24, 24, 27];
+    static #BAND = [244, 244, 245];
+    get extension() {
+      return "pdf";
+    }
+    /** Portrait or landscape for this table and format. */
+    static orientation(table, format) {
+      if (format.orientation === "portrait" || format.orientation === "landscape") return format.orientation;
+      const weight = table.columns.reduce((n, c) => n + (c.weight || 1), 0);
+      return table.columns.length >= 7 || weight > 7.5 ? "landscape" : "portrait";
+    }
+    async write(table, format) {
+      const [{ jsPDF, autoTable }, fonts] = await Promise.all([VendorLibrary.pdf(), VendorLibrary.fonts()]);
+      const doc = new jsPDF({ orientation: _PdfWriter.orientation(table, format), unit: "pt", format: format.paper, compress: true });
+      this.#registerFonts(doc, fonts);
+      const M = _PdfWriter.#MARGIN;
+      const pageW = doc.internal.pageSize.getWidth();
+      const width = pageW - 2 * M;
+      const fontSize = table.columns.length >= 9 ? 7.5 : table.columns.length >= 7 ? 8 : 9;
+      let y = M;
+      doc.setFont(_PdfWriter.#FONT, "bold").setFontSize(16).setTextColor(..._PdfWriter.#INK);
+      for (const line of doc.splitTextToSize(table.title, width)) {
+        doc.text(line, M, y + 12);
+        y += 20;
+      }
+      doc.setFont(_PdfWriter.#FONT, "normal").setFontSize(9).setTextColor(..._PdfWriter.#MUTED_INK);
+      for (const text of [table.subtitle, ...table.notes].filter(Boolean)) {
+        for (const line of doc.splitTextToSize(text, width)) {
+          doc.text(line, M, y + 8);
+          y += 12;
+        }
+      }
+      y += 8;
+      const cols = table.columns;
+      const body = [];
+      for (const s of table.sections) {
+        if (s.label) {
+          body.push([{ content: s.label, colSpan: cols.length, styles: { fontStyle: "bold", fillColor: _PdfWriter.#BAND, textColor: _PdfWriter.#INK } }]);
+        }
+        for (const r of s.rows) body.push(this.#row(cols, r));
+        if (s.subtotal) body.push(this.#row(cols, s.subtotal, { lineWidth: { top: 0.75 }, lineColor: [161, 161, 170] }));
+      }
+      if (table.isEmpty) {
+        body.push([{ content: "No entries match these filters.", colSpan: cols.length, styles: { halign: "center", textColor: _PdfWriter.#MUTED_INK } }]);
+      }
+      const columnStyles = {};
+      cols.forEach((c, i) => {
+        const numeric = CellText.isNumeric(c);
+        const oneLine = CellText.keepsOneLine(c);
+        columnStyles[i] = {
+          halign: c.align === "right" || numeric ? "right" : "left",
+          // Numbers and dates keep one line; text shares what is left and wraps.
+          cellWidth: numeric || oneLine ? "wrap" : "auto",
+          minCellWidth: numeric ? 48 : oneLine ? 56 : 40
+        };
+      });
+      autoTable(doc, {
+        startY: y,
+        margin: { top: M + 18, right: M, bottom: M + 14, left: M },
+        tableWidth: width,
+        head: [cols.map((c, i) => ({ content: c.label, styles: { halign: columnStyles[i].halign } }))],
+        body,
+        foot: table.total ? [this.#row(cols, table.total)] : void 0,
+        showHead: "everyPage",
+        showFoot: "lastPage",
+        rowPageBreak: "avoid",
+        theme: "grid",
+        styles: {
+          font: _PdfWriter.#FONT,
+          fontStyle: "normal",
+          fontSize,
+          textColor: _PdfWriter.#INK,
+          cellPadding: { top: 4, right: 5, bottom: 4, left: 5 },
+          overflow: "linebreak",
+          valign: "top",
+          lineColor: _PdfWriter.#LINE,
+          lineWidth: 0.5
+        },
+        headStyles: { font: _PdfWriter.#FONT, fontStyle: "bold", fillColor: _PdfWriter.#HEAD, textColor: [255, 255, 255], valign: "middle" },
+        footStyles: { font: _PdfWriter.#FONT, fontStyle: "bold", fillColor: _PdfWriter.#BAND, textColor: _PdfWriter.#INK },
+        columnStyles,
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            doc.setFont(_PdfWriter.#FONT, "normal").setFontSize(8).setTextColor(..._PdfWriter.#MUTED_INK);
+            doc.text(doc.splitTextToSize(table.title, width)[0], M, M);
+          }
+        }
+      });
+      const pages = doc.getNumberOfPages();
+      const pageH = doc.internal.pageSize.getHeight();
+      const generated = ReportWriter.generatedLine();
+      for (let p = 1; p <= pages; p++) {
+        doc.setPage(p);
+        doc.setFont(_PdfWriter.#FONT, "normal").setFontSize(8).setTextColor(..._PdfWriter.#MUTED_INK);
+        doc.text(generated, M, pageH - M / 2);
+        doc.text(`Page ${p} of ${pages}`, pageW - M, pageH - M / 2, { align: "right" });
+      }
+      return doc.output("blob");
+    }
+    #row(cols, row, extraStyles = {}) {
+      return cols.map((c, i) => {
+        const styles = { ...extraStyles };
+        if (c.align === "right" || CellText.isNumeric(c)) styles.halign = "right";
+        if (row._strong) styles.fontStyle = "bold";
+        if (row._level && i === 0) styles.cellPadding = { top: 4, right: 5, bottom: 4, left: 16 };
+        if (row._level) styles.textColor = [63, 63, 70];
+        return { content: this.cells.text(c, row), styles };
+      });
+    }
+    #registerFonts(doc, fonts) {
+      const [regular, semibold] = fonts;
+      doc.addFileToVFS(regular.name, regular.base64);
+      doc.addFont(regular.name, _PdfWriter.#FONT, "normal");
+      doc.addFileToVFS(semibold.name, semibold.base64);
+      doc.addFont(semibold.name, _PdfWriter.#FONT, "bold");
+    }
+  };
+
+  // src/domain/export/writers/XlsxWriter.js
+  var XlsxWriter = class _XlsxWriter extends ReportWriter {
+    static #DARK = "#18181b";
+    static #MUTED = "#f4f4f5";
+    static #MAX_WIDTH = 48;
+    get extension() {
+      return "xlsx";
+    }
+    async write(table, format) {
+      const writeXlsxFile = await VendorLibrary.excel();
+      const { data, columns, headerIndex } = this.sheet(table);
+      return writeXlsxFile(data, {
+        sheet: _XlsxWriter.#sheetName(table.title),
+        columns,
+        stickyRowsCount: headerIndex + 1,
+        orientation: format.orientation === "portrait" ? "portrait" : "landscape",
+        fontFamily: "Calibri",
+        fontSize: 11
+      }).toBlob();
+    }
+    /** The sheet rows and column widths (exposed for tests). */
+    sheet(table) {
+      const cols = table.columns;
+      const n = cols.length;
+      const data = [];
+      const span = (value, extra = {}) => [{ value, columnSpan: n, ...extra }, ...Array(n - 1).fill(null)];
+      data.push(span(table.title, { fontWeight: "bold", fontSize: 14 }));
+      if (table.subtitle) data.push(span(table.subtitle, { textColor: "#52525b", wrap: true }));
+      for (const note of table.notes) data.push(span(note, { textColor: "#52525b" }));
+      data.push(span(ReportWriter.generatedLine(), { textColor: "#a1a1aa", fontSize: 9 }));
+      data.push(span(""));
+      const headerIndex = data.length;
+      data.push(cols.map((c) => ({
+        value: c.label,
+        fontWeight: "bold",
+        textColor: "#ffffff",
+        backgroundColor: _XlsxWriter.#DARK,
+        align: c.align === "right" ? "right" : "left",
+        alignVertical: "center",
+        height: 20
+      })));
+      for (const s of table.sections) {
+        if (s.label) data.push(span(s.label, { fontWeight: "bold", backgroundColor: _XlsxWriter.#MUTED }));
+        for (const r of s.rows) data.push(cols.map((c, i) => this.#cell(c, r, i)));
+        if (s.subtotal) data.push(cols.map((c, i) => this.#cell(c, s.subtotal, i, { topBorderStyle: "thin", topBorderColor: "#d4d4d8" })));
+      }
+      if (table.total) {
+        data.push(cols.map((c, i) => this.#cell(c, table.total, i, { backgroundColor: _XlsxWriter.#MUTED, topBorderStyle: "medium", topBorderColor: _XlsxWriter.#DARK })));
+      }
+      return { data, columns: this.#widths(table), headerIndex };
+    }
+    #cell(col, row, index, extra = {}) {
+      const base = { ...extra };
+      if (row._strong) base.fontWeight = "bold";
+      if (row._level && index === 0) base.indent = 1;
+      if (row._labelKey === col.key) return { value: row._label, ...base };
+      const v = row[col.key];
+      if (v == null || v === "") return { value: null, ...base };
+      switch (col.kind) {
+        case "money": {
+          const digits = this.cells.digits(col, row);
+          return { value: this.cells.major(col, row), type: Number, format: digits ? `#,##0.${"0".repeat(digits)}` : "#,##0", align: "right", ...base };
+        }
+        case "count":
+          return { value: Number(v), type: Number, format: "#,##0", align: "right", ...base };
+        case "percent":
+          return { value: Number(v), type: Number, format: "0.0%", align: "right", ...base };
+        case "date": {
+          const [y, m, d] = String(v).split("-").map(Number);
+          return { value: new Date(Date.UTC(y, m - 1, d)), type: Date, format: "dd mmm yyyy", ...base };
+        }
+        default:
+          return { value: String(v), type: String, wrap: col.weight >= 2, alignVertical: "top", ...base };
+      }
+    }
+    /** Column widths in characters: fit the longest value, within limits. */
+    #widths(table) {
+      return table.columns.map((c) => {
+        let longest = c.label.length;
+        const look = (row) => {
+          longest = Math.max(longest, String(this.cells.text(c, row) ?? "").length + (row._level ? 2 : 0));
+        };
+        for (const s of table.sections) {
+          s.rows.forEach(look);
+          if (s.subtotal) look(s.subtotal);
+        }
+        if (table.total) look(table.total);
+        const cap = c.weight >= 2 ? _XlsxWriter.#MAX_WIDTH : 32;
+        return { width: Math.max(8, Math.min(cap, longest + 2)) };
+      });
+    }
+    /** Excel sheet names: at most 31 characters, none of : \ / ? * [ ]. */
+    static #sheetName(title) {
+      return (title || "Report").replace(/[:\\/?*[\]]/g, " ").slice(0, 31).trim() || "Report";
+    }
+  };
+
+  // src/domain/export/writers/CsvWriter.js
+  var CsvWriter = class _CsvWriter extends ReportWriter {
+    get extension() {
+      return "csv";
+    }
+    async write(table, _format) {
+      return new Blob(["\uFEFF" + this.text(table)], { type: "text/csv;charset=utf-8" });
+    }
+    /** The CSV text (without the byte-order mark). */
+    text(table) {
+      const cols = table.columns;
+      const lines = [];
+      const line = (cells) => lines.push(cells.map(_CsvWriter.#cell).join(","));
+      const blank = () => lines.push("");
+      line([table.title]);
+      if (table.subtitle) line([table.subtitle]);
+      for (const n of table.notes) line([n]);
+      blank();
+      line(cols.map((c) => c.label));
+      for (const s of table.sections) {
+        if (s.label) line([s.label]);
+        for (const r of s.rows) line(cols.map((c, i) => this.#value(c, r, i)));
+        if (s.subtotal) line(cols.map((c, i) => this.#value(c, s.subtotal, i)));
+      }
+      if (table.total) line(cols.map((c, i) => this.#value(c, table.total, i)));
+      return lines.join("\r\n") + "\r\n";
+    }
+    /** A cell's value; a sub-category's name is indented under its main category. */
+    #value(col, row, index) {
+      const v = this.cells.plain(col, row);
+      return row._level && index === 0 ? `  ${v}` : v;
+    }
+    static #cell(v) {
+      const s = v == null ? "" : String(v);
+      const safe = /^[=+\-@\t\r]/.test(s) && !/^-?\d/.test(s) ? `'${s}` : s;
+      return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+    }
+  };
+
+  // src/domain/export/ReportExporter.js
+  var ReportExporter = class _ReportExporter {
+    static FILE_TYPES = Object.freeze([
+      ["pdf", "PDF", "file-text"],
+      ["xlsx", "Excel", "sheet"],
+      ["csv", "CSV", "file-spreadsheet"]
+    ]);
+    static #WRITERS = { pdf: PdfWriter, xlsx: XlsxWriter, csv: CsvWriter };
+    /**
+     * @param {object} state
+     * @param {import('./ExportFilter.js').ExportFilter} filter
+     * @param {import('./ExportFormat.js').ExportFormat} format
+     * @param {'pdf'|'xlsx'|'csv'} type
+     * @returns {Promise<{blob: Blob, fileName: string, rows: number}>}
+     */
+    static async make(state, filter, format, type) {
+      const Writer = _ReportExporter.#WRITERS[type];
+      if (!Writer) throw new Error(`Unknown file type: ${type}`);
+      const table = ReportBuilder.build(state, filter, format);
+      const writer = new Writer();
+      const blob = await writer.write(table, format);
+      return { blob, fileName: table.fileName(writer.extension), rows: table.rowCount };
+    }
+    /** Save a file through the browser. */
+    static download(blob, fileName) {
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement("a"), { href: url, download: fileName, rel: "noopener" });
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 1e3);
+    }
+  };
+
+  // src/ui/modals/ExportModal.js
+  var ExportModal = class _ExportModal {
+    static #PREVIEW_ROWS = 150;
+    /** Modal width: wider than the usual sheet, for the preview table. */
+    maxWidth = "760px";
+    #store;
+    #cells = new CellText();
+    /** @type {ExportFilter} */
+    #filter = new ExportFilter();
+    /** @type {ExportFormat} */
+    #format = new ExportFormat();
+    #busy = null;
+    constructor({ store = Store.getInstance() } = {}) {
+      this.#store = store;
+    }
+    onOpen() {
+      const saved = this.#store.getState().user?.exportPrefs || {};
+      this.#filter = new ExportFilter(saved.filter);
+      this.#format = new ExportFormat(saved.format);
+      this.#busy = null;
+    }
+    // ── Changes (called through window.__app, which re-renders) ─────────────
+    /** @param {'filter'|'format'} scope */
+    set(scope, field, value) {
+      if (scope === "filter") this.#filter = this.#filter.with(field, value);
+      else this.#format = this.#format.with(field, field === "showTotals" ? !!value : value);
+      this.#save();
+    }
+    toggle(scope, field, value) {
+      if (scope === "filter") this.#filter = this.#filter.toggle(field, value);
+      else if (field === "columns") this.#format = this.#format.toggleColumn(value);
+      this.#save();
+    }
+    moveColumn(key, step) {
+      this.#format = this.#format.moveColumn(key, step);
+      this.#save();
+    }
+    clearFilters() {
+      this.#filter = new ExportFilter({ period: this.#filter.period, from: this.#filter.from, to: this.#filter.to });
+      this.#save();
+    }
+    /** Make and save a file. @returns {Promise<string>} a message for the toast */
+    async run(type) {
+      if (this.#busy) return "Already preparing a file\u2026";
+      this.#busy = type;
+      try {
+        const { blob, fileName, rows } = await ReportExporter.make(this.#data(), this.#filter, this.#format, type);
+        ReportExporter.download(blob, fileName);
+        return `Saved ${fileName} \xB7 ${rows.toLocaleString()} row${rows === 1 ? "" : "s"}`;
+      } finally {
+        this.#busy = null;
+      }
+    }
+    get busy() {
+      return this.#busy;
+    }
+    // ── Rendering ────────────────────────────────────────────────────────────
+    render() {
+      const data = this.#data();
+      const table = ReportBuilder.build(data, this.#filter, this.#format);
+      const f = this.#filter;
+      const fm = this.#format;
+      return `
+      <div class="p-5">
+        <div class="sheet-header flex items-center justify-between">
+          <h3 class="text-lg font-semibold">Export report</h3>
+          <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close" title="Close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <div class="seg mb-4" style="grid-template-columns:repeat(${ExportFormat.REPORTS.length},minmax(0,1fr))" role="tablist">
+          ${ExportFormat.REPORTS.map(([k, l]) => `
+            <button type="button" role="tab" aria-selected="${fm.report === k}" class="${fm.report === k ? "on" : ""}"
+                    onclick="window.__app.exportSet('format','report','${k}')">${l}</button>`).join("")}
+        </div>
+
+        ${this.#periodSection(f)}
+        ${this.#filterSection(data, f)}
+        ${this.#layoutSection(fm)}
+        ${this.#preview(table)}
+
+        <div class="form-footer flex flex-wrap items-center gap-2 mt-4">
+          ${ReportExporter.FILE_TYPES.map(([type, label, icon], i) => `
+            <button type="button" class="btn ${i === 0 ? "btn-primary" : "btn-outline"} flex-1 justify-center py-2.5"
+                    onclick="window.__app.exportRun('${type}')" ${this.#busy ? "disabled" : ""}>
+              <i data-lucide="${icon}"></i> ${this.#busy === type ? "Preparing\u2026" : label}
+            </button>`).join("")}
+          <button type="button" class="w-full text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 pt-1"
+                  onclick="window.__app.exportCsv('all')" title="All transactions in the import template's columns">
+            Backup CSV for re-import (all transactions)
+          </button>
+        </div>
+      </div>`;
+    }
+    #periodSection(f) {
+      const { from, to } = f.range();
+      return `
+      <div class="mb-3">
+        <label class="field-label" for="expPeriod">Period</label>
+        <div class="flex flex-wrap gap-2 items-center">
+          <select id="expPeriod" class="select w-auto" onchange="window.__app.exportSet('filter','period',this.value)">
+            ${ExportFilter.PERIODS.map(([k, l]) => `<option value="${k}" ${f.period === k ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+          ${f.period === "custom" ? `
+            <input class="input w-auto" type="date" value="${f.from}" aria-label="From"
+                   onchange="window.__app.exportSet('filter','from',this.value)">
+            <span class="text-zinc-400 text-sm">to</span>
+            <input class="input w-auto" type="date" value="${f.to}" aria-label="To"
+                   onchange="window.__app.exportSet('filter','to',this.value)">` : `<span class="text-xs text-zinc-500">${from ? this.#esc(from) : "Beginning"} \u2192 ${to ? this.#esc(to) : "today"}</span>`}
+        </div>
+      </div>`;
+    }
+    #filterSection(data, f) {
+      const accounts = (data.accounts || []).filter((a) => !a.archived || f.accountIds.includes(a.id));
+      const cats = data.categories || [];
+      const mains = cats.filter((c) => !c.parentId || !cats.some((p) => p.id === c.parentId));
+      const catOptions = mains.sort((a, b) => a.name.localeCompare(b.name)).flatMap((m) => [
+        { id: m.id, label: m.name },
+        ...cats.filter((c) => c.parentId === m.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => ({ id: c.id, label: `${m.name} / ${c.name}` }))
+      ]);
+      const catLabel = (id) => catOptions.find((o) => o.id === id)?.label || id;
+      const payments = [...new Set((data.transactions || []).map((t) => t.paymentType).filter(Boolean))].sort();
+      const n = f.activeCount;
+      return `
+      <details class="more-options card-muted px-3 mb-3" ${n ? "open" : ""}>
+        <summary class="flex items-center gap-1.5 py-2.5 text-sm font-medium">
+          <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
+          Filters
+          ${n ? `<span class="chip" style="font-size:.7rem;padding:.05rem .45rem">${n}</span>
+                 <button type="button" class="ml-auto text-xs text-zinc-500 hover:text-rose-500" onclick="event.preventDefault();window.__app.exportClearFilters()">Clear</button>` : '<span class="text-xs font-normal text-zinc-400">accounts, categories, types\u2026</span>'}
+        </summary>
+        <div class="pb-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${this.#multiPicker("Accounts", "accountIds", f.accountIds, accounts.map((a) => ({ id: a.id, label: a.name })), (id) => accounts.find((a) => a.id === id)?.name || id, "Any account")}
+          ${this.#multiPicker("Categories", "categoryIds", f.categoryIds, catOptions, catLabel, "Any category")}
+          <div>
+            <span class="field-label">Types</span>
+            <div class="chip-scroll">${ExportFilter.TYPES.map(([k, l]) => this.#chip(l, f.types.includes(k), `window.__app.exportToggle('filter','types','${k}')`)).join("")}</div>
+          </div>
+          <div>
+            <span class="field-label">Payment</span>
+            <div class="chip-scroll">${payments.length ? payments.map((p) => this.#chip(p[0].toUpperCase() + p.slice(1), f.paymentTypes.includes(p), `window.__app.exportToggle('filter','paymentTypes','${Html.js(p)}')`)).join("") : '<span class="text-xs text-zinc-400">None recorded</span>'}</div>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="field-label" for="expSearch">Search payee, note, category or account</label>
+            <input id="expSearch" class="input" value="${this.#esc(f.search)}" placeholder="e.g. taxi"
+                   onchange="window.__app.exportSet('filter','search',this.value)">
+          </div>
+        </div>
+      </details>`;
+    }
+    #layoutSection(fm) {
+      const isTx = fm.report === "transactions";
+      const usesCalendar = fm.report === "months" || isTx && fm.groupBy === "month";
+      const select = (label, field, list, value) => `
+      <div>
+        <label class="field-label">${label}</label>
+        <select class="select" onchange="window.__app.exportSet('format','${field}',this.value)">
+          ${list.map(([k, l]) => `<option value="${k}" ${value === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+      </div>`;
+      return `
+      <details class="more-options card-muted px-3 mb-3">
+        <summary class="flex items-center gap-1.5 py-2.5 text-sm font-medium">
+          <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
+          Layout
+          <span class="text-xs font-normal text-zinc-400">${isTx ? "columns, grouping, " : ""}page, title</span>
+        </summary>
+        <div class="pb-3">
+          ${isTx ? this.#columnPicker(fm) : ""}
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            ${isTx ? select("Group by", "groupBy", ExportFormat.GROUPS, fm.groupBy) : ""}
+            ${usesCalendar ? select("Months", "calendar", ExportFormat.CALENDARS, fm.calendar) : ""}
+            ${select("PDF page", "orientation", ExportFormat.ORIENTATIONS, fm.orientation)}
+            ${select("Paper", "paper", ExportFormat.PAPERS, fm.paper)}
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
+            <div>
+              <label class="field-label" for="expTitle">Title</label>
+              <input id="expTitle" class="input" value="${this.#esc(fm.title)}" placeholder="Default title"
+                     onchange="window.__app.exportSet('format','title',this.value)">
+            </div>
+            <label class="flex items-center gap-2 text-sm pb-2">
+              <input type="checkbox" ${fm.showTotals ? "checked" : ""} onchange="window.__app.exportSet('format','showTotals',this.checked)">
+              Totals
+            </label>
+          </div>
+          <div class="text-[11px] text-zinc-500 mt-2">Your layout is kept when you change the filters, and remembered for next time.</div>
+        </div>
+      </details>`;
+    }
+    #columnPicker(fm) {
+      const shown = fm.columns;
+      const hidden = ExportFormat.TX_COLUMNS.filter(([k]) => !shown.includes(k));
+      return `
+      <span class="field-label">Columns, in order</span>
+      <div class="flex flex-wrap gap-1.5 mb-2">
+        ${shown.map((k, i) => `
+          <span class="inline-flex items-center rounded-full border border-zinc-300 dark:border-zinc-700 text-sm overflow-hidden">
+            <button type="button" class="px-1.5 py-1 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-30"
+                    ${i === 0 ? "disabled" : ""} onclick="window.__app.exportMoveColumn('${k}',-1)" aria-label="Move left">\u2039</button>
+            <span class="py-1">${this.#esc(ExportFormat.label(ExportFormat.TX_COLUMNS, k))}</span>
+            <button type="button" class="px-1.5 py-1 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-30"
+                    ${i === shown.length - 1 ? "disabled" : ""} onclick="window.__app.exportMoveColumn('${k}',1)" aria-label="Move right">\u203A</button>
+            <button type="button" class="pr-2 pl-0.5 py-1 text-zinc-400 hover:text-rose-500 disabled:opacity-30" ${shown.length === 1 ? "disabled" : ""}
+                    onclick="window.__app.exportToggle('format','columns','${k}')" aria-label="Hide column">\xD7</button>
+          </span>`).join("")}
+      </div>
+      ${hidden.length ? `
+        <div class="flex flex-wrap gap-1.5 mb-3">
+          ${hidden.map(([k, l]) => `
+            <button type="button" class="px-2.5 py-1 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500"
+                    onclick="window.__app.exportToggle('format','columns','${k}')">\uFF0B ${this.#esc(l)}</button>`).join("")}
+        </div>` : '<div class="mb-3"></div>'}`;
+    }
+    #preview(table) {
+      const cols = table.columns;
+      const shown = [];
+      let budget = _ExportModal.#PREVIEW_ROWS;
+      for (const s of table.sections) {
+        if (budget <= 0) break;
+        if (s.label) shown.push({ section: s.label });
+        for (const r of s.rows.slice(0, budget)) shown.push({ row: r });
+        budget -= s.rows.length;
+        if (s.subtotal && budget >= 0) shown.push({ row: s.subtotal, sub: true });
+      }
+      const more = table.rowCount - Math.min(table.rowCount, _ExportModal.#PREVIEW_ROWS);
+      const cell = (c, r, i) => {
+        const right = CellText.isNumeric(c);
+        const nowrap = CellText.keepsOneLine(c) && !CellText.isLabel(c, r);
+        const pad = r._level && i === 0 ? "padding-left:1.25rem;" : "";
+        const text = this.#esc(this.#cells.text(c, r));
+        return `<td class="px-2.5 py-1.5 align-top ${right ? "text-right tx-amount whitespace-nowrap" : ""} ${nowrap ? "whitespace-nowrap" : ""}"
+                  style="${pad}${c.weight >= 2 ? "min-width:14rem;" : ""}">${text}</td>`;
+      };
+      return `
+      <div class="mb-1 flex items-baseline justify-between gap-2">
+        <span class="field-label mb-0">Preview</span>
+        <span class="text-xs text-zinc-500">${table.rowCount.toLocaleString()} row${table.rowCount === 1 ? "" : "s"}${more > 0 ? ` \xB7 first ${_ExportModal.#PREVIEW_ROWS} shown` : ""}</span>
+      </div>
+      <div class="text-sm font-semibold">${this.#esc(table.title)}</div>
+      <div class="text-xs text-zinc-500 mb-1">${this.#esc(table.subtitle)}</div>
+      ${table.notes.map((n) => `<div class="text-xs text-zinc-500">${this.#esc(n)}</div>`).join("")}
+      <div class="export-preview mt-2 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-auto" style="max-height:340px">
+        ${table.isEmpty ? '<div class="p-6 text-center text-sm text-zinc-500">No entries match these filters.</div>' : `<table class="text-xs w-full" style="border-collapse:separate;border-spacing:0">
+          <thead>
+            <tr>${cols.map((c) => `<th class="px-2.5 py-2 font-semibold whitespace-nowrap ${c.align === "right" || c.kind === "money" ? "text-right" : "text-left"}">${this.#esc(c.label)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${shown.map((x) => x.section ? `<tr class="export-section"><td colspan="${cols.length}" class="px-2.5 py-1.5 font-semibold">${this.#esc(x.section)}</td></tr>` : `<tr class="${x.row._strong ? "font-semibold" : ""} ${x.sub ? "export-subtotal" : ""}">${cols.map((c, i) => cell(c, x.row, i)).join("")}</tr>`).join("")}
+          </tbody>
+          ${table.total ? `<tfoot><tr class="font-semibold">${cols.map((c, i) => cell(c, table.total, i)).join("")}</tr></tfoot>` : ""}
+        </table>`}
+      </div>`;
+    }
+    #multiPicker(label, field, selected, options, labelOf, placeholder) {
+      const remaining = options.filter((o) => !selected.includes(o.id));
+      return `
+      <div>
+        <span class="field-label">${label}</span>
+        ${selected.length ? `<div class="flex flex-wrap gap-1.5 mb-1.5">${selected.map((id) => `
+          <span class="chip">${this.#esc(labelOf(id))}
+            <button type="button" class="ml-1 opacity-60" aria-label="Remove"
+                    onclick="window.__app.exportToggle('filter','${field}','${Html.js(id)}')">\xD7</button></span>`).join("")}</div>` : ""}
+        <select class="select" onchange="if(this.value){window.__app.exportToggle('filter','${field}',this.value)}">
+          <option value="">${selected.length ? "\uFF0B Add\u2026" : placeholder}</option>
+          ${remaining.map((o) => `<option value="${this.#esc(o.id)}">${this.#esc(o.label)}</option>`).join("")}
+        </select>
+      </div>`;
+    }
+    #chip(label, on, onclick) {
+      return `<button type="button" onclick="${onclick}" class="px-3 py-1 rounded-full border text-sm ${on ? "bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"}">${this.#esc(label)}</button>`;
+    }
+    /** The book the user is looking at: their own, or a shared space's view of the owner's. */
+    #data() {
+      const space = window.__app?.spaces?.active?.();
+      return space ? space.project() : this.#store.getState();
+    }
+    /** Remember the layout and filters with the user's settings (synced). */
+    #save() {
+      const state = this.#store.getState();
+      state.user.exportPrefs = { filter: this.#filter.toJSON(), format: this.#format.toJSON() };
+      this.#store.persist();
+    }
+    #esc(s) {
+      return (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
+    }
+  };
+
   // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
@@ -14493,6 +15939,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
     // DayLogsModal
     #currencySetupModal = null;
     // CurrencySetupModal
+    #exportModal = null;
+    // ExportModal
     // ── Per-session UI state ──────────────────────────────────────────────────
     #reportRange = "30";
     #importPlan = null;
@@ -14636,6 +16084,8 @@ alter publication supabase_realtime add table public.family_contributions;</div>
       this.#modal.register("budget", new BudgetModal());
       this.#modal.register("settings", new SettingsModal());
       this.#modal.register("csv", new CsvModal());
+      this.#exportModal = new ExportModal({ store: this.#store });
+      this.#modal.register("export", this.#exportModal);
       this.#modal.register("debt", this.#debtModal);
       this.#modal.register("debtPayment", this.#debtModal);
       this.#modal.register("familyMember", this.#familyModal);
@@ -17342,6 +18792,38 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     discardConflictBackup(key) {
       this.#sync.discardConflictBackup?.(key);
       this.#render();
+    }
+    // ── Report export (PDF / Excel / CSV) ─────────────────────────────────
+    exportSet(scope, field, value) {
+      this.#exportModal.set(scope, field, value);
+      this.#modal.refresh();
+    }
+    exportToggle(scope, field, value) {
+      this.#exportModal.toggle(scope, field, value);
+      this.#modal.refresh();
+    }
+    exportMoveColumn(key, step) {
+      this.#exportModal.moveColumn(key, step);
+      this.#modal.refresh();
+    }
+    exportClearFilters() {
+      this.#exportModal.clearFilters();
+      this.#modal.refresh();
+    }
+    async exportRun(type) {
+      if (this.#exportModal.busy) return;
+      const label = { pdf: "PDF", xlsx: "Excel file", csv: "CSV" }[type] || "file";
+      this.#toast.show(`Preparing ${label}\u2026`);
+      const done = this.#exportModal.run(type);
+      this.#modal.refresh();
+      try {
+        this.#toast.show(await done);
+      } catch (e) {
+        console.error("[export]", e);
+        this.#toast.show(`Export failed: ${e.message || e}`);
+      } finally {
+        this.#modal.refresh();
+      }
     }
     exportCsv(range) {
       const state = this.#store.getState();

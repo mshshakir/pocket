@@ -47,11 +47,8 @@ export class ReportsView extends BaseView {
             <option value="30" ${this.#range==='30'?'selected':''}>Last 30d</option>
             <option value="90" ${this.#range==='90'?'selected':''}>Last 90d</option>
           </select>
-          <button class="btn btn-outline" onclick="window.__app.openModal('csv')">
+          <button class="btn btn-primary" onclick="window.__app.openModal('export')" title="PDF, Excel or CSV, with filters">
             <i data-lucide="download"></i> Export
-          </button>
-          <button class="btn btn-outline" onclick="window.print()" title="Save as PDF via browser print">
-            <i data-lucide="printer"></i> PDF
           </button>
         </div>
       </div>
@@ -223,7 +220,7 @@ export class ReportsView extends BaseView {
       topEl.innerHTML = tops.length === 0
         ? `<div class="text-sm text-zinc-500 text-center py-4">No expenses in range.</div>`
         : `<div class="divide-y divide-zinc-100 dark:divide-zinc-800">
-            ${tops.map(({ t, value }) => {
+            ${tops.map(({ tx: t, value }) => {
               const cat = state.categories.find((c) => c.id === t.categoryId);
               return `
                 <button onclick="window.__app.openModal('transaction',{id:'${t.id}'})"

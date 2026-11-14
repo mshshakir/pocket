@@ -87,6 +87,8 @@ export class Modal {
     // Let the view reset its per-open state before we render
     view.onOpen?.(opts, this.#card);
 
+    // A view may ask for a wider sheet (e.g. the export preview table).
+    this.#card.style.maxWidth = view.maxWidth || '';
     this.#card.innerHTML   = view.render(opts);
     this.#backdrop.classList.add('open');
     document.body.style.overflow = 'hidden';
@@ -127,6 +129,7 @@ export class Modal {
     const prev        = this.#active;
     this.#active      = null;
     this.#card.innerHTML = '';
+    this.#card.style.maxWidth = '';
     EventBus.getInstance().emit('modal:closed', { name: prev });
   }
 

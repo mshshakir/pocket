@@ -86,6 +86,7 @@ import { AuthModal }        from './ui/modals/AuthModal.js';
 import { RegularItemModal }     from './ui/modals/RegularItemModal.js';
 import { DayLogsModal }         from './ui/modals/DayLogsModal.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
+import { ExportModal }          from './ui/modals/ExportModal.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -149,6 +150,7 @@ export class Application {
   #reconcileModal    = null;  // ReconcileModal — kept for ledger-sum access
   #dayLogsModal      = null;  // DayLogsModal
   #currencySetupModal= null;  // CurrencySetupModal
+  #exportModal       = null;  // ExportModal
 
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
@@ -329,6 +331,8 @@ export class Application {
     this.#modal.register('budget',       new BudgetModal());
     this.#modal.register('settings',     new SettingsModal());
     this.#modal.register('csv',          new CsvModal());
+    this.#exportModal = new ExportModal({ store: this.#store });
+    this.#modal.register('export',       this.#exportModal);
     this.#modal.register('debt',         this.#debtModal);
     this.#modal.register('debtPayment',  this.#debtModal);
     this.#modal.register('familyMember', this.#familyModal);
@@ -3319,6 +3323,44 @@ export class Application {
   discardConflictBackup(key) {
     this.#sync.discardConflictBackup?.(key);
     this.#render();
+  }
+
+  // ── Report export (PDF / Excel / CSV) ─────────────────────────────────
+
+  exportSet(scope, field, value) {
+    this.#exportModal.set(scope, field, value);
+    this.#modal.refresh();
+  }
+
+  exportToggle(scope, field, value) {
+    this.#exportModal.toggle(scope, field, value);
+    this.#modal.refresh();
+  }
+
+  exportMoveColumn(key, step) {
+    this.#exportModal.moveColumn(key, step);
+    this.#modal.refresh();
+  }
+
+  exportClearFilters() {
+    this.#exportModal.clearFilters();
+    this.#modal.refresh();
+  }
+
+  async exportRun(type) {
+    if (this.#exportModal.busy) return;
+    const label = { pdf: 'PDF', xlsx: 'Excel file', csv: 'CSV' }[type] || 'file';
+    this.#toast.show(`Preparing ${label}…`);
+    const done = this.#exportModal.run(type);
+    this.#modal.refresh();               // shows "Preparing…" on the button
+    try {
+      this.#toast.show(await done);
+    } catch (e) {
+      console.error('[export]', e);
+      this.#toast.show(`Export failed: ${e.message || e}`);
+    } finally {
+      this.#modal.refresh();
+    }
   }
 
   exportCsv(range) {

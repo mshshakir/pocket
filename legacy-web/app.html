@@ -167,6 +167,15 @@
                   background:rgba(255,255,255,.96); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
                   border-bottom:1px solid #f4f4f5; }
   html.dark .sheet-header { background:rgba(12,12,15,.96); border-color:#1f1f23; }
+  /* Export preview: scrolls both ways inside its box; header row stays visible. */
+  .export-preview thead th { position:sticky; top:0; z-index:1; background:#18181b; color:#fafafa; }
+  .export-preview tbody tr + tr td { border-top:1px solid #f4f4f5; }
+  html.dark .export-preview tbody tr + tr td { border-top-color:#1f1f23; }
+  .export-preview .export-section td { background:#f4f4f5; }
+  html.dark .export-preview .export-section td { background:#18181b; }
+  .export-preview .export-subtotal td { border-top:1px solid #a1a1aa !important; }
+  .export-preview tfoot td { position:sticky; bottom:0; background:#f4f4f5; border-top:2px solid #18181b; }
+  html.dark .export-preview tfoot td { background:#18181b; border-top-color:#fafafa; }
   .more-options > summary { list-style:none; cursor:pointer; }
   .more-options > summary::-webkit-details-marker { display:none; }
   .more-options[open] .more-chevron { transform:rotate(90deg); }
