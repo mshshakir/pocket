@@ -26,6 +26,13 @@ export class LocalClock {
     }).format(when);
   }
 
+  /** Minutes since local midnight, 0–1439. */
+  minuteOfDay(): number {
+    const [h, m] = new Intl.DateTimeFormat('en-GB', { timeZone: this.#timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .format(new Date(this.#now())).split(':').map(Number);
+    return h * 60 + m;
+  }
+
   /** The hour of the day, 0–23. */
   hour(): number {
     const h = new Intl.DateTimeFormat('en-GB', { timeZone: this.#timeZone, hour: '2-digit', hourCycle: 'h23' })

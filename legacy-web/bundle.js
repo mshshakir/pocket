@@ -13581,7 +13581,7 @@ This replaces your current grouping.`
             <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
             ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
           </div>`).join("")}
-        ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself.
+        ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).
              Paying again for the same plan adds to its end date.${switching ? " Moving to a different plan starts it today; time left on the old one isn't carried over." : ""}</div>` : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
       </div>`;
     }
@@ -13610,7 +13610,7 @@ This replaces your current grouping.`
         <div class="flex items-center justify-between gap-2">
           <div>
             <div class="font-semibold text-sm">AI pack</div>
-            <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries. Credits don't expire.</div>
+            <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year.</div>
           </div>
           ${this.#button(pack, _PlanCard.#inr(pack.amountPaise), buying, false)}
         </div>

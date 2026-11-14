@@ -124,7 +124,7 @@ never are, and transfers are left out.
 2. The space's owner (Family plan, chat already linked with `/link`) sends `/summary on` in the
    group, or `/summary on <space name>` if they have several shared spaces.
 3. In the group: `/summary` (settings), `/summary now` (today so far),
-   `/summary daily|weekly|monthly|names on|off`, `/summary calendar hijri|regular`, `/summary time <city>`, `/summary off`. Only the owner can change settings.
+   `/summary daily|weekly|monthly|names on|off`, `/summary calendar hijri|regular`, `/summary time 8:30pm` (a morning time sums up the day before), `/summary weekly friday`, `/summary zone <city>`, `/summary off`. Only the owner can change settings.
 
 In a group with **topics**, summaries go to the topic where `/summary on` was sent (send it again
 from another topic to move them; from General, they go to General). In an ordinary group they go to
@@ -134,6 +134,6 @@ Entries are still sent to the bot in a private chat; in a group it records nothi
 
 How it runs: migration `0022_telegram_group_summaries.sql` adds `telegram_groups`, the
 `pocket_space_summary` totals and a pg_cron job that calls the `telegram-summaries` function
-(every half hour at :07 and :37 since 0024, so half-hour zones like India also post just after 9). The function works out what is due and claims each summary in the database before
+(every 10 minutes since 0026, so half-hour zones like India also post just after 9). The function works out what is due and claims each summary in the database before
 sending, so it posts once however often it is called. If the owner's Family plan ends, the group is
 told once that summaries are paused; if the bot is removed from the group, the link is deleted.

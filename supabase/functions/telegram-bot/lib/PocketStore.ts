@@ -74,6 +74,8 @@ export interface GroupLink {
   monthly: boolean;
   calendar: 'gregorian' | 'hijri'; // months for the monthly summary
   last_monthly: string | null;
+  post_minute: number;        // minutes after local midnight (21:00 = 1260)
+  weekly_day: number;         // 0 = Sunday … 6 = Saturday
   daily: boolean;
   weekly: boolean;
   names: boolean;
@@ -288,7 +290,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone' | 'monthly' | 'calendar'>>): Promise<void> {
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone' | 'monthly' | 'calendar' | 'post_minute' | 'weekly_day'>>): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
     if (error) throw error;
   }

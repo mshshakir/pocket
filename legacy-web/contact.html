@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Contact — Pocket</title>
+<meta name="description" content="How to contact Pocket about your account, payments or refunds." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  html,body{font-family:'Inter',ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;background:#fafafa;color:#18181b;}
+  [data-lucide]{width:18px;height:18px;stroke-width:1.75;}
+  .prose-pocket h2{font-size:1.25rem;font-weight:700;letter-spacing:-.01em;margin-top:2.25rem;margin-bottom:.6rem;scroll-margin-top:5rem;}
+  .prose-pocket h3{font-size:1rem;font-weight:600;margin-top:1.25rem;margin-bottom:.35rem;}
+  .prose-pocket p{color:#3f3f46;line-height:1.7;margin-bottom:.8rem;}
+  .prose-pocket ul{list-style:disc;padding-left:1.25rem;margin-bottom:.9rem;color:#3f3f46;}
+  .prose-pocket li{margin-bottom:.4rem;line-height:1.6;}
+  .prose-pocket a{color:#0e7490;text-decoration:underline;}
+  .prose-pocket strong{color:#18181b;}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<header class="sticky top-0 z-40 backdrop-blur bg-white/80 border-b border-zinc-200/70">
+  <div class="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2">
+      <div class="w-9 h-9 rounded-xl bg-zinc-900 text-white grid place-items-center font-bold">P</div>
+      <span class="font-semibold tracking-tight text-lg">Pocket</span>
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="index.html" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition"><i data-lucide="arrow-left"></i> Back</a>
+      <a href="app.html" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition">Go to app <i data-lucide="arrow-right"></i></a>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-3xl mx-auto px-5 py-12">
+  <div class="mb-8">
+    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-100 text-zinc-700 text-xs font-medium"><i data-lucide="mail" style="width:14px;height:14px"></i> Contact</span>
+    <h1 class="mt-4 text-3xl md:text-4xl font-extrabold tracking-tight">Contact us</h1>
+    <p class="mt-2 text-sm text-zinc-500">Last updated: November 2026</p>
+  </div>
+  <div class="prose-pocket">
+    <p>For questions about Pocket, your account, payments or refunds, write to us. We reply within 2 working days.</p>
+  </div>
+
+  <!-- CONTACT DETAILS: fill these in; they must match what was given to Razorpay for KYC. -->
+  <div class="mt-6 grid gap-3">
+    <div class="rounded-2xl bg-white border border-zinc-200 p-5 flex items-start gap-3">
+      <i data-lucide="building-2" style="color:#71717a"></i>
+      <div><div class="text-xs text-zinc-500">Operated by</div><div class="font-medium" data-contact="name">To be added</div></div>
+    </div>
+    <div class="rounded-2xl bg-white border border-zinc-200 p-5 flex items-start gap-3">
+      <i data-lucide="mail" style="color:#71717a"></i>
+      <div><div class="text-xs text-zinc-500">Email</div><div class="font-medium" data-contact="email">To be added</div></div>
+    </div>
+    <div class="rounded-2xl bg-white border border-zinc-200 p-5 flex items-start gap-3">
+      <i data-lucide="phone" style="color:#71717a"></i>
+      <div><div class="text-xs text-zinc-500">Phone</div><div class="font-medium" data-contact="phone">To be added</div></div>
+    </div>
+    <div class="rounded-2xl bg-white border border-zinc-200 p-5 flex items-start gap-3">
+      <i data-lucide="map-pin" style="color:#71717a"></i>
+      <div><div class="text-xs text-zinc-500">Address</div><div class="font-medium" data-contact="address">To be added</div></div>
+    </div>
+  </div>
+
+  <div class="prose-pocket mt-8">
+    <h2 id="payments">About a payment</h2>
+    <p>Please include the email you sign in with, the date and amount, and the Razorpay payment ID (it starts with <code>pay_</code>). See our <a href="refunds.html">Refunds &amp; cancellation policy</a>.</p>
+    <h2 id="data">About your data</h2>
+    <p>See the <a href="privacy.html">Privacy Policy</a> for what we hold and how to export or delete it.</p>
+  </div>
+
+  <div class="mt-12 pt-6 border-t border-zinc-200 flex items-center justify-between text-sm">
+    <a href="index.html" class="inline-flex items-center gap-2 text-zinc-600 hover:text-zinc-900"><i data-lucide="arrow-left"></i> Back to site</a>
+    <a href="app.html" class="inline-flex items-center gap-2 font-semibold text-zinc-900">Open Pocket <i data-lucide="arrow-right"></i></a>
+  </div>
+</main>
+
+<footer class="border-t border-zinc-200">
+  <div class="max-w-3xl mx-auto px-5 py-8 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400">
+    <span>© <span id="yr"></span> Pocket</span>
+    <span class="flex flex-wrap gap-x-4 gap-y-1">
+      <a href="terms.html" class="hover:text-zinc-700">Terms</a>
+      <a href="refunds.html" class="hover:text-zinc-700">Refunds &amp; cancellation</a>
+      <a href="privacy.html" class="hover:text-zinc-700">Privacy</a>
+      <a href="contact.html" class="hover:text-zinc-700">Contact</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+  lucide.createIcons();
+  document.getElementById('yr').textContent = new Date().getFullYear();
+</script>
+</body>
+</html>

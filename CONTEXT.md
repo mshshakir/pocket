@@ -67,7 +67,16 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   (only when `is_topic_message`), else the group; deleted topic → General. Time zones (0024 `time_zone`, default Asia/Kolkata; asked by buttons on `/summary on`, `/summary time <city>`;
   `lib/TimeZones.ts`; runner checks each group in its own zone; cron now `7,37 * * * *`). Monthly (0025 `monthly`, `calendar` gregorian|hijri, `last_monthly`;
   `lib/SummaryMonths.ts`; posted on the month's last day with per-category change vs previous month).
-  Tests: `telegram-bot/test/groups_test.ts` (61). Verified on live data that space +
+  Schedule (0026 `post_minute` default 1260, `weekly_day` default 0; `lib/SummarySchedule.ts`; morning
+  time = about yesterday; cron every 10 min; `/summary time 8:30pm`, `/summary weekly friday`, `/summary zone`).
+  Tests: `telegram-bot/test/groups_test.ts` (75).
+- **2026-11-14 · AI credits expire after a year** (0026: `billing_settings.ai_credit_days` 365,
+  `pocket_ai_expire(user)` FIFO, written as negative 'grant' rows ref `exp:<purchase id>`, cron
+  `ai-credit-expiry` hourly at :23). Decided: plans, trial and AI packs not refundable; only
+  duplicate/erroneous charges refunded.
+- **2026-11-14 · Legal pages:** legacy-web/terms.html, refunds.html, contact.html (contact details
+  still "To be added" — waiting on the user's name/email/phone/address matching Razorpay KYC; the
+  privacy page's contact email is still a placeholder too). Footer links on index and privacy. Verified on live data that space +
   personal spending = whole book.
 - **2026-11-14 · phase 5, Razorpay one-time payments (off until switched on):** migration 0021
   (`billing_settings.payments_enabled`, `payment_orders`, `pocket_payment_products/quote/fulfil`,

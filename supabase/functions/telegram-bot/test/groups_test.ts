@@ -36,7 +36,7 @@ class FakeStore {
   groups() { return Promise.resolve([...this.groupsMap.values()].map((g) => ({ ...g }))); }
   saveGroup(chat: number, owner: string, space: string, title: string | null, thread: number | null = null) {
     const had = this.groupsMap.get(chat);
-    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, time_zone: 'Asia/Kolkata', monthly: true, calendar: 'gregorian', last_monthly: null, ...had,
+    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, time_zone: 'Asia/Kolkata', monthly: true, calendar: 'gregorian', last_monthly: null, post_minute: 1260, weekly_day: 0, ...had,
       chat_id: chat, owner_id: owner, space_id: space, title, thread_id: thread, paused_notice: false });
     return Promise.resolve();
   }
@@ -226,7 +226,7 @@ console.log('\ngroup summaries');
   ok('Z2 someone else tapping a button changes nothing', store.groupsMap.get(GROUP)?.time_zone === 'Asia/Kolkata' && /Only the person/.test(tg.answers.at(-1) ?? ''));
   await tap(11, 'tz:Africa/Nairobi');
   ok('Z3 the owner taps Kenya: saved, and the question becomes the answer',
-    store.groupsMap.get(GROUP)?.time_zone === 'Africa/Nairobi' && /9 pm Kenya \(Africa\/Nairobi\)/.test(tg.edits.at(-1) ?? ''), tg.edits.at(-1));
+    store.groupsMap.get(GROUP)?.time_zone === 'Africa/Nairobi' && /9 pm, Kenya \(Africa\/Nairobi\)/.test(tg.edits.at(-1) ?? ''), tg.edits.at(-1));
   await tap(11, 'tz:Mars/Base');
   ok('Z4 a made-up zone is refused', store.groupsMap.get(GROUP)?.time_zone === 'Africa/Nairobi');
   await say('/summary time dubai');
@@ -333,6 +333,68 @@ console.log('\ngroup summaries');
   ok('M15 typed: back to regular months, shown in the status', store.groupsMap.get(GROUP)?.calendar === 'gregorian' && /Monthly: on, by regular months/.test(tg.last), tg.last);
   await say('/summary monthly off');
   ok('M16 monthly can be switched off', store.groupsMap.get(GROUP)?.monthly === false && /Monthly: off/.test(tg.last));
+}
+{
+  const { SummarySchedule: S } = await import('../lib/SummarySchedule.ts');
+  ok('W1 times people type', S.parseTime('9pm') === 1260 && S.parseTime('9 PM') === 1260 && S.parseTime('21:00') === 1260
+     && S.parseTime('8:30 pm') === 1230 && S.parseTime('2130') === 1290 && S.parseTime('7.45am') === 465 && S.parseTime('12am') === 0
+     && S.parseTime('12pm') === 720 && S.parseTime('25:00') === null && S.parseTime('dubai') === null && S.parseTime('13pm') === null);
+  ok('W2 shown back plainly', S.formatTime(1260) === '9 pm' && S.formatTime(1230) === '8:30 pm' && S.formatTime(465) === '7:45 am' && S.formatTime(0) === '12 am');
+  ok('W3 days', S.parseDay('fri') === 5 && S.parseDay('Friday') === 5 && S.parseDay('jumuah') === 5 && S.parseDay('sun') === 0 && S.parseDay('on') === null);
+}
+{
+  const { store, tg, say } = setup();
+  await say('/summary on');
+  await say('/summary time 8:30pm');
+  ok('W4 /summary time 8:30pm: saved and shown', store.groupsMap.get(GROUP)?.post_minute === 1230 && /Time: 8:30 pm/.test(tg.last), tg.last);
+  await say('/summary weekly friday');
+  ok('W5 /summary weekly friday: saved and shown', store.groupsMap.get(GROUP)?.weekly_day === 5 && /Weekly on Fridays: on/.test(tg.last), tg.last);
+  await say('/summary time 7am');
+  ok('W6 a morning time says it covers the day before', /7 am, about the day before/.test(tg.last), tg.last);
+  await say('/summary time 9pm', 22);
+  ok('W7 only the owner changes the time', store.groupsMap.get(GROUP)?.post_minute === 420);
+  await say('/summary zone dubai');
+  ok('W8 /summary zone still sets the time zone', store.groupsMap.get(GROUP)?.time_zone === 'Asia/Dubai');
+}
+{
+  // 8:30 pm India = 15:00 UTC.
+  const before = setup(at('2026-11-12T14:55:00Z'));
+  await before.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await before.store.updateGroup(GROUP, { post_minute: 1230 });
+  ok('W9 before the chosen time: nothing', (await before.runner.run()).posted === 0);
+  const after = setup(at('2026-11-12T15:05:00Z'));
+  await after.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await after.store.updateGroup(GROUP, { post_minute: 1230 });
+  ok('W10 just after it: posted', (await after.runner.run()).posted === 1);
+}
+{
+  // 7 am India on Sat 14 Nov = 01:30 UTC: the summary is about Friday 13 Nov.
+  const { store, tg, runner } = setup(at('2026-11-14T01:45:00Z'));
+  await store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await store.updateGroup(GROUP, { post_minute: 420 });
+  const r = await runner.run();
+  ok('W11 a morning summary is about yesterday', r.posted === 1 && store.asked.at(-1) === 'sp1:2026-11-13..2026-11-13' && /Fri 13 Nov/.test(tg.last), tg.last);
+}
+{
+  // Weekly on Fridays: Fri 13 Nov at 9:30 pm India.
+  const fri = setup(at('2026-11-13T16:00:00Z'));
+  await fri.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await fri.store.updateGroup(GROUP, { weekly_day: 5 });
+  const r = await fri.runner.run();
+  ok('W12 weekly on its chosen day, about the 7 days ending then', r.posted === 2 && fri.store.asked.includes('sp1:2026-11-07..2026-11-13') && /week of 7–13 Nov/.test(fri.tg.last), fri.tg.last);
+  const sun = setup(at('2026-11-15T16:00:00Z'));
+  await sun.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await sun.store.updateGroup(GROUP, { weekly_day: 5 });
+  ok('W13 and no longer on Sunday', (await sun.runner.run()).posted === 1);
+}
+{
+  // Morning time: the month that ended yesterday goes out on the 1st.
+  const { store, tg, runner } = setup(at('2026-11-01T01:45:00Z')); // 7:15 am India, Sun 1 Nov
+  await store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await store.updateGroup(GROUP, { post_minute: 420 });
+  const r = await runner.run();
+  ok('W14 with a morning time, October\'s monthly arrives on the morning of 1 November',
+    store.asked.includes('sp1:2026-10-01..2026-10-31') && tg.sent.some((m) => /October 2026/.test(m.text)) && r.posted === 3, JSON.stringify(r));
 }
 {
   ok('C1 clock: hour and weekday in India time', at('2026-11-15T15:45:00Z').hour() === 21 && at('2026-11-15T15:45:00Z').weekday() === 0

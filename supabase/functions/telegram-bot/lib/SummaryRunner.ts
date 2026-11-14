@@ -1,12 +1,13 @@
 /**
- * SummaryRunner — posts the group summaries that are due. Called every half
- * hour (pg_cron → the telegram-summaries function); it decides what's due
- * itself, in each group's own time zone:
+ * SummaryRunner — posts the group summaries that are due. Called every ten
+ * minutes (pg_cron → the telegram-summaries function); it decides what's due
+ * itself, in each group's own time zone, from its chosen time (9 pm unless
+ * changed) and weekly day (Sunday unless changed):
  *
- *   daily   from 9 pm, once per day
- *   weekly  from 9 pm on Sundays, once per week (Monday to Sunday)
- *   monthly from 9 pm on the last day of the month, by the group's calendar
- *           (regular or Hijri), compared with the month before
+ *   daily   once per day, about the day (the day before, for a morning time)
+ *   weekly  on the chosen day, about the seven days ending that day
+ *   monthly when the month (regular or Hijri, as chosen) has just ended,
+ *           compared with the month before
  *
  * Each summary is claimed in the database before it is sent, so overlapping
  * or repeated runs never post twice, and calling it early posts nothing.
@@ -16,9 +17,10 @@
  * summaries are paused; a group the bot was removed from is forgotten.
  */
 import type { GroupSummaries } from './GroupSummaries.ts';
-import type { LocalClock } from './LocalClock.ts';
 import { PlanAccess } from './PlanAccess.ts';
 import type { GroupLink, PocketStore } from './PocketStore.ts';
+import { LocalClock } from './LocalClock.ts';
+import { SummarySchedule } from './SummarySchedule.ts';
 import { TimeZones } from './TimeZones.ts';
 import type { TelegramClient } from './TelegramClient.ts';
 
@@ -29,7 +31,6 @@ export interface RunResult {
 }
 
 export class SummaryRunner {
-  static readonly POST_HOUR = 21;
   static readonly #PAUSED = '⏸ Pocket summaries are paused: the Family plan for this shared space has ended. '
     + 'They start again when it is renewed.';
 
@@ -51,8 +52,10 @@ export class SummaryRunner {
     for (const group of await this.#store.groups()) {
       try {
         const local = this.#clock.in(TimeZones.isValid(group.time_zone) ? group.time_zone : TimeZones.DEFAULT);
-        if (local.hour() < SummaryRunner.POST_HOUR) continue;
-        await this.#one(group, local.isoDate(), local.weekday() === 0, result);
+        const at = group.post_minute ?? SummarySchedule.DEFAULT_MINUTE;
+        if (local.minuteOfDay() < at) continue;
+        await this.#one(group, local.isoDate(), local.weekday() === (group.weekly_day ?? SummarySchedule.DEFAULT_WEEKDAY),
+          SummarySchedule.coversYesterday(at), result);
       } catch (e) {
         console.error('[summaries] group', group.chat_id, e);
       }
@@ -60,11 +63,17 @@ export class SummaryRunner {
     return result;
   }
 
-  async #one(group: GroupLink, today: string, sunday: boolean, result: RunResult): Promise<void> {
+  /**
+   * @param today the posting day (what each summary is claimed under)
+   * @param weekDay today is the group's weekly day
+   * @param yesterday a morning time: summarise the day before
+   */
+  async #one(group: GroupLink, today: string, weekDay: boolean, yesterday: boolean, result: RunResult): Promise<void> {
+    const about = yesterday ? LocalClock.shift(today, -1) : today;
     const dailyDue = group.daily && (group.last_daily ?? '') < today;
-    const weeklyDue = sunday && group.weekly && (group.last_weekly ?? '') < today;
+    const weeklyDue = weekDay && group.weekly && (group.last_weekly ?? '') < today;
     const months = group.monthly && (group.last_monthly ?? '') < today ? await this.#summaries.months(group) : null;
-    const monthlyDue = !!months?.isLastDay(today);
+    const monthlyDue = !!months?.isLastDay(about);
     if (!dailyDue && !weeklyDue && !monthlyDue) return;
 
     if (!(await PlanAccess.load(this.#store, group.owner_id)).canShare) {
@@ -77,15 +86,15 @@ export class SummaryRunner {
     if (group.paused_notice) await this.#store.updateGroup(group.chat_id, { paused_notice: false });
 
     if (dailyDue && await this.#store.claimSummary(group.chat_id, 'daily', today)) {
-      const text = await this.#summaries.daily(group, today);
+      const text = await this.#summaries.daily(group, about, yesterday ? 'yesterday' : 'today');
       if (text && await this.#post(group, text, true, result)) result.posted++;
     }
     if (weeklyDue && await this.#store.claimSummary(group.chat_id, 'weekly', today)) {
-      const text = await this.#summaries.weekly(group, today);
+      const text = await this.#summaries.weekly(group, about);
       if (text && await this.#post(group, text, true, result)) result.posted++;
     }
     if (monthlyDue && await this.#store.claimSummary(group.chat_id, 'monthly', today)) {
-      const text = await this.#summaries.monthly(group, today, months!);
+      const text = await this.#summaries.monthly(group, about, months!);
       if (text && await this.#post(group, text, true, result)) result.posted++;
     }
   }

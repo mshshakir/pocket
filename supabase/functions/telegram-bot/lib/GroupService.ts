@@ -8,7 +8,9 @@
  *   /summary daily|weekly|monthly|names on|off
  *   /summary calendar regular|hijri   months for the monthly summary
  *   /summary now          today's summary so far
- *   /summary time [city]  the time zone for 9 pm (buttons, or a typed city / zone)
+ *   /summary time 8:30pm  when summaries go out (9 pm unless changed)
+ *   /summary zone [city]  the time zone (buttons, or a typed city / zone)
+ *   /summary weekly friday   the day the weekly summary goes out (Sunday unless changed)
  *   /summary              what this group gets
  *
  * Only entries in that space's own accounts are summarised, never personal
@@ -25,6 +27,7 @@ import { PocketBook } from './PocketBook.ts';
 import type { GroupLink, PocketStore, SharedSpace, TelegramLink } from './PocketStore.ts';
 import { SummaryReport } from './SummaryReport.ts';
 import type { Keyboard, TelegramClient } from './TelegramClient.ts';
+import { SummarySchedule } from './SummarySchedule.ts';
 import { TimeZones } from './TimeZones.ts';
 
 export interface GroupMessage {
@@ -53,7 +56,7 @@ interface Place {
 export class GroupService {
   static readonly GUIDE = [
     '<b>Pocket in this group</b>',
-    'I post a summary of one shared space here: every evening at 9 pm, a weekly one on Sunday evenings, and a monthly one on the last evening of the month.',
+    'I post a summary of one shared space here: every day (9 pm unless you change it), a weekly one (Sundays unless changed), and a monthly one when the month ends.',
     'Only entries in that space\'s accounts are included. Personal accounts never are, and I don\'t read this group\'s messages.',
     '',
     'Entries are still sent to me in a private chat.',
@@ -61,7 +64,9 @@ export class GroupService {
     '/summary on  start (for the space\'s owner, on the Family plan)',
     '/summary  what this group gets',
     '/summary now  today so far',
-    '/summary time  choose the time zone (or e.g. /summary time Nairobi)',
+    '/summary time 8:30pm  change the time · a morning time (e.g. 7am) sums up the day before',
+    '/summary weekly friday  change the weekly day',
+    '/summary zone  choose the time zone (or e.g. /summary zone Nairobi)',
     '/summary calendar hijri  monthly summaries by Hijri months (or regular)',
     '/summary daily off · /summary weekly off · /summary monthly off · /summary names off',
     '/summary off  stop',
@@ -112,12 +117,26 @@ export class GroupService {
       await this.#store.removeGroup(chatId);
       return void await this.#say(at, 'Summaries are off for this group. Send /summary on to start again.');
     }
-    if (action === 'time') {
-      const typed = text.split(/\s+/).slice(2).join(' ');
-      if (!typed) return void await this.#askZone(at, 'Which time zone should 9 pm be in?');
+    const rest = text.split(/\s+/).slice(2).join(' ');
+    if ((action === 'time' || action === 'at') && rest) {
+      const minute = SummarySchedule.parseTime(rest);
+      if (minute !== null) {
+        await this.#store.updateGroup(chatId, { post_minute: minute });
+        return void await this.#status(at, { ...group, post_minute: minute });
+      }
+      if (action === 'at') return void await this.#say(at, 'Send a time like /summary time 8:30pm or /summary time 21:00.');
+    }
+    if (action === 'weekly' && SummarySchedule.parseDay(value) !== null) {
+      const day = SummarySchedule.parseDay(value)!;
+      await this.#store.updateGroup(chatId, { weekly_day: day, weekly: true });
+      return void await this.#status(at, { ...group, weekly_day: day, weekly: true });
+    }
+    if (action === 'time' || action === 'zone') {
+      const typed = rest;
+      if (!typed) return void await this.#askZone(at, 'Which time zone should the summaries follow?');
       const zone = TimeZones.resolve(typed);
       if (!zone || !TimeZones.isValid(zone)) {
-        return void await this.#askZone(at, `I don't know the time zone "${SummaryReport.esc(typed)}". Pick one, or type a big city near you, e.g. /summary time Nairobi`);
+        return void await this.#askZone(at, `I don't know the time "${SummaryReport.esc(typed)}" or a time zone by that name. For the time, send e.g. /summary time 8:30pm; for the time zone, pick one below or type a big city, e.g. /summary zone Nairobi`);
       }
       await this.#store.updateGroup(chatId, { time_zone: zone });
       return void await this.#status(at, { ...group, time_zone: zone });
@@ -154,17 +173,18 @@ export class GroupService {
       return void await this.#say(at, `${ask}\n${list}\nSend /summary on <name>, e.g. /summary on ${PocketBook.squash(spaces[0].name)}`);
     }
     await this.#store.saveGroup(at.chatId, link.user_id, chosen.id, title, at.threadId);
+    const saved = await this.#store.findGroup(at.chatId);
     const name = SummaryReport.esc(chosen.name);
     await this.#say(at, [
       `✅ ${at.threadId ? 'This topic' : 'This group'} will get summaries of <b>${name}</b> (${chosen.accounts} ${chosen.accounts === 1 ? 'account' : 'accounts'}):`,
-      'every evening at 9 pm, a weekly one on Sunday evenings, and a monthly one on the last evening of the month.',
+      `${GroupService.#when(saved)}.`,
       `Only entries in ${name}'s accounts are included; personal accounts never are.`,
       '',
+      'Change the time: /summary time 8:30pm · the weekly day: /summary weekly friday',
       'Settings: /summary · Today so far: /summary now',
     ].join('\n'), true);
-    const current = (await this.#store.findGroup(at.chatId))?.time_zone ?? TimeZones.DEFAULT;
-    await this.#askZone(at, `🕘 Which time zone should 9 pm be in? For now: ${SummaryReport.esc(TimeZones.label(current))}.`);
-    const saved = await this.#store.findGroup(at.chatId);
+    const current = saved?.time_zone ?? TimeZones.DEFAULT;
+    await this.#askZone(at, `🕘 Which time zone should the summaries follow? For now: ${SummaryReport.esc(TimeZones.label(current))}.`);
     await this.#askCalendar(at, `📅 Monthly summaries by which calendar? For now: ${GroupService.#calendarName(saved?.calendar ?? 'gregorian')}.`);
   }
 
@@ -179,6 +199,14 @@ export class GroupService {
     if (['hijri', 'islamic', 'misri'].includes(typed)) return 'hijri';
     if (['regular', 'gregorian', 'english', 'normal'].includes(typed)) return 'gregorian';
     return null;
+  }
+
+  /** "every day at 9 pm, weekly on Sundays and monthly when the month ends" */
+  static #when(g: GroupLink | null): string {
+    const minute = g?.post_minute ?? SummarySchedule.DEFAULT_MINUTE;
+    const day = SummarySchedule.DAYS[g?.weekly_day ?? SummarySchedule.DEFAULT_WEEKDAY];
+    const before = SummarySchedule.coversYesterday(minute) ? ' (about the day before)' : '';
+    return `every day at ${SummarySchedule.formatTime(minute)}${before}, weekly on ${day}s and monthly when the month ends`;
   }
 
   static #calendarName(c: string): string {
@@ -206,14 +234,15 @@ export class GroupService {
     if (!TimeZones.isValid(choice)) return void await this.#telegram.answer(cb.id, 'Unknown time zone');
     await this.#store.updateGroup(msg.chat.id, { time_zone: choice });
     await this.#telegram.answer(cb.id, 'Saved');
-    await this.#telegram.edit(msg.chat.id, msg.message_id, `🕘 Summaries at 9 pm ${TimeZones.label(choice)} time.`);
+    const time = SummarySchedule.formatTime(group.post_minute ?? SummarySchedule.DEFAULT_MINUTE);
+    await this.#telegram.edit(msg.chat.id, msg.message_id, `🕘 Summaries at ${time}, ${TimeZones.label(choice)} time.`);
   }
 
   async #askZone(at: Place, question: string): Promise<void> {
     const buttons = TimeZones.COMMON.map((c) => ({ text: c.label, callback_data: `tz:${c.zone}` }));
     const keyboard: Keyboard = [];
     for (let i = 0; i < buttons.length; i += 2) keyboard.push(buttons.slice(i, i + 2));
-    await this.#telegram.send(at.chatId, `${question}\nElsewhere? Send /summary time and a city, e.g. /summary time Nairobi`,
+    await this.#telegram.send(at.chatId, `${question}\nElsewhere? Send /summary zone and a city, e.g. /summary zone Nairobi`,
       { html: true, threadId: at.threadId, replyTo: at.replyTo, keyboard });
   }
 
@@ -232,14 +261,17 @@ export class GroupService {
     }
     const space = (await this.#store.spacesOf(group.owner_id)).find((s) => s.id === group.space_id);
     const onOff = (b: boolean) => (b ? 'on' : 'off');
+    const minute = group.post_minute ?? SummarySchedule.DEFAULT_MINUTE;
+    const day = group.weekly_day ?? SummarySchedule.DEFAULT_WEEKDAY;
     const where = group.thread_id
       ? (group.thread_id === at.threadId ? 'Posted in this topic.' : 'Posted in another topic; send /summary on here to move them.')
       : 'Posted in the group (General).';
     await this.#say(at, [
       `📊 Summaries of <b>${SummaryReport.esc(space?.name ?? 'a space that no longer exists')}</b>`,
-      `Daily at 9 pm: ${onOff(group.daily)} · Weekly on Sundays: ${onOff(group.weekly)} · Names: ${onOff(group.names)}`,
-      `Monthly: ${onOff(group.monthly ?? true)}, by ${GroupService.#calendarName(group.calendar ?? 'gregorian')} (change with /summary calendar)`,
-      `Time zone: ${SummaryReport.esc(TimeZones.label(group.time_zone ?? TimeZones.DEFAULT))} (change with /summary time)`,
+      `Time: ${SummarySchedule.formatTime(minute)}${SummarySchedule.coversYesterday(minute) ? ', about the day before' : ''} (/summary time 8:30pm)`,
+      `Daily: ${onOff(group.daily)} · Weekly on ${SummarySchedule.DAYS[day]}s: ${onOff(group.weekly)} (/summary weekly friday) · Names: ${onOff(group.names)}`,
+      `Monthly: ${onOff(group.monthly ?? true)}, by ${GroupService.#calendarName(group.calendar ?? 'gregorian')} (/summary calendar)`,
+      `Time zone: ${SummaryReport.esc(TimeZones.label(group.time_zone ?? TimeZones.DEFAULT))} (/summary zone)`,
       where,
       '',
       'Change with e.g. /summary weekly off · Stop with /summary off',

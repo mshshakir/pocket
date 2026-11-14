@@ -17,9 +17,9 @@ export class GroupSummaries {
   }
 
   /** The summary of one day, or null when the space no longer exists. */
-  async daily(group: GroupLink, day: string): Promise<string | null> {
+  async daily(group: GroupLink, day: string, when: 'today' | 'yesterday' = 'today'): Promise<string | null> {
     const s = await this.#store.spaceSummary(group.owner_id, group.space_id, day, day);
-    return s ? this.#report.daily(day, s, group.names) : null;
+    return s ? this.#report.daily(day, s, group.names, when) : null;
   }
 
   /** The seven days ending on `lastDay`, compared with the seven before. */

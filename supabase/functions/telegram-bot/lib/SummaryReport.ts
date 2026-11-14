@@ -25,10 +25,11 @@ export class SummaryReport {
     this.#money = money;
   }
 
-  daily(day: string, s: SpaceSummary, names: boolean): string {
+  /** @param when 'today' or 'yesterday', for the nothing-logged line */
+  daily(day: string, s: SpaceSummary, names: boolean, when: 'today' | 'yesterday' = 'today'): string {
     const head = `📊 <b>${SummaryReport.esc(s.space)} · ${SummaryReport.#day(day)}</b>`;
     if (!s.entries) {
-      return `${head}\nNothing logged in the shared accounts today.\nMissed something? Send it to me in a private chat.`;
+      return `${head}\nNothing logged in the shared accounts ${when}.\nMissed something? Send it to me in a private chat.`;
     }
     return [head, ...this.#body(s, SummaryReport.#TOP_DAY, null), ...this.#people(s, names)].join('\n');
   }
