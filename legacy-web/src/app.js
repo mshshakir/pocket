@@ -161,6 +161,11 @@ export class Application {
   #buying            = null;
   /** A coupon code typed in Your plan, used for the next purchase. */
   #coupon            = '';
+  /** The plan chooser's Monthly/Yearly switch (null: follow the person's plan), code box, highlighted plan. */
+  #planTerm          = null;
+  #couponOpen        = false;
+  #planHighlight     = null;
+  static #PENDING_PLANS = 'pocket.pendingPlans';
   /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
   #payments          = null;
 
@@ -371,6 +376,7 @@ export class Application {
     // seed data briefly before the cloud pull completes
     this.#bus.on('auth:changed', ({ user, showSignIn }) => {
       this.#nav.renderAuthPill(user ?? null);
+      if (user) setTimeout(() => this.#resumePlanLink(), 400);
       if (!user) {
         this.#render(); // show seed/default data immediately
         // If the session was invalidated by the backend (or the user signed out),
@@ -425,6 +431,9 @@ export class Application {
       history.replaceState(null, '', window.location.pathname);
       setTimeout(() => { if (!this.#sync.currentUser) this.openModal('auth'); }, 500);
     }
+    // 11. A pricing button on the website: show the plan chooser (after sign-in).
+    this.#takePlanLink();
+    setTimeout(() => this.#resumePlanLink(), 700);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -674,6 +683,54 @@ export class Application {
 
   /** Remembers the typed code without redrawing (so typing isn't interrupted). */
   setCoupon(value) { this.#coupon = String(value ?? '').slice(0, 32); }
+
+  /** How the plan chooser is set: Monthly/Yearly, code box open, a plan to point out. */
+  get planUi() {
+    const term = this.#planTerm ?? (this.getPlan()?.term === 'month' ? 'month' : 'year');
+    return { term, couponOpen: this.#couponOpen, highlight: this.#planHighlight };
+  }
+
+  setPlanTerm(term) {
+    this.#planTerm = term === 'month' ? 'month' : 'year';
+    this.#modal.refresh();
+  }
+
+  openCoupon() {
+    this.#couponOpen = true;
+    this.#modal.refresh();
+    setTimeout(() => document.querySelector('.plan-coupon')?.focus(), 30);
+  }
+
+  /**
+   * The website's pricing buttons link to app.html#plans=<product> (e.g.
+   * family_year). Remember the choice (it must survive a Google sign-in
+   * round trip), then show the plan chooser with that plan and term picked.
+   */
+  #takePlanLink() {
+    const m = window.location.hash.match(/^#plans(?:=([a-z_]+))?$/);
+    if (!m) return;
+    history.replaceState(null, '', window.location.pathname);
+    try { sessionStorage.setItem(Application.#PENDING_PLANS, m[1] || 'plans'); } catch (_) { /* private mode */ }
+  }
+
+  /** Opens the plan chooser for a pending website link, signing in first if needed. */
+  #resumePlanLink() {
+    let pending = null;
+    try { pending = sessionStorage.getItem(Application.#PENDING_PLANS); } catch (_) { return; }
+    if (!pending) return;
+    if (!this.#sync.currentUser) { this.openModal('auth'); return; }
+    try { sessionStorage.removeItem(Application.#PENDING_PLANS); } catch (_) { /* ignore */ }
+    const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? [];
+    if (plan) { this.#planHighlight = plan; this.#planTerm = term === 'month' ? 'month' : 'year'; }
+    this.openModal('settings');
+    let tries = 0;
+    const scroll = () => {
+      const el = document.getElementById(plan ? `plan-${plan}` : 'planCard');
+      if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+      if (++tries < 30) setTimeout(scroll, 150);
+    };
+    setTimeout(scroll, 150);
+  }
 
   /**
    * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.

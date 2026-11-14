@@ -184,6 +184,31 @@
   .plan-buy:disabled { opacity:.55; cursor:default; }
   .plan-was { opacity:.6; font-weight:400; margin-right:.15rem; }
   .plan-coupon { padding:.4rem .7rem; font-size:.8rem; text-transform:uppercase; }
+  .plan-terms { display:inline-flex; padding:3px; border-radius:.6rem; background:#f4f4f5; gap:2px; }
+  html.dark .plan-terms { background:#18181b; }
+  .plan-term { padding:.35rem .8rem; border-radius:.45rem; font-size:.8rem; font-weight:500; color:#71717a; display:inline-flex; align-items:center; gap:.35rem; }
+  .plan-term.on { background:#fff; color:#09090b; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  html.dark .plan-term.on { background:#27272a; color:#fafafa; }
+  .plan-save { font-size:.68rem; font-weight:600; padding:.05rem .4rem; border-radius:999px; background:#10b98122; color:#059669; }
+  html.dark .plan-save { color:#34d399; }
+  .plan-box { border:1px solid #e4e4e7; border-radius:.8rem; padding:.9rem 1rem; margin-bottom:.6rem; transition:border-color .2s, box-shadow .2s; }
+  html.dark .plan-box { border-color:#27272a; }
+  .plan-box-slim { padding:.7rem 1rem; }
+  .plan-highlight { border-color:#09090b !important; box-shadow:0 0 0 3px #09090b14; }
+  html.dark .plan-highlight { border-color:#fafafa !important; box-shadow:0 0 0 3px #fafafa1f; }
+  .plan-price { font-size:1.35rem; font-weight:600; letter-spacing:-.01em; }
+  .plan-per { font-size:.78rem; color:#71717a; }
+  html.dark .plan-per { color:#a1a1aa; }
+  .plan-features { margin:.6rem 0 .8rem; display:grid; gap:.3rem; font-size:.82rem; color:#52525b; }
+  html.dark .plan-features { color:#a1a1aa; }
+  .plan-features li { display:flex; gap:.45rem; align-items:flex-start; }
+  .plan-features svg { width:15px; height:15px; flex-shrink:0; margin-top:.15rem; color:#10b981; }
+  .plan-tag { white-space:nowrap; font-size:.68rem; font-weight:600; padding:.1rem .5rem; border-radius:999px; background:#f4f4f5; color:#3f3f46; }
+  html.dark .plan-tag { background:#27272a; color:#d4d4d8; }
+  .plan-tag-current { background:#10b98122; color:#059669; }
+  .plan-trial { font-size:.8rem; color:#71717a; text-decoration:underline; text-underline-offset:3px; }
+  .plan-trial:hover { color:#09090b; }
+  html.dark .plan-trial:hover { color:#fafafa; }
   .export-preview thead th { position:sticky; top:0; z-index:1; background:#18181b; color:#fafafa; }
   .export-preview tbody tr + tr td { border-top:1px solid #f4f4f5; }
   html.dark .export-preview tbody tr + tr td { border-top-color:#1f1f23; }

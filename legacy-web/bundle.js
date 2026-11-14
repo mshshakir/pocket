@@ -13495,8 +13495,10 @@ This replaces your current grouping.`
      * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
      * @param {string|null} [buying]  the product being paid for right now
      * @param {string} [coupon]  the code typed so far
+     * @param {{term?: 'month'|'year', couponOpen?: boolean, highlight?: string|null}} [ui]
+     *   the Monthly/Yearly choice, whether the code box is open, a plan to point out
      */
-    html(plan, catalogue, offers = null, buying = null, coupon = "") {
+    html(plan, catalogue, offers = null, buying = null, coupon = "", ui = {}) {
       return `
       <div class="card-muted p-3 mb-3" id="planCard">
         <div class="flex items-center justify-between gap-2 mb-1">
@@ -13510,8 +13512,7 @@ This replaces your current grouping.`
             <i data-lucide="download"></i> Download my data
           </button>
         </div>
-        ${this.#offers(plan, catalogue, offers, buying, coupon)}
-        ${this.#aiPack(plan, offers, buying)}
+        ${this.#offers(plan, catalogue, offers, buying, coupon, ui)}
       </div>`;
     }
     #title(plan) {
@@ -13564,74 +13565,116 @@ This replaces your current grouping.`
       for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
       return parts.join(" \xB7 ");
     }
-    #offers(plan, catalogue, offers, buying, coupon) {
+    /**
+     * The plans on offer: a Monthly / Yearly switch, then one card per plan with
+     * its price for that term, what it includes, and one button. The trial is a
+     * small link on the plan that has one. Without online payment the cards
+     * still show prices, and say payment is coming.
+     */
+    #offers(plan, catalogue, offers, buying, coupon, ui) {
       if (plan.isLifetime) return "";
       if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
-      const paid = catalogue.filter((p) => p.code !== "free");
+      const paid = catalogue.filter((p) => p.code !== "free" && (p.monthly_paise != null || p.yearly_paise != null));
       if (!paid.length) return "";
-      const what = (p) => [p.sync && "cloud sync", p.telegram && "Telegram", p.sharing && `sharing with up to ${p.seats - 1} family members`].filter(Boolean).join(", ");
-      const selling = plan.paymentsOpen && offers;
+      const selling = !!(plan.paymentsOpen && offers);
+      const term = ui.term === "month" ? "month" : "year";
+      const save = Math.max(0, ...paid.map((p) => _PlanCard.#saving(p)));
+      const tab = (t, label) => `<button class="plan-term ${term === t ? "on" : ""}" onclick="window.__app.setPlanTerm('${t}')">${label}</button>`;
       const switching = plan.state === "active" && plan.isPaid && plan.term !== "trial";
       return `
-      <div class="mt-3 text-xs">
-        <div class="field-label">Plans</div>
-        ${paid.map((p) => `
-          <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5 mb-2 ${plan.plan === p.code && plan.state === "active" ? "plan-current" : ""}">
-            <div class="flex items-baseline justify-between gap-2">
-              <span class="font-semibold text-sm">${Html.escape(p.name)}</span>
-              <span class="tx-amount">${p.monthly_paise != null ? `${_PlanCard.#inr(p.monthly_paise)}/month` : ""}${p.yearly_paise != null ? ` \xB7 ${_PlanCard.#inr(p.yearly_paise)}/year` : ""}</span>
-            </div>
-            <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
-            ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
-          </div>`).join("")}
-        ${selling ? this.#couponField(coupon) : ""}
-        ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).
-             Paying again for the same plan adds to its end date.${switching ? " Moving to a different plan starts it today; time left on the old one isn't carried over." : ""}</div>` : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
+      <div class="mt-4">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="text-sm font-medium">${plan.isPaid && plan.state === "active" ? "Plans" : "Choose a plan"}</div>
+          <div class="plan-terms">${tab("month", "Monthly")}${tab("year", `Yearly${save ? ` <span class="plan-save">save ${save}%</span>` : ""}`)}</div>
+        </div>
+        ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
+        ${this.#aiPack(plan, selling ? offers : null, buying)}
+        ${selling ? this.#couponField(coupon, ui.couponOpen) : ""}
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans starts the new one today; time left on the old one isn't carried over." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
     }
-    /** One button per product of a plan: trial (if still available), month, year. */
-    #buttons(products, plan, buying, trialDays) {
-      const order = { trial: 0, month: 1, year: 2 };
-      const shown = products.filter((o) => o.available || o.term !== "trial" && o.reason !== "lifetime").sort((a, b) => order[a.term] - order[b.term]);
-      if (!shown.length) return "";
-      const label = (o) => {
-        const price = _PlanCard.#price(o);
-        if (o.term === "trial") return trialDays ? `Try ${trialDays} days \xB7 ${price}` : `Try for ${price}`;
-        const verb = plan.plan === o.plan && plan.state === "active" && plan.term !== "trial" ? "Add" : "Buy";
-        return `${verb} 1 ${o.term} \xB7 ${price}`;
-      };
+    /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
+    #planBox(p, plan, term, offers, buying, highlight) {
+      const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial";
+      const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
+      const listPaise = term === "month" ? p.monthly_paise : p.yearly_paise;
+      const price = product ? _PlanCard.#price(product) : listPaise != null ? _PlanCard.#inr(listPaise) : null;
+      const perMonth = term === "year" && listPaise != null ? _PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
+      const save = term === "year" ? _PlanCard.#saving(p) : 0;
+      const features = [
+        p.sync && "Cloud sync on all your devices",
+        p.telegram && "Log by Telegram, voice or receipt scan",
+        p.sharing && `Share with up to ${p.seats - 1} family members`,
+        p.sharing && "Daily, monthly and yearly family summaries"
+      ].filter(Boolean);
+      const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
+      const button = !offers ? "" : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}`, buying, true, "w-full justify-center mt-3");
+      const trial = this.#trialLink(p, plan, offers, buying);
+      const popular = p.sharing && !current;
       return `
-      <div class="flex flex-wrap gap-2 mt-2">
-        ${shown.map((o) => this.#button(o, label(o), buying, o.term === "year")).join("")}
+      <div class="plan-box ${current ? "plan-current" : ""} ${highlight === p.code ? "plan-highlight" : ""}" id="plan-${Html.escape(p.code)}">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="font-semibold flex items-center gap-2 flex-wrap">${Html.escape(p.name)}
+              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : ""}</div>
+            ${save ? `<div class="plan-save mt-1 inline-block">save ${save}% vs monthly</div>` : ""}
+          </div>
+          <div class="text-right">
+            ${price ? `<div class="plan-price">${price}<span class="plan-per">/${term}</span></div>` : '<div class="text-xs text-zinc-400">\u2014</div>'}
+            ${perMonth ? `<div class="text-[11px] text-zinc-500">about ${perMonth} a month</div>` : ""}
+          </div>
+        </div>
+        <ul class="plan-features">${features.map((f) => `<li><i data-lucide="check"></i>${Html.escape(f)}</li>`).join("")}</ul>
+        ${button}
+        ${trial}
       </div>`;
+    }
+    /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */
+    #trialLink(p, plan, offers, buying) {
+      if (p.trial_paise == null || !p.trial_days || !plan.trialAvailable) return "";
+      if (plan.state === "active" && plan.isPaid) return "";
+      const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
+      if (offers && (!product || !product.available)) return "";
+      const text = `or try it for ${p.trial_days} days for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
+      if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
+      return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
+    }
+    /** Percent saved by paying yearly instead of 12 monthly payments (0 when it can't be worked out). */
+    static #saving(p) {
+      if (!p.monthly_paise || !p.yearly_paise) return 0;
+      return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
     }
     #aiPack(plan, offers, buying) {
       if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return "";
       const pack = offers.products.find((o) => o.product === "ai_pack" && o.available);
       if (!pack) return "";
       return `
-      <div class="mt-1 text-xs rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5">
-        <div class="flex items-center justify-between gap-2">
+      <div class="plan-box plan-box-slim">
+        <div class="flex items-center justify-between gap-3">
           <div>
-            <div class="font-semibold text-sm">AI pack</div>
-            <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year.</div>
+            <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
+            <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
           </div>
           ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
         </div>
       </div>`;
     }
     /** @param {string} label  safe HTML (built here from numbers and fixed words) */
-    #button(o, label, buying, primary) {
+    #button(o, label, buying, primary, extra = "") {
       const busy = buying === o.product;
-      return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy" ${buying ? "disabled" : ""}
+      return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy ${extra}" ${buying ? "disabled" : ""}
       onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : label}</button>`;
     }
-    /** A box for a coupon code, applied to whichever item is bought next. */
-    #couponField(coupon) {
+    /** "Have a code?" — opens a box for a coupon code, applied to whatever is bought next. */
+    #couponField(coupon, open) {
+      if (!open && !coupon) {
+        return '<div class="mt-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+      }
       return `
-      <div class="flex items-center gap-2 mb-2">
-        <input class="input plan-coupon" placeholder="Have a code? Type it here" maxlength="32" autocomplete="off"
+      <div class="flex items-center gap-2 mt-2">
+        <input class="input plan-coupon" placeholder="Code" maxlength="32" autocomplete="off"
           value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)">
+        <span class="text-[11px] text-zinc-500 whitespace-nowrap">used at checkout</span>
       </div>`;
     }
     /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
@@ -13819,7 +13862,7 @@ This replaces your current grouping.`
         </div>`;
       })()}
 
-        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying, window.__app.coupon) : ""}
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying, window.__app.coupon, window.__app.planUi) : ""}
 
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
@@ -16770,6 +16813,11 @@ This replaces your current grouping.`
     #buying = null;
     /** A coupon code typed in Your plan, used for the next purchase. */
     #coupon = "";
+    /** The plan chooser's Monthly/Yearly switch (null: follow the person's plan), code box, highlighted plan. */
+    #planTerm = null;
+    #couponOpen = false;
+    #planHighlight = null;
+    static #PENDING_PLANS = "pocket.pendingPlans";
     /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
     #payments = null;
     // ── Per-session UI state ──────────────────────────────────────────────────
@@ -16933,6 +16981,7 @@ This replaces your current grouping.`
       });
       this.#bus.on("auth:changed", ({ user, showSignIn }) => {
         this.#nav.renderAuthPill(user ?? null);
+        if (user) setTimeout(() => this.#resumePlanLink(), 400);
         if (!user) {
           this.#render();
           if (showSignIn) {
@@ -16968,6 +17017,8 @@ This replaces your current grouping.`
           if (!this.#sync.currentUser) this.openModal("auth");
         }, 500);
       }
+      this.#takePlanLink();
+      setTimeout(() => this.#resumePlanLink(), 700);
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Navigation
@@ -17207,6 +17258,68 @@ This replaces your current grouping.`
     /** Remembers the typed code without redrawing (so typing isn't interrupted). */
     setCoupon(value) {
       this.#coupon = String(value ?? "").slice(0, 32);
+    }
+    /** How the plan chooser is set: Monthly/Yearly, code box open, a plan to point out. */
+    get planUi() {
+      const term = this.#planTerm ?? (this.getPlan()?.term === "month" ? "month" : "year");
+      return { term, couponOpen: this.#couponOpen, highlight: this.#planHighlight };
+    }
+    setPlanTerm(term) {
+      this.#planTerm = term === "month" ? "month" : "year";
+      this.#modal.refresh();
+    }
+    openCoupon() {
+      this.#couponOpen = true;
+      this.#modal.refresh();
+      setTimeout(() => document.querySelector(".plan-coupon")?.focus(), 30);
+    }
+    /**
+     * The website's pricing buttons link to app.html#plans=<product> (e.g.
+     * family_year). Remember the choice (it must survive a Google sign-in
+     * round trip), then show the plan chooser with that plan and term picked.
+     */
+    #takePlanLink() {
+      const m = window.location.hash.match(/^#plans(?:=([a-z_]+))?$/);
+      if (!m) return;
+      history.replaceState(null, "", window.location.pathname);
+      try {
+        sessionStorage.setItem(_Application.#PENDING_PLANS, m[1] || "plans");
+      } catch (_) {
+      }
+    }
+    /** Opens the plan chooser for a pending website link, signing in first if needed. */
+    #resumePlanLink() {
+      let pending = null;
+      try {
+        pending = sessionStorage.getItem(_Application.#PENDING_PLANS);
+      } catch (_) {
+        return;
+      }
+      if (!pending) return;
+      if (!this.#sync.currentUser) {
+        this.openModal("auth");
+        return;
+      }
+      try {
+        sessionStorage.removeItem(_Application.#PENDING_PLANS);
+      } catch (_) {
+      }
+      const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? [];
+      if (plan) {
+        this.#planHighlight = plan;
+        this.#planTerm = term === "month" ? "month" : "year";
+      }
+      this.openModal("settings");
+      let tries = 0;
+      const scroll = () => {
+        const el = document.getElementById(plan ? `plan-${plan}` : "planCard");
+        if (el) {
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+          return;
+        }
+        if (++tries < 30) setTimeout(scroll, 150);
+      };
+      setTimeout(scroll, 150);
     }
     /**
      * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.

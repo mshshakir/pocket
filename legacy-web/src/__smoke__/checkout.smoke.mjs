@@ -116,19 +116,27 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 payment off: no buy buttons, "coming soon"', !closed.includes('__app.buy(') && /coming soon/.test(closed));
 
   const open = card.html(free({ paymentsOpen: true }), catalogue, offers());
-  const buys = [...open.matchAll(/__app\.buy\('([a-z_]+)'\)/g)].map((m) => m[1]);
+  const openMonth = card.html(free({ paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
+  const buys = [...(open + openMonth).matchAll(/__app\.buy\('([a-z_]+)'\)/g)].map((m) => m[1]);
+  ok('C6 one term at a time: yearly by default, monthly when switched',
+     open.includes("buy('family_year')") && !open.includes("buy('family_month')") && openMonth.includes("buy('family_month')") && !openMonth.includes("buy('family_year')"));
+  ok('C6 the switch shows how much yearly saves, and each plan its own saving',
+     /plan-term on"[^>]*setPlanTerm\('year'\)/.test(open) && /save 51%/.test(open) && /save 37% vs monthly/.test(open) && /about ₹125 a month/.test(open));
+  ok('C6 each plan lists what it includes', /Share with up to 4 family members/.test(open) && /Cloud sync on all your devices/.test(open));
+  ok('C6 a plan can be pointed out (website link)', /plan-highlight[^"]*" id="plan-family"/.test(card.html(free({ paymentsOpen: true }), catalogue, offers(), null, '', { highlight: 'family' })));
   ok('C6 payment open: trial, months, years and the AI pack can be bought',
      ['family_trial', 'sync_month', 'sync_year', 'family_month', 'family_year', 'ai_pack'].every((x) => buys.includes(x)), buys.join());
-  ok('C6 prices are shown in rupees', open.includes('₹169') && open.includes('₹1,499') && open.includes('Try 14 days · ₹50'));
+  ok('C6 prices are shown in rupees', openMonth.includes('Get Sync · ₹169') && open.includes('Get Family · ₹1,499') && open.includes('or try it for 14 days for ₹50'));
 
   const used = card.html(free({ paymentsOpen: true, trialAvailable: false }), catalogue, offers(false));
   ok('C6 a used trial has no button', !used.includes("buy('family_trial')"));
 
-  const busy = card.html(free({ paymentsOpen: true }), catalogue, offers(), 'sync_month');
+  const busy = card.html(free({ paymentsOpen: true }), catalogue, offers(), 'sync_month', '', { term: 'month' });
   ok('C6 while paying, buttons are disabled and the one in progress says so', /disabled/.test(busy) && busy.includes('Opening…'));
 
-  const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers());
-  ok('C6 on Sync: "Add 1 month" extends, and switching plans is explained', syncing.includes('Add 1 month') && /starts it today/.test(syncing));
+  const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
+  ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
+     syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /starts the new one today/.test(syncing) && !syncing.includes('try it for'));
 
   const life = card.html(Entitlements.from({ plan: 'family', state: 'active', term: 'lifetime', aiUnlimited: true, paymentsOpen: true }), catalogue, offers());
   ok('C6 for life with unlimited AI: nothing to buy', !life.includes('__app.buy('));
@@ -149,8 +157,10 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
     { product: 'family_month', plan: 'family', term: 'month', amountPaise: 19900, listPaise: 19900, available: true },
   ] };
   const html = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, 'LAUNCH20');
-  ok('C8 a sale shows the old price struck through, named; others stay plain', /<s class="plan-was" title="Launch sale">₹1,499<\/s> ₹1,199\.20/.test(html) && /Buy 1 month · ₹199</.test(html), html.match(/Buy 1 year[^<]*<s[^>]*>[^<]*<\/s>[^<]*/)?.[0]);
-  ok('C9 a code box keeps what was typed', /placeholder="Have a code\? Type it here"[^>]*value="LAUNCH20"/.test(html.replace(/\s+/g, ' ')));
+  const htmlMonth = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, '', { term: 'month' });
+  ok('C8 a sale shows the old price struck through, named; others stay plain', /<s class="plan-was" title="Launch sale">₹1,499<\/s> ₹1,199\.20/.test(html) && /Get Family · ₹199</.test(htmlMonth));
+  ok('C9 a code box keeps what was typed', /placeholder="Code"[^>]*value="LAUNCH20"/.test(html.replace(/\s+/g, ' ')));
+  ok('C9 without a code, only a "Have a code?" link; it opens the box', htmlMonth.includes('openCoupon()') && !htmlMonth.includes('placeholder="Code"') && card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, '', { couponOpen: true }).includes('placeholder="Code"'));
   const esc = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, '"><script>');
   ok('C10 the code box escapes what was typed', !esc.includes('"><script>'));
 }
