@@ -16,6 +16,12 @@
  *          falls back to one full load and ends up exactly like the cloud.
  *   E5     An edit made here, unsaved when the tab closed, still survives a
  *          delta load and reaches the cloud.
+ *   S1–S4  ShareDelta: shares merge per owner/space, newest first; a share
+ *          whose count doesn't add up (an account shared or unshared) or that
+ *          has no previous copy rejects the whole result.
+ *   M1–M3  A family member's app follows the owner's changes (added,
+ *          deleted, moved to an account they can't see) through deltas, after
+ *          one full load.
  *
  * Run: node src/__smoke__/delta-sync.smoke.mjs
  */
@@ -23,6 +29,7 @@ import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { FakeCloud } from './FakeCloud.mjs';
 import { BookDelta } from '../core/BookDelta.js';
+import { ShareDelta } from '../core/ShareDelta.js';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -68,6 +75,34 @@ console.log('\ndelta sync suite');
   ok('B6 …and so is a response without _delta', BookDelta.merge(prev, head) === null);
   const resent = { ...head, _delta: { cursor: 'k3', full: false, count: 2, put: [tx('t2', 200)], remove: ['gone-already'] } };
   ok('B6 re-sent rows and unknown removals are harmless', ids(BookDelta.merge(prev, resent)?.book.transactions) === 't1,t2');
+}
+
+
+// ═══ S — ShareDelta ════════════════════════════════════════════════════════
+{
+  console.log('\n S — merging shared books');
+  const head = (owner, space = 'default') => ({ _ownerId: owner, _spaceId: space, accounts: [{ id: 'j1' }], permission: { j1: 'add' } });
+  const full = { cursor: 'c1', shares: [
+    { ...head('o1'), _delta: { full: true, count: 2, put: [tx('s2', 20, { date: '2026-11-02' }), tx('s1', 10, { date: '2026-11-01' })], remove: [] } },
+    { ...head('o2'), _delta: { full: true, count: 0, put: [], remove: [] } },
+  ] };
+  const r1 = ShareDelta.merge(null, full);
+  ok('S1 a full response gives every share', r1?.shares.length === 2 && ids(r1.shares[0].transactions) === 's1,s2' && r1.cursor === 'c1');
+  ok('S1 …without the _delta wrapper', !('_delta' in r1.shares[0]));
+
+  const delta = { cursor: 'c2', shares: [
+    { ...head('o1'), _delta: { full: false, count: 3, put: [tx('s3', 30, { date: '2026-11-01' }), tx('s4', 40, { date: '2026-11-03' }), tx('s2', 22, { date: '2026-11-02' })], remove: ['s1'] } },
+    { ...head('o2'), _delta: { full: false, count: 0, put: [], remove: [] } },
+  ] };
+  const r2 = ShareDelta.merge(r1.shares, delta);
+  ok('S2 entries added, edited and removed per share', ids(r2?.shares[0].transactions) === 's2,s3,s4'
+     && r2.shares[0].transactions.find((t) => t.id === 's2').amount === 22);
+  ok('S2 kept newest first', r2.shares[0].transactions.map((t) => t.id).join(',') === 's4,s2,s3',
+     r2.shares[0].transactions.map((t) => t.id).join(','));
+  ok('S3 a share whose count doesn\'t add up rejects the result',
+     ShareDelta.merge(r1.shares, { ...delta, shares: [{ ...delta.shares[0], _delta: { ...delta.shares[0]._delta, count: 9 } }, delta.shares[1]] }) === null);
+  ok('S4 a delta for a share with no previous copy rejects the result',
+     ShareDelta.merge([r1.shares[1]], delta) === null);
 }
 
 // ═══ E — the app against the cloud ═════════════════════════════════════════
@@ -192,6 +227,53 @@ const book = (cloud) => cloud.book('u1').transactions;
   ok('E4 …and ends up exactly like the cloud', ids(localTxs(w4)) === ids(book(cloud)),
      `${ids(localTxs(w4))} vs ${ids(book(cloud))}`);
   w4.close();
+}
+
+// ═══ M — a family member following the owner's changes ═════════════════════
+{
+  console.log('\n M — a member\'s shared view');
+  const cloud = new FakeCloud();
+  const owner = baseState([
+    tx('j1', 100, { accountId: 'joint', note: 'joint-one', date: '2026-11-01' }),
+    tx('j2', 200, { accountId: 'joint', note: 'joint-two', date: '2026-11-02' }),
+    tx('p1', 300, { accountId: 'a1', note: 'private-one' }),
+  ]);
+  owner.accounts.push({ id: 'joint', name: 'Joint', currency: 'USD', type: 'bank', color: '#000', icon: 'landmark',
+    openingBalance: 0, balance: 0, groupId: null });
+  owner.family = [{ id: 'f1', name: 'Wife', email: 'wife@x.com', permissions: [{ accountId: 'joint', access: 'add' }] }];
+  cloud.setBook('owner1', owner, 'owner@x.com');
+  const WIFE = { id: 'wife1', email: 'wife@x.com' };
+  cloud.setBook('wife1', baseState(), 'wife@x.com');
+
+  const w = boot({ supabase: { createClient: cloud.client(WIFE) } });
+  await wait(80);
+  cloud.authCb?.('SIGNED_IN', { user: WIFE });
+  await wait(300);
+  const shareCalls = () => cloud.calls.filter((c) => c.fn === 'pocket_get_shared_changes');
+  const seen = () => {
+    w.__app.switchSpace('owner1');
+    return (w.__app.spaces.active().transactions || []).map((t) => t.note).join(' | ');
+  };
+  ok('M1 first load reads the shares in full', cloud.fullShareLoads === 1, `${cloud.fullShareLoads} full of ${shareCalls().length}`);
+  let text = seen();
+  ok('M1 the member sees the joint entries, not the private one',
+     text.includes('joint-one') && text.includes('joint-two') && !text.includes('private-one'), text);
+
+  // The owner (or the bot) adds one, deletes one and moves one off the joint account.
+  const book = cloud.book('owner1');
+  book.transactions.push(tx('j3', 300, { accountId: 'joint', note: 'joint-three', date: '2026-11-03', addedBy: 'owner@x.com' }));
+  book.transactions = book.transactions.filter((t) => t.id !== 'j1');
+  Object.assign(book.transactions.find((t) => t.id === 'j2'), { accountId: 'a1' });
+  const before = cloud.fullShareLoads;
+  cloud.emit('transactions', 'owner1', { id: 'j3' });
+  await wait(900);
+  text = seen();
+  ok('M2 the new entry arrives', text.includes('joint-three'), text);
+  ok('M2 the deleted one and the one moved to a private account are gone',
+     !text.includes('joint-one') && !text.includes('joint-two'));
+  ok('M3 …all through a delta, with no full reload of the share', cloud.fullShareLoads === before
+     && shareCalls().slice(-1)[0]?.args.since != null, `${cloud.fullShareLoads - before} full loads`);
+  w.close();
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

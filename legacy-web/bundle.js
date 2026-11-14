@@ -3871,24 +3871,64 @@ RULES:
       if (!meta || typeof meta !== "object") return null;
       const head = { ...response };
       delete head[_BookDelta.#KEY];
-      const transactions = meta.full ? BookDiff.clone(meta.put || []) : _BookDelta.#replay(previous, meta);
+      const transactions = meta.full ? BookDiff.clone(meta.put || []) : Array.isArray(previous?.transactions) ? _BookDelta.replay(previous.transactions, meta) : null;
       if (!transactions || transactions.length !== Number(meta.count)) return null;
       return { book: { ...BookDiff.clone(head), transactions }, cursor: meta.cursor ?? null };
     }
-    /** The previous copy's transactions with the changed ones swapped in and the deleted ones dropped. */
-    static #replay(previous, meta) {
-      if (!Array.isArray(previous?.transactions)) return null;
-      const transactions = BookDiff.clone(previous.transactions);
-      const at = new Map(transactions.map((t, i) => [t?.id, i]));
-      for (const tx of BookDiff.clone(meta.put || [])) {
-        if (at.has(tx.id)) transactions[at.get(tx.id)] = tx;
-        else {
-          at.set(tx.id, transactions.length);
-          transactions.push(tx);
-        }
+    /**
+     * A copy of `list` with the changed items swapped in (new ones added) and
+     * the removed ones dropped. The input is not modified.
+     * @param {object[]} list
+     * @param {{put?: object[], remove?: string[]}} meta
+     * @param {{newFirst?: boolean}} [opts]  put new items ahead of the old ones
+     *        (lists kept newest-first) instead of after them
+     * @returns {object[]}
+     */
+    static replay(list, meta, { newFirst = false } = {}) {
+      const items = BookDiff.clone(list);
+      const at = new Map(items.map((t, i) => [t?.id, i]));
+      const added = [];
+      for (const item of BookDiff.clone(meta.put || [])) {
+        if (at.has(item.id)) items[at.get(item.id)] = item;
+        else added.push(item);
       }
+      const merged = newFirst ? [...added, ...items] : [...items, ...added];
       const gone = new Set(meta.remove || []);
-      return gone.size ? transactions.filter((t) => !gone.has(t?.id)) : transactions;
+      return gone.size ? merged.filter((t) => !gone.has(t?.id)) : merged;
+    }
+  };
+
+  // src/core/ShareDelta.js
+  var ShareDelta = class _ShareDelta {
+    static #KEY = "_delta";
+    /** Identifies a share across loads. */
+    static key(share) {
+      return `${share?._ownerId}|${share?._spaceId}`;
+    }
+    /**
+     * @param {object[]|null} previous  the shares as last merged (null on a first load)
+     * @param {object} response          what pocket_get_shared_changes returned
+     * @returns {{shares: object[], cursor: string|null}|null}  null when it can't be trusted
+     */
+    static merge(previous, response) {
+      if (!response || !Array.isArray(response.shares)) return null;
+      const before = new Map((previous || []).map((s) => [_ShareDelta.key(s), s]));
+      const shares = [];
+      for (const raw of response.shares) {
+        const meta = raw?.[_ShareDelta.#KEY];
+        if (!meta || typeof meta !== "object") return null;
+        const head = { ...raw };
+        delete head[_ShareDelta.#KEY];
+        const prev = before.get(_ShareDelta.key(raw));
+        const transactions = meta.full ? BookDiff.clone(meta.put || []) : Array.isArray(prev?.transactions) ? _ShareDelta.#newestFirst(BookDelta.replay(prev.transactions, meta, { newFirst: true })) : null;
+        if (!transactions || transactions.length !== Number(meta.count)) return null;
+        shares.push({ ...BookDiff.clone(head), transactions });
+      }
+      return { shares, cursor: response.cursor ?? null };
+    }
+    /** Newest date first; entries on the same date keep their order (new ones were placed first). */
+    static #newestFirst(list) {
+      return list.map((t, i) => [t, i]).sort(([a, i], [b, j]) => String(b?.date || "").localeCompare(String(a?.date || "")) || i - j).map(([t]) => t);
     }
   };
 
@@ -3950,6 +3990,13 @@ RULES:
     #pendingRemovals = /* @__PURE__ */ new Set();
     #pendingAdditions = /* @__PURE__ */ new Map();
     #sharedData = [];
+    /**
+     * The shares exactly as the server last sent them (no optimistic edits),
+     * and the cursor to ask for changes since. #sharedData is rebuilt from
+     * this on every load, with this device's pending edits laid over it.
+     */
+    #sharesBase = null;
+    #sharesCursor = null;
     /** True when local edits have not yet been committed to the cloud. */
     #dirty = false;
     /** Timestamp of the edit that started the current uncommitted run. */
@@ -4117,6 +4164,8 @@ RULES:
       this.#user = null;
       this.#loaded = false;
       this.#sharedData = [];
+      this.#sharesBase = null;
+      this.#sharesCursor = null;
       this.#pendingRemovals.clear();
       this.#pendingAdditions.clear();
       if (wipeLocal) {
@@ -4610,12 +4659,11 @@ RULES:
     async #pullFamilyShares() {
       if (!this.#sb || !this.#user?.email) return;
       try {
-        const { data, error } = await this.#sb.rpc("pocket_get_shared");
-        if (error) {
-          console.warn("[SyncService] pullFamilyShares error:", error);
-          return;
-        }
-        const shares = Array.isArray(data) ? data : [];
+        const loaded = await this.#loadShares();
+        if (!loaded) return;
+        this.#sharesBase = loaded.shares;
+        this.#sharesCursor = loaded.cursor;
+        const shares = BookDiff.clone(loaded.shares);
         const rawIds = new Set(shares.flatMap((s) => (s.transactions || []).map((t) => t.id)));
         const ownersBefore = this.#sharedData.map((s) => s._ownerId).join(",");
         this.#sharedData = shares.filter((s) => s._ownerId !== this.#user.id).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)) || String(a._spaceId).localeCompare(String(b._spaceId)));
@@ -4645,6 +4693,30 @@ RULES:
       } catch (e) {
         console.warn("[SyncService] pullFamilyShares error:", e);
       }
+    }
+    /**
+     * The shares as the server holds them: only what changed since the last
+     * load when there is a copy to apply it to, otherwise every share in full.
+     * @returns {Promise<{shares: object[], cursor: string|null}|null>} null on error
+     */
+    async #loadShares() {
+      const since = this.#sharesBase ? this.#sharesCursor : null;
+      if (since) {
+        const changes = await this.#readShares(since);
+        if (!changes) return null;
+        const merged = ShareDelta.merge(this.#sharesBase, changes);
+        if (merged) return merged;
+      }
+      const full = await this.#readShares(null);
+      return full ? ShareDelta.merge(null, full) : null;
+    }
+    async #readShares(since) {
+      const { data, error } = await this.#sb.rpc("pocket_get_shared_changes", { since });
+      if (error) {
+        console.warn("[SyncService] pullFamilyShares error:", error);
+        return null;
+      }
+      return data;
     }
     // ── Private helpers ──────────────────────────────────────────────────
     #emitStatus(status) {

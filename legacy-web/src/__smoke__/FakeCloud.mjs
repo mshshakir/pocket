@@ -15,6 +15,8 @@
  *                                     (add → new entries, edit → change, full →
  *                                     delete; their own entries with add access)
  *   rpc('pocket_get_shared')          the books shared with the caller
+ *   rpc('pocket_get_shared_changes', {since})  the same as change sets per share,
+ *                                     worked out like pocket_get_changes
  *   channel().on('postgres_changes')  live updates, fired by emit()
  *
  * Tests read and seed books directly with book() / setBook().
@@ -123,6 +125,7 @@ export class FakeCloud {
     if (fn === 'pocket_get_book') return structuredClone(this.#books.get(user.id) ?? null);
     if (fn === 'pocket_get_changes') return this.#changes(user, args.since ?? null);
     if (fn === 'pocket_get_shared') return this.#shared(user);
+    if (fn === 'pocket_get_shared_changes') return this.#sharedChanges(user, args.since ?? null);
     if (fn === 'pocket_apply_changes') return this.#apply(user, args.book, args.changes);
     throw new Error(`unknown rpc ${fn}`);
   }
@@ -144,6 +147,30 @@ export class FakeCloud {
       remove = [...before.rows.keys()].filter((id) => !rows.has(id));
     }
     return { ...head, _delta: { cursor, full: since == null, count: transactions.length, put, remove } };
+  }
+
+  /** The shares as pocket_get_shared_changes returns them. */
+  #sharedChanges(user, since) {
+    const cursor = `fake:${++this.#tick}`;
+    const key = (sh) => `${sh._ownerId}|${sh._spaceId}`;
+    const before = since ? this.#served.get(since) : null;
+    const known = before && before.ownerId === `shares:${user.id}` ? before.rows : null;
+    const rows = new Map();
+    const shares = this.#shared(user).map(({ transactions = [], ...head }) => {
+      const mine = new Map(transactions.map((t) => [t.id, JSON.stringify(t)]));
+      rows.set(key(head), mine);
+      const was = known?.get(key(head));
+      const put = was ? transactions.filter((t) => was.get(t.id) !== mine.get(t.id)) : transactions;
+      const remove = was ? [...was.keys()].filter((id) => !mine.has(id)) : [];
+      return { ...head, _delta: { full: since == null, count: transactions.length, put, remove } };
+    });
+    this.#served.set(cursor, { ownerId: `shares:${user.id}`, rows });
+    return { cursor, shares };
+  }
+
+  /** How many pocket_get_shared_changes calls asked for every share in full. */
+  get fullShareLoads() {
+    return this.calls.filter((c) => c.fn === 'pocket_get_shared_changes' && c.args.since == null).length;
   }
 
   /** How many pocket_get_changes calls asked for the whole book. */

@@ -20,9 +20,10 @@
  * nothing written by another device in the meantime is overwritten, and
  * nothing written here is lost.
  *
- * Family sharing: a member reads the owner's shared accounts live
- * (`pocket_get_shared`) and writes straight into the owner's book; the
- * database checks their access on every row.
+ * Family sharing: a member reads the owner's shared accounts live — only what
+ * changed since the last load (`pocket_get_shared_changes`, merged by
+ * ShareDelta) — and writes straight into the owner's book; the database
+ * checks their access on every row.
  *
  * Events emitted:
  *   'sync:status'    { status: 'local'|'syncing'|'synced'|'error' }
@@ -34,6 +35,7 @@ import { SyncJournal }    from '../../core/SyncJournal.js';
 import { SyncBaseline }   from '../../core/SyncBaseline.js';
 import { BookDiff }       from '../../core/BookDiff.js';
 import { BookDelta }      from '../../core/BookDelta.js';
+import { ShareDelta }     from '../../core/ShareDelta.js';
 import { EventBus }       from '../../core/EventBus.js';
 import { SeedFactory }    from '../../data/seed.js';
 import { StateMigrator }  from '../../data/StateMigrator.js';
@@ -116,6 +118,13 @@ export class SyncService {
   #pendingRemovals  = new Set();
   #pendingAdditions = new Map();
   #sharedData       = [];
+  /**
+   * The shares exactly as the server last sent them (no optimistic edits),
+   * and the cursor to ask for changes since. #sharedData is rebuilt from
+   * this on every load, with this device's pending edits laid over it.
+   */
+  #sharesBase       = null;
+  #sharesCursor     = null;
 
   /** True when local edits have not yet been committed to the cloud. */
   #dirty = false;
@@ -301,6 +310,8 @@ export class SyncService {
     this.#user = null;
     this.#loaded = false;
     this.#sharedData = [];
+    this.#sharesBase = null;
+    this.#sharesCursor = null;
     this.#pendingRemovals.clear();
     this.#pendingAdditions.clear();
 
@@ -829,10 +840,13 @@ export class SyncService {
   async #pullFamilyShares() {
     if (!this.#sb || !this.#user?.email) return;
     try {
-      const { data, error } = await this.#sb.rpc('pocket_get_shared');
-      if (error) { console.warn('[SyncService] pullFamilyShares error:', error); return; }
+      const loaded = await this.#loadShares();
+      if (!loaded) return;
+      this.#sharesBase = loaded.shares;
+      this.#sharesCursor = loaded.cursor;
 
-      const shares = Array.isArray(data) ? data : [];
+      // Working copies: the optimistic edits below must not touch the base.
+      const shares = BookDiff.clone(loaded.shares);
       const rawIds = new Set(shares.flatMap((s) => (s.transactions || []).map((t) => t.id)));
       const ownersBefore = this.#sharedData.map((s) => s._ownerId).join(',');
 
@@ -864,6 +878,29 @@ export class SyncService {
 
       if (this.#sharedData.map((s) => s._ownerId).join(',') !== ownersBefore) this.#subscribeShares();
     } catch (e) { console.warn('[SyncService] pullFamilyShares error:', e); }
+  }
+
+  /**
+   * The shares as the server holds them: only what changed since the last
+   * load when there is a copy to apply it to, otherwise every share in full.
+   * @returns {Promise<{shares: object[], cursor: string|null}|null>} null on error
+   */
+  async #loadShares() {
+    const since = this.#sharesBase ? this.#sharesCursor : null;
+    if (since) {
+      const changes = await this.#readShares(since);
+      if (!changes) return null;
+      const merged = ShareDelta.merge(this.#sharesBase, changes);
+      if (merged) return merged;
+    }
+    const full = await this.#readShares(null);
+    return full ? ShareDelta.merge(null, full) : null;
+  }
+
+  async #readShares(since) {
+    const { data, error } = await this.#sb.rpc('pocket_get_shared_changes', { since });
+    if (error) { console.warn('[SyncService] pullFamilyShares error:', error); return null; }
+    return data;
   }
 
   // ── Private helpers ──────────────────────────────────────────────────

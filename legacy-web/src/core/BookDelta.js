@@ -34,22 +34,31 @@ export class BookDelta {
 
     const transactions = meta.full
       ? BookDiff.clone(meta.put || [])
-      : BookDelta.#replay(previous, meta);
+      : (Array.isArray(previous?.transactions) ? BookDelta.replay(previous.transactions, meta) : null);
     if (!transactions || transactions.length !== Number(meta.count)) return null;
 
     return { book: { ...BookDiff.clone(head), transactions }, cursor: meta.cursor ?? null };
   }
 
-  /** The previous copy's transactions with the changed ones swapped in and the deleted ones dropped. */
-  static #replay(previous, meta) {
-    if (!Array.isArray(previous?.transactions)) return null;
-    const transactions = BookDiff.clone(previous.transactions);
-    const at = new Map(transactions.map((t, i) => [t?.id, i]));
-    for (const tx of BookDiff.clone(meta.put || [])) {
-      if (at.has(tx.id)) transactions[at.get(tx.id)] = tx;
-      else { at.set(tx.id, transactions.length); transactions.push(tx); }
+  /**
+   * A copy of `list` with the changed items swapped in (new ones added) and
+   * the removed ones dropped. The input is not modified.
+   * @param {object[]} list
+   * @param {{put?: object[], remove?: string[]}} meta
+   * @param {{newFirst?: boolean}} [opts]  put new items ahead of the old ones
+   *        (lists kept newest-first) instead of after them
+   * @returns {object[]}
+   */
+  static replay(list, meta, { newFirst = false } = {}) {
+    const items = BookDiff.clone(list);
+    const at = new Map(items.map((t, i) => [t?.id, i]));
+    const added = [];
+    for (const item of BookDiff.clone(meta.put || [])) {
+      if (at.has(item.id)) items[at.get(item.id)] = item;
+      else added.push(item);
     }
+    const merged = newFirst ? [...added, ...items] : [...items, ...added];
     const gone = new Set(meta.remove || []);
-    return gone.size ? transactions.filter((t) => !gone.has(t?.id)) : transactions;
+    return gone.size ? merged.filter((t) => !gone.has(t?.id)) : merged;
   }
 }
