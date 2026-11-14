@@ -7,6 +7,7 @@
  *   /summary off          stop
  *   /summary daily|weekly|monthly|names on|off
  *   /summary calendar regular|hijri   months for the monthly summary
+ *   /summary yearly 31 march          the year-end for the yearly summary (31 Dec / end of Zilhaj unless changed)
  *   /summary now          today's summary so far
  *   /summary time 8:30pm  when summaries go out (9 pm unless changed)
  *   /summary zone [city]  the time zone (buttons, or a typed city / zone)
@@ -28,7 +29,9 @@ import { PocketBook } from './PocketBook.ts';
 import type { GroupLink, PocketStore, SharedSpace, TelegramLink } from './PocketStore.ts';
 import { SummaryReport } from './SummaryReport.ts';
 import type { Keyboard, TelegramClient } from './TelegramClient.ts';
+import { SummaryMonths } from './SummaryMonths.ts';
 import { SummarySchedule } from './SummarySchedule.ts';
+import { SummaryYears } from './SummaryYears.ts';
 import { TimeZones } from './TimeZones.ts';
 
 export interface GroupMessage {
@@ -57,7 +60,7 @@ interface Place {
 export class GroupService {
   static readonly GUIDE = [
     '<b>Pocket in this group</b>',
-    'I post a summary of one shared space here: every day (9 pm unless you change it), a weekly one (Sundays unless changed), and a monthly one when the month ends.',
+    'I post a summary of one shared space here: every day (9 pm unless you change it), weekly (Sundays unless changed), monthly, and yearly (at the year end you choose).',
     'Only entries in that space\'s accounts are included. Personal accounts never are, and I don\'t read this group\'s messages.',
     '',
     'Entries are still sent to me in a private chat.',
@@ -69,7 +72,8 @@ export class GroupService {
     '/summary weekly friday  change the weekly day',
     '/summary zone  choose the time zone (or e.g. /summary zone Nairobi)',
     '/summary calendar hijri  monthly summaries by Hijri months (or regular)',
-    '/summary daily off · /summary weekly off · /summary monthly off · /summary names off',
+    '/summary yearly 31 march  the year end (e.g. 31 march for a financial year, or 29 zilhaj)',
+    '/summary daily off · weekly off · monthly off · yearly off · names off',
     '/summary off  stop',
   ].join('\n');
 
@@ -151,7 +155,16 @@ export class GroupService {
       await this.#store.updateGroup(chatId, { calendar });
       return void await this.#status(at, { ...group, calendar });
     }
-    if ((action === 'daily' || action === 'weekly' || action === 'monthly' || action === 'names') && (value === 'on' || value === 'off')) {
+    if (action === 'yearly' && rest && value !== 'on' && value !== 'off') {
+      const end = SummaryYears.parse(rest);
+      if (!end) {
+        return void await this.#say(at, 'Send the last day of your year, e.g. /summary yearly 31 march, /summary yearly 31/12 or /summary yearly 29 zilhaj.');
+      }
+      const patch = { year_end_month: end.month, year_end_day: end.day, yearly: true, yearly_calendar: end.calendar };
+      await this.#store.updateGroup(chatId, patch);
+      return void await this.#status(at, { ...group, ...patch });
+    }
+    if ((action === 'daily' || action === 'weekly' || action === 'monthly' || action === 'yearly' || action === 'names') && (value === 'on' || value === 'off')) {
       await this.#store.updateGroup(chatId, { [action]: value === 'on' });
       return void await this.#status(at, { ...group, [action]: value === 'on' });
     }
@@ -211,7 +224,14 @@ export class GroupService {
     const minute = g?.post_minute ?? SummarySchedule.DEFAULT_MINUTE;
     const day = SummarySchedule.DAYS[g?.weekly_day ?? SummarySchedule.DEFAULT_WEEKDAY];
     const before = SummarySchedule.coversYesterday(minute) ? ' (about the day before)' : '';
-    return `every day at ${SummarySchedule.formatTime(minute)}${before}, weekly on ${day}s and monthly when the month ends`;
+    return `every day at ${SummarySchedule.formatTime(minute)}${before}, weekly on ${day}s, monthly, and yearly on ${g ? GroupService.#yearEnd(g) : 'the last day of December'}`;
+  }
+
+  /** "the last day of December", "31 March", "the last day of Zilhaj al-Haraam" */
+  static #yearEnd(g: GroupLink): string {
+    const calendar = g.yearly_calendar ?? (g.calendar === 'hijri' ? 'hijri' : 'gregorian');
+    return new SummaryYears(SummaryMonths.for(calendar),
+      { month: g.year_end_month ?? SummaryYears.DEFAULT.month, day: g.year_end_day ?? SummaryYears.DEFAULT.day }).describe();
   }
 
   static #calendarName(c: string): string {
@@ -276,6 +296,7 @@ export class GroupService {
       `Time: ${SummarySchedule.formatTime(minute)}${SummarySchedule.coversYesterday(minute) ? ', about the day before' : ''} (/summary time 8:30pm)`,
       `Daily: ${onOff(group.daily)} · Weekly on ${SummarySchedule.DAYS[day]}s: ${onOff(group.weekly)} (/summary weekly friday) · Names: ${onOff(group.names)}`,
       `Monthly: ${onOff(group.monthly ?? true)}, by ${GroupService.#calendarName(group.calendar ?? 'gregorian')} (/summary calendar)`,
+      `Yearly: ${onOff(group.yearly ?? true)}, on ${SummaryReport.esc(GroupService.#yearEnd(group))} (/summary yearly 31 march)`,
       `Time zone: ${SummaryReport.esc(TimeZones.label(group.time_zone ?? TimeZones.DEFAULT))} (/summary zone)`,
       where,
       '',

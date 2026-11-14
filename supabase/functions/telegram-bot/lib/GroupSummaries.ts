@@ -5,6 +5,7 @@
 import { LocalClock } from './LocalClock.ts';
 import type { GroupLink, PocketStore } from './PocketStore.ts';
 import { SummaryMonths } from './SummaryMonths.ts';
+import { SummaryYears } from './SummaryYears.ts';
 import type { SummaryReport } from './SummaryReport.ts';
 
 export class GroupSummaries {
@@ -48,5 +49,25 @@ export class GroupSummaries {
       this.#store.spaceSummary(group.owner_id, group.space_id, before.from, before.to),
     ]);
     return s ? this.#report.monthly(month.label, before.short, s, previous, group.names) : null;
+  }
+
+  /** The group's year (its chosen year-end, in its yearly calendar). */
+  async years(group: GroupLink): Promise<SummaryYears> {
+    const calendar = group.yearly_calendar ?? (group.calendar === 'hijri' ? 'hijri' : 'gregorian');
+    const offset = calendar === 'hijri' ? await this.#store.hijriOffset(group.owner_id) : 0;
+    return new SummaryYears(SummaryMonths.for(calendar, offset),
+      { month: group.year_end_month ?? SummaryYears.DEFAULT.month, day: group.year_end_day ?? SummaryYears.DEFAULT.day });
+  }
+
+  /** The year ending on `lastDay`, compared with the year before. */
+  async yearly(group: GroupLink, lastDay: string, years?: SummaryYears): Promise<string | null> {
+    const cal = years ?? await this.years(group);
+    const year = cal.period(lastDay);
+    const before = cal.previous(year);
+    const [s, previous] = await Promise.all([
+      this.#store.spaceSummary(group.owner_id, group.space_id, year.from, year.to),
+      this.#store.spaceSummary(group.owner_id, group.space_id, before.from, before.to),
+    ]);
+    return s ? this.#report.yearly(year.label, s, previous, 12, group.names) : null;
   }
 }

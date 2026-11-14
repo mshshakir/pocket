@@ -76,6 +76,11 @@ export interface GroupLink {
   last_monthly: string | null;
   post_minute: number;        // minutes after local midnight (21:00 = 1260)
   weekly_day: number;         // 0 = Sunday … 6 = Saturday
+  yearly: boolean;
+  year_end_month: number;     // 1–12, in the yearly calendar
+  year_end_day: number;       // 1–31; past the month's end = its last day
+  yearly_calendar: 'gregorian' | 'hijri' | null; // null = the group's calendar
+  last_yearly: string | null;
   daily: boolean;
   weekly: boolean;
   names: boolean;
@@ -290,7 +295,7 @@ export class PocketStore {
     if (error) throw error;
   }
 
-  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone' | 'monthly' | 'calendar' | 'post_minute' | 'weekly_day'>>): Promise<void> {
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice' | 'thread_id' | 'time_zone' | 'monthly' | 'calendar' | 'post_minute' | 'weekly_day' | 'yearly' | 'year_end_month' | 'year_end_day' | 'yearly_calendar'>>): Promise<void> {
     const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
     if (error) throw error;
   }
@@ -308,7 +313,7 @@ export class PocketStore {
   }
 
   /** Marks a summary as sent for that day; false when it already was. */
-  async claimSummary(chatId: number, kind: 'daily' | 'weekly' | 'monthly', day: string): Promise<boolean> {
+  async claimSummary(chatId: number, kind: 'daily' | 'weekly' | 'monthly' | 'yearly', day: string): Promise<boolean> {
     const { data, error } = await this.#sb.rpc('pocket_group_claim', { p_chat: chatId, p_kind: kind, p_day: day });
     if (error) throw error;
     return data === true;

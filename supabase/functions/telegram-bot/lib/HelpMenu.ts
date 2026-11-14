@@ -20,7 +20,7 @@ export class HelpMenu {
 
   /** The menu in groups, where the bot only does summaries. */
   static readonly GROUP_COMMANDS: BotCommand[] = [
-    { command: 'summary', description: 'Summary settings (on, off, now, time, weekly, zone, calendar)' },
+    { command: 'summary', description: 'Summary settings (on, off, now, time, weekly, yearly, zone, calendar)' },
     { command: 'help', description: 'What I do in this group' },
   ];
 
@@ -83,14 +83,15 @@ export class HelpMenu {
     '/help  this guide',
     '',
     '<b>👪 Family group summaries</b> (Family plan)',
-    'Add me to your family\'s Telegram group (or a topic in it) and send /summary on there. I\'ll post summaries of your shared space: daily, weekly and monthly, with the change from last week and last month. Only the shared space\'s accounts are included, never personal ones, and I don\'t read the group\'s messages. Entries still come here.',
+    'Add me to your family\'s Telegram group (or a topic in it) and send /summary on there. I\'ll post summaries of your shared space: daily, weekly, monthly and yearly, with the change from the period before. Only the shared space\'s accounts are included, never personal ones, and I don\'t read the group\'s messages. Entries still come here.',
     'In the group:',
     '/summary  settings · /summary now  today so far',
     '<code>/summary time 8:30pm</code>  when (a morning time sums up the day before)',
     '<code>/summary weekly friday</code>  the weekly day',
     '<code>/summary zone Nairobi</code>  the time zone',
     '<code>/summary calendar hijri</code>  Hijri or regular months',
-    '<code>/summary names off</code> · <code>/summary daily off</code> · <code>/summary weekly off</code> · <code>/summary monthly off</code>',
+    '<code>/summary yearly 31 march</code>  your year end',
+    '<code>/summary names off</code> (or daily, weekly, monthly, yearly)',
     '/summary off  stop',
     '',
     '<i>The word "to" in a note never makes a transfer — only &gt; or two #accounts do.</i>',

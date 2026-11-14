@@ -8,6 +8,8 @@
  *   weekly  on the chosen day, about the seven days ending that day
  *   monthly when the month (regular or Hijri, as chosen) has just ended,
  *           compared with the month before
+ *   yearly  when the group's year ends (31 December / end of Zilhaj, or the
+ *           date it chose), compared with the year before
  *
  * Each summary is claimed in the database before it is sent, so overlapping
  * or repeated runs never post twice, and calling it early posts nothing.
@@ -74,7 +76,9 @@ export class SummaryRunner {
     const weeklyDue = weekDay && group.weekly && (group.last_weekly ?? '') < today;
     const months = group.monthly && (group.last_monthly ?? '') < today ? await this.#summaries.months(group) : null;
     const monthlyDue = !!months?.isLastDay(about);
-    if (!dailyDue && !weeklyDue && !monthlyDue) return;
+    const years = group.yearly && (group.last_yearly ?? '') < today ? await this.#summaries.years(group) : null;
+    const yearlyDue = !!years?.isYearEnd(about);
+    if (!dailyDue && !weeklyDue && !monthlyDue && !yearlyDue) return;
 
     if (!(await PlanAccess.load(this.#store, group.owner_id)).canShare) {
       if (!group.paused_notice) {
@@ -95,6 +99,10 @@ export class SummaryRunner {
     }
     if (monthlyDue && await this.#store.claimSummary(group.chat_id, 'monthly', today)) {
       const text = await this.#summaries.monthly(group, about, months!);
+      if (text && await this.#post(group, text, true, result)) result.posted++;
+    }
+    if (yearlyDue && await this.#store.claimSummary(group.chat_id, 'yearly', today)) {
+      const text = await this.#summaries.yearly(group, about, years!);
       if (text && await this.#post(group, text, true, result)) result.posted++;
     }
   }

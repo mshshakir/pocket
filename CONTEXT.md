@@ -69,7 +69,9 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   `lib/SummaryMonths.ts`; posted on the month's last day with per-category change vs previous month).
   Schedule (0026 `post_minute` default 1260, `weekly_day` default 0; `lib/SummarySchedule.ts`; morning
   time = about yesterday; cron every 10 min; `/summary time 8:30pm`, `/summary weekly friday`, `/summary zone`).
-  Tests: `telegram-bot/test/groups_test.ts` (75).
+  Yearly (0027 `yearly`, `year_end_month`/`year_end_day` default 12/31 = end of Dec or Zilhaj, `yearly_calendar`
+  null = group calendar, `last_yearly`; `lib/SummaryYears.ts`; `/summary yearly 31 march`).
+  Tests: `telegram-bot/test/groups_test.ts` (93).
 - **2026-11-14 · AI credits expire after a year** (0026: `billing_settings.ai_credit_days` 365,
   `pocket_ai_expire(user)` FIFO, written as negative 'grant' rows ref `exp:<purchase id>`, cron
   `ai-credit-expiry` hourly at :23). Decided: plans, trial and AI packs not refundable; only

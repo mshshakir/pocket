@@ -36,7 +36,7 @@ class FakeStore {
   groups() { return Promise.resolve([...this.groupsMap.values()].map((g) => ({ ...g }))); }
   saveGroup(chat: number, owner: string, space: string, title: string | null, thread: number | null = null) {
     const had = this.groupsMap.get(chat);
-    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, time_zone: 'Asia/Kolkata', monthly: true, calendar: 'gregorian', last_monthly: null, post_minute: 1260, weekly_day: 0, ...had,
+    this.groupsMap.set(chat, { daily: true, weekly: true, names: true, last_daily: null, last_weekly: null, time_zone: 'Asia/Kolkata', monthly: true, calendar: 'gregorian', last_monthly: null, post_minute: 1260, weekly_day: 0, yearly: true, year_end_month: 12, year_end_day: 31, yearly_calendar: null, last_yearly: null, ...had,
       chat_id: chat, owner_id: owner, space_id: space, title, thread_id: thread, paused_notice: false });
     return Promise.resolve();
   }
@@ -45,9 +45,9 @@ class FakeStore {
   moveGroup(a: number, b: number) { const g = this.groupsMap.get(a)!; this.groupsMap.delete(a); this.groupsMap.set(b, { ...g, chat_id: b }); return Promise.resolve(); }
   hijri = 0;
   hijriOffset() { return Promise.resolve(this.hijri); }
-  claimSummary(chat: number, kind: 'daily' | 'weekly' | 'monthly', day: string) {
+  claimSummary(chat: number, kind: 'daily' | 'weekly' | 'monthly' | 'yearly', day: string) {
     const g = this.groupsMap.get(chat)!;
-    const key = kind === 'daily' ? 'last_daily' : kind === 'weekly' ? 'last_weekly' : 'last_monthly';
+    const key = kind === 'daily' ? 'last_daily' : kind === 'weekly' ? 'last_weekly' : kind === 'monthly' ? 'last_monthly' : 'last_yearly';
     if (!g[kind] || (g[key] ?? '') >= day) return Promise.resolve(false);
     g[key] = day;
     return Promise.resolve(true);
@@ -405,6 +405,68 @@ console.log('\ngroup summaries');
   const { HelpMenu } = await import('../lib/HelpMenu.ts');
   ok('H2 the private /help explains group summaries and their commands',
     /Family group summaries/.test(HelpMenu.GUIDE) && /summary time 8:30pm/.test(HelpMenu.GUIDE) && /summary calendar hijri/.test(HelpMenu.GUIDE) && /never personal/.test(HelpMenu.GUIDE));
+}
+{
+  const { SummaryYears: Y } = await import('../lib/SummaryYears.ts');
+  const { SummaryMonths: SM } = await import('../lib/SummaryMonths.ts');
+  const p = (t: string) => JSON.stringify(Y.parse(t));
+  ok('Y1 year ends people type', p('31 march') === '{"month":3,"day":31,"calendar":"gregorian"}' && p('March 31st') === p('31 march')
+     && p('31/3') === '{"month":3,"day":31,"calendar":null}' && p('last day of march') === p('31 march') && p('march') === p('31 march')
+     && p('29 zilhaj') === '{"month":12,"day":29,"calendar":"hijri"}' && p('end zilhaj') === '{"month":12,"day":31,"calendar":"hijri"}'
+     && p('30 ramadaan') === '{"month":9,"day":30,"calendar":"hijri"}' && Y.parse('tomorrow') === null && Y.parse('32 march') === null, p('29 zilhaj'));
+  const cal = new Y(SM.for('gregorian'));
+  const y = cal.period('2026-12-31');
+  ok('Y2 default: the calendar year, labelled "2026", the year before is 2025',
+    cal.isYearEnd('2026-12-31') && !cal.isYearEnd('2026-12-30') && y.from === '2026-01-01' && y.label === '2026' && cal.previous(y).from === '2025-01-01' && cal.previous(y).to === '2025-12-31');
+  const fy = new Y(SM.for('gregorian'), { month: 3, day: 31 });
+  const f = fy.period('2027-03-31');
+  ok('Y3 financial year to 31 March: April–March, labelled with both ends', f.from === '2026-04-01' && f.label === 'April 2026 – March 2027' && fy.isYearEnd('2027-03-31'), f.label);
+  const feb = new Y(SM.for('gregorian'), { month: 2, day: 31 });
+  ok('Y4 a day past the month\'s end means its last day', feb.isYearEnd('2027-02-28') && feb.isYearEnd('2028-02-29') && !feb.isYearEnd('2028-02-28'));
+  const hy = new Y(SM.for('hijri', 0));
+  let end = '2026-11-14';
+  while (!hy.isYearEnd(end)) end = LocalClock.shift(end, 1);
+  const h = hy.period(end);
+  const len = Math.round((Date.parse(h.to) - Date.parse(h.from)) / 86400000) + 1;
+  ok('Y5 Hijri year: ends on the last day of Zilhaj, 354–355 days, labelled "… H"', (len === 354 || len === 355) && / H$/.test(h.label)
+     && SM.for('hijri', 0).position(h.from).month === 1 && SM.for('hijri', 0).position(h.from).day === 1, `${h.from}..${h.to} ${h.label} (${len})`);
+  ok('Y6 described for people', fy.describe() === 'the last day of March' && new Y(SM.for('gregorian'), { month: 3, day: 15 }).describe() === '15 March' && /Zilhaj/.test(hy.describe()));
+  const r = new SummaryReport();
+  const yt = r.yearly('2026', summary({ spent: 72_000_000 }), summary({ spent: 60_000_000 }), 12, true);
+  ok('Y7 yearly text: label, monthly average, compared with last year', yt.includes('Shakirs · 2026') && yt.includes('On average ₹60,000 a month') && yt.includes('(last year ₹6,00,000, up 20%)'), yt);
+}
+{
+  // 31 Dec 2026 at 9:30 pm India: daily, monthly and yearly.
+  const { store, tg, runner } = setup(at('2026-12-31T16:00:00Z'));
+  await store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  const r = await runner.run();
+  ok('Y8 31 December: the yearly summary too, the whole year vs last year',
+    r.posted === 3 && store.asked.includes('sp1:2026-01-01..2026-12-31') && store.asked.includes('sp1:2025-01-01..2025-12-31') && /🎉/.test(tg.last), JSON.stringify(r));
+  ok('Y9 not twice', (await runner.run()).posted === 0);
+  const fy = setup(at('2027-03-31T16:00:00Z'));
+  await fy.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await fy.store.updateGroup(GROUP, { year_end_month: 3, year_end_day: 31, yearly_calendar: 'gregorian' });
+  await fy.runner.run();
+  ok('Y10 financial year: on 31 March, April–March', fy.store.asked.includes('sp1:2026-04-01..2027-03-31') && /April 2026 – March 2027/.test(fy.tg.last), fy.tg.last);
+  const dec = setup(at('2026-12-31T16:00:00Z'));
+  await dec.store.saveGroup(GROUP, OWNER, 'sp1', 'Family');
+  await dec.store.updateGroup(GROUP, { year_end_month: 3, year_end_day: 31, yearly_calendar: 'gregorian' });
+  ok('Y11 and then not on 31 December', !(await dec.runner.run(), dec.tg.sent.some((m) => /🎉/.test(m.text))));
+}
+{
+  const { store, tg, say } = setup();
+  await say('/summary on');
+  await say('/summary yearly 31 march');
+  const g = store.groupsMap.get(GROUP)!;
+  ok('Y12 /summary yearly 31 march: saved and shown', g.year_end_month === 3 && g.year_end_day === 31 && g.yearly_calendar === 'gregorian' && /Yearly: on, on the last day of March/.test(tg.last), tg.last);
+  await say('/summary yearly 29 zilhaj');
+  ok('Y13 a Hijri date sets a Hijri year', store.groupsMap.get(GROUP)!.yearly_calendar === 'hijri' && store.groupsMap.get(GROUP)!.year_end_month === 12);
+  await say('/summary yearly off');
+  ok('Y14 yearly off', store.groupsMap.get(GROUP)!.yearly === false && /Yearly: off/.test(tg.last));
+  await say('/summary yearly someday');
+  ok('Y15 a date it can\'t read: shows examples', /31 march/.test(tg.last));
+  await say('/summary yearly 31/12', 22);
+  ok('Y16 only the owner sets it', store.groupsMap.get(GROUP)!.year_end_month === 12 && store.groupsMap.get(GROUP)!.yearly_calendar === 'hijri');
 }
 {
   ok('C1 clock: hour and weekday in India time', at('2026-11-15T15:45:00Z').hour() === 21 && at('2026-11-15T15:45:00Z').weekday() === 0

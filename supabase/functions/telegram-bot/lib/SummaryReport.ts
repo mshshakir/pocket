@@ -18,6 +18,7 @@ export class SummaryReport {
   static readonly #TOP_DAY = 4;
   static readonly #TOP_WEEK = 5;
   static readonly #TOP_MONTH = 6;
+  static readonly #TOP_YEAR = 8;
 
   readonly #money: Money;
 
@@ -49,6 +50,15 @@ export class SummaryReport {
     const head = `📅 <b>${SummaryReport.esc(s.space)} · ${SummaryReport.esc(label)}</b>`;
     if (!s.entries) return `${head}\nNothing was logged in the shared accounts this month.`;
     return [head, ...this.#body(s, SummaryReport.#TOP_MONTH, previous, SummaryReport.esc(previousName), true), ...this.#people(s, names)].join('\n');
+  }
+
+  /** A year, compared with the year before overall and per category, with the monthly average. */
+  yearly(label: string, s: SpaceSummary, previous: SpaceSummary | null, months: number, names: boolean): string {
+    const head = `🎉 <b>${SummaryReport.esc(s.space)} · ${SummaryReport.esc(label)}</b>`;
+    if (!s.entries) return `${head}\nNothing was logged in the shared accounts this year.`;
+    const lines = this.#body(s, SummaryReport.#TOP_YEAR, previous, 'last year', true);
+    if (months > 1 && s.spent > 0) lines.splice(1, 0, `On average ${this.#amount(Math.round(s.spent / months), s.currency)} a month`);
+    return [head, ...lines, ...this.#people(s, names)].join('\n');
   }
 
   #body(s: SpaceSummary, top: number, previous: SpaceSummary | null, previousName = 'last week', perCategory = false): string[] {

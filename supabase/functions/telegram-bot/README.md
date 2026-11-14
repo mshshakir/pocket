@@ -115,7 +115,9 @@ The bot can post a summary of one **shared space** to a Telegram group: every ev
 group's time zone (asked with buttons when summaries are turned on, or `/summary time <city>`;
 India until chosen), on Sunday evenings a weekly one (Monday to Sunday, compared
 with the week before), and on the last evening of each month a monthly one, compared with the month
-before overall and per category. Months follow the group's calendar, regular or Hijri (asked with
+before overall and per category. A yearly one goes out on the group's year end (31 December, or the end of Zilhaj for Hijri groups, unless
+changed with `/summary yearly 31 march`), compared with the year before, with the monthly average.
+Months follow the group's calendar, regular or Hijri (asked with
 buttons; `/summary calendar hijri|regular`; Hijri months use the owner's Hijri offset, as in the app). Only entries in that space's own accounts are counted. Personal accounts
 never are, and transfers are left out.
 

@@ -17,12 +17,26 @@ export interface MonthPeriod {
   short: string; // "October" / "Rabi al-Awwal", for "(September ₹55,100 …)"
 }
 
+/** A day's place in its calendar: month 1–12, day of the month, year. */
+export interface CalendarDay {
+  year: number;
+  month: number;
+  day: number;
+}
+
 export abstract class SummaryMonths {
   static for(calendar: CalendarKind, hijriOffset = 0): SummaryMonths {
     return calendar === 'hijri' ? new HijriMonths(hijriOffset) : new GregorianMonths();
   }
 
+  abstract readonly kind: CalendarKind;
+
+  /** Month names, January… or Moharram… */
+  abstract readonly names: readonly string[];
+
   abstract month(day: string): MonthPeriod;
+
+  abstract position(day: string): CalendarDay;
 
   /** Is this the last day of its month? (the monthly summary goes out then) */
   isLastDay(day: string): boolean {
@@ -35,6 +49,14 @@ export abstract class SummaryMonths {
 }
 
 class GregorianMonths extends SummaryMonths {
+  readonly kind = 'gregorian' as const;
+  readonly names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  position(day: string): CalendarDay {
+    const [year, month, d] = day.split('-').map(Number);
+    return { year, month, day: d };
+  }
+
   month(day: string): MonthPeriod {
     const [y, m] = day.split('-').map(Number);
     const first = new Date(Date.UTC(y, m - 1, 1));
@@ -45,11 +67,18 @@ class GregorianMonths extends SummaryMonths {
 }
 
 class HijriMonths extends SummaryMonths {
+  readonly kind = 'hijri' as const;
+  readonly names = HijriCalendar.MONTHS;
   readonly #cal: HijriCalendar;
 
   constructor(offset: number) {
     super();
     this.#cal = new HijriCalendar(offset);
+  }
+
+  position(day: string): CalendarDay {
+    const h = this.#cal.toHijri(day);
+    return { year: h.year, month: h.month + 1, day: h.day };
   }
 
   month(day: string): MonthPeriod {
