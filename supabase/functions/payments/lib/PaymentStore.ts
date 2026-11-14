@@ -11,12 +11,21 @@ export interface Product {
   plan?: string;
   term?: 'month' | 'year' | 'trial';
   aiCredits?: number;
-  amountPaise: number;
+  amountPaise: number;  // after any running sale
+  listPaise?: number;   // before offers
+  sale?: string;        // the sale's name, when one applies
 }
+
+export type QuoteRefusal =
+  | 'closed' | 'unknown' | 'lifetime' | 'trial_used' | 'has_plan' | 'no_place'
+  | 'coupon_unknown' | 'coupon_not_started' | 'coupon_expired' | 'coupon_used_up' | 'coupon_not_for_this';
 
 export interface Quote extends Partial<Product> {
   ok: boolean;
-  reason?: 'closed' | 'unknown' | 'lifetime' | 'trial_used' | 'has_plan';
+  reason?: QuoteRefusal;
+  offerIds?: number[];
+  coupon?: string;
+  applicationId?: number; // the habit programme place being paid for
 }
 
 export interface Fulfilment {
@@ -35,14 +44,17 @@ export class PaymentStore {
     return (await this.#rpc('pocket_payment_products', {})) as Product[];
   }
 
-  async quote(userId: string, product: string): Promise<Quote> {
-    return (await this.#rpc('pocket_payment_quote', { p_user: userId, p_product: product })) as Quote;
+  /** The price for this person, after any sale and the coupon code, if given (migration 0028). */
+  async quote(userId: string, product: string, code: string | null = null): Promise<Quote> {
+    return (await this.#rpc('pocket_payment_quote_with', { p_user: userId, p_product: product, p_code: code })) as Quote;
   }
 
   async saveOrder(orderId: string, userId: string, q: Quote): Promise<void> {
     const { error } = await this.#admin.from('payment_orders').insert({
       id: orderId, user_id: userId, product: q.product, plan: q.plan ?? null, term: q.term ?? null,
-      ai_credits: q.aiCredits ?? null, amount_paise: q.amountPaise,
+      ai_credits: q.aiCredits ?? null, amount_paise: q.amountPaise, list_paise: q.listPaise ?? null,
+      offer_ids: q.offerIds?.length ? q.offerIds : null, coupon_code: q.coupon ?? null,
+      application_id: q.applicationId ?? null,
     });
     if (error) throw new Error(`saving the order failed: ${error.message}`);
   }

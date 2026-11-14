@@ -25,14 +25,28 @@ class FakeStore {
   orders = new Map<string, { user: string; paid: boolean; product: string }>();
   fulfilled: string[] = [];
   products() { return Promise.resolve(PRODUCTS); }
-  quote(_u: string, product: string): Promise<Quote> {
+  quotedWith: (string | null)[] = [];
+  offered = false;
+  quote(_u: string, product: string, code: string | null = null): Promise<Quote> {
+    this.quotedWith.push(code);
     if (!this.open) return Promise.resolve({ ok: false, reason: 'closed' });
+    if (product === 'programme') {
+      return Promise.resolve(this.offered
+        ? { ok: true, product: 'programme', name: 'Habit programme · Batch 1', amountPaise: 500000, listPaise: 500000, applicationId: 7 }
+        : { ok: false, reason: 'no_place' });
+    }
+    if (code === 'BAD') return Promise.resolve({ ok: false, reason: 'coupon_unknown' });
+    if (code === 'TEN') {
+      const p = PRODUCTS.find((x) => x.product === product)!;
+      return Promise.resolve({ ok: true, ...p, listPaise: p.amountPaise, amountPaise: Math.round(p.amountPaise * 0.9), coupon: 'TEN', offerIds: [3] });
+    }
     const p = PRODUCTS.find((x) => x.product === product);
     if (!p) return Promise.resolve({ ok: false, reason: 'unknown' });
     if (p.term === 'trial' && this.trialUsed) return Promise.resolve({ ok: false, reason: 'trial_used' });
     return Promise.resolve({ ok: true, ...p });
   }
-  saveOrder(id: string, user: string, q: Quote) { this.orders.set(id, { user, paid: false, product: q.product! }); return Promise.resolve(); }
+  saved: Quote[] = [];
+  saveOrder(id: string, user: string, q: Quote) { this.saved.push(q); this.orders.set(id, { user, paid: false, product: q.product! }); return Promise.resolve(); }
   ownerOf(id: string) { return Promise.resolve(this.orders.get(id)?.user ?? null); }
   fulfil(id: string, payment: string) {
     const o = this.orders.get(id)!;
@@ -149,6 +163,31 @@ console.log('\npayments function');
   const other = await (await h.handle(await hook({ event: 'order.paid', payload: { order: { entity: { id: 'order_xyz' } }, payment: { entity: { id: 'pay_x' } } } }))).json();
   const failedPay = await (await h.handle(await hook({ event: 'payment.failed', payload: { payment: { entity: { id: 'pay_f', order_id: 'order_1', status: 'failed' } } } }))).json();
   ok('P17 other orders and other events are acknowledged and ignored', other.ignored === true && failedPay.ignored === true && !s.fulfilled.length);
+}
+
+{
+  const s = new FakeStore(); rzpCalls = [];
+  const res = await make(s).handle(app({ action: 'order', product: 'sync_month', code: ' ten ' }));
+  const j = await res.json();
+  ok('P18 a coupon is passed to the price check, tidied; the order is for the discounted amount',
+    s.quotedWith.at(-1) === 'TEN' && rzpCalls[0].body.amount === 15210 && j.amount === 15210 && j.listAmount === 16900 && j.coupon === 'TEN'
+    && (rzpCalls[0].body.notes as Record<string, string>).coupon === 'TEN' && s.saved[0].offerIds?.[0] === 3, JSON.stringify(j));
+}
+{
+  const s = new FakeStore(); rzpCalls = [];
+  const res = await make(s).handle(app({ action: 'order', product: 'sync_month', code: 'BAD' }));
+  const j = await res.json();
+  ok('P19 a bad code: refused with a reason, no Razorpay order', res.status === 409 && j.code === 'bad_coupon' && /isn't valid/.test(j.error) && !rzpCalls.length, JSON.stringify(j));
+  const odd = await make(new FakeStore()).handle(app({ action: 'order', product: 'sync_month', code: 'no spaces allowed!' }));
+  ok('P20 a code with odd characters never reaches the database as typed', (await odd.json()).code === 'bad_coupon');
+}
+{
+  const s = new FakeStore(); rzpCalls = [];
+  const before = await (await make(s).handle(app({ action: 'order', product: 'programme' }))).json();
+  ok('P21 programme before a place is offered: refused', before.code === 'not_allowed' && /no programme place/.test(before.error), JSON.stringify(before));
+  s.offered = true;
+  const j = await (await make(s).handle(app({ action: 'order', product: 'programme' }))).json();
+  ok('P22 programme once offered: ₹5,000 order tied to the application', j.amount === 500000 && s.saved.at(-1)?.applicationId === 7 && /Habit programme/.test(j.name), JSON.stringify(j));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

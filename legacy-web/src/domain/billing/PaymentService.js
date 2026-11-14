@@ -33,12 +33,13 @@ export class PaymentService {
 
   /**
    * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
-   * @param {{email?: string}} [who]
+   * @param {{email?: string, code?: string}} [who]  code: a coupon code, if typed
    * @returns {Promise<{applied: boolean}>}
    * @throws {PaymentError}  code 'dismissed' when the person closed the window
    */
   async buy(product, who = {}) {
-    const order = await this.#call({ action: 'order', product });
+    const code = (who.code ?? '').trim();
+    const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}) });
     const paid = await this.#checkout.open({ ...order, email: who.email });
     const result = await this.#call({ action: 'verify', ...paid });
     return { applied: result.applied === true };

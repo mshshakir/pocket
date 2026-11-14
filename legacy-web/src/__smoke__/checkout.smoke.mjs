@@ -134,5 +134,26 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 for life with unlimited AI: nothing to buy', !life.includes('__app.buy('));
 }
 
+{
+  const s = server();
+  const checkout = { open: async (o) => ({ orderId: o.orderId, paymentId: 'pay_1', signature: 'sig' }) };
+  await new PaymentService(() => s.invoke, checkout).buy('sync_month', { code: ' launch20 ' });
+  await new PaymentService(() => s.invoke, checkout).buy('sync_month', { code: '' });
+  ok('C7 a typed coupon code goes with the order; an empty one is left out', s.sent[0].code === 'launch20' && !('code' in s.sent[2]));
+}
+{
+  const card = new PlanCard();
+  const catalogue = [{ code: 'family', name: 'Family', sync: true, telegram: true, sharing: true, seats: 5, monthly_paise: 19900, yearly_paise: 149900 }];
+  const offers = { products: [
+    { product: 'family_year', plan: 'family', term: 'year', amountPaise: 119920, listPaise: 149900, sale: 'Launch sale', available: true },
+    { product: 'family_month', plan: 'family', term: 'month', amountPaise: 19900, listPaise: 19900, available: true },
+  ] };
+  const html = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, 'LAUNCH20');
+  ok('C8 a sale shows the old price struck through, named; others stay plain', /<s class="plan-was" title="Launch sale">₹1,499<\/s> ₹1,199\.20/.test(html) && /Buy 1 month · ₹199</.test(html), html.match(/Buy 1 year[^<]*<s[^>]*>[^<]*<\/s>[^<]*/)?.[0]);
+  ok('C9 a code box keeps what was typed', /placeholder="Have a code\? Type it here"[^>]*value="LAUNCH20"/.test(html.replace(/\s+/g, ' ')));
+  const esc = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, offers, null, '"><script>');
+  ok('C10 the code box escapes what was typed', !esc.includes('"><script>'));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

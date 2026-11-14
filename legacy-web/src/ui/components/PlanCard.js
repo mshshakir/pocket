@@ -15,8 +15,9 @@ export class PlanCard {
    * @param {object[]|null} catalogue  rows of the plans table, or null while loading
    * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
    * @param {string|null} [buying]  the product being paid for right now
+   * @param {string} [coupon]  the code typed so far
    */
-  html(plan, catalogue, offers = null, buying = null) {
+  html(plan, catalogue, offers = null, buying = null, coupon = '') {
     return `
       <div class="card-muted p-3 mb-3" id="planCard">
         <div class="flex items-center justify-between gap-2 mb-1">
@@ -30,7 +31,7 @@ export class PlanCard {
             <i data-lucide="download"></i> Download my data
           </button>
         </div>
-        ${this.#offers(plan, catalogue, offers, buying)}
+        ${this.#offers(plan, catalogue, offers, buying, coupon)}
         ${this.#aiPack(plan, offers, buying)}
       </div>`;
   }
@@ -93,7 +94,7 @@ export class PlanCard {
     return parts.join(' · ');
   }
 
-  #offers(plan, catalogue, offers, buying) {
+  #offers(plan, catalogue, offers, buying, coupon) {
     if (plan.isLifetime) return '';
     if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans…</div>';
     const paid = catalogue.filter((p) => p.code !== 'free');
@@ -116,6 +117,7 @@ export class PlanCard {
               ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days)
               : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ''}
           </div>`).join('')}
+        ${selling ? this.#couponField(coupon) : ''}
         ${selling
           ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) — nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).
              Paying again for the same plan adds to its end date.${switching ? ' Moving to a different plan starts it today; time left on the old one isn\'t carried over.' : ''}</div>`
@@ -131,7 +133,7 @@ export class PlanCard {
       .sort((a, b) => order[a.term] - order[b.term]);
     if (!shown.length) return '';
     const label = (o) => {
-      const price = PlanCard.#inr(o.amountPaise);
+      const price = PlanCard.#price(o);
       if (o.term === 'trial') return trialDays ? `Try ${trialDays} days · ${price}` : `Try for ${price}`;
       const verb = plan.plan === o.plan && plan.state === 'active' && plan.term !== 'trial' ? 'Add' : 'Buy';
       return `${verb} 1 ${o.term} · ${price}`;
@@ -153,15 +155,32 @@ export class PlanCard {
             <div class="font-semibold text-sm">AI pack</div>
             <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year.</div>
           </div>
-          ${this.#button(pack, PlanCard.#inr(pack.amountPaise), buying, false)}
+          ${this.#button(pack, PlanCard.#price(pack), buying, false)}
         </div>
       </div>`;
   }
 
+  /** @param {string} label  safe HTML (built here from numbers and fixed words) */
   #button(o, label, buying, primary) {
     const busy = buying === o.product;
     return `<button class="btn ${primary ? 'btn-primary' : 'btn-outline'} plan-buy" ${buying ? 'disabled' : ''}
-      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? 'Opening…' : Html.escape(label)}</button>`;
+      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? 'Opening…' : label}</button>`;
+  }
+
+  /** A box for a coupon code, applied to whichever item is bought next. */
+  #couponField(coupon) {
+    return `
+      <div class="flex items-center gap-2 mb-2">
+        <input class="input plan-coupon" placeholder="Have a code? Type it here" maxlength="32" autocomplete="off"
+          value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)">
+      </div>`;
+  }
+
+  /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
+  static #price(o) {
+    const now = PlanCard.#inr(o.amountPaise);
+    if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
+    return `<s class="plan-was" title="${Html.escape(o.sale ?? 'Offer')}">${PlanCard.#inr(o.listPaise)}</s> ${now}`;
   }
 
   static #inr(paise) {

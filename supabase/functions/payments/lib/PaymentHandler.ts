@@ -3,7 +3,8 @@
  *
  * From the app (signed in), POST JSON { action, ... }:
  *   products            → { products: [{ ...product, available, reason? }], keyId }
- *   order  { product }  → { orderId, keyId, amount, currency, name }
+ *   order  { product, code? } → { orderId, keyId, amount, listAmount, coupon?, currency, name }
+ *                         product 'programme' = the habit programme place offered to them
  *   verify { orderId, paymentId, signature } → { ok, applied }
  *
  * From Razorpay, POST /payments/webhook with X-Razorpay-Signature:
@@ -11,7 +12,7 @@
  *   hasn't already). Applying is idempotent, so both paths are safe together.
  *
  * Errors are { error, code }: signed_out, bad_request, closed, not_allowed,
- * not_set_up, bad_signature, not_yours, failed.
+ * bad_coupon, not_set_up, bad_signature, not_yours, failed.
  */
 import type { PaymentStore, Quote } from './PaymentStore.ts';
 import { RazorpayError, type RazorpayClient } from './RazorpayClient.ts';
@@ -32,6 +33,12 @@ export class PaymentHandler {
     lifetime: 'Your account is already free for life.',
     trial_used: 'You\'ve already used your trial.',
     has_plan: 'The trial is for people without a plan.',
+    no_place: 'There is no programme place waiting for you to pay for.',
+    coupon_unknown: 'That code isn\'t valid.',
+    coupon_not_started: 'That code isn\'t active yet.',
+    coupon_expired: 'That code has expired.',
+    coupon_used_up: 'That code has been used up.',
+    coupon_not_for_this: 'That code can\'t be used for this.',
   };
 
   readonly #userOf: UserLookup;
@@ -73,7 +80,11 @@ export class PaymentHandler {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     switch (body?.action) {
       case 'products': return await this.#products(userId);
-      case 'order': return await this.#order(userId, String(body.product ?? ''));
+      case 'order': {
+        const code = PaymentHandler.#code(body.code);
+        if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
+        return await this.#order(userId, String(body.product ?? ''), code);
+      }
       case 'verify': return await this.#verify(userId, body);
       default: return this.#fail(400, 'bad_request', 'Unknown action.');
     }
@@ -88,23 +99,29 @@ export class PaymentHandler {
     });
   }
 
-  async #order(userId: string, product: string): Promise<Response> {
-    const quote: Quote = await this.#store.quote(userId, product);
+  async #order(userId: string, product: string, coupon: string | null): Promise<Response> {
+    const quote: Quote = await this.#store.quote(userId, product, coupon);
     if (!quote.ok) {
-      const code = quote.reason === 'closed' ? 'closed' : 'not_allowed';
-      return this.#fail(quote.reason === 'closed' ? 503 : 409, code, PaymentHandler.#REFUSALS[quote.reason ?? ''] ?? 'Not available.');
+      const reason = quote.reason ?? '';
+      const code = reason === 'closed' ? 'closed' : reason.startsWith('coupon_') ? 'bad_coupon' : 'not_allowed';
+      return this.#fail(reason === 'closed' ? 503 : 409, code, PaymentHandler.#REFUSALS[reason] ?? 'Not available.');
     }
     if (!this.#razorpay) return this.#fail(503, 'not_set_up', 'Payments aren\'t set up yet. Please try again later.');
 
     let order;
     try {
-      order = await this.#razorpay.createOrder(quote.amountPaise!, `pocket-${product}-${Date.now()}`, { user_id: userId, product });
+      const notes: Record<string, string> = { user_id: userId, product };
+      if (quote.coupon) notes.coupon = quote.coupon;
+      order = await this.#razorpay.createOrder(quote.amountPaise!, `pocket-${product}-${Date.now()}`, notes);
     } catch (e) {
       if (e instanceof RazorpayError) return this.#fail(502, 'failed', `${e.message} You weren't charged.`);
       throw e;
     }
     await this.#store.saveOrder(order.id, userId, quote);
-    return this.#json(200, { orderId: order.id, keyId: this.#razorpay.keyId, amount: order.amount, currency: order.currency, name: quote.name });
+    return this.#json(200, {
+      orderId: order.id, keyId: this.#razorpay.keyId, amount: order.amount, listAmount: quote.listPaise ?? order.amount,
+      coupon: quote.coupon ?? null, currency: order.currency, name: quote.name,
+    });
   }
 
   async #verify(userId: string, body: Record<string, unknown>): Promise<Response> {
@@ -132,6 +149,13 @@ export class PaymentHandler {
     // Not one of Pocket's orders (another product on the same account): acknowledge and move on.
     if (!(await this.#store.ownerOf(orderId))) return this.#json(200, { ignored: true });
     return this.#json(200, await this.#store.fulfil(orderId, payment.id));
+  }
+
+  /** A coupon code as typed, tidied; null when there is none; false when it can't be a code. */
+  static #code(raw: unknown): string | null | false {
+    const code = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+    if (!code) return null;
+    return /^[A-Z0-9_-]{3,32}$/.test(code) ? code : false;
   }
 
   // ── replies ─────────────────────────────────────────────────────

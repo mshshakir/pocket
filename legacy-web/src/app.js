@@ -159,6 +159,8 @@ export class Application {
   #paymentOffers     = null;
   /** The product being paid for right now (disables the buy buttons), or null. */
   #buying            = null;
+  /** A coupon code typed in Your plan, used for the next purchase. */
+  #coupon            = '';
   /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
   #payments          = null;
 
@@ -667,6 +669,12 @@ export class Application {
   /** The product being paid for right now, or null. */
   get buying() { return this.#buying; }
 
+  /** The coupon code typed so far. */
+  get coupon() { return this.#coupon; }
+
+  /** Remembers the typed code without redrawing (so typing isn't interrupted). */
+  setCoupon(value) { this.#coupon = String(value ?? '').slice(0, 32); }
+
   /**
    * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
    * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
@@ -677,7 +685,8 @@ export class Application {
     this.#buying = product;
     this.#modal.refresh();
     try {
-      await this.#payments.buy(product, { email: this.#sync.currentUser.email });
+      await this.#payments.buy(product, { email: this.#sync.currentUser.email, code: this.#coupon });
+      this.#coupon = '';
       this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added' : 'Payment received — your plan is updated');
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
