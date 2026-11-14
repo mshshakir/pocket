@@ -15,6 +15,7 @@
  */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -64,109 +65,39 @@ console.log('\nfamily sharing suite');
 // ═══════════════════════════════════════════════════════════════════════════
 // PART 1 — LIVE SYNC MUST STILL WORK (add + delete, both directions)
 // ═══════════════════════════════════════════════════════════════════════════
+// Members now write straight into the owner's book; the cloud enforces who may
+// do what. The owner's app must pick each change up live.
+const expense = (id, accountId, amount, over = {}) => ({
+  id, accountId, categoryId: 'c1', amount, currency: 'USD', type: 'expense',
+  date: '2026-04-01', paymentType: 'card', recordState: 'cleared', tags: [], ...over,
+});
 {
-  // Fake Supabase carrying user_data, family_shares and family_contributions.
-  const cloud = {
-    userRow:       { id: 'owner1', data: null, version: 3 },
-    shares:        [],   // rows for the MEMBER's email
-    contributions: [],   // rows the member wrote for the owner
-    updatedContribIds: [],
-  };
-
-  const makeSb = (selfId, selfEmail) => ({
-    auth: {
-      onAuthStateChange(cb) { cloud.authCb = cb; },
-      getSession: async () => ({ data: { session: null } }),
-      signOut: async () => {}, signInWithOAuth: async () => ({}),
-    },
-    removeChannel() {},
-    channel() {
-      const ch = {
-        on(kind, cfg, handler) {
-          if (cfg?.table === 'family_contributions') cloud.onContribInsert = handler;
-          return ch;
-        },
-        subscribe(cb) { cb?.('SUBSCRIBED'); return ch; },
-        send() {},
-      };
-      return ch;
-    },
-    from(table) {
-      const q = {
-        _eq: {}, _patch: null,
-        select() { return q; },
-        eq(k, v) { q._eq[k] = v; return q; },
-        in(k, v) { q._in = { k, v }; return q; },
-        order() { return q; },
-        async single() {
-          if (table === 'user_data') return { data: cloud.userRow, error: null };
-          return { data: null, error: { code: 'PGRST116' } };
-        },
-        update(patch) { q._patch = patch; return q; },
-        async upsert(payload) {
-          if (table === 'user_data')            cloud.userRow = { ...cloud.userRow, ...payload };
-          if (table === 'family_shares')        cloud.shares  = [{ ...payload }];
-          if (table === 'family_contributions') {
-            cloud.contributions.push({ id: payload.id || `ctr_${cloud.contributions.length}`, ...payload });
-            cloud.onContribInsert?.({});
-          }
-          return { error: null };
-        },
-        then(res) {
-          if (q._patch) {
-            if (table === 'user_data') {
-              const casOk = q._eq.version === undefined || q._eq.version === cloud.userRow.version;
-              if (casOk) {
-                cloud.userRow = { ...cloud.userRow, ...q._patch };
-                return res({ data: [{ version: q._patch.version }], error: null });
-              }
-              return res({ data: [], error: null });
-            }
-            if (table === 'family_contributions') {
-              // Mark rows synced exactly as Supabase would, so the next pull
-              // doesn't re-apply an already-consumed add on top of a delete.
-              const ids = q._in?.v || [];
-              cloud.updatedContribIds.push(...ids);
-              cloud.contributions.forEach((c) => { if (ids.includes(c.id)) c.synced = true; });
-              return res({ data: [], error: null });
-            }
-          }
-          if (table === 'family_contributions') {
-            return res({ data: cloud.contributions.filter((c) => !c.synced), error: null });
-          }
-          if (table === 'family_shares') return res({ data: cloud.shares, error: null });
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
-
-  // ---- OWNER side: a member's contribution must be applied on arrival ------
+  const cloud = new FakeCloud();
   const ownerState = baseState();
   ownerState.accounts.push({ id: 'shared1', name: 'Joint', type: 'bank', currency: 'USD',
     color: '#3b82f6', icon: 'landmark', openingBalance: 0, balance: 0 });
   ownerState.family = [{ id: 'f1', name: 'Member', email: 'member@x.com',
     permissions: [{ accountId: 'shared1', access: 'full' }] }];
-  cloud.userRow.data = ownerState;
+  cloud.setBook('owner1', ownerState, 'owner@x.com');
 
-  const w = boot(ownerState, { supabase: { createClient: () => makeSb('owner1', 'owner@x.com') } });
+  const owner = { id: 'owner1', email: 'owner@x.com' };
+  const w = boot(ownerState, { supabase: { createClient: cloud.client(owner) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'owner1', email: 'owner@x.com' } });
+  cloud.authCb?.('SIGNED_IN', { user: owner });
   await wait(200);
   const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
 
-  // A member ADDS a transaction to the shared account.
-  cloud.contributions.push({
-    id: 'ctr_add', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    tx_data: { id: 'mtx1', accountId: 'shared1', categoryId: 'c1', amount: 2500,
-               currency: 'USD', type: 'expense', date: '2026-04-01', paymentType: 'card',
-               recordState: 'cleared', tags: [], addedBy: 'member@x.com' },
-  });
-  cloud.onContribInsert?.({});                 // realtime INSERT fires
-  await wait(250);
+  // The member's own app, talking to the same cloud.
+  const member = cloud.client({ id: 'mem1', email: 'member@x.com' })();
+  const stranger = cloud.client({ id: 'str1', email: 'stranger@x.com' })();
+  const write = (sb, changes) => sb.rpc('pocket_apply_changes', { book: 'owner1', changes });
 
+  // A member ADDS a transaction to the shared account.
+  let res = await write(member, { put: { transactions: [
+    expense('mtx1', 'shared1', 2500, { addedBy: 'member@x.com' })] } });
+  await wait(600);
+
+  ok('SYNC the member\'s add was accepted', !res.error, res.error?.message);
   ok('SYNC member ADD lands in the owner ledger',
      saved().transactions.some((t) => t.id === 'mtx1'),
      saved().transactions.map((t) => t.id).join(','));
@@ -176,56 +107,34 @@ console.log('\nfamily sharing suite');
   ok('SYNC the shared account balance moved',
      saved().accounts.find((a) => a.id === 'shared1')?.balance === -2500,
      String(saved().accounts.find((a) => a.id === 'shared1')?.balance));
-  ok('SYNC the applied contribution was marked synced',
-     cloud.updatedContribIds.includes('ctr_add'), cloud.updatedContribIds.join(','));
 
   // The member DELETES that same transaction.
-  cloud.contributions.push({
-    id: 'ctr_del', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    // The delete marker's flag is `_delete` (see SyncService#pullMemberContributions).
-    tx_data: { _delete: true, targetId: 'mtx1' },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
-
+  await write(member, { remove: { transactions: ['mtx1'] } });
+  await wait(600);
   ok('SYNC member DELETE removes it from the owner ledger',
      !saved().transactions.some((t) => t.id === 'mtx1'),
      saved().transactions.map((t) => t.id).join(','));
   ok('SYNC the balance reverted after the delete',
      saved().accounts.find((a) => a.id === 'shared1')?.balance === 0,
      String(saved().accounts.find((a) => a.id === 'shared1')?.balance));
-  ok('SYNC the owner re-published the share snapshot',
-     cloud.shares.length > 0 && !!cloud.shares[0].snapshot,
-     JSON.stringify(cloud.shares.length));
+
+  // The member sees the owner's account in their shares.
+  const shared = (await member.rpc('pocket_get_shared')).data;
+  ok('SYNC the member is served the shared account',
+     shared.length === 1 && shared[0].accounts.map((a) => a.id).join() === 'shared1',
+     JSON.stringify(shared.map((s) => s.accounts.map((a) => a.id))));
+  ok('SYNC …and never the owner\'s private one',
+     !shared[0].accounts.some((a) => a.id === 'own1'));
 
   // ---- H6: an EDIT must replace the row, not duplicate it -----------------
-  cloud.contributions.push({
-    id: 'ctr_add2', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    tx_data: { id: 'mtx2', accountId: 'shared1', categoryId: 'c1', amount: 1000,
-               currency: 'USD', type: 'expense', date: '2026-04-03', paymentType: 'card',
-               recordState: 'cleared', tags: [], addedBy: 'member@x.com' },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  await write(member, { put: { transactions: [
+    expense('mtx2', 'shared1', 1000, { date: '2026-04-03', addedBy: 'member@x.com' })] } });
+  await wait(600);
   ok('H6 baseline row added', saved().transactions.filter((t) => t.id === 'mtx2').length === 1);
 
-  // The member edits it: a _replace marker plus an add carrying the SAME id.
-  cloud.contributions.push({
-    id: 'ctr_rep', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    tx_data: { _delete: true, _replace: true, id: 'rep_mtx2', targetId: 'mtx2' },
-  });
-  cloud.contributions.push({
-    id: 'ctr_add2b', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    tx_data: { id: 'mtx2', accountId: 'shared1', categoryId: 'c1', amount: 7777,
-               currency: 'USD', type: 'expense', date: '2026-04-03', paymentType: 'card',
-               recordState: 'cleared', tags: [], addedBy: 'member@x.com' },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  await write(member, { put: { transactions: [
+    expense('mtx2', 'shared1', 7777, { date: '2026-04-03', addedBy: 'member@x.com' })] } });
+  await wait(600);
 
   const mtx2Rows = saved().transactions.filter((t) => t.id === 'mtx2');
   ok('H6 edit did NOT duplicate the transaction', mtx2Rows.length === 1,
@@ -237,127 +146,52 @@ console.log('\nfamily sharing suite');
      String(saved().accounts.find((a) => a.id === 'shared1')?.balance));
 
   // ---- H9: a member with no rights must be rejected -----------------------
-  cloud.contributions.push({
-    id: 'ctr_evil', owner_id: 'owner1', member_email: 'stranger@x.com',
-    account_id: 'own1', synced: false,
-    tx_data: { id: 'evil1', accountId: 'own1', amount: 999999, currency: 'USD',
-               type: 'expense', date: '2026-04-04', paymentType: 'card',
-               recordState: 'cleared', tags: [] },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  res = await write(stranger, { put: { transactions: [
+    expense('evil1', 'own1', 999999, { addedBy: 'stranger@x.com' })] } });
+  await wait(600);
+  ok('H9 a write from a non-member is refused', !!res.error);
   ok('H9 contribution from a non-member is rejected',
      !saved().transactions.some((t) => t.id === 'evil1'),
      saved().transactions.map((t) => t.id).join(','));
-  ok('H9 the rejected row was consumed, not left to retry',
-     cloud.updatedContribIds.includes('ctr_evil'));
 
   // A real member may not touch an account they were never granted.
-  cloud.contributions.push({
-    id: 'ctr_wrongacc', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'own1', synced: false,
-    tx_data: { id: 'wrong1', accountId: 'own1', amount: 500, currency: 'USD',
-               type: 'expense', date: '2026-04-05', paymentType: 'card',
-               recordState: 'cleared', tags: [] },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  res = await write(member, { put: { transactions: [
+    expense('wrong1', 'own1', 500, { addedBy: 'member@x.com' })] } });
+  await wait(600);
   ok('H9 member cannot write to an account outside their grant',
-     !saved().transactions.some((t) => t.id === 'wrong1'));
+     !!res.error && !saved().transactions.some((t) => t.id === 'wrong1'));
 
-  // A crafted delete aimed at one of the OWNER's private transactions — the
-  // original H9 attack. 'ownTx1' lives on own1, which was never shared.
-  const ownTx = { id: 'ownTx1', accountId: 'own1', categoryId: 'c1', amount: 4242,
-    currency: 'USD', type: 'expense', date: '2026-04-06', paymentType: 'card',
-    recordState: 'cleared', tags: [] };
+  // A member may not change anything but entries (accounts, settings …).
+  res = await write(member, { put: { accounts: [{ id: 'shared1', name: 'Mine now' }] } });
+  ok('H9 member cannot rename the owner\'s account', !!res.error);
+
+  // A crafted delete aimed at one of the OWNER's private transactions.
   w.__app.openModal('transaction', {});
   await wait(20);
-  // Seed it through the owner's own save path so it lands in the live store.
   const doc = w.document;
   doc.querySelector('#txForm [name=amount]').value = '42.42';
   doc.querySelector('#txForm [name=accountId]').value = 'own1';
   await w.__app.submitTx({ preventDefault() {}, target: doc.querySelector('#txForm') }, '');
-  await wait(60);
+  await wait(1400);
   const privateTx = saved().transactions.find((t) => t.accountId === 'own1' && t.amount === 4242);
   ok('H9 owner has a private transaction on a non-shared account', !!privateTx,
      saved().transactions.map((t) => `${t.accountId}:${t.amount}`).join(','));
+  ok('H9 …saved to the cloud', cloud.book('owner1').transactions.some((t) => t.id === privateTx?.id));
 
-  cloud.contributions.push({
-    id: 'ctr_evildel', owner_id: 'owner1', member_email: 'member@x.com',
-    account_id: 'shared1', synced: false,
-    tx_data: { _delete: true, id: 'del_evil', targetId: privateTx?.id },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  res = await write(member, { remove: { transactions: [privateTx?.id] } });
+  await wait(600);
   ok('H9 a delete targeting a non-shared account is refused',
-     saved().transactions.some((t) => t.id === privateTx?.id),
+     !!res.error && saved().transactions.some((t) => t.id === privateTx?.id),
      'the owner\'s private transaction was deleted by a member');
 
   w.close();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PART 1b — H9 with a DOWNGRADED member (view-only) and H8 revocation
+// PART 1b — access levels (view / add) and H8 revocation
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const cloud = { userRow: { id: 'owner2', data: null, version: 1 },
-                  shares: [], deletedShares: [], contributions: [], updatedContribIds: [] };
-  const makeSb = () => ({
-    auth: { onAuthStateChange(cb) { cloud.authCb = cb; },
-            getSession: async () => ({ data: { session: null } }),
-            signOut: async () => {}, signInWithOAuth: async () => ({}) },
-    removeChannel() {},
-    channel() {
-      const ch = { on(k, cfg, h) { if (cfg?.table === 'family_contributions') cloud.onContribInsert = h; return ch; },
-                   subscribe(cb) { cb?.('SUBSCRIBED'); return ch; }, send() {} };
-      return ch;
-    },
-    from(table) {
-      const q = {
-        _eq: {}, _patch: null, _delete: false,
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in(k, v) { q._in = { k, v }; return q; }, order() { return q; },
-        delete() { q._delete = true; return q; },
-        update(p) { q._patch = p; return q; },
-        async upsert(payload) {
-          if (table === 'user_data')     cloud.userRow = { ...cloud.userRow, ...payload };
-          if (table === 'family_shares') cloud.shares  = [{ ...payload }];
-          return { error: null };
-        },
-        async single() {
-          return table === 'user_data'
-            ? { data: cloud.userRow, error: null }
-            : { data: null, error: { code: 'PGRST116' } };
-        },
-        then(res) {
-          if (q._delete && table === 'family_shares') {
-            cloud.deletedShares.push({ ...q._eq });
-            cloud.shares = cloud.shares.filter((s) => s.member_email !== q._eq.member_email);
-            return res({ data: [], error: null });
-          }
-          if (q._patch) {
-            if (table === 'user_data') {
-              cloud.userRow = { ...cloud.userRow, ...q._patch };
-              return res({ data: [{ version: q._patch.version }], error: null });
-            }
-            if (table === 'family_contributions') {
-              const ids = q._in?.v || [];
-              cloud.updatedContribIds.push(...ids);
-              cloud.contributions.forEach((c) => { if (ids.includes(c.id)) c.synced = true; });
-              return res({ data: [], error: null });
-            }
-          }
-          if (table === 'family_contributions') {
-            return res({ data: cloud.contributions.filter((c) => !c.synced), error: null });
-          }
-          if (table === 'family_shares') return res({ data: cloud.shares, error: null });
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
-
+  const cloud = new FakeCloud();
   const st = baseState();
   st.accounts.push({ id: 'joint', name: 'Joint', type: 'bank', currency: 'USD',
     color: '#3b82f6', icon: 'landmark', openingBalance: 0, balance: 0 });
@@ -367,62 +201,57 @@ console.log('\nfamily sharing suite');
     { id: 'f2', name: 'Adder',  email: 'adder@x.com',
       permissions: [{ accountId: 'joint', access: 'add' }] },
   ];
-  cloud.userRow.data = st;
+  st.transactions = [expense('ownerJoint', 'joint', 300)];
+  cloud.setBook('owner2', st, 'owner2@x.com');
 
-  const w = boot(st, { supabase: { createClient: () => makeSb() } });
+  const owner = { id: 'owner2', email: 'owner2@x.com' };
+  const w = boot(st, { supabase: { createClient: cloud.client(owner) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'owner2', email: 'owner2@x.com' } });
+  cloud.authCb?.('SIGNED_IN', { user: owner });
   await wait(250);
   const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
 
-  // view-only: adds must be refused
-  cloud.contributions.push({
-    id: 'c_view_add', owner_id: 'owner2', member_email: 'viewer@x.com',
-    account_id: 'joint', synced: false,
-    tx_data: { id: 'vtx1', accountId: 'joint', amount: 100, currency: 'USD',
-               type: 'expense', date: '2026-05-01', paymentType: 'card',
-               recordState: 'cleared', tags: [] },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
-  ok('H9 view-only member cannot add', !saved().transactions.some((t) => t.id === 'vtx1'),
+  const viewer = cloud.client({ id: 'v1', email: 'viewer@x.com' })();
+  const adder  = cloud.client({ id: 'a1', email: 'adder@x.com' })();
+  const write = (sb, changes) => sb.rpc('pocket_apply_changes', { book: 'owner2', changes });
+
+  let res = await write(viewer, { put: { transactions: [
+    expense('vtx1', 'joint', 100, { addedBy: 'viewer@x.com' })] } });
+  await wait(600);
+  ok('H9 view-only member cannot add', !!res.error && !saved().transactions.some((t) => t.id === 'vtx1'),
      saved().transactions.map((t) => t.id).join(','));
 
-  // A second member holding 'add' on the same account MUST still get through —
-  // the check has to block the unauthorised without breaking the authorised.
-  cloud.contributions.push({
-    id: 'c_add_ok', owner_id: 'owner2', member_email: 'adder@x.com',
-    account_id: 'joint', synced: false,
-    tx_data: { id: 'vtx2', accountId: 'joint', amount: 200, currency: 'USD',
-               type: 'expense', date: '2026-05-02', paymentType: 'card',
-               recordState: 'cleared', tags: [] },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
+  // A second member holding 'add' on the same account MUST still get through.
+  res = await write(adder, { put: { transactions: [
+    expense('vtx2', 'joint', 200, { addedBy: 'adder@x.com' })] } });
+  await wait(600);
   ok("H9 a member holding 'add' is still allowed through",
-     saved().transactions.some((t) => t.id === 'vtx2'),
+     !res.error && saved().transactions.some((t) => t.id === 'vtx2'),
      saved().transactions.map((t) => t.id).join(','));
 
-  // 'add' is not 'full': that member must not be able to delete.
-  cloud.contributions.push({
-    id: 'c_add_del', owner_id: 'owner2', member_email: 'adder@x.com',
-    account_id: 'joint', synced: false,
-    tx_data: { _delete: true, id: 'del_vtx2', targetId: 'vtx2' },
-  });
-  cloud.onContribInsert?.({});
-  await wait(250);
-  ok("H9 'add' access cannot delete", saved().transactions.some((t) => t.id === 'vtx2'),
-     'vtx2 was deleted by an add-only member');
+  // 'add' covers fixing your own entry …
+  res = await write(adder, { put: { transactions: [
+    expense('vtx2', 'joint', 250, { addedBy: 'adder@x.com' })] } });
+  ok("H9 'add' may correct their own entry", !res.error, res.error?.message);
 
-  // ---- H8: removing the member must delete their family_shares row --------
-  cloud.shares = [{ owner_id: 'owner2', member_email: 'viewer@x.com', snapshot: {} }];
+  // … but not changing or deleting anyone else's.
+  res = await write(adder, { put: { transactions: [expense('ownerJoint', 'joint', 1)] } });
+  ok("H9 'add' cannot edit the owner's entry", !!res.error);
+  res = await write(adder, { remove: { transactions: ['ownerJoint'] } });
+  await wait(600);
+  ok("H9 'add' cannot delete the owner's entry",
+     !!res.error && saved().transactions.some((t) => t.id === 'ownerJoint'),
+     'ownerJoint was deleted by an add-only member');
+
+  // ---- H8: removing the member must end their access ----------------------
+  const before = (await viewer.rpc('pocket_get_shared')).data;
+  ok('H8 the viewer can see the share to begin with', before.length === 1);
   w.__app.deleteFamilyMember?.('f1');
-  await wait(200);
-  ok('H8 removing a member deletes their share row',
-     cloud.deletedShares.some((d) => d.member_email === 'viewer@x.com'),
-     JSON.stringify(cloud.deletedShares));
-  ok('H8 the share row is actually gone', cloud.shares.length === 0,
-     JSON.stringify(cloud.shares.map((s) => s.member_email)));
+  await wait(1500);
+  const after = (await viewer.rpc('pocket_get_shared')).data;
+  ok('H8 removing a member ends their access', after.length === 0, JSON.stringify(after.length));
+  ok('H8 the other member keeps theirs',
+     (await adder.rpc('pocket_get_shared')).data.length === 1);
   w.close();
 }
 
@@ -449,39 +278,18 @@ console.log('\nfamily sharing suite');
     permission:   { [evilAccountId]: 'full' },
   };
 
-  // Deliver it the way production does: a family_shares row for this user,
-  // installed by #pullFamilyShares() during sign-in.
-  const cloud2 = { userRow: { id: 'me1', data: baseState(), version: 2 } };
-  const sb2 = {
-    auth: {
-      onAuthStateChange(cb) { cloud2.authCb = cb; },
-      getSession: async () => ({ data: { session: null } }),
-      signOut: async () => {}, signInWithOAuth: async () => ({}),
-    },
-    removeChannel() {},
-    channel() { const ch = { on() { return ch; }, subscribe(cb) { cb?.('SUBSCRIBED'); return ch; }, send() {} }; return ch; },
-    from(table) {
-      const q = {
-        _eq: {},
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; }, order() { return q; }, update() { return q; },
-        async upsert() { return { error: null }; },
-        async single() {
-          if (table === 'user_data') return { data: cloud2.userRow, error: null };
-          return { data: null, error: { code: 'PGRST116' } };
-        },
-        then(res) {
-          if (table === 'family_shares') {
-            return res({ data: [{ owner_id: 'evil1', snapshot: hostileSnapshot }], error: null });
-          }
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  };
+  // Deliver it the way production does: the attacker's book shares that
+  // account with this user, and the share is read during sign-in.
+  const cloud2 = new FakeCloud();
+  cloud2.setBook('me1', baseState(), 'me@x.com');
+  cloud2.setBook('evil1', {
+    user: { homeCurrency: hostileSnapshot.homeCurrency },
+    accounts: hostileSnapshot.accounts, transactions: [], categories: [],
+    family: [{ id: 'fx', email: 'me@x.com', spaceName: hostileSnapshot.sharedBy,
+               permissions: [{ accountId: evilAccountId, access: 'full' }] }],
+  }, 'evil@x.com');
 
-  const w = boot(baseState(), { supabase: { createClient: () => sb2 } });
+  const w = boot(baseState(), { supabase: { createClient: cloud2.client({ id: 'me1', email: 'me@x.com' }) } });
   await wait(80);
   const app = w.__app, doc = w.document;
   cloud2.authCb?.('SIGNED_IN', { user: { id: 'me1', email: 'me@x.com' } });
@@ -577,30 +385,7 @@ console.log('\nfamily sharing suite');
 // PART 4 — sharing an account FROM the account side
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const revoked = [];
-  const sb = {
-    auth: { onAuthStateChange(cb) { sb._cb = cb; },
-            getSession: async () => ({ data: { session: null } }),
-            signOut: async () => {}, signInWithOAuth: async () => ({}) },
-    removeChannel() {},
-    channel() { const c = { on() { return c; }, subscribe(cb) { cb?.('SUBSCRIBED'); return c; }, send() {} }; return c; },
-    from(table) {
-      const q = {
-        _eq: {}, _del: false,
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; }, order() { return q; },
-        delete() { q._del = true; return q; }, update() { return q; },
-        async upsert() { return { error: null }; },
-        async single() { return { data: null, error: { code: 'PGRST116' } }; },
-        then(res) {
-          if (q._del && table === 'family_shares') revoked.push(q._eq.member_email);
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  };
-
+  const cloud = new FakeCloud();
   const st = baseState();
   st.accounts.push({ id: 'joint', name: 'Joint', type: 'bank', currency: 'USD',
     color: '#3b82f6', icon: 'landmark', openingBalance: 0, balance: 0 });
@@ -610,10 +395,14 @@ console.log('\nfamily sharing suite');
       permissions: [{ accountId: 'joint', access: 'view' }] },
   ];
 
-  const w = boot(st, { supabase: { createClient: () => sb } });
+  cloud.setBook('me', st, 'me@x.com');
+  const w = boot(st, { supabase: { createClient: cloud.client({ id: 'me', email: 'me@x.com' }) } });
   await wait(80);
-  sb._cb?.('SIGNED_IN', { user: { id: 'me', email: 'me@x.com' } });
+  cloud.authCb?.('SIGNED_IN', { user: { id: 'me', email: 'me@x.com' } });
   await wait(200);
+  /** What a member's own app is served from this book. */
+  const sharesFor = async (email) => (await cloud.client({ id: email, email })()
+    .rpc('pocket_get_shared')).data;
   const app = w.__app, doc = w.document;
   const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
   const permOf = (mid) => (saved().family.find((m) => m.id === mid).permissions || [])
@@ -651,13 +440,10 @@ console.log('\nfamily sharing suite');
   app.accountShareSheet.pick('m1');
   await wait(30);
   app.accountShareSheet.setAccess('m1', '');
-  await wait(80);
+  await wait(1500);
   ok('SHARE revoking removes the permission', permOf('m1') === null, String(permOf('m1')));
-  // Two independent paths guarantee this: AccountShareSheet calls
-  // revokeMemberShare() when it sees wasLast, and #pushFamilyShares() revokes
-  // any member left with zero shared accounts. The outcome is what matters.
-  ok('SHARE losing the last shared account revokes the cloud share (H8)',
-     revoked.includes('amina@x.com'), JSON.stringify(revoked));
+  ok('SHARE losing the last shared account ends the cloud share (H8)',
+     (await sharesFor('amina@x.com')).length === 0);
   ok('SHARE the other member is untouched', permOf('m2') === 'view', String(permOf('m2')));
 
   // the member-first modal must see the same data
@@ -675,10 +461,10 @@ console.log('\nfamily sharing suite');
   app.shareAccount('joint');
   await wait(60);
   app.accountShareSheet.unshareAll();
-  await wait(80);
+  await wait(1500);
   ok('SHARE unshare-all clears every member', permOf('m1') === null && permOf('m2') === null);
-  ok('SHARE unshare-all revoked the remaining cloud share',
-     revoked.includes('yusuf@x.com'), JSON.stringify(revoked));
+  ok('SHARE unshare-all ended the remaining cloud share',
+     (await sharesFor('yusuf@x.com')).length === 0);
   app.accountShareSheet.close();
   w.close();
 }
