@@ -57,9 +57,25 @@ const lapsed = { ...grace, plan: 'free', planName: 'Free', state: 'lapsed', acce
 }
 {
   const e = Entitlements.from({ ...lifetimeFamily, aiCredits: 3 });
-  ok('E7 AI credits: 3 uses left', e.canUseAi() && e.canUseAi(3) && !e.canUseAi(4));
+  ok('E7 own book: own credits pay', e.aiPayer() === 'own' && e.canUseAi());
   const copy = e.toJSON(); copy.access.sync = 'none'; copy.coveredBy.length = 0;
   ok('E8 the object cannot be changed from outside', e.can('sync') && e.coveredBy.length === 1);
+}
+{
+  // Mirrors the database tests for pocket_ai_spend (0019).
+  const member = (pool, own, extra = {}) => Entitlements.from({
+    ...lapsed, aiCredits: own, aiUnlimited: false,
+    coveredBy: [{ ownerId: 'P', ownerEmail: 'p@x', plan: 'family', access: 'write', aiCredits: pool, aiUnlimited: false, ...extra }],
+  });
+  ok('E9 shared space: the family pool pays first', member(10, 2).aiPayer('P') === 'family');
+  ok('E9 pool empty: own credits pay', member(0, 2).aiPayer('P') === 'own');
+  ok('E9 both empty: no AI', member(0, 0).aiPayer('P') === null && !member(0, 0).canUseAi('P'));
+  ok('E9 the pool never pays in your own book', member(10, 0).aiPayer() === null);
+  ok('E9 unlimited owner: unlimited in their shared space', member(0, 0, { aiUnlimited: true }).aiPayer('P') === 'unlimited');
+  ok('E9 owner in grace (read): no AI in that space', member(10, 2, { access: 'read' }).aiPayer('P') === null);
+  ok('E9 a space you are not part of: no AI', member(10, 2).aiPayer('Q') === null);
+  const wife = Entitlements.from({ ...lifetimeFamily, aiUnlimited: true });
+  ok('E10 unlimited account: unlimited everywhere', wife.aiUnlimited && wife.aiPayer() === 'unlimited' && wife.aiPayer('owner-1') === 'unlimited');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

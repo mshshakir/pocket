@@ -56,6 +56,13 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · 0019 AI pool:** `subscriptions.ai_unlimited` (on for the four comp accounts);
+  `ai_credit_ledger.used_by`; `pocket_ai_spend(user, book, ref)` / `pocket_ai_refund(user, ref)`
+  (service_role only). Own book: own unlimited, else own credits. Owner's shared space: owner
+  unlimited, else owner's pool, else own credits. Idempotent per ref; advisory lock per balance.
+  `Entitlements.aiPayer(sharedOwnerId)` mirrors it. Also: demo books (22 entries, 4 accounts,
+  4 budgets, pre-`sample` flag) soft-deleted for the four Free accounts via pocket_apply_changes.
+
 - **2026-11-14 · 0018 paid plans, phase 1 (no behaviour change):** tables `plans`, `billing_settings`,
   `subscriptions`, `subscription_events` (trigger-logged), `ai_credit_ledger`; `pocket_entitlements()`
   (signed-in app) / `pocket_entitlements_for(uuid)` (service_role, bot); admin functions

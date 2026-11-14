@@ -13,6 +13,10 @@
  *
  * Free works fully on the device, with every export, so nothing here ever
  * blocks local use or exporting.
+ *
+ * AI (migration 0019): in your own book, your own unlimited flag or credits;
+ * in a Family owner's shared space, the owner's unlimited flag, then their
+ * pool, then your own credits.
  */
 export class Entitlements {
   static FEATURES = Object.freeze(['sync', 'telegram', 'sharing']);
@@ -32,7 +36,7 @@ export class Entitlements {
       plan: 'free', planName: 'Free', paidPlan: null, term: null, source: null,
       state: 'free', endsAt: null, graceUntil: null, autoRenew: false,
       access: { sync: 'none', telegram: 'none', sharing: 'none' },
-      seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, trialAvailable: true,
+      seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: false, trialAvailable: true,
     });
   }
 
@@ -64,9 +68,13 @@ export class Entitlements {
       coveredBy: Array.isArray(raw.coveredBy)
         ? raw.coveredBy
             .filter((c) => c && typeof c.ownerId === 'string')
-            .map((c) => Object.freeze({ ownerId: c.ownerId, ownerEmail: c.ownerEmail ?? '', plan: c.plan ?? '', access: level(c.access) }))
+            .map((c) => Object.freeze({
+              ownerId: c.ownerId, ownerEmail: c.ownerEmail ?? '', plan: c.plan ?? '', access: level(c.access),
+              aiCredits: Number.isInteger(c.aiCredits) ? c.aiCredits : 0, aiUnlimited: c.aiUnlimited === true,
+            }))
         : [],
       aiCredits: Number.isInteger(raw.aiCredits) ? raw.aiCredits : 0,
+      aiUnlimited: raw.aiUnlimited === true,
       trialAvailable: raw.trialAvailable !== false,
     });
   }
@@ -80,7 +88,9 @@ export class Entitlements {
   get seats()          { return this.#data.seats; }
   get seatsUsed()      { return this.#data.seatsUsed; }
   get seatsLeft()      { return Math.max(0, this.#data.seats - this.#data.seatsUsed); }
+  /** Own credits (for a Family owner, also the pool for their shared space). */
   get aiCredits()      { return this.#data.aiCredits; }
+  get aiUnlimited()    { return this.#data.aiUnlimited; }
   get trialAvailable() { return this.#data.trialAvailable; }
   get isLifetime()     { return this.#data.term === 'lifetime' && this.#data.state === 'active'; }
   /** The plan ended recently: its features still show, but nothing can change. */
@@ -108,11 +118,28 @@ export class Entitlements {
     return this.#data.coveredBy.find((c) => c.ownerId === ownerId)?.access ?? 'none';
   }
 
-  /** @returns {{ownerId: string, ownerEmail: string, plan: string, access: string}[]} */
+  /** @returns {{ownerId: string, ownerEmail: string, plan: string, access: string, aiCredits: number, aiUnlimited: boolean}[]} */
   get coveredBy() { return [...this.#data.coveredBy]; }
 
-  /** Whether one more AI use is paid for. */
-  canUseAi(uses = 1) { return this.#data.aiCredits >= uses; }
+  /**
+   * Who would pay for one AI use, mirroring pocket_ai_spend on the server.
+   * @param {string|null} [sharedOwnerId]  the owner, when working in their shared space
+   * @returns {'unlimited'|'family'|'own'|null}  null: no credits (or no access to that space)
+   */
+  aiPayer(sharedOwnerId = null) {
+    if (sharedOwnerId) {
+      const c = this.#data.coveredBy.find((x) => x.ownerId === sharedOwnerId);
+      if (!c || c.access !== 'write') return null;
+      if (c.aiUnlimited || this.#data.aiUnlimited) return 'unlimited';
+      if (c.aiCredits >= 1) return 'family';
+      return this.#data.aiCredits >= 1 ? 'own' : null;
+    }
+    if (this.#data.aiUnlimited) return 'unlimited';
+    return this.#data.aiCredits >= 1 ? 'own' : null;
+  }
+
+  /** Whether one more AI use is paid for, in your own book or in an owner's shared space. */
+  canUseAi(sharedOwnerId = null) { return this.aiPayer(sharedOwnerId) !== null; }
 
   toJSON() {
     return structuredClone({ ...this.#data, access: { ...this.#data.access }, coveredBy: [...this.#data.coveredBy] });

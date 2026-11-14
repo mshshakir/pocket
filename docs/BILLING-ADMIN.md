@@ -56,7 +56,18 @@ select pocket_admin_set_plan('someone@gmail.com', 'family', 'year', '2027-12-31'
 select pocket_admin_end_plan('someone@gmail.com', 'Asked to cancel');
 
 -- AI credits: add, or remove with a negative number. 1 credit = 1 use.
+-- For a Family owner, these credits are the family pool.
 select pocket_admin_grant_ai('someone@gmail.com', 1000, 'Bought one pack, paid cash');
+
+-- Unlimited AI on or off (they need a plan first)
+select pocket_admin_set_ai_unlimited('someone@gmail.com', true);
+select pocket_admin_set_ai_unlimited('someone@gmail.com', false);
+
+-- Every AI use and top-up for one person (used_by = who used it)
+select at, reason, delta, used_by, note
+from ai_credit_ledger
+where user_id = pocket_admin_user('someone@gmail.com') or used_by = pocket_admin_user('someone@gmail.com')
+order by at desc;
 
 -- One person's history
 select at, kind, plan, term, ends_at, note, actor
@@ -74,6 +85,13 @@ order by at desc;
 - **Ended longer ago:** Free. Their data is kept, never deleted.
 - **Family seats:** a Family plan covers its owner plus the first 4 family members they
   added. A 5th member is not covered until someone is removed.
+- **AI credits:**
+  - In their **own book**, a person uses their own unlimited AI if they have it, otherwise
+    their own credits.
+  - In a Family owner's **shared space**, AI comes from (in order): the owner's unlimited AI,
+    the owner's credits (the family pool), then the person's own credits.
+  - A member whose owner's plan has ended can't use the pool.
+  - The same request is never charged twice, and a failed AI call is refunded once.
 - **Trials:** each person can have one trial. `pocket_admin_set_plan(..., 'trial')`
   records it.
 - **Who can change what:** users can see their own plan, history and credits, but cannot
@@ -82,4 +100,4 @@ order by at desc;
 ## Free for life (set 2026-11-14)
 
 mshshakir@gmail.com, hdshakir@gmail.com, sakina0019@gmail.com and tshshakir@gmail.com have
-Family, lifetime (`source = 'comp'`).
+Family, lifetime (`source = 'comp'`), with unlimited AI.
