@@ -68,6 +68,18 @@ export class UserRecord {
     return this.#writes;
   }
 
+  /**
+   * Whose record is stored under this key, without loading it for anyone.
+   * @param {string} key
+   * @param {KeyValueStore} [store]
+   * @returns {Promise<string|null>}
+   */
+  static async storedUserId(key, store = KeyValueStore.default()) {
+    let rec = await store.get(key);
+    if (rec === undefined && !(store instanceof LocalStorageStore)) rec = await new LocalStorageStore().get(key);
+    return rec && typeof rec === 'object' && typeof rec.userId === 'string' ? rec.userId : null;
+  }
+
   /** Resolves once every write made so far has finished. */
   flushed() {
     return this.#writes;

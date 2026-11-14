@@ -166,8 +166,7 @@ export class SettingsModal {
         </div>
 
         ${(() => {
-          let backups = [];
-          try { backups = JSON.parse(localStorage.getItem('pocket.v1.conflicts') || '[]'); } catch (_) {}
+          const backups = window.__app?.conflictBackups?.() ?? [];
           if (!backups.length) return '';
           return `
         <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">

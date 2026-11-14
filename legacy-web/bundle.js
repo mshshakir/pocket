@@ -100,8 +100,46 @@ var _PocketApp = (() => {
   var Repository = class _Repository {
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
+    /**
+     * Whose book is stored here (a user id), written with every save. Several
+     * people can use one browser; without this, a book left on the device by one
+     * person (e.g. re-saved by another open tab after they signed out) could be
+     * shown to the next person who signs in. Nobody's yet (a guest) = absent.
+     */
+    static #OWNER_KEY = "pocket.v1.owner";
+    static OWNER_KEY = _Repository.#OWNER_KEY;
     /** True if the last load() hit corrupt data (so callers can warn the user). */
     lastLoadCorrupted = false;
+    /** Whose book this tab holds, saved alongside it. */
+    #owner = null;
+    /** @returns {string|null} the owner recorded on the device right now (any tab may have written it) */
+    static storedOwner() {
+      try {
+        return localStorage.getItem(_Repository.#OWNER_KEY) || null;
+      } catch (_) {
+        return null;
+      }
+    }
+    /**
+     * The book stored on the device right now, as any tab last saved it (not
+     * necessarily what this tab holds in memory). Null when none or unreadable.
+     * @returns {object|null}
+     */
+    static storedBook() {
+      try {
+        const raw = localStorage.getItem(_Repository.#STORAGE_KEY);
+        return raw == null ? null : JSON.parse(raw);
+      } catch (_) {
+        return null;
+      }
+    }
+    get owner() {
+      return this.#owner;
+    }
+    /** @param {string|null} userId */
+    set owner(userId) {
+      this.#owner = userId || null;
+    }
     /**
      * Persist the entire application state snapshot.
      * @param {object} state
@@ -127,6 +165,8 @@ var _PocketApp = (() => {
           _Repository.#STORAGE_KEY,
           JSON.stringify(_Repository.stripTransient(state))
         );
+        if (this.#owner) localStorage.setItem(_Repository.#OWNER_KEY, this.#owner);
+        else localStorage.removeItem(_Repository.#OWNER_KEY);
         return true;
       } catch (err) {
         console.error("[Repository] Failed to save state:", err);
@@ -141,6 +181,7 @@ var _PocketApp = (() => {
       this.lastLoadCorrupted = false;
       const raw = localStorage.getItem(_Repository.#STORAGE_KEY);
       if (raw == null) return null;
+      this.#owner = _Repository.storedOwner();
       try {
         return JSON.parse(raw);
       } catch (err) {
@@ -158,6 +199,11 @@ var _PocketApp = (() => {
      */
     clear() {
       localStorage.removeItem(_Repository.#STORAGE_KEY);
+      try {
+        localStorage.removeItem(_Repository.#OWNER_KEY);
+      } catch (_) {
+      }
+      this.#owner = null;
     }
   };
 
@@ -259,6 +305,28 @@ var _PocketApp = (() => {
       this.#state = persisted ?? seedFactory();
       migrateDefaults(this.#state);
       return this;
+    }
+    // ── Whose book this is ──────────────────────────────────────────────
+    /** @returns {string|null} the user id recorded on the device for the stored book */
+    get storedOwner() {
+      return Repository.storedOwner();
+    }
+    /** @returns {string|null} whose book this tab holds in memory */
+    get heldOwner() {
+      return this.#repository.owner;
+    }
+    /** @returns {object|null} the book stored on the device (as any tab last saved it) */
+    get storedBook() {
+      return Repository.storedBook();
+    }
+    /**
+     * Record that the book in this tab belongs to this user, and save it so the
+     * device knows too. Every later save writes the same owner.
+     * @param {string} userId
+     */
+    claimFor(userId) {
+      this.#repository.owner = userId;
+      this.#persistState({ local: false });
     }
     // ── State access ────────────────────────────────────────────────────
     /**
@@ -3960,6 +4028,17 @@ RULES:
       });
       return this.#writes;
     }
+    /**
+     * Whose record is stored under this key, without loading it for anyone.
+     * @param {string} key
+     * @param {KeyValueStore} [store]
+     * @returns {Promise<string|null>}
+     */
+    static async storedUserId(key, store = KeyValueStore.default()) {
+      let rec = await store.get(key);
+      if (rec === void 0 && !(store instanceof LocalStorageStore)) rec = await new LocalStorageStore().get(key);
+      return rec && typeof rec === "object" && typeof rec.userId === "string" ? rec.userId : null;
+    }
     /** Resolves once every write made so far has finished. */
     flushed() {
       return this.#writes;
@@ -4040,6 +4119,36 @@ RULES:
     }
     flushed() {
       return this.#record.flushed();
+    }
+  };
+
+  // src/core/ParkedBooks.js
+  var ParkedBooks = class _ParkedBooks {
+    static PREFIX = "pocket.v2.parked.";
+    #store;
+    /** @param {KeyValueStore} [store] */
+    constructor(store = KeyValueStore.default()) {
+      this.#store = store;
+    }
+    /**
+     * @param {string} userId  whose book it is
+     * @param {object} state   the book (persisted keys only)
+     * @param {boolean} pending  it had edits the cloud had not received
+     */
+    park(userId, state, pending) {
+      return this.#store.set(_ParkedBooks.PREFIX + userId, { state, pending: !!pending, parkedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
+    /**
+     * Hand back this person's parked book, if any, and forget it here.
+     * @param {string} userId
+     * @returns {Promise<{state: object, pending: boolean}|null>}
+     */
+    async take(userId) {
+      const key = _ParkedBooks.PREFIX + userId;
+      const rec = await this.#store.get(key);
+      if (!rec || typeof rec !== "object" || !rec.state) return null;
+      await this.#store.remove(key);
+      return { state: rec.state, pending: rec.pending === true };
     }
   };
 
@@ -4491,6 +4600,9 @@ RULES:
     /** The signed-in person's plan: whether the cloud copy may be saved or read. */
     /** @type {PlanService} */
     #plan;
+    /** Books of other people who used this device, kept for them out of sight. */
+    /** @type {ParkedBooks} */
+    #parked;
     constructor() {
       this.#store = Store.getInstance();
       this.#bus = EventBus.getInstance();
@@ -4499,6 +4611,7 @@ RULES:
       this.#baseline = new SyncBaseline();
       this.#shareCache = new ShareCache();
       this.#plan = new PlanService((fn, args) => this.#sb.rpc(fn, args), { bus: this.#bus });
+      this.#parked = new ParkedBooks();
     }
     /** @returns {import('../billing/Entitlements.js').Entitlements} */
     get plan() {
@@ -4559,6 +4672,10 @@ RULES:
       if (this.#lifecycleBound) return;
       if (typeof document === "undefined" || typeof window === "undefined") return;
       this.#lifecycleBound = true;
+      window.addEventListener("storage", (e) => {
+        if (e.key !== Repository.OWNER_KEY && e.key !== null) return;
+        if ((Repository.storedOwner() ?? null) !== (this.#store.heldOwner ?? null)) window.location.reload();
+      });
       const flush = () => {
         if (!this.#dirty || !this.#sb || !this.#user) return;
         clearTimeout(this.#saveTimer);
@@ -4635,6 +4752,8 @@ RULES:
     async #adoptSession(user) {
       if (this.#user) return false;
       this.#user = user;
+      await this.#claimLocalBook(user);
+      if (this.#user !== user) return false;
       const [, cachedShares] = await Promise.all([
         this.#baseline.load(user.id),
         this.#shareCache.load(user.id),
@@ -4654,6 +4773,39 @@ RULES:
       const isFirst = await this.pull();
       this.#subscribe();
       return isFirst;
+    }
+    /**
+     * Make sure the book on this device is this person's before anything shows it.
+     *
+     * If it belongs to someone else (they used this browser; another open tab
+     * may even have saved it again after they signed out), it is parked for them
+     * and this person starts from a fresh book. If this person parked a book here
+     * earlier, it comes back. A book nobody has claimed (used before signing in)
+     * becomes theirs, as before.
+     */
+    async #claimLocalBook(user) {
+      const owner = await this.#localBookOwner();
+      if (owner && owner !== user.id) {
+        const pending = this.#journal.read()?.userId === owner;
+        const theirs = this.#store.storedBook ?? Repository.stripTransient(this.#store.getState());
+        await this.#parked.park(owner, theirs, pending);
+        this.#markClean();
+        this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+      }
+      const mine = await this.#parked.take(user.id);
+      if (mine) {
+        this.#store.replaceState(mine.state, (s) => this.#migrateDefaults(s));
+        if (mine.pending) this.#journal.mark(user.id, null);
+      }
+      this.#store.claimFor(user.id);
+    }
+    /**
+     * Whose book is on this device: recorded with the book since 2026-11-14;
+     * for books saved before that, the person the device last synced for.
+     * @returns {Promise<string|null>}
+     */
+    async #localBookOwner() {
+      return this.#store.storedOwner ?? await UserRecord.storedUserId(SyncBaseline.KEY) ?? this.#journal.read()?.userId ?? null;
     }
     /**
      * Drop back to local/guest state.
@@ -4863,29 +5015,44 @@ RULES:
       try {
         const savedAt = (/* @__PURE__ */ new Date()).toISOString();
         const key = `pocket.v1.conflict.${Date.now()}`;
-        localStorage.setItem(key, JSON.stringify({ savedAt, state: this.#store.getState() }));
-        const idx = this.conflictBackups();
-        idx.unshift({ key, savedAt });
-        for (const stale of idx.slice(5)) {
+        const userId = this.#user?.id ?? null;
+        localStorage.setItem(key, JSON.stringify({ savedAt, userId, state: this.#store.getState() }));
+        const all = this.#allConflictBackups();
+        const mine = [{ key, savedAt, userId }, ...all.filter((b) => b.userId === userId)];
+        for (const stale of mine.slice(5)) {
           try {
             localStorage.removeItem(stale.key);
           } catch (_) {
           }
         }
-        localStorage.setItem("pocket.v1.conflicts", JSON.stringify(idx.slice(0, 5)));
+        const keep = new Set(mine.slice(0, 5).map((b) => b.key));
+        localStorage.setItem(
+          "pocket.v1.conflicts",
+          JSON.stringify([...mine.slice(0, 5), ...all.filter((b) => b.userId !== userId && !keep.has(b.key))])
+        );
       } catch (_) {
       }
     }
-    /** @returns {{key:string, savedAt:string}[]} recoverable conflict copies, newest first */
+    /**
+     * The signed-in person's recoverable copies, newest first. Copies belong to
+     * whoever was signed in when they were kept; nobody else is shown them.
+     * (Copies from before 2026-11-14 carry no owner and are shown to no one.)
+     * @returns {{key:string, savedAt:string}[]}
+     */
     conflictBackups() {
+      const me = this.#user?.id;
+      return me ? this.#allConflictBackups().filter((b) => b.userId === me) : [];
+    }
+    #allConflictBackups() {
       try {
         return JSON.parse(localStorage.getItem("pocket.v1.conflicts") || "[]");
       } catch (_) {
         return [];
       }
     }
-    /** @param {string} key @returns {object|null} the stashed state, or null */
+    /** @param {string} key @returns {object|null} the stashed state (only the signed-in person's), or null */
     readConflictBackup(key) {
+      if (!this.conflictBackups().some((b) => b.key === key)) return null;
       try {
         const raw = localStorage.getItem(key);
         return raw ? JSON.parse(raw).state ?? null : null;
@@ -4895,6 +5062,7 @@ RULES:
     }
     /** Forget one backup (after restore, or on user discard). @param {string} key */
     discardConflictBackup(key) {
+      if (!this.conflictBackups().some((b) => b.key === key)) return;
       try {
         localStorage.removeItem(key);
       } catch (_) {
@@ -4902,7 +5070,7 @@ RULES:
       try {
         localStorage.setItem(
           "pocket.v1.conflicts",
-          JSON.stringify(this.conflictBackups().filter((b) => b.key !== key))
+          JSON.stringify(this.#allConflictBackups().filter((b) => b.key !== key))
         );
       } catch (_) {
       }
@@ -13428,11 +13596,7 @@ This replaces your current grouping.`
         </div>
 
         ${(() => {
-        let backups = [];
-        try {
-          backups = JSON.parse(localStorage.getItem("pocket.v1.conflicts") || "[]");
-        } catch (_) {
-        }
+        const backups = window.__app?.conflictBackups?.() ?? [];
         if (!backups.length) return "";
         return `
         <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">

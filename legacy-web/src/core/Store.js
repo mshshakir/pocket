@@ -124,6 +124,33 @@ export class Store {
     return this;
   }
 
+  // ── Whose book this is ──────────────────────────────────────────────
+
+  /** @returns {string|null} the user id recorded on the device for the stored book */
+  get storedOwner() {
+    return Repository.storedOwner();
+  }
+
+  /** @returns {string|null} whose book this tab holds in memory */
+  get heldOwner() {
+    return this.#repository.owner;
+  }
+
+  /** @returns {object|null} the book stored on the device (as any tab last saved it) */
+  get storedBook() {
+    return Repository.storedBook();
+  }
+
+  /**
+   * Record that the book in this tab belongs to this user, and save it so the
+   * device knows too. Every later save writes the same owner.
+   * @param {string} userId
+   */
+  claimFor(userId) {
+    this.#repository.owner = userId;
+    this.#persistState({ local: false });
+  }
+
   // ── State access ────────────────────────────────────────────────────
 
   /**

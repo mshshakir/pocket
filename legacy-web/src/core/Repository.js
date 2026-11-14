@@ -7,9 +7,42 @@
 export class Repository {
   static #STORAGE_KEY = 'pocket.v1';
   static #BACKUP_KEY  = 'pocket.v1.corrupt';
+  /**
+   * Whose book is stored here (a user id), written with every save. Several
+   * people can use one browser; without this, a book left on the device by one
+   * person (e.g. re-saved by another open tab after they signed out) could be
+   * shown to the next person who signs in. Nobody's yet (a guest) = absent.
+   */
+  static #OWNER_KEY   = 'pocket.v1.owner';
+  static OWNER_KEY    = Repository.#OWNER_KEY;
 
   /** True if the last load() hit corrupt data (so callers can warn the user). */
   lastLoadCorrupted = false;
+
+  /** Whose book this tab holds, saved alongside it. */
+  #owner = null;
+
+  /** @returns {string|null} the owner recorded on the device right now (any tab may have written it) */
+  static storedOwner() {
+    try { return localStorage.getItem(Repository.#OWNER_KEY) || null; } catch (_) { return null; }
+  }
+
+  /**
+   * The book stored on the device right now, as any tab last saved it (not
+   * necessarily what this tab holds in memory). Null when none or unreadable.
+   * @returns {object|null}
+   */
+  static storedBook() {
+    try {
+      const raw = localStorage.getItem(Repository.#STORAGE_KEY);
+      return raw == null ? null : JSON.parse(raw);
+    } catch (_) { return null; }
+  }
+
+  get owner() { return this.#owner; }
+
+  /** @param {string|null} userId */
+  set owner(userId) { this.#owner = userId || null; }
 
   /**
    * Persist the entire application state snapshot.
@@ -37,6 +70,8 @@ export class Repository {
         Repository.#STORAGE_KEY,
         JSON.stringify(Repository.stripTransient(state)),
       );
+      if (this.#owner) localStorage.setItem(Repository.#OWNER_KEY, this.#owner);
+      else localStorage.removeItem(Repository.#OWNER_KEY);
       return true;
     } catch (err) {
       console.error('[Repository] Failed to save state:', err);
@@ -52,6 +87,7 @@ export class Repository {
     this.lastLoadCorrupted = false;
     const raw = localStorage.getItem(Repository.#STORAGE_KEY);
     if (raw == null) return null; // genuinely empty → seeding fresh is correct
+    this.#owner = Repository.storedOwner();
 
     try {
       return JSON.parse(raw);
@@ -71,5 +107,7 @@ export class Repository {
    */
   clear() {
     localStorage.removeItem(Repository.#STORAGE_KEY);
+    try { localStorage.removeItem(Repository.#OWNER_KEY); } catch (_) { /* private mode */ }
+    this.#owner = null;
   }
 }

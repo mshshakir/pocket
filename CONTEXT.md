@@ -56,6 +56,14 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · device owner (privacy fix):** the device book now records its owner (`pocket.v1.owner`,
+  written by Repository with every save). On sign-in, a book owned by someone else (or, for older
+  devices, whose baseline/journal belongs to someone else) is parked for them (`ParkedBooks`,
+  `pocket.v2.parked.<userId>`) and the new person starts fresh; their own parked book comes back.
+  Other tabs reload when the owner key changes (no stale tab re-saving a signed-out book).
+  Conflict backups are per person (`userId` in `pocket.v1.conflicts`; old ones shown to nobody).
+  Reported: sign out of A, sign in B (Free) showed A's book; nothing reached B's cloud (server lock).
+
 - **2026-11-14 · 0020 plan enforcement (phase 2 + app side of 3):** guard trigger `zz_plan_guard`
   on every book table (writes by signed-in users need own sync=write, or the owner's Family
   coverage=write); `zz_plan_sharing` (family/permissions need sharing=write; seats enforced).

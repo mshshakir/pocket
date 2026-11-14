@@ -34,6 +34,8 @@ import { Repository }     from '../../core/Repository.js';
 import { SyncJournal }    from '../../core/SyncJournal.js';
 import { SyncBaseline }   from '../../core/SyncBaseline.js';
 import { ShareCache }     from '../../core/ShareCache.js';
+import { ParkedBooks }    from '../../core/ParkedBooks.js';
+import { UserRecord }     from '../../core/UserRecord.js';
 import { BookDiff }       from '../../core/BookDiff.js';
 import { BookDelta }      from '../../core/BookDelta.js';
 import { ShareDelta }     from '../../core/ShareDelta.js';
@@ -148,6 +150,8 @@ export class SyncService {
   #explicitSignOut = false;
   /** The signed-in person's plan: whether the cloud copy may be saved or read. */
   /** @type {PlanService} */ #plan;
+  /** Books of other people who used this device, kept for them out of sight. */
+  /** @type {ParkedBooks} */ #parked;
 
   constructor() {
     this.#store    = Store.getInstance();
@@ -157,6 +161,7 @@ export class SyncService {
     this.#baseline = new SyncBaseline();
     this.#shareCache = new ShareCache();
     this.#plan = new PlanService((fn, args) => this.#sb.rpc(fn, args), { bus: this.#bus });
+    this.#parked = new ParkedBooks();
   }
 
   /** @returns {import('../billing/Entitlements.js').Entitlements} */
@@ -227,6 +232,15 @@ export class SyncService {
     if (this.#lifecycleBound) return;
     if (typeof document === 'undefined' || typeof window === 'undefined') return;
     this.#lifecycleBound = true;
+
+    // Another tab signed out, or someone else signed in there: the book on the
+    // device is no longer the one this tab holds. Reload rather than ever save
+    // this tab's copy over it (that is how one person's book once reappeared
+    // for the next person who signed in).
+    window.addEventListener('storage', (e) => {
+      if (e.key !== Repository.OWNER_KEY && e.key !== null) return;
+      if ((Repository.storedOwner() ?? null) !== (this.#store.heldOwner ?? null)) window.location.reload();
+    });
 
     const flush = () => {
       if (!this.#dirty || !this.#sb || !this.#user) return;
@@ -314,6 +328,8 @@ export class SyncService {
   async #adoptSession(user) {
     if (this.#user) return false;
     this.#user = user;
+    await this.#claimLocalBook(user);
+    if (this.#user !== user) return false; // signed out meanwhile
     // Both copies are read before the first load, so it can ask for changes only.
     const [, cachedShares] = await Promise.all([
       this.#baseline.load(user.id), this.#shareCache.load(user.id), this.#plan.start(user.id),
@@ -332,6 +348,45 @@ export class SyncService {
     const isFirst = await this.pull();
     this.#subscribe();
     return isFirst;
+  }
+
+  /**
+   * Make sure the book on this device is this person's before anything shows it.
+   *
+   * If it belongs to someone else (they used this browser; another open tab
+   * may even have saved it again after they signed out), it is parked for them
+   * and this person starts from a fresh book. If this person parked a book here
+   * earlier, it comes back. A book nobody has claimed (used before signing in)
+   * becomes theirs, as before.
+   */
+  async #claimLocalBook(user) {
+    const owner = await this.#localBookOwner();
+    if (owner && owner !== user.id) {
+      const pending = this.#journal.read()?.userId === owner;
+      // What is stored is theirs (another tab may have saved it after this one was wiped).
+      const theirs = this.#store.storedBook ?? Repository.stripTransient(this.#store.getState());
+      await this.#parked.park(owner, theirs, pending);
+      this.#markClean();
+      this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
+    }
+    const mine = await this.#parked.take(user.id);
+    if (mine) {
+      this.#store.replaceState(mine.state, (s) => this.#migrateDefaults(s));
+      if (mine.pending) this.#journal.mark(user.id, null);
+    }
+    this.#store.claimFor(user.id);
+  }
+
+  /**
+   * Whose book is on this device: recorded with the book since 2026-11-14;
+   * for books saved before that, the person the device last synced for.
+   * @returns {Promise<string|null>}
+   */
+  async #localBookOwner() {
+    return this.#store.storedOwner
+      ?? await UserRecord.storedUserId(SyncBaseline.KEY)
+      ?? this.#journal.read()?.userId
+      ?? null;
   }
 
   /**
@@ -569,22 +624,37 @@ export class SyncService {
     try {
       const savedAt = new Date().toISOString();
       const key = `pocket.v1.conflict.${Date.now()}`;
-      localStorage.setItem(key, JSON.stringify({ savedAt, state: this.#store.getState() }));
-      const idx = this.conflictBackups();
-      idx.unshift({ key, savedAt });
-      for (const stale of idx.slice(5)) { try { localStorage.removeItem(stale.key); } catch (_) {} }
-      localStorage.setItem('pocket.v1.conflicts', JSON.stringify(idx.slice(0, 5)));
+      const userId = this.#user?.id ?? null;
+      localStorage.setItem(key, JSON.stringify({ savedAt, userId, state: this.#store.getState() }));
+      // Five copies per person, oldest dropped; other people's copies are left alone.
+      const all = this.#allConflictBackups();
+      const mine = [{ key, savedAt, userId }, ...all.filter((b) => b.userId === userId)];
+      for (const stale of mine.slice(5)) { try { localStorage.removeItem(stale.key); } catch (_) {} }
+      const keep = new Set(mine.slice(0, 5).map((b) => b.key));
+      localStorage.setItem('pocket.v1.conflicts',
+        JSON.stringify([...mine.slice(0, 5), ...all.filter((b) => b.userId !== userId && !keep.has(b.key))]));
     } catch (_) { /* quota / private mode — nothing we can do */ }
   }
 
-  /** @returns {{key:string, savedAt:string}[]} recoverable conflict copies, newest first */
+  /**
+   * The signed-in person's recoverable copies, newest first. Copies belong to
+   * whoever was signed in when they were kept; nobody else is shown them.
+   * (Copies from before 2026-11-14 carry no owner and are shown to no one.)
+   * @returns {{key:string, savedAt:string}[]}
+   */
   conflictBackups() {
+    const me = this.#user?.id;
+    return me ? this.#allConflictBackups().filter((b) => b.userId === me) : [];
+  }
+
+  #allConflictBackups() {
     try { return JSON.parse(localStorage.getItem('pocket.v1.conflicts') || '[]'); }
     catch (_) { return []; }
   }
 
-  /** @param {string} key @returns {object|null} the stashed state, or null */
+  /** @param {string} key @returns {object|null} the stashed state (only the signed-in person's), or null */
   readConflictBackup(key) {
+    if (!this.conflictBackups().some((b) => b.key === key)) return null;
     try {
       const raw = localStorage.getItem(key);
       return raw ? (JSON.parse(raw).state ?? null) : null;
@@ -593,10 +663,11 @@ export class SyncService {
 
   /** Forget one backup (after restore, or on user discard). @param {string} key */
   discardConflictBackup(key) {
+    if (!this.conflictBackups().some((b) => b.key === key)) return;
     try { localStorage.removeItem(key); } catch (_) {}
     try {
       localStorage.setItem('pocket.v1.conflicts',
-        JSON.stringify(this.conflictBackups().filter((b) => b.key !== key)));
+        JSON.stringify(this.#allConflictBackups().filter((b) => b.key !== key)));
     } catch (_) {}
   }
 
