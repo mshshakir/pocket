@@ -32,6 +32,7 @@ must be lowercase letters, digits or `_`, and can't be changed later.
 | `grace_days` | After a plan ends, how many days the cloud copy stays readable (read-only) before the person drops to Free. Default `30`. Nothing is ever deleted. |
 | `ai_credit_paise` | Price of one AI use (receipt scan or voice entry). `10` = ₹0.10. |
 | `ai_pack_paise` | Size of an AI pack. `10000` = ₹100 = 1,000 uses. |
+| `payments_enabled` | `true` shows the buy buttons in Settings → Your plan and lets the `payments` function take orders. Default `false`. |
 
 ## One person's plan: SQL Editor
 
@@ -85,6 +86,41 @@ AI scans say "AI scanning isn't set up yet" and nobody is charged.
 
 Each scan or voice entry costs one credit, charged by the `ai` server function; if Gemini
 fails, the credit is refunded automatically.
+
+## Online payment (Razorpay)
+
+People pay once for a month, a year, the Family trial or an AI pack. Nothing renews
+by itself; paying again for the same plan adds to its end date. Prices come from the
+`plans` and `billing_settings` tables, so changing a price there changes what Razorpay
+charges. Every order is in the table `payment_orders` (status `created` or `paid`), and
+each paid plan also appears in `subscription_events` with its amount.
+
+**Switching it on (once):**
+
+1. Razorpay dashboard → **Account & Settings → API Keys** → generate keys
+   (start in **Test mode**).
+2. Supabase → **Edge Functions → Secrets**, add:
+   - `RAZORPAY_KEY_ID` (starts `rzp_test_` or `rzp_live_`)
+   - `RAZORPAY_KEY_SECRET`
+   - `RAZORPAY_WEBHOOK_SECRET`: any long random text you make up; use the same text in step 3.
+3. Razorpay → **Account & Settings → Webhooks → Add new webhook**:
+   - URL: `https://nvsfxdnnakzfzsrsfftp.supabase.co/functions/v1/payments/webhook`
+   - Secret: the same text as `RAZORPAY_WEBHOOK_SECRET`
+   - Events: `payment.captured` and `order.paid`
+4. Razorpay → **Account & Settings → Payment capture**: keep **automatic** capture on.
+5. SQL Editor: `update billing_settings set payments_enabled = true;`
+
+To stop taking payments, set it back to `false`; plans already paid for are untouched.
+Going live: swap the two key secrets for the live ones and add the webhook again in live mode.
+
+**Refunds** are made in the Razorpay dashboard. A refund doesn't change the plan by
+itself; end it with `pocket_admin_end_plan` (or remove the credits with
+`pocket_admin_grant_ai` and a negative number) if you want to.
+
+**If someone paid but their plan didn't change:** find the order in `payment_orders`.
+If it is still `created`, check the payment in Razorpay; the webhook applies it when
+Razorpay reports it captured. To apply it by hand:
+`select pocket_payment_fulfil('order_…', 'pay_…');` (safe to run twice).
 
 ## The rules
 

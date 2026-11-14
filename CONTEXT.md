@@ -56,6 +56,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · phase 5, Razorpay one-time payments (off until switched on):** migration 0021
+  (`billing_settings.payments_enabled`, `payment_orders`, `pocket_payment_products/quote/fulfil`,
+  `paymentsOpen` in entitlements; fulfil is idempotent and extends the same plan from its end date).
+  Edge function `supabase/functions/payments` (deployed `--no-verify-jwt`; checks the user's sign-in
+  itself; `/payments/webhook` checked by `X-Razorpay-Signature`): actions products / order / verify.
+  App: `domain/billing/PaymentService.js`, `RazorpayCheckout.js` (loads checkout.js lazily),
+  `PaymentError.js`; PlanCard buy buttons when `paymentsOpen`; `app.buy(product)`. Tests:
+  `payments/test/handler_test.ts` (18), `checkout.smoke.mjs` (19). Switch-on steps in
+  docs/BILLING-ADMIN.md. Needs secrets RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET.
 - **2026-11-14 · phase 4, AI through Pocket's key:** new edge function `supabase/functions/ai` (JWT
   verified; AiRequest validates kind/book/ref/one file ≤ ~4.5 MB; AiCredits → pocket_ai_spend/refund;
   GeminiClient with secret GEMINI_API_KEY, model fixed gemini-2.5-flash-lite, ≤1024 output tokens;

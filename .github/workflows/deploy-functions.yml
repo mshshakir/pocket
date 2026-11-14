@@ -48,3 +48,9 @@ jobs:
       # sign-in (JWT) check stays on. Needs the GEMINI_API_KEY function secret.
       - name: Deploy ai
         run: supabase functions deploy ai --remote="$PROJECT_REF" --yes
+
+      # Razorpay payments. Razorpay's webhook can't send a Supabase sign-in, so
+      # the gateway check is off; the function checks the user's sign-in itself
+      # and checks webhooks by signature. Needs the RAZORPAY_* function secrets.
+      - name: Deploy payments
+        run: supabase functions deploy payments --remote="$PROJECT_REF" --no-verify-jwt --yes

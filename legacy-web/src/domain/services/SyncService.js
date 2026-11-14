@@ -49,6 +49,8 @@ import { LedgerMath }        from './LedgerMath.js';
 import { BudgetService }     from './BudgetService.js';
 import { PlanService }       from '../billing/PlanService.js';
 import { AiGateway }         from './AiGateway.js';
+import { PaymentService }    from '../billing/PaymentService.js';
+import { RazorpayCheckout }  from '../billing/RazorpayCheckout.js';
 
 /** Trailing-edge debounce applied after each local save. */
 const PUSH_DEBOUNCE_MS = 1000;
@@ -178,6 +180,14 @@ export class SyncService {
   /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
   aiGateway() {
     return new AiGateway(() => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null));
+  }
+
+  /** Buying plans and AI packs through Pocket's `payments` server function, as the signed-in person. */
+  payments() {
+    return new PaymentService(
+      () => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null),
+      new RazorpayCheckout(),
+    );
   }
 
   /** The cloud price list, for showing upgrade options. */

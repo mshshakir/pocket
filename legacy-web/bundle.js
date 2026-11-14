@@ -4209,7 +4209,8 @@ RULES:
         coveredBy: [],
         aiCredits: 0,
         aiUnlimited: false,
-        trialAvailable: true
+        trialAvailable: true,
+        paymentsOpen: false
       });
     }
     /**
@@ -4247,7 +4248,8 @@ RULES:
         })) : [],
         aiCredits: Number.isInteger(raw.aiCredits) ? raw.aiCredits : 0,
         aiUnlimited: raw.aiUnlimited === true,
-        trialAvailable: raw.trialAvailable !== false
+        trialAvailable: raw.trialAvailable !== false,
+        paymentsOpen: raw.paymentsOpen === true
       });
     }
     get plan() {
@@ -4289,6 +4291,10 @@ RULES:
     }
     get trialAvailable() {
       return this.#data.trialAvailable;
+    }
+    /** Online payment is switched on (billing_settings.payments_enabled). */
+    get paymentsOpen() {
+      return this.#data.paymentsOpen;
     }
     get isLifetime() {
       return this.#data.term === "lifetime" && this.#data.state === "active";
@@ -4522,6 +4528,122 @@ RULES:
     }
   };
 
+  // src/domain/billing/PaymentError.js
+  var PaymentError = class extends Error {
+    /**
+     * @param {string} message
+     * @param {'signed_out'|'closed'|'not_allowed'|'not_set_up'|'bad_signature'|'not_yours'|'failed'|'network'|'dismissed'|'bad_request'} code
+     */
+    constructor(message, code) {
+      super(message);
+      this.code = code;
+    }
+  };
+
+  // src/domain/billing/PaymentService.js
+  var PaymentService = class _PaymentService {
+    #invoker;
+    #checkout;
+    /**
+     * @param {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} invoker
+     *   supabase.functions.invoke for the signed-in person, or null when signed out
+     * @param {{open: (o: object) => Promise<{orderId: string, paymentId: string, signature: string}>}} checkout
+     */
+    constructor(invoker, checkout) {
+      this.#invoker = invoker;
+      this.#checkout = checkout;
+    }
+    /** @returns {Promise<{keyId: string|null, products: {product: string, name: string, plan?: string, term?: string, aiCredits?: number, amountPaise: number, available: boolean, reason?: string}[]}>} */
+    async offers() {
+      const data = await this.#call({ action: "products" });
+      return { keyId: data.keyId ?? null, products: Array.isArray(data.products) ? data.products : [] };
+    }
+    /**
+     * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
+     * @param {{email?: string}} [who]
+     * @returns {Promise<{applied: boolean}>}
+     * @throws {PaymentError}  code 'dismissed' when the person closed the window
+     */
+    async buy(product, who = {}) {
+      const order = await this.#call({ action: "order", product });
+      const paid = await this.#checkout.open({ ...order, email: who.email });
+      const result = await this.#call({ action: "verify", ...paid });
+      return { applied: result.applied === true };
+    }
+    async #call(body) {
+      const invoke = this.#invoker();
+      if (!invoke) throw new PaymentError("Please sign in to buy a plan.", "signed_out");
+      let result;
+      try {
+        result = await invoke("payments", { body });
+      } catch (_) {
+        throw new PaymentError("Network error \u2014 check your connection and try again.", "network");
+      }
+      const { data, error } = result ?? {};
+      if (error) throw await _PaymentService.#explain(error);
+      return data ?? {};
+    }
+    static async #explain(error) {
+      try {
+        const body = await error.context?.json?.();
+        if (body?.error) return new PaymentError(body.error, body.code || "failed");
+      } catch (_) {
+      }
+      return new PaymentError(error.message || "The payment request failed. Please try again.", "failed");
+    }
+  };
+
+  // src/domain/billing/RazorpayCheckout.js
+  var RazorpayCheckout = class _RazorpayCheckout {
+    static #SCRIPT = "https://checkout.razorpay.com/v1/checkout.js";
+    /** @type {Promise<void>|null} */
+    static #loading = null;
+    /** @type {Window & typeof globalThis} */
+    #win;
+    constructor(win = globalThis.window) {
+      this.#win = win;
+    }
+    /**
+     * @param {{keyId: string, orderId: string, amount: number, currency: string, name: string, email?: string}} o
+     * @returns {Promise<{orderId: string, paymentId: string, signature: string}>}
+     */
+    async open(o) {
+      await this.#load();
+      return new Promise((resolve, reject) => {
+        const rzp = new this.#win.Razorpay({
+          key: o.keyId,
+          order_id: o.orderId,
+          amount: o.amount,
+          currency: o.currency,
+          name: "Pocket",
+          description: o.name,
+          prefill: o.email ? { email: o.email } : void 0,
+          theme: { color: "#18181b" },
+          handler: (r) => resolve({ orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }),
+          modal: { ondismiss: () => reject(new PaymentError("Payment cancelled.", "dismissed")) }
+        });
+        rzp.on?.("payment.failed", () => {
+        });
+        rzp.open();
+      });
+    }
+    #load() {
+      if (this.#win.Razorpay) return Promise.resolve();
+      _RazorpayCheckout.#loading ??= new Promise((resolve, reject) => {
+        const s = this.#win.document.createElement("script");
+        s.src = _RazorpayCheckout.#SCRIPT;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => {
+          _RazorpayCheckout.#loading = null;
+          reject(new PaymentError("Couldn't open the payment window \u2014 check your connection and try again.", "network"));
+        };
+        this.#win.document.head.appendChild(s);
+      });
+      return _RazorpayCheckout.#loading;
+    }
+  };
+
   // src/domain/services/SyncService.js
   var PUSH_DEBOUNCE_MS = 1e3;
   var MAX_PUSH_WAIT_MS = 3e3;
@@ -4634,6 +4756,13 @@ RULES:
     /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
     aiGateway() {
       return new AiGateway(() => this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null);
+    }
+    /** Buying plans and AI packs through Pocket's `payments` server function, as the signed-in person. */
+    payments() {
+      return new PaymentService(
+        () => this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null,
+        new RazorpayCheckout()
+      );
     }
     /** The cloud price list, for showing upgrade options. */
     planCatalogue() {
@@ -13357,12 +13486,14 @@ This replaces your current grouping.`
   };
 
   // src/ui/components/PlanCard.js
-  var PlanCard = class {
+  var PlanCard = class _PlanCard {
     /**
      * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
      * @param {object[]|null} catalogue  rows of the plans table, or null while loading
+     * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
+     * @param {string|null} [buying]  the product being paid for right now
      */
-    html(plan, catalogue) {
+    html(plan, catalogue, offers = null, buying = null) {
       return `
       <div class="card-muted p-3 mb-3" id="planCard">
         <div class="flex items-center justify-between gap-2 mb-1">
@@ -13376,7 +13507,8 @@ This replaces your current grouping.`
             <i data-lucide="download"></i> Download my data
           </button>
         </div>
-        ${this.#offers(plan, catalogue)}
+        ${this.#offers(plan, catalogue, offers, buying)}
+        ${this.#aiPack(plan, offers, buying)}
       </div>`;
     }
     #title(plan) {
@@ -13429,13 +13561,14 @@ This replaces your current grouping.`
       for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
       return parts.join(" \xB7 ");
     }
-    #offers(plan, catalogue) {
+    #offers(plan, catalogue, offers, buying) {
       if (plan.isLifetime) return "";
       if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
       const paid = catalogue.filter((p) => p.code !== "free");
       if (!paid.length) return "";
-      const inr = (paise) => (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
       const what = (p) => [p.sync && "cloud sync", p.telegram && "Telegram", p.sharing && `sharing with up to ${p.seats - 1} family members`].filter(Boolean).join(", ");
+      const selling = plan.paymentsOpen && offers;
+      const switching = plan.state === "active" && plan.isPaid && plan.term !== "trial";
       return `
       <div class="mt-3 text-xs">
         <div class="field-label">Plans</div>
@@ -13443,13 +13576,53 @@ This replaces your current grouping.`
           <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5 mb-2 ${plan.plan === p.code && plan.state === "active" ? "plan-current" : ""}">
             <div class="flex items-baseline justify-between gap-2">
               <span class="font-semibold text-sm">${Html.escape(p.name)}</span>
-              <span class="tx-amount">${p.monthly_paise != null ? `${inr(p.monthly_paise)}/month` : ""}${p.yearly_paise != null ? ` \xB7 ${inr(p.yearly_paise)}/year` : ""}</span>
+              <span class="tx-amount">${p.monthly_paise != null ? `${_PlanCard.#inr(p.monthly_paise)}/month` : ""}${p.yearly_paise != null ? ` \xB7 ${_PlanCard.#inr(p.yearly_paise)}/year` : ""}</span>
             </div>
             <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
-            ${p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
+            ${selling ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying) : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${_PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ""}
           </div>`).join("")}
-        <div class="text-zinc-400">Online payment is coming soon.</div>
+        ${selling ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) \u2014 nothing renews by itself.
+             Paying again for the same plan adds to its end date.${switching ? " Moving to a different plan starts it today; time left on the old one isn't carried over." : ""}</div>` : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
       </div>`;
+    }
+    /** One button per product of a plan: trial (if still available), month, year. */
+    #buttons(products, plan, buying) {
+      const order = { trial: 0, month: 1, year: 2 };
+      const shown = products.filter((o) => o.available || o.term !== "trial" && o.reason !== "lifetime").sort((a, b) => order[a.term] - order[b.term]);
+      if (!shown.length) return "";
+      const label = (o) => {
+        const price = _PlanCard.#inr(o.amountPaise);
+        if (o.term === "trial") return `Try for ${price}`;
+        const verb = plan.plan === o.plan && plan.state === "active" && plan.term !== "trial" ? "Add" : "Buy";
+        return `${verb} 1 ${o.term} \xB7 ${price}`;
+      };
+      return `
+      <div class="flex flex-wrap gap-2 mt-2">
+        ${shown.map((o) => this.#button(o, label(o), buying, o.term === "year")).join("")}
+      </div>`;
+    }
+    #aiPack(plan, offers, buying) {
+      if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return "";
+      const pack = offers.products.find((o) => o.product === "ai_pack" && o.available);
+      if (!pack) return "";
+      return `
+      <div class="mt-1 text-xs rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <div class="font-semibold text-sm">AI pack</div>
+            <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries. Credits don't expire.</div>
+          </div>
+          ${this.#button(pack, _PlanCard.#inr(pack.amountPaise), buying, false)}
+        </div>
+      </div>`;
+    }
+    #button(o, label, buying, primary) {
+      const busy = buying === o.product;
+      return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy" ${buying ? "disabled" : ""}
+      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : Html.escape(label)}</button>`;
+    }
+    static #inr(paise) {
+      return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
     }
   };
 
@@ -13627,7 +13800,7 @@ This replaces your current grouping.`
         </div>`;
       })()}
 
-        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue) : ""}
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying) : ""}
 
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">
@@ -16571,6 +16744,12 @@ This replaces your current grouping.`
     // PlanBanner
     /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
     #planCatalogue = null;
+    /** What's for sale for this person (payments function), when payment is open; null otherwise. */
+    #paymentOffers = null;
+    /** The product being paid for right now (disables the buy buttons), or null. */
+    #buying = null;
+    /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
+    #payments = null;
     // ── Per-session UI state ──────────────────────────────────────────────────
     #reportRange = "30";
     #importPlan = null;
@@ -16991,6 +17170,34 @@ This replaces your current grouping.`
     get planCatalogue() {
       return this.#planCatalogue;
     }
+    /** What's for sale (null while loading or when payment is off). */
+    get paymentOffers() {
+      return this.#paymentOffers;
+    }
+    /** The product being paid for right now, or null. */
+    get buying() {
+      return this.#buying;
+    }
+    /**
+     * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
+     * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
+     */
+    async buy(product) {
+      if (this.#buying || !this.#sync.currentUser) return;
+      this.#payments ??= this.#sync.payments();
+      this.#buying = product;
+      this.#modal.refresh();
+      try {
+        await this.#payments.buy(product, { email: this.#sync.currentUser.email });
+        this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : "Payment received \u2014 your plan is updated");
+      } catch (e) {
+        if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
+      } finally {
+        this.#buying = null;
+        await this.#refreshPlanInfo();
+        this.#modal.refresh();
+      }
+    }
     /** Everything in this book as one file that Import JSON can bring back. */
     downloadMyData() {
       this.exportJson();
@@ -17001,11 +17208,13 @@ This replaces your current grouping.`
     /** Settings is opening: ask for the latest plan and price list, then redraw it. */
     async #refreshPlanInfo() {
       if (!this.#sync.currentUser) return;
-      const [, catalogue] = await Promise.all([
+      const [plan, catalogue] = await Promise.all([
         this.#sync.refreshPlan(),
         this.#sync.planCatalogue().catch(() => [])
       ]);
       this.#planCatalogue = catalogue;
+      this.#payments ??= this.#sync.payments();
+      this.#paymentOffers = plan?.paymentsOpen ? await this.#payments.offers().catch(() => null) : null;
       if (this.#modal.active === "settings") this.#modal.refresh();
     }
     async signInWithGoogle() {

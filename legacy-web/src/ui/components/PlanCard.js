@@ -2,9 +2,10 @@
  * PlanCard — "Your plan" in Settings: what the person has, what it covers,
  * their AI allowance, the way to download their data, and the plans on offer.
  *
- * Purely a renderer: it is given the Entitlements and the price list and
- * returns HTML. Online payment comes in a later phase; until then the card
- * lists the options and says so.
+ * Purely a renderer: it is given the Entitlements, the price list and (when
+ * online payment is open) what's for sale, and returns HTML. Buy buttons call
+ * window.__app.buy(product); while payment is off the card lists the plans
+ * and says payment is coming.
  */
 import { Html } from '../../core/Html.js';
 
@@ -12,8 +13,10 @@ export class PlanCard {
   /**
    * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
    * @param {object[]|null} catalogue  rows of the plans table, or null while loading
+   * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
+   * @param {string|null} [buying]  the product being paid for right now
    */
-  html(plan, catalogue) {
+  html(plan, catalogue, offers = null, buying = null) {
     return `
       <div class="card-muted p-3 mb-3" id="planCard">
         <div class="flex items-center justify-between gap-2 mb-1">
@@ -27,7 +30,8 @@ export class PlanCard {
             <i data-lucide="download"></i> Download my data
           </button>
         </div>
-        ${this.#offers(plan, catalogue)}
+        ${this.#offers(plan, catalogue, offers, buying)}
+        ${this.#aiPack(plan, offers, buying)}
       </div>`;
   }
 
@@ -89,14 +93,15 @@ export class PlanCard {
     return parts.join(' · ');
   }
 
-  #offers(plan, catalogue) {
+  #offers(plan, catalogue, offers, buying) {
     if (plan.isLifetime) return '';
     if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans…</div>';
     const paid = catalogue.filter((p) => p.code !== 'free');
     if (!paid.length) return '';
-    const inr = (paise) => (paise / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: paise % 100 ? 2 : 0 });
     const what = (p) => [p.sync && 'cloud sync', p.telegram && 'Telegram', p.sharing && `sharing with up to ${p.seats - 1} family members`]
       .filter(Boolean).join(', ');
+    const selling = plan.paymentsOpen && offers;
+    const switching = plan.state === 'active' && plan.isPaid && plan.term !== 'trial';
     return `
       <div class="mt-3 text-xs">
         <div class="field-label">Plans</div>
@@ -104,12 +109,62 @@ export class PlanCard {
           <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5 mb-2 ${plan.plan === p.code && plan.state === 'active' ? 'plan-current' : ''}">
             <div class="flex items-baseline justify-between gap-2">
               <span class="font-semibold text-sm">${Html.escape(p.name)}</span>
-              <span class="tx-amount">${p.monthly_paise != null ? `${inr(p.monthly_paise)}/month` : ''}${p.yearly_paise != null ? ` · ${inr(p.yearly_paise)}/year` : ''}</span>
+              <span class="tx-amount">${p.monthly_paise != null ? `${PlanCard.#inr(p.monthly_paise)}/month` : ''}${p.yearly_paise != null ? ` · ${PlanCard.#inr(p.yearly_paise)}/year` : ''}</span>
             </div>
             <div class="text-zinc-500 mt-0.5">${Html.escape(what(p))}.</div>
-            ${p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ''}
+            ${selling
+              ? this.#buttons(offers.products.filter((o) => o.plan === p.code), plan, buying, p.trial_days)
+              : p.trial_paise != null && plan.trialAvailable ? `<div class="text-zinc-500 mt-0.5">Try it: ${PlanCard.#inr(p.trial_paise)} for ${p.trial_days} days.</div>` : ''}
           </div>`).join('')}
-        <div class="text-zinc-400">Online payment is coming soon.</div>
+        ${selling
+          ? `<div class="text-zinc-400 leading-relaxed">One-time payment through Razorpay (UPI, cards, net banking) — nothing renews by itself.
+             Paying again for the same plan adds to its end date.${switching ? ' Moving to a different plan starts it today; time left on the old one isn\'t carried over.' : ''}</div>`
+          : '<div class="text-zinc-400">Online payment is coming soon.</div>'}
       </div>`;
+  }
+
+  /** One button per product of a plan: trial (if still available), month, year. */
+  #buttons(products, plan, buying, trialDays) {
+    const order = { trial: 0, month: 1, year: 2 };
+    const shown = products
+      .filter((o) => o.available || (o.term !== 'trial' && o.reason !== 'lifetime'))
+      .sort((a, b) => order[a.term] - order[b.term]);
+    if (!shown.length) return '';
+    const label = (o) => {
+      const price = PlanCard.#inr(o.amountPaise);
+      if (o.term === 'trial') return trialDays ? `Try ${trialDays} days · ${price}` : `Try for ${price}`;
+      const verb = plan.plan === o.plan && plan.state === 'active' && plan.term !== 'trial' ? 'Add' : 'Buy';
+      return `${verb} 1 ${o.term} · ${price}`;
+    };
+    return `
+      <div class="flex flex-wrap gap-2 mt-2">
+        ${shown.map((o) => this.#button(o, label(o), buying, o.term === 'year')).join('')}
+      </div>`;
+  }
+
+  #aiPack(plan, offers, buying) {
+    if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return '';
+    const pack = offers.products.find((o) => o.product === 'ai_pack' && o.available);
+    if (!pack) return '';
+    return `
+      <div class="mt-1 text-xs rounded-xl border border-zinc-200 dark:border-zinc-800 p-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <div class="font-semibold text-sm">AI pack</div>
+            <div class="text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries. Credits don't expire.</div>
+          </div>
+          ${this.#button(pack, PlanCard.#inr(pack.amountPaise), buying, false)}
+        </div>
+      </div>`;
+  }
+
+  #button(o, label, buying, primary) {
+    const busy = buying === o.product;
+    return `<button class="btn ${primary ? 'btn-primary' : 'btn-outline'} plan-buy" ${buying ? 'disabled' : ''}
+      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? 'Opening…' : Html.escape(label)}</button>`;
+  }
+
+  static #inr(paise) {
+    return (paise / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: paise % 100 ? 2 : 0 });
   }
 }

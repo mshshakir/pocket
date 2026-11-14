@@ -37,6 +37,7 @@ export class Entitlements {
       state: 'free', endsAt: null, graceUntil: null, autoRenew: false,
       access: { sync: 'none', telegram: 'none', sharing: 'none' },
       seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: false, trialAvailable: true,
+      paymentsOpen: false,
     });
   }
 
@@ -76,6 +77,7 @@ export class Entitlements {
       aiCredits: Number.isInteger(raw.aiCredits) ? raw.aiCredits : 0,
       aiUnlimited: raw.aiUnlimited === true,
       trialAvailable: raw.trialAvailable !== false,
+      paymentsOpen: raw.paymentsOpen === true,
     });
   }
 
@@ -93,6 +95,8 @@ export class Entitlements {
   get aiCredits()      { return this.#data.aiCredits; }
   get aiUnlimited()    { return this.#data.aiUnlimited; }
   get trialAvailable() { return this.#data.trialAvailable; }
+  /** Online payment is switched on (billing_settings.payments_enabled). */
+  get paymentsOpen()   { return this.#data.paymentsOpen; }
   get isLifetime()     { return this.#data.term === 'lifetime' && this.#data.state === 'active'; }
   /** The plan ended recently: its features still show, but nothing can change. */
   get isReadOnly()     { return this.#data.state === 'grace'; }

@@ -183,7 +183,7 @@ export class SettingsModal {
         </div>`;
         })()}
 
-        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue) : ''}
+        ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying) : ''}
 
         <!-- Cloud sync -->
         <div class="card-muted p-3 mb-3">

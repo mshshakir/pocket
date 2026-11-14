@@ -155,6 +155,12 @@ export class Application {
   #planBanner        = null;  // PlanBanner
   /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
   #planCatalogue     = null;
+  /** What's for sale for this person (payments function), when payment is open; null otherwise. */
+  #paymentOffers     = null;
+  /** The product being paid for right now (disables the buy buttons), or null. */
+  #buying            = null;
+  /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
+  #payments          = null;
 
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
@@ -655,6 +661,33 @@ export class Application {
   /** Plans on offer, or null while loading (Settings shows "Loading plans…"). */
   get planCatalogue() { return this.#planCatalogue; }
 
+  /** What's for sale (null while loading or when payment is off). */
+  get paymentOffers() { return this.#paymentOffers; }
+
+  /** The product being paid for right now, or null. */
+  get buying() { return this.#buying; }
+
+  /**
+   * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
+   * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
+   */
+  async buy(product) {
+    if (this.#buying || !this.#sync.currentUser) return;
+    this.#payments ??= this.#sync.payments();
+    this.#buying = product;
+    this.#modal.refresh();
+    try {
+      await this.#payments.buy(product, { email: this.#sync.currentUser.email });
+      this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added' : 'Payment received — your plan is updated');
+    } catch (e) {
+      if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
+    } finally {
+      this.#buying = null;
+      await this.#refreshPlanInfo();
+      this.#modal.refresh();
+    }
+  }
+
   /** Everything in this book as one file that Import JSON can bring back. */
   downloadMyData() { this.exportJson(); }
 
@@ -663,11 +696,13 @@ export class Application {
   /** Settings is opening: ask for the latest plan and price list, then redraw it. */
   async #refreshPlanInfo() {
     if (!this.#sync.currentUser) return;
-    const [, catalogue] = await Promise.all([
+    const [plan, catalogue] = await Promise.all([
       this.#sync.refreshPlan(),
       this.#sync.planCatalogue().catch(() => []),
     ]);
     this.#planCatalogue = catalogue;
+    this.#payments ??= this.#sync.payments();
+    this.#paymentOffers = plan?.paymentsOpen ? await this.#payments.offers().catch(() => null) : null;
     if (this.#modal.active === 'settings') this.#modal.refresh();
   }
 
