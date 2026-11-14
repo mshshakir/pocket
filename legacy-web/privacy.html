@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Privacy Policy — Pocket</title>
-<meta name="description" content="How Pocket handles your data: stored in your browser and your own cloud, never sold, no ads." />
+<meta name="description" content="How Pocket handles your data: who can see it, where it is stored, and what we never do with it." />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -49,81 +49,99 @@
   <div class="rounded-2xl bg-white border border-zinc-200 p-5 mb-8">
     <div class="font-semibold mb-2 flex items-center gap-2"><i data-lucide="sparkles" style="width:16px;height:16px;color:#10b981"></i> The short version</div>
     <ul class="text-sm text-zinc-600 space-y-1.5 list-disc pl-5">
-      <li>Pocket keeps your data <strong>in your browser</strong> and, if you sign in, in <strong>your own cloud account</strong>.</li>
+      <li>On the <strong>Free</strong> plan, your data stays <strong>in your browser, on your device</strong>.</li>
+      <li>On <strong>Sync</strong> and <strong>Family</strong>, it is also stored on <strong>Pocket's cloud server</strong>, so it syncs across your devices and with the family members you choose.</li>
+      <li><strong>Other users can't see your data.</strong> The people who run Pocket technically can; we look at it <strong>only when you ask us to help, or when the law requires it</strong>.</li>
       <li>We <strong>don't sell your data, show ads, or track you</strong> across the web.</li>
-      <li>When you scan a receipt or speak an entry, the image or recording passes <strong>through Pocket's server to Google's AI, only to read it</strong>, and isn't stored.</li>
+      <li>A scanned receipt or voice entry goes <strong>to Google's AI only to be read</strong>, and isn't stored.</li>
       <li>You can <strong>export or delete everything</strong> at any time.</li>
     </ul>
   </div>
 
   <div class="prose-pocket">
-    <p>This Privacy Policy explains what information the Pocket personal-finance application ("Pocket", "the app", "we") processes, how, and why. By using Pocket you agree to the practices described here. If you do not agree, please do not use the app.</p>
+    <p>This Privacy Policy explains what information Pocket ("Pocket", "the app", "we") processes, how, why, and who can see it. It covers the website, the app, the Telegram bot and our paid plans. By using Pocket you agree to the practices described here. If you do not agree, please do not use Pocket.</p>
 
     <h2 id="data">1. What data Pocket processes</h2>
-    <p>Pocket is designed so that <strong>you</strong> hold your data. Depending on how you use it, the app processes:</p>
     <ul>
       <li><strong>Financial data you enter:</strong> accounts, balances, transactions, transfers, categories, budgets, debts, recurring and regular items, tags, notes and payees.</li>
-      <li><strong>Account information:</strong> if you sign in, your email address and a user identifier provided by the sign-in provider.</li>
-      <li><strong>Preferences:</strong> home/default currency, date format, theme, calendar settings and similar app settings.</li>
-      <li><strong>Plan and usage records:</strong> if you sign in, your plan, its dates, and a record of each AI scan or voice entry (when, by whom and which book it was for, and the credit used), so your plan and AI allowance work.</li>
+      <li><strong>Account information:</strong> if you sign in, your email address, your name and a user identifier from Google sign-in.</li>
+      <li><strong>Family members:</strong> the names and email addresses of people you share accounts with, and what each may do.</li>
+      <li><strong>Preferences:</strong> currency, date format, theme, calendar and similar settings.</li>
+      <li><strong>Plan, payment and usage records:</strong> your plan and its dates; for each payment, what was bought, the amount and Razorpay's order and payment references; and a record of each AI scan or voice entry (when, by whom, for which book, and the credit used).</li>
+      <li><strong>Telegram:</strong> if you link the bot, your Telegram chat ID and the email it is linked to; and, if you turn on group summaries, the group's ID, name and settings.</li>
     </ul>
 
     <h2 id="storage">2. Where your data is stored</h2>
     <ul>
-      <li><strong>On your device:</strong> by default all data is stored locally in your browser's <code>localStorage</code>. It never leaves your device unless you turn on cloud sync.</li>
-      <li><strong>In your cloud (optional):</strong> if you sign in, your data is synced to a database in a <a href="https://supabase.com" target="_blank" rel="noopener">Supabase</a> project so it is available across your devices and to family members you explicitly share with. This data is associated with your account and protected by row-level security so only you (and people you share with) can read it.</li>
+      <li><strong>On your device:</strong> Pocket stores your data in your browser's storage. On the Free plan it stays there and is not sent to us.</li>
+      <li><strong>On Pocket's cloud server:</strong> on the Sync and Family plans, your data is also stored in Pocket's database, hosted by <a href="https://supabase.com" target="_blank" rel="noopener">Supabase</a>, so it is available on your devices and to the family members you share with.</li>
     </ul>
 
-    <h2 id="auth">3. Sign-in &amp; authentication</h2>
-    <p>Signing in is optional and is used to sync your data across devices. Authentication is handled by Supabase Auth using Google sign-in. We receive your email address and an account identifier so we can store and retrieve <em>your</em> data. We do not receive your Google password. Your use of Google sign-in is also subject to Google's own privacy policy.</p>
-
-    <h2 id="ai">4. AI receipt scanning &amp; voice entry</h2>
-    <p>Receipt scanning and voice entry are optional features that need you to be signed in. When you use them:</p>
+    <h2 id="who">3. Who can see your data</h2>
     <ul>
-      <li>The receipt image or voice recording, with your category names, is sent over an encrypted connection to Pocket's server, which forwards it to Google's Generative Language API (Gemini) using Pocket's own API key. You don't need a key of your own.</li>
-      <li>Pocket's server doesn't store the image or recording. It keeps only a usage record (when, by whom, for which book, and the credit used) so your AI allowance can be counted.</li>
-      <li>The image or recording is processed to extract amounts, merchants and line items. Google's handling of that request is governed by Google's API terms and privacy policy.</li>
+      <li><strong>You.</strong></li>
+      <li><strong>Family members you share with</strong> see only the accounts you share with them, at the access level you choose. You can remove them at any time.</li>
+      <li><strong>Members of a Telegram group</strong>, if the owner of a shared space turns on group summaries there: they see that space's totals, spending by category and who logged how many entries. They never see personal accounts or individual entries.</li>
+      <li><strong>Other Pocket users</strong> cannot see your data. The database itself enforces this for every request from the app.</li>
+      <li><strong>The people who run Pocket</strong> can technically access data stored on the cloud server, as the operators of the service; your data is not end-to-end encrypted. We look at it <strong>only</strong> to fix a problem you have asked us to help with, to keep the service secure (for example, to investigate abuse), or when the law requires us to. We do not browse it, analyse it for marketing, or share it. Data that stays on your device (the Free plan) is not visible to us.</li>
+      <li><strong>Service providers</strong> who run parts of Pocket for us, only as needed for their part: Supabase (hosting and sign-in), Google (sign-in, and reading scanned receipts and voice entries), Telegram (delivering bot messages) and Razorpay (payments). Each handles data under its own terms and privacy policy.</li>
+    </ul>
+
+    <h2 id="auth">4. Sign-in</h2>
+    <p>Signing in is optional; you need it for cloud sync, the Telegram bot, family sharing and AI scanning. Sign-in uses Google through Supabase Auth. We receive your email address, name and an account identifier. We never receive your Google password.</p>
+
+    <h2 id="telegram">5. Telegram bot and group summaries</h2>
+    <ul>
+      <li>When you send an entry to the Pocket bot, Telegram delivers the message to Pocket's server, which saves it as a transaction in your book (or a book shared with you). Messages to bots are not end-to-end encrypted by Telegram.</li>
+      <li>While the bot waits for you to choose a category or correct an entry, it keeps that step briefly; it is removed when you finish and expires after 30 minutes.</li>
+      <li>In a group, the bot only reacts to commands addressed to it. It does not read the group's conversation and never records entries from a group.</li>
+      <li>Group summaries count only the accounts in the shared space chosen for that group. The space's owner turns them on and off, and can hide who logged entries.</li>
+      <li><code>/unlink</code> disconnects a chat, and <code>/summary off</code> stops a group's summaries.</li>
+    </ul>
+
+    <h2 id="ai">6. AI receipt scanning and voice entry</h2>
+    <ul>
+      <li>The receipt image or voice recording, with your category names, is sent over an encrypted connection to Pocket's server, which forwards it to Google's Gemini AI using Pocket's API key.</li>
+      <li>Pocket's server doesn't store the image or recording. It keeps only the usage record described above, so your AI credits can be counted.</li>
+      <li>Google processes the request to read amounts, merchants and items, under Google's API terms and privacy policy.</li>
     </ul>
     <p>If you never scan a receipt or speak an entry, no images or recordings are sent anywhere.</p>
 
-    <h2 id="rates">5. Exchange rates</h2>
-    <p>To convert between currencies, Pocket fetches public, aggregate exchange-rate data from a third-party rates provider (open.er-api.com). These requests contain no personal or financial information — only a request for the latest USD-based rate table, which is cached on your device.</p>
+    <h2 id="payments">7. Payments</h2>
+    <p>Payments are handled by Razorpay. Your card, UPI and bank details go directly to Razorpay; Pocket never sees or stores them. We keep the record of what you bought, the amount and Razorpay's references, to apply your plan or credits and to help if something goes wrong.</p>
 
-    <h2 id="family">6. Family sharing</h2>
-    <p>If you invite a family member and grant them access to specific accounts, a snapshot of <strong>only those accounts</strong> and their related transactions is shared with the email address you specify, at the access level you choose (view-only, edit, or full). You control which accounts are shared and can revoke access by removing the member. Members can contribute transactions to accounts you've shared with edit access.</p>
+    <h2 id="rates">8. Exchange rates</h2>
+    <p>To convert between currencies, Pocket fetches public exchange-rate tables from open.er-api.com. These requests contain no personal or financial information.</p>
 
-    <h2 id="not">7. What we do not do</h2>
+    <h2 id="not">9. What we do not do</h2>
     <ul>
       <li>We do <strong>not</strong> sell, rent or trade your personal or financial data.</li>
-      <li>We do <strong>not</strong> show advertising in the app.</li>
-      <li>We do <strong>not</strong> use third-party advertising or cross-site tracking cookies.</li>
-      <li>We do <strong>not</strong> access your financial data for marketing.</li>
+      <li>We do <strong>not</strong> show advertising, or use advertising or cross-site tracking cookies.</li>
+      <li>We do <strong>not</strong> use your financial data for marketing.</li>
     </ul>
 
-    <h2 id="cookies">8. Cookies &amp; local storage</h2>
-    <p>Pocket uses your browser's local storage to save your data and preferences on your device, and authentication tokens (set by the sign-in provider) to keep you signed in. These are essential to the app's core functionality, not for advertising or tracking.</p>
+    <h2 id="cookies">10. Cookies and local storage</h2>
+    <p>Pocket uses your browser's storage to keep your data and preferences on your device, and sign-in tokens to keep you signed in. These are needed for the app to work, not for advertising or tracking.</p>
 
-    <h2 id="retention">9. Data retention &amp; your controls</h2>
-    <p>You stay in control of your data:</p>
+    <h2 id="retention">11. Keeping and deleting your data</h2>
     <ul>
-      <li><strong>Export:</strong> download all your data as JSON or CSV from Settings at any time.</li>
-      <li><strong>Delete / reset:</strong> reset all local data from Settings, which clears it from your device.</li>
-      <li><strong>Sign out:</strong> signing out clears the locally cached copy on that device.</li>
-      <li><strong>Cloud deletion:</strong> to remove your synced data, reset your data while signed in or request deletion of your cloud record.</li>
+      <li><strong>Export:</strong> download all your data from Settings at any time (JSON, CSV, Excel or PDF).</li>
+      <li><strong>On your device:</strong> reset all data from Settings, or clear your browser storage. Signing out clears the copy on that device.</li>
+      <li><strong>When a paid plan ends:</strong> your cloud copy stays readable for 30 days so you can download it, and is then kept (without sync) so it comes back if you renew. Ask us to delete it at any time.</li>
+      <li><strong>Deletion:</strong> to delete your cloud data and account, write to us through the <a href="contact.html">contact page</a>. Payment records may be kept for as long as the law requires.</li>
     </ul>
-    <p>Locally stored data persists until you clear it or clear your browser storage. Cloud-synced data persists until you delete it.</p>
 
-    <h2 id="security">10. Security</h2>
-    <p>Cloud data is protected by your provider's authentication and row-level security so that only your account (and members you share with) can access it. Transfers to Supabase and Google are made over encrypted HTTPS connections. No method of storage or transmission is 100% secure, but we rely on industry-standard protections and a design that minimises the data exposed to anyone but you.</p>
+    <h2 id="security">12. Security</h2>
+    <p>Connections to Pocket, Supabase, Google, Telegram and Razorpay use encrypted HTTPS. Supabase encrypts the stored database, and the database's access rules keep each user's data separate from other users'. As explained in section 3, the data is not end-to-end encrypted, so the people who run Pocket can technically access it; we keep that access to the few people who run the service. No method of storage or transmission is 100% secure.</p>
 
-    <h2 id="children">11. Children</h2>
+    <h2 id="children">13. Children</h2>
     <p>Pocket is not directed to children under 13 (or the minimum age required in your jurisdiction). We do not knowingly collect personal information from children. If you believe a child has provided us information, please contact us so it can be removed.</p>
 
-    <h2 id="changes">12. Changes to this policy</h2>
+    <h2 id="changes">14. Changes to this policy</h2>
     <p>We may update this Privacy Policy from time to time. Material changes will be reflected by updating the "Last updated" date above. Continued use of the app after changes take effect constitutes acceptance of the revised policy.</p>
 
-    <h2 id="contact">13. Contact</h2>
-    <p>Questions about this policy or your data? Contact us at <a href="mailto:privacy@example.com">privacy@example.com</a>. <em>(Replace this with your real contact address before publishing.)</em></p>
+    <h2 id="contact">15. Contact</h2>
+    <p>Questions about this policy or your data, or a request to delete it? See our <a href="contact.html">contact page</a>.</p>
   </div>
 
   <div class="mt-12 pt-6 border-t border-zinc-200 flex items-center justify-between text-sm">

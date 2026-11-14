@@ -79,6 +79,9 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   duplicate/erroneous charges refunded.
 - **2026-11-14 · Homepage #reports section:** group summary mock (daily + monthly with % change) and the four
   downloadable reports (Transactions, By category, Month by month incl. Hijri, Account activity; PDF/Excel/CSV, free). Nav + footer link.
+- **2026-11-14 · Privacy policy rewritten to be accurate:** operator can technically access synced data (not E2E);
+  looks only on the user's request, for security, or by law. Covers Telegram bot/groups, payments, retention, deletion via
+  contact page. Homepage privacy + catch-up wording updated (catch-up: "Send us your data and we will send you back a file…").
 - **2026-11-14 · Legal pages:** legacy-web/terms.html, refunds.html, contact.html (contact details
   still "To be added" — waiting on the user's name/email/phone/address matching Razorpay KYC; the
   privacy page's contact email is still a placeholder too). Footer links on index and privacy. Verified on live data that space +
