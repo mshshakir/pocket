@@ -44,7 +44,9 @@ export class GeminiClient {
       let detail = '';
       try { detail = (await res.json())?.error?.message ?? ''; } catch (_) { /* not JSON */ }
       console.error('[ai] Gemini', res.status, detail);
-      throw new GeminiError(res.status === 429 ? 'The AI service is busy. Please try again in a minute.'
+      // 429 is Google's quota for Pocket's key (per minute, per day, or none on the
+      // free tier) — not something the person can fix, so don't call it "busy".
+      throw new GeminiError(res.status === 429 ? 'AI scanning has reached its limit for now. Please try again later.'
         : 'The AI service could not read that. Please try again.', res.status);
     }
     const body = await res.json();
