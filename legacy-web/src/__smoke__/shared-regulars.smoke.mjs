@@ -146,6 +146,7 @@ ok('a book with no regular items yields only local logs',
 // ═══════════════════════════════════════════════════════════════════════════
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -177,36 +178,22 @@ const memberState = {
   merchantCategories: {}, accountGroups: [],
 };
 
-const cloud = { userRow: { id: 'me1', data: memberState, version: 2 }, contributions: [] };
-const sb = {
-  auth: {
-    onAuthStateChange(cb) { cloud.authCb = cb; },
-    getSession: async () => ({ data: { session: null } }),
-    signOut: async () => {}, signInWithOAuth: async () => ({}),
-  },
-  removeChannel() {},
-  channel() { const ch = { on() { return ch; }, subscribe(cb) { cb?.('SUBSCRIBED'); return ch; }, send() {} }; return ch; },
-  from(table) {
-    const q = {
-      _eq: {},
-      select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-      in() { return q; }, order() { return q; }, update() { return q; },
-      async upsert(payload) {
-        if (table === 'family_contributions') cloud.contributions.push(payload);
-        return { error: null };
-      },
-      async single() {
-        if (table === 'user_data') return { data: cloud.userRow, error: null };
-        return { data: null, error: { code: 'PGRST116' } };
-      },
-      then(res) {
-        if (table === 'family_shares') return res({ data: [{ owner_id: 'owner1', snapshot }], error: null });
-        return res({ data: [], error: null });
-      },
-    };
-    return q;
-  },
-};
+// The owner's book in the cloud: the member may fully manage shared1.
+const cloud = new FakeCloud();
+cloud.setBook('owner1', {
+  user: { homeCurrency: snapshot.homeCurrency },
+  accounts: snapshot.accounts,
+  transactions: snapshot.transactions,
+  categories: snapshot.categories,
+  family: [{ id: 'm1', email: 'member@x.com', name: 'Member', spaceName: snapshot.sharedBy,
+             permissions: [{ accountId: 'shared1', access: 'full' }] }],
+}, 'owner@x.com');
+cloud.setBook('me1', memberState, 'member@x.com');
+
+/** Every transaction the member sent into the owner's book, as {tx_data}. */
+const contributions = () => cloud.calls
+  .filter((c) => c.fn === 'pocket_apply_changes' && c.args.book === 'owner1')
+  .flatMap((c) => (c.args.changes.put?.transactions || []).map((tx) => ({ tx_data: tx })));
 
 const dom = new JSDOM(
   `<!doctype html><html><head></head><body>
@@ -222,7 +209,7 @@ w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListen
 w.fetch   = () => Promise.reject(new Error('offline'));
 w.confirm = () => true;
 w.alert   = () => {};
-w.supabase = { createClient: () => sb };
+w.supabase = { createClient: cloud.client({ id: 'me1', email: 'member@x.com' }) };
 w.eval(bundleSrc);
 await wait(80);
 
@@ -282,8 +269,8 @@ doc.querySelector('#txForm [name=accountId]').value = 'shared1';
 await app.submitTx({ preventDefault() {}, target: doc.querySelector('#txForm') }, '');
 await wait(120);
 
-const contrib = cloud.contributions[cloud.contributions.length - 1];
-ok('a contribution was submitted to the owner', !!contrib, JSON.stringify(cloud.contributions).slice(0, 120));
+const contrib = contributions().at(-1);
+ok('a contribution was submitted to the owner', !!contrib, JSON.stringify(contributions()).slice(0, 120));
 ok('it carries the OWNER\'s category id — not "Uncategorised"',
   contrib?.tx_data?.categoryId === 'o_coffee', contrib?.tx_data?.categoryId ?? 'null');
 
@@ -346,7 +333,7 @@ ok('…and remembers whose book it belongs to', savedItem?.sharedOwnerId === 'ow
 ok('…with the owner\'s category as its default', savedItem?.categoryId === 'o_grocery', savedItem?.categoryId);
 
 // Logging it must contribute to the owner instead of writing locally.
-const before = cloud.contributions.length;
+const before = contributions().length;
 app.openModal('dayLogs', { date: '2026-08-06' });
 await wait(40);
 const logForm = doc.querySelector('form[onsubmit*="submitRegularLog"]');
@@ -356,9 +343,9 @@ logForm.querySelector('[name=unitPrice]').value = '15';
 await app.submitRegularLog({ preventDefault() {}, target: logForm }, '2026-08-06');
 await wait(120);
 
-const logContrib = cloud.contributions[cloud.contributions.length - 1];
+const logContrib = contributions().at(-1);
 ok('logging a shared regular item contributes to the owner',
-  cloud.contributions.length > before, `${before} → ${cloud.contributions.length}`);
+  contributions().length > before, `${before} → ${contributions().length}`);
 ok('…rather than writing into the local ledger',
   !JSON.parse(w.localStorage.getItem('pocket.v1')).transactions.some((t) => t.regularItemId === savedItem.id));
 ok('…on the owner\'s account', logContrib?.tx_data?.accountId === 'shared1', logContrib?.tx_data?.accountId);
