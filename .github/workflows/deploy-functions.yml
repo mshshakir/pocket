@@ -42,4 +42,4 @@ jobs:
           version: latest
 
       - name: Deploy telegram-bot
-        run: supabase functions deploy telegram-bot --project-ref "$PROJECT_REF" --no-verify-jwt
+        run: supabase functions deploy telegram-bot --remote="$PROJECT_REF" --no-verify-jwt --yes
