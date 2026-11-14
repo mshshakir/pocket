@@ -1,6 +1,7 @@
 {
   "name": "pocket-budget-app",
   "version": "2.0.0",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "npx esbuild src/app.js --bundle --format=iife --global-name=_PocketApp --outfile=bundle.js --watch --servedir=. --serve=5173",
