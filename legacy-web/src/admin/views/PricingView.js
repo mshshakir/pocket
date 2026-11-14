@@ -77,7 +77,10 @@ export class PricingView extends AdminView {
           <td>${Format.date(o.starts_at)} – ${o.ends_at ? Format.date(o.ends_at) : 'no end'}</td>
           <td class="num">${o.uses}${o.max_uses ? ` / ${o.max_uses}` : ''}</td>
           <td>${state}</td>
-          <td><button data-action="offer-active" data-id="${o.id}" data-on="${!o.active}" class="btn btn-soft btn-sm">${o.active ? 'Switch off' : 'Switch on'}</button></td>
+          <td><div class="row-actions">
+            <button data-action="offer-active" data-id="${o.id}" data-on="${!o.active}" class="btn btn-soft btn-sm">${o.active ? 'Switch off' : 'Switch on'}</button>
+            <button data-action="offer-delete" data-id="${o.id}" data-label="${Format.esc(o.kind === 'coupon' ? `code ${o.code}` : `sale "${o.name}"`)}" data-uses="${o.uses}" class="btn btn-danger btn-sm">Delete</button>
+          </div></td>
         </tr>`;
     }).join('');
     return `
@@ -169,6 +172,16 @@ export class PricingView extends AdminView {
         this.#data = await this.api.saveOffer({ id: el.dataset.id, active: el.dataset.on === 'true' });
         this.host.toast(el.dataset.on === 'true' ? 'Offer on' : 'Offer off');
         return true;
+      case 'offer-delete': {
+        const uses = Number(el.dataset.uses) || 0;
+        const ask = `Delete the ${el.dataset.label}?` + (uses
+          ? ` It has been used ${uses} time${uses === 1 ? '' : 's'}; those payments keep their price. Switching it off instead keeps it in this list.`
+          : ' This can\'t be undone.');
+        if (!confirm(ask)) return false;
+        this.#data = await this.api.deleteOffer(el.dataset.id);
+        this.host.toast('Offer deleted');
+        return true;
+      }
       default:
         return false;
     }

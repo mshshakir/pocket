@@ -24,6 +24,7 @@ export class AdminApi {
   updatePlan(code, patch)    { return this.#session.rpc('pocket_adm_update_plan', { p_code: code, p: patch }); }
   updateSettings(patch)      { return this.#session.rpc('pocket_adm_update_settings', { p: patch }); }
   saveOffer(offer)           { return this.#session.rpc('pocket_adm_save_offer', { p: offer }); }
+  deleteOffer(id)            { return this.#session.rpc('pocket_adm_delete_offer', { p_id: Number(id) }); }
   programme()                { return this.#session.rpc('pocket_adm_programme'); }
   saveBatch(batch)           { return this.#session.rpc('pocket_adm_save_batch', { p: batch }); }
   application(id, action, args = {}) {

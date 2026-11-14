@@ -134,6 +134,20 @@ const formOf = (html, selector) => {
   of.form.querySelector('[value=sync_year]').checked = true;
   const err = await v.act('offer', of.form, of.data()).catch((e) => e);
   ok('A3 a fixed price on two products is refused before sending', err instanceof Error && /exactly one product/.test(err.message));
+
+  ok('A3 each offer has Switch off and Delete', h.includes('data-action="offer-active"') && /data-action="offer-delete" data-id="1"/.test(h) && h.includes('>Switch off<'));
+  const btn = (action) => { const d = document.createElement('div'); d.innerHTML = h; return d.querySelector(`[data-action="${action}"]`); };
+  calls.length = 0;
+  await v.act('offer-active', btn('offer-active'));
+  ok('A3 Switch off sends active: false for that offer', calls[0]?.[0] === 'saveOffer' && calls[0][1].id === '1' && calls[0][1].active === false);
+  let asked = '';
+  globalThis.confirm = (q) => { asked = q; return false; };
+  calls.length = 0;
+  await v.act('offer-delete', btn('offer-delete'));
+  ok('A3 Delete asks first, names the code and its uses; "no" sends nothing', /code LAUNCH20/.test(asked) && /used 3 times/.test(asked) && !calls.length, asked);
+  globalThis.confirm = () => true;
+  await v.act('offer-delete', btn('offer-delete'));
+  ok('A3 Delete once confirmed: removed by id', calls[0]?.[0] === 'deleteOffer' && calls[0][1] === '1' && toasts.at(-1) === 'Offer deleted');
 }
 
 // A4
