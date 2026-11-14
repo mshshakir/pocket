@@ -9,6 +9,9 @@
  * Pure domain — no DOM, no network. Run: node src/__smoke__/book-diff.smoke.mjs
  */
 import { BookDiff } from '../core/BookDiff.js';
+import { StateMigrator } from '../data/StateMigrator.js';
+import { LedgerMath } from '../domain/services/LedgerMath.js';
+import { CurrencyService } from '../domain/services/CurrencyService.js';
 
 let passed = 0, failed = 0;
 const ok = (label, cond, extra = '') => {
@@ -104,6 +107,35 @@ console.log('\nbook diff suite');
   const ch = BookDiff.changes(null, base());
   ok('against no baseline, everything is new', ch.put.transactions.length === 2 && ch.put.accounts.length === 2);
   ok('…and nothing is removed', !ch.remove);
+}
+
+{
+  // An entry written by the Telegram bot, as pocket_get_book returns it, must
+  // load without the app seeing an edit: a back-filled field would make the
+  // app save the row again under the app user's name (and could overwrite a
+  // newer edit made from Telegram meanwhile).
+  const fx = new CurrencyService();
+  const botTx = (over = {}) => ({
+    id: 'tx_bot', accountId: 'acc_inr', categoryId: 'c1', type: 'expense', amount: 970, acctMinor: 970,
+    currency: 'INR', exchangeRate: 1, refAmount: 970, payee: '', note: 'grant road to charni road',
+    date: '2026-11-14', hijriDate: { year: 1448, month: 5, day: 5, offset: 0 }, paymentType: 'online',
+    recordState: 'cleared', tags: [], addedBy: 'u_wife', createdAt: '2026-11-14T02:25:33.170Z', ...over,
+  });
+  const loadAsApp = (tx) => {
+    const cloud = {
+      user: { homeCurrency: 'INR', hijriOffset: 0 },
+      accounts: [{ id: 'acc_inr', name: 'BOI', currency: 'INR', openingBalance: 0, balance: -970 }],
+      categories: [{ id: 'c1', name: 'Train' }], transactions: [tx],
+      budgets: [], debts: [], regularItems: [], accountGroups: [], family: [], spaces: [], merchantCategories: {},
+    };
+    const local = BookDiff.clone(cloud);
+    StateMigrator.migrate(local, fx);
+    LedgerMath.stampAccountAmounts(local.transactions, local.accounts, fx);
+    return BookDiff.changes(cloud, local);
+  };
+  ok('bot entry loads without a re-save', !loadAsApp(botTx())?.put?.transactions);
+  ok('…while one missing acctMinor would be re-saved (the guard is live)',
+    loadAsApp(botTx({ acctMinor: undefined }))?.put?.transactions?.length === 1);
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

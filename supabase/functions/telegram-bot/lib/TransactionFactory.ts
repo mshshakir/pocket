@@ -2,7 +2,10 @@
  * TransactionFactory — builds transactions with the same fields and
  * conventions as the app (TransactionService.create and
  * TransactionComposer#buildTransferPair): minor-unit amounts, frozen
- * exchangeRate/refAmount, and a hijriDate snapshot at the owner's offset.
+ * exchangeRate/refAmount, acctMinor, and a hijriDate snapshot at the owner's
+ * offset. A row the app would complete on load (a missing field it back-fills)
+ * looks edited to the app, which then saves it again under the app user's name
+ * — so every field the app derives is written here up front.
  */
 import { HijriCalendar, type HijriDate } from './HijriCalendar.ts';
 import { Money } from './Money.ts';
@@ -17,6 +20,8 @@ export interface PocketTransaction {
   currency: string;
   exchangeRate: number;
   refAmount: number;
+  /** The amount in the account's own currency, frozen at creation (LedgerMath.stampAccountAmounts). */
+  acctMinor: number;
   payee: string;
   note: string;
   date: string;
@@ -137,10 +142,12 @@ export class TransactionFactory {
     ];
   }
 
+  /** Every row the bot writes is in its own account's currency, so acctMinor is the amount itself. */
   #valued(amount: number, currency: string) {
     const home = this.#book.homeCurrency;
     return {
       amount,
+      acctMinor: amount,
       currency,
       exchangeRate: this.#money.exchangeRate(currency, home),
       refAmount: this.#money.convert(amount, currency, home),
