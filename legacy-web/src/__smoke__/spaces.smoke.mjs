@@ -57,6 +57,7 @@
  */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -104,49 +105,19 @@ const snapshot = (over = {}) => ({
 });
 
 function boot(state, { shares = [] } = {}) {
-  // The cloud row mirrors local state, so adopting it is a no-op — the suite is
-  // about spaces, not about sync. Returning no row at all would send #doPull
-  // down the first-sign-in branch, which never pulls family shares.
-  const cloud = {
-    shares, contributions: [], pushedShares: [],
-    row: { id: 'me1', version: 1, data: JSON.parse(JSON.stringify(state)) },
-  };
-  const sb = () => ({
-    auth: {
-      onAuthStateChange(cb) { cloud.authCb = cb; },
-      getSession: async () => ({ data: { session: null } }),
-      signOut: async () => {}, signInWithOAuth: async () => ({}),
-    },
-    removeChannel() {},
-    channel() { const ch = { on() { return ch; }, subscribe() { return ch; }, send() {} }; return ch; },
-    from(table) {
-      const q = {
-        _t: table, _eq: {},
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; }, order() { return q; },
-        async single() {
-          return { data: JSON.parse(JSON.stringify(cloud.row)), error: null };
-        },
-        update(patch) { q._patch = patch; return q; },
-        async upsert(payload) {
-          if (table === 'family_contributions') cloud.contributions.push(payload);
-          if (table === 'family_shares')        cloud.pushedShares.push(payload);
-          if (table === 'user_data') cloud.row = { ...cloud.row, ...payload };
-          return { data: [{ version: (payload?.version ?? 1) }], error: null };
-        },
-        delete() { return q; },
-        then(res) {
-          if (q._patch) {
-            cloud.row = { ...cloud.row, ...q._patch };
-            return res({ data: [{ version: q._patch.version }], error: null });
-          }
-          if (table === 'family_shares') return res({ data: cloud.shares, error: null });
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
+  // The cloud book mirrors local state, so adopting it is a no-op — the suite
+  // is about spaces, not about sync. Shares are served as given (old-style
+  // {owner_id, snapshot} rows are accepted for brevity).
+  const cloud = new FakeCloud();
+  cloud.setBook('me1', state, 'me@x.com');
+  const serve = (rows) => cloud.servedShares.set('me@x.com', rows.map((r) => (r.snapshot
+    ? { _spaceId: r.space_id || 'default', ...r.snapshot, _ownerId: r.owner_id } : r)));
+  serve(shares);
+  cloud.serve = serve;
+  // Writes this user made into someone else's book.
+  Object.defineProperty(cloud, 'contributions', { get: () => cloud.calls
+    .filter((c) => c.fn === 'pocket_apply_changes' && c.args.book !== 'me1') });
+  const sb = cloud.client({ id: 'me1', email: 'me@x.com' });
 
   const dom = new JSDOM(
     `<!doctype html><html><head></head><body>
@@ -172,6 +143,9 @@ const signIn = async (w) => {
   w.__cloud.authCb?.('SIGNED_IN', { user: { id: 'me1', email: 'me@x.com' } });
   await wait(250);
 };
+
+/** A day in the current month, so "this period's spend" includes it. */
+const THIS_MONTH = (d) => `${new Date().toISOString().slice(0, 7)}-${String(d).padStart(2, '0')}`;
 
 console.log('\nspaces suite');
 
@@ -284,7 +258,7 @@ console.log('\nspaces suite');
      persisted.user.activeSpace === undefined && persisted.activeSpace === undefined);
 
   // ═══ SP8 — revocation ════════════════════════════════════════════════════
-  w.__cloud.shares = [];                    // the owner un-shared everything
+  w.__cloud.serve([]);                      // the owner un-shared everything
   await app.sync.pullFamilyShares();        // emits state:changed → #reconcileSpaces
   await wait(80);
   ok('SP8 a revoked space drops the user back home', w.__app.spaces.isHome,
@@ -518,9 +492,9 @@ console.log('\nspaces suite');
   ownerState.categories = [{ id: 'cFood', name: 'Food', type: 'expense', parentId: null, color: '#f97316', icon: 'tag' }];
   ownerState.transactions = [
     { id: 'tA', accountId: 'shared1', categoryId: 'cFood', amount: 3000, currency: 'USD',
-      type: 'expense', date: '2026-08-05', paymentType: 'card', recordState: 'cleared', tags: [] },
+      type: 'expense', date: THIS_MONTH(5), paymentType: 'card', recordState: 'cleared', tags: [] },
     { id: 'tB', accountId: 'private1', categoryId: 'cFood', amount: 4500, currency: 'USD',
-      type: 'expense', date: '2026-08-06', paymentType: 'card', recordState: 'cleared', tags: [] },
+      type: 'expense', date: THIS_MONTH(6), paymentType: 'card', recordState: 'cleared', tags: [] },
   ];
   ownerState.budgets = [{ id: 'bFood', categoryId: 'cFood', amount: 100000, currency: 'USD',
                           period: 'gregorian', rollover: false }];
@@ -555,11 +529,9 @@ console.log('\nspaces suite');
   await app.sync.push();
   await wait(120);
 
-  const forMember = (email) => w.__cloud.pushedShares
-    .filter((r) => r.member_email === email).at(-1)?.snapshot;
+  const forMember = (email) => w.__cloud.sharesFor(email).find((x) => x._ownerId === 'me1');
   const pushed = forMember('zahra@x.com');
-  ok('SP15 a snapshot was published for the member', !!pushed,
-     JSON.stringify(w.__cloud.pushedShares.length));
+  ok('SP15 the member is served a share', !!pushed);
   ok('SP15 only the shared account travels',
      pushed.accounts.length === 1 && pushed.accounts[0].id === 'shared1',
      JSON.stringify(pushed.accounts.map((a) => a.id)));
@@ -593,7 +565,7 @@ console.log('\nspaces suite');
   // as a full revocation would silently delete their space.
   const budgetOnly = forMember('husain@x.com');
   ok('SP15 a budget-only member still gets a space', !!budgetOnly,
-     JSON.stringify(w.__cloud.pushedShares.map((r) => r.member_email)));
+     JSON.stringify(budgetOnly));
   ok('SP15 …with no accounts', (budgetOnly?.accounts || []).length === 0,
      JSON.stringify(budgetOnly?.accounts));
   ok('SP15 …but the budget they were granted',
@@ -742,7 +714,7 @@ console.log('\nspaces suite');
   // And the name must travel to the member, replacing the owner's own name.
   await app.sync.push();
   await wait(120);
-  const forZahra = w.__cloud.pushedShares.filter((r) => r.member_email === 'z@x.com').at(-1)?.snapshot;
+  const forZahra = w.__cloud.sharesFor('z@x.com').find((x) => x._ownerId === 'me1');
   ok('SP18 the chosen name is what the member receives',
      forZahra?.sharedBy === 'Household', String(forZahra?.sharedBy));
   ok('SP18 …with the owner\'s real name still available alongside it',
@@ -751,7 +723,7 @@ console.log('\nspaces suite');
   app.familyShares.setSpaceName('m1', '');
   await app.sync.push();
   await wait(120);
-  const cleared = w.__cloud.pushedShares.filter((r) => r.member_email === 'z@x.com').at(-1)?.snapshot;
+  const cleared = w.__cloud.sharesFor('z@x.com').find((x) => x._ownerId === 'me1');
   ok('SP18 clearing it falls back to the owner\'s name',
      cleared?.sharedBy === 'Abbas', String(cleared?.sharedBy));
   w.close();
