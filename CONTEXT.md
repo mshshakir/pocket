@@ -56,6 +56,14 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · 0018 paid plans, phase 1 (no behaviour change):** tables `plans`, `billing_settings`,
+  `subscriptions`, `subscription_events` (trigger-logged), `ai_credit_ledger`; `pocket_entitlements()`
+  (signed-in app) / `pocket_entitlements_for(uuid)` (service_role, bot); admin functions
+  `pocket_admin_set_plan/end_plan/grant_ai/overview` (SQL Editor only). Rules: no row = Free; ended <
+  `grace_days` (30) = read-only; Family = owner + first 4 members. Four family accounts are Family for
+  life (comp). Guide: `docs/BILLING-ADMIN.md`. App side: `domain/billing/Entitlements.js` (not wired yet).
+  Decided: no own-Gemini-key option (phase 4); paid trial ₹50 / 14 days Family. Next: phase 2 enforcement.
+
 - **2026-11-14 · 0017:** anon can no longer EXECUTE any `pocket_*` function (signed-in users and
   service_role keep it). Pre-relational tables moved to schema `archive` and out of realtime;
   nothing deleted. 52 stray `*.js.tmp` backups removed from `legacy-web/src`. Settings' self-host

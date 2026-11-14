@@ -1,0 +1,85 @@
+# Managing plans and subscriptions
+
+Everything below is done in the Supabase dashboard for project `nvsfxdnnakzfzsrsfftp`.
+No code changes or deploys are needed.
+
+- **Table Editor**: change prices, seats and settings.
+- **SQL Editor**: change one person's plan or AI credits, and see everyone at a glance.
+
+Money is stored in **paise** (₹1 = 100), so ₹169 is `16900`.
+
+## Prices and what each plan includes: table `plans`
+
+Table Editor → `plans`. One row per plan: `free`, `sync`, `family`.
+
+| Column | Meaning |
+|---|---|
+| `name` | What people see ("Family"). |
+| `seats` | People covered, the owner included. Family = 5. |
+| `sync`, `telegram`, `sharing` | Ticked = included in the plan. |
+| `monthly_paise`, `yearly_paise` | Prices. ₹199 → `19900`, ₹1,499 → `149900`. |
+| `trial_paise`, `trial_days` | Paid trial. Family: ₹50 (`5000`) for `14` days. Empty = no trial. |
+| `active` | Untick to stop offering the plan to new buyers. Existing subscribers keep it. |
+| `sort` | Order on the pricing screen. |
+
+A new price applies to new purchases and renewals. To add a plan, add a row: the `code`
+must be lowercase letters, digits or `_`, and can't be changed later.
+
+## General settings: table `billing_settings` (one row)
+
+| Column | Meaning |
+|---|---|
+| `grace_days` | After a plan ends, how many days the cloud copy stays readable (read-only) before the person drops to Free. Default `30`. Nothing is ever deleted. |
+| `ai_credit_paise` | Price of one AI use (receipt scan or voice entry). `10` = ₹0.10. |
+| `ai_pack_paise` | Size of an AI pack. `10000` = ₹100 = 1,000 uses. |
+
+## One person's plan: SQL Editor
+
+Use these functions rather than editing the `subscriptions` table by hand. They fill in
+the end date for you. Every change, including any hand edit, is recorded in
+`subscription_events`.
+
+```sql
+-- Everyone: plan, state, end date, people in their family, AI credits
+select * from pocket_admin_overview();
+
+-- Give a plan. Term is 'month', 'year', 'trial' or 'lifetime'.
+select pocket_admin_set_plan('someone@gmail.com', 'family', 'year');
+select pocket_admin_set_plan('someone@gmail.com', 'sync', 'month');
+select pocket_admin_set_plan('someone@gmail.com', 'family', 'trial');            -- 14 days, marks the trial as used
+select pocket_admin_set_plan('someone@gmail.com', 'family', 'lifetime', null, 'Family, free for life', 'comp');
+
+-- A specific end date
+select pocket_admin_set_plan('someone@gmail.com', 'family', 'year', '2027-12-31', 'Paid by bank transfer');
+
+-- End a plan now (they get the grace period, then Free)
+select pocket_admin_end_plan('someone@gmail.com', 'Asked to cancel');
+
+-- AI credits: add, or remove with a negative number. 1 credit = 1 use.
+select pocket_admin_grant_ai('someone@gmail.com', 1000, 'Bought one pack, paid cash');
+
+-- One person's history
+select at, kind, plan, term, ends_at, note, actor
+from subscription_events
+where user_id = pocket_admin_user('someone@gmail.com')
+order by at desc;
+```
+
+## The rules
+
+- **No plan:** Free. Everything works on the device, including every export.
+- **Active:** the plan's features work fully.
+- **Ended within `grace_days`:** the features can be seen but nothing can be changed
+  (read-only).
+- **Ended longer ago:** Free. Their data is kept, never deleted.
+- **Family seats:** a Family plan covers its owner plus the first 4 family members they
+  added. A 5th member is not covered until someone is removed.
+- **Trials:** each person can have one trial. `pocket_admin_set_plan(..., 'trial')`
+  records it.
+- **Who can change what:** users can see their own plan, history and credits, but cannot
+  change them. Only you (SQL / Table Editor) and, later, the payment webhook can.
+
+## Free for life (set 2026-11-14)
+
+mshshakir@gmail.com, hdshakir@gmail.com, sakina0019@gmail.com and tshshakir@gmail.com have
+Family, lifetime (`source = 'comp'`).
