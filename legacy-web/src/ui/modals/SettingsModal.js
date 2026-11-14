@@ -27,9 +27,12 @@ export class SettingsModal {
 
     return `
       <div class="p-5">
-        <div class="flex items-center justify-between mb-4">
+        <!-- Pinned while the long panel scrolls, so Close is always in reach on a phone. -->
+        <div class="sheet-header flex items-center justify-between">
           <h3 class="text-lg font-semibold">Settings</h3>
-          <button class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+          <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close settings" title="Close">
+            <i data-lucide="x"></i>
+          </button>
         </div>
 
         <!-- Home currency -->
@@ -347,6 +350,13 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         </div>
 
         <div class="text-xs text-zinc-500 text-center mt-4">Pocket · v2.0</div>
+
+        <!-- Phones: a Done button that stays at the bottom of the sheet. -->
+        <div class="form-footer phone-only mt-4">
+          <button class="btn btn-primary w-full justify-center py-3" onclick="window.__app.closeModal()">
+            <i data-lucide="check"></i> Done
+          </button>
+        </div>
       </div>`;
   }
 

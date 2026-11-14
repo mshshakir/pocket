@@ -232,7 +232,7 @@ export class TransactionRowRenderer {
         <div class="desk-only">
           <div class="font-medium truncate flex items-center gap-1.5">${title}${badges}</div>
           <div class="text-xs text-zinc-500 truncate">
-            ${subline}${hijriDate ? ` · ${hijriDate.day} ${hijriShort[hijriDate.month]}` : ''}${t.addedBy ? ` · by ${this.#esc(t.addedBy)}` : ''}
+            ${subline}${t.addedBy ? ` · by ${this.#esc(t.addedBy)}` : ''}
           </div>
         </div>
         <div class="phone-only">
