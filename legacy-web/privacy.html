@@ -42,7 +42,7 @@
   <div class="mb-8">
     <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium"><i data-lucide="shield-check" style="width:14px;height:14px"></i> Privacy-first</span>
     <h1 class="mt-4 text-3xl md:text-4xl font-extrabold tracking-tight">Privacy Policy</h1>
-    <p class="mt-2 text-sm text-zinc-500">Last updated: June 2026</p>
+    <p class="mt-2 text-sm text-zinc-500">Last updated: November 2026</p>
   </div>
 
   <!-- TL;DR -->
@@ -51,7 +51,7 @@
     <ul class="text-sm text-zinc-600 space-y-1.5 list-disc pl-5">
       <li>Pocket keeps your data <strong>in your browser</strong> and, if you sign in, in <strong>your own cloud account</strong>.</li>
       <li>We <strong>don't sell your data, show ads, or track you</strong> across the web.</li>
-      <li>Receipt images and your AI key are sent <strong>only to Google's API, only when you scan</strong> — never to us.</li>
+      <li>When you scan a receipt or speak an entry, the image or recording passes <strong>through Pocket's server to Google's AI, only to read it</strong>, and isn't stored.</li>
       <li>You can <strong>export or delete everything</strong> at any time.</li>
     </ul>
   </div>
@@ -65,7 +65,7 @@
       <li><strong>Financial data you enter:</strong> accounts, balances, transactions, transfers, categories, budgets, debts, recurring and regular items, tags, notes and payees.</li>
       <li><strong>Account information:</strong> if you sign in, your email address and a user identifier provided by the sign-in provider.</li>
       <li><strong>Preferences:</strong> home/default currency, date format, theme, calendar settings and similar app settings.</li>
-      <li><strong>Optional API key:</strong> a Google AI (Gemini) key you choose to add for receipt scanning.</li>
+      <li><strong>Plan and usage records:</strong> if you sign in, your plan, its dates, and a record of each AI scan or voice entry (when, by whom and which book it was for, and the credit used), so your plan and AI allowance work.</li>
     </ul>
 
     <h2 id="storage">2. Where your data is stored</h2>
@@ -77,14 +77,14 @@
     <h2 id="auth">3. Sign-in &amp; authentication</h2>
     <p>Signing in is optional and is used to sync your data across devices. Authentication is handled by Supabase Auth using Google sign-in. We receive your email address and an account identifier so we can store and retrieve <em>your</em> data. We do not receive your Google password. Your use of Google sign-in is also subject to Google's own privacy policy.</p>
 
-    <h2 id="ai">4. AI receipt scanning</h2>
-    <p>Receipt scanning is an optional feature. When you scan a receipt:</p>
+    <h2 id="ai">4. AI receipt scanning &amp; voice entry</h2>
+    <p>Receipt scanning and voice entry are optional features that need you to be signed in. When you use them:</p>
     <ul>
-      <li>The receipt image is sent directly from your browser to Google's Generative Language API (<code>generativelanguage.googleapis.com</code>) using the API key you provide.</li>
-      <li>Your API key is stored only in your browser and is sent only to Google. It is never transmitted to Pocket's developers.</li>
-      <li>The image is processed to extract amounts, merchants and line items. Google's handling of that request is governed by Google's API terms and privacy policy.</li>
+      <li>The receipt image or voice recording, with your category names, is sent over an encrypted connection to Pocket's server, which forwards it to Google's Generative Language API (Gemini) using Pocket's own API key. You don't need a key of your own.</li>
+      <li>Pocket's server doesn't store the image or recording. It keeps only a usage record (when, by whom, for which book, and the credit used) so your AI allowance can be counted.</li>
+      <li>The image or recording is processed to extract amounts, merchants and line items. Google's handling of that request is governed by Google's API terms and privacy policy.</li>
     </ul>
-    <p>If you never add a key or never scan a receipt, no images or keys are sent anywhere.</p>
+    <p>If you never scan a receipt or speak an entry, no images or recordings are sent anywhere.</p>
 
     <h2 id="rates">5. Exchange rates</h2>
     <p>To convert between currencies, Pocket fetches public, aggregate exchange-rate data from a third-party rates provider (open.er-api.com). These requests contain no personal or financial information — only a request for the latest USD-based rate table, which is cached on your device.</p>
