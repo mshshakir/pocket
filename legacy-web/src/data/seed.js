@@ -1,12 +1,16 @@
 /**
  * SeedFactory — generates fresh sample data for new users.
  *
+ * Sample accounts, transactions and budgets are flagged (BookCleaner), so a new
+ * user can remove them without touching anything they entered themselves.
+ *
  * Extracted from the monolithic seed() function into a proper class
  * so it can be injected, tested, and replaced independently.
  */
 import { DEFAULT_CATEGORIES } from './constants.js';
 import { IdGenerator } from '../domain/services/IdGenerator.js';
 import { DateService } from '../domain/services/DateService.js';
+import { BookCleaner } from '../domain/services/BookCleaner.js';
 
 export class SeedFactory {
   /**
@@ -106,6 +110,10 @@ export class SeedFactory {
       { id: uid('bg'), categoryId: catBy('Entertainment'), amount:  10000, currency: 'USD', period: 'gregorian', rollover: false },
     ];
 
+    // Accounts, transactions and budgets are demo data the user can clear on
+    // first sign-in (or later in Settings); categories are real defaults.
+    const sample = (list) => list.map((item) => BookCleaner.markSample(item));
+
     return {
       user: {
         homeCurrency:    'USD',
@@ -126,10 +134,10 @@ export class SeedFactory {
         collapsedAccountGroups:   [],
         collapsedCategories:      [],
       },
-      accounts,
+      accounts:          sample(accounts),
       categories:        cats,
-      transactions,
-      budgets,
+      transactions:      sample(transactions),
+      budgets:           sample(budgets),
       merchantCategories: {},
       debts:              [],
       regularItems:       [],

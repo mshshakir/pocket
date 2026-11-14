@@ -13,6 +13,7 @@ import { Router }     from './core/Router.js';
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 import { SeedFactory } from './data/seed.js';
+import { BookCleaner } from './domain/services/BookCleaner.js';
 import { StateMigrator } from './data/StateMigrator.js';
 import {
   MEMBER_COLORS, ACCOUNT_TYPE_ICONS,
@@ -3143,16 +3144,45 @@ export class Application {
   }
 
   /**
-   * Step 1 → Step 2: save selected currency then advance to the
-   * Hijri calibration step by calling advanceToStep2() on the modal
-   * and refreshing in-place (no close/reopen flash).
+   * Currency step done: save the selected currency, then move to the next
+   * onboarding step in place (no close/reopen flash).
    */
   currencySetupNext() {
     const sel = document.getElementById('setupCurrency');
     if (sel) this.#store.getState().user.homeCurrency = sel.value;
     this.#store.persist();
-    this.#currencySetupModal.advanceToStep2();
+    this.#currencySetupModal.advance();
     this.#modal.refresh();
+  }
+
+  /**
+   * Sample-data step: keep the demo records, or remove them so the new user
+   * starts with an empty book. Removal is saved like any edit, so the cloud
+   * copy loses the sample rows too.
+   * @param {boolean} keep
+   */
+  chooseSampleData(keep) {
+    if (!keep) this.#clearSampleData();
+    this.#currencySetupModal.advance();
+    this.#modal.refresh();
+  }
+
+  /** Settings → Data: remove whatever sample data is left. */
+  removeSampleData() {
+    if (!BookCleaner.hasSample(this.#store.getState())) {
+      this.#toast.show('No sample data left');
+      return;
+    }
+    if (!confirm('Remove the sample accounts, transactions and budgets? Your own entries are kept.')) return;
+    this.#clearSampleData();
+    this.#toast.show('Sample data removed');
+    this.#render();
+  }
+
+  #clearSampleData() {
+    BookCleaner.removeSample(this.#store.getState());
+    this.#accounts.recompute();
+    this.#store.persist();
   }
 
   /**
@@ -3573,16 +3603,27 @@ export class Application {
     this.#render();
   }
 
+  /**
+   * Delete every entry in the user's book — transactions, accounts, budgets,
+   * debts, regular items and account groups — here and in the cloud. Categories,
+   * settings and family sharing are kept. Asks for the word DELETE first,
+   * because this cannot be undone.
+   */
   resetData() {
-    if (!confirm('Reset ALL data? This cannot be undone.')) return;
-    // Migrate the seed too, so a reset lands on the current schema rather than
-    // whatever shape SeedFactory happens to emit.
-    this.#store.replaceState(SeedFactory.create(), (s) => StateMigrator.migrate(s));
-    this.#ensureUserDefaults();
+    const typed = prompt(
+      'This deletes ALL your transactions, accounts, budgets, debts and regular items, ' +
+      'on every device. Categories and settings are kept. It cannot be undone — ' +
+      'consider exporting a backup first.\n\nType DELETE to confirm.');
+    if (typed == null) return;
+    if (typed.trim().toUpperCase() !== 'DELETE') {
+      this.#toast.show('Reset cancelled — you didn\'t type DELETE');
+      return;
+    }
+    const removed = BookCleaner.wipe(this.#store.getState());
     this.#accounts.recompute();
     this.#store.persist();
     this.#render();
-    this.#toast.show('Data reset');
+    this.#toast.show(`Data reset — ${removed} record${removed === 1 ? '' : 's'} deleted`);
   }
 
   // ──────────────────────────────────────────────────────────────────────────

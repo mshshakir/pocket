@@ -942,6 +942,89 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/BookCleaner.js
+  var BookCleaner = class _BookCleaner {
+    static #FLAG = "sample";
+    /** Lists that SeedFactory fills with sample records. */
+    static #SAMPLE_LISTS = Object.freeze(["transactions", "budgets", "accounts"]);
+    /** Lists that hold the user's entries; a reset empties all of them. */
+    static #ENTRY_LISTS = Object.freeze([
+      "transactions",
+      "accounts",
+      "budgets",
+      "debts",
+      "regularItems",
+      "accountGroups"
+    ]);
+    /**
+     * Mark a record as sample data (used by SeedFactory).
+     * @template T
+     * @param {T} record
+     * @returns {T}
+     */
+    static markSample(record) {
+      return { ...record, [_BookCleaner.#FLAG]: true };
+    }
+    /** @param {object} record */
+    static isSample(record) {
+      return record?.[_BookCleaner.#FLAG] === true;
+    }
+    /** Whether the book still holds any sample record. */
+    static hasSample(state) {
+      return _BookCleaner.#SAMPLE_LISTS.some((list) => _BookCleaner.#list(state, list).some(_BookCleaner.isSample));
+    }
+    /**
+     * Remove every sample transaction and budget, and each sample account that
+     * holds no entry of the user's own (an account the user has started using
+     * is kept, so none of their transactions is orphaned).
+     * @returns {{transactions:number, budgets:number, accounts:number}} counts removed
+     */
+    static removeSample(state) {
+      const removed = {
+        transactions: _BookCleaner.#drop(state, "transactions", _BookCleaner.isSample),
+        budgets: _BookCleaner.#drop(state, "budgets", _BookCleaner.isSample),
+        accounts: 0
+      };
+      const inUse = new Set(_BookCleaner.#list(state, "transactions").map((t) => t.accountId));
+      removed.accounts = _BookCleaner.#drop(state, "accounts", (a) => _BookCleaner.isSample(a) && !inUse.has(a.id));
+      _BookCleaner.#clearDanglingDefaults(state);
+      return removed;
+    }
+    /**
+     * Delete every entry: transactions, accounts, budgets, debts, regular items
+     * and account groups, plus the payee → category suggestions learned from
+     * them. Categories, settings and family sharing are kept.
+     * @returns {number} how many records were removed
+     */
+    static wipe(state) {
+      let removed = 0;
+      for (const list of _BookCleaner.#ENTRY_LISTS) {
+        removed += _BookCleaner.#list(state, list).length;
+        state[list] = [];
+      }
+      state.merchantCategories = {};
+      _BookCleaner.#clearDanglingDefaults(state);
+      return removed;
+    }
+    static #list(state, key) {
+      return Array.isArray(state?.[key]) ? state[key] : [];
+    }
+    /** Remove the items matching `predicate`; returns how many were removed. */
+    static #drop(state, key, predicate) {
+      const before = _BookCleaner.#list(state, key);
+      const kept = before.filter((item) => !predicate(item));
+      if (kept.length !== before.length) state[key] = kept;
+      return before.length - kept.length;
+    }
+    /** The default account must not point at an account that no longer exists. */
+    static #clearDanglingDefaults(state) {
+      const user = state?.user;
+      if (!user?.defaultAccountId) return;
+      const exists = _BookCleaner.#list(state, "accounts").some((a) => a.id === user.defaultAccountId);
+      if (!exists) user.defaultAccountId = "";
+    }
+  };
+
   // src/data/seed.js
   var SeedFactory = class {
     /**
@@ -1033,6 +1116,7 @@ var _PocketApp = (() => {
         { id: uid("bg"), categoryId: catBy("Shopping"), amount: 25e3, currency: "USD", period: "gregorian", rollover: false },
         { id: uid("bg"), categoryId: catBy("Entertainment"), amount: 1e4, currency: "USD", period: "gregorian", rollover: false }
       ];
+      const sample = (list) => list.map((item) => BookCleaner.markSample(item));
       return {
         user: {
           homeCurrency: "USD",
@@ -1053,10 +1137,10 @@ var _PocketApp = (() => {
           collapsedAccountGroups: [],
           collapsedCategories: []
         },
-        accounts,
+        accounts: sample(accounts),
         categories: cats,
-        transactions,
-        budgets,
+        transactions: sample(transactions),
+        budgets: sample(budgets),
         merchantCategories: {},
         debts: [],
         regularItems: [],
@@ -3565,11 +3649,228 @@ RULES:
     }
   };
 
+  // src/core/BookDiff.js
+  var BookDiff = class _BookDiff {
+    /** Lists of items with an `id`, in the order the server applies them. */
+    static LISTS = Object.freeze([
+      "accountGroups",
+      "accounts",
+      "categories",
+      "budgets",
+      "debts",
+      "regularItems",
+      "family",
+      "spaces",
+      "transactions"
+    ]);
+    /** Top-level keys the server stores in their own tables or columns. */
+    static #KNOWN_TOP = /* @__PURE__ */ new Set([
+      ..._BookDiff.LISTS,
+      "user",
+      "fxRates",
+      "merchantCategories",
+      "fxRatesUpdatedAt",
+      "_transferDirBackfilled"
+    ]);
+    /**
+     * Changes that turn `base` into `cur`.
+     * @param {object|null} base  last synced snapshot (null → everything is new)
+     * @param {object} cur        current state (transient keys already stripped)
+     * @returns {object|null}     a change set, or null when nothing changed
+     */
+    static changes(base, cur) {
+      const b = base || {};
+      const out = { put: {}, remove: {} };
+      let any = false;
+      for (const list of _BookDiff.LISTS) {
+        const before = new Map((Array.isArray(b[list]) ? b[list] : []).filter(_BookDiff.#hasId).map((it) => [it.id, _BookDiff.#key(it)]));
+        const nowItems = (Array.isArray(cur[list]) ? cur[list] : []).filter(_BookDiff.#hasId);
+        const seen = /* @__PURE__ */ new Set();
+        const puts = [];
+        nowItems.forEach((it, i) => {
+          seen.add(it.id);
+          if (before.get(it.id) !== _BookDiff.#key(it)) puts.push({ ...it, _pos: i + 1 });
+        });
+        const removes = [...before.keys()].filter((id) => !seen.has(id));
+        if (puts.length) {
+          out.put[list] = puts;
+          any = true;
+        }
+        if (removes.length) {
+          out.remove[list] = removes;
+          any = true;
+        }
+      }
+      const settingsChanged = ["user", "fxRatesUpdatedAt", "_transferDirBackfilled"].some((k) => _BookDiff.#key(b[k]) !== _BookDiff.#key(cur[k]));
+      if (settingsChanged) {
+        out.user = cur.user || {};
+        out.fxRatesUpdatedAt = cur.fxRatesUpdatedAt ?? null;
+        out._transferDirBackfilled = cur._transferDirBackfilled ?? null;
+        any = true;
+      }
+      for (const map of ["fxRates", "merchantCategories"]) {
+        if (_BookDiff.#key(b[map]) !== _BookDiff.#key(cur[map])) {
+          out[map] = cur[map] || {};
+          any = true;
+        }
+      }
+      const extraBefore = _BookDiff.#extra(b);
+      const extraNow = _BookDiff.#extra(cur);
+      if (_BookDiff.#key(extraBefore) !== _BookDiff.#key(extraNow)) {
+        out.bookExtra = extraNow;
+        any = true;
+      }
+      if (!Object.keys(out.put).length) delete out.put;
+      if (!Object.keys(out.remove).length) delete out.remove;
+      return any ? out : null;
+    }
+    /**
+     * Replay a change set onto a state (mutates and returns it). Used to carry
+     * this device's unsynced edits over onto a newer cloud copy.
+     * @param {object} state
+     * @param {object|null} changes
+     * @returns {object}
+     */
+    static apply(state, changes) {
+      if (!changes) return state;
+      for (const list of _BookDiff.LISTS) {
+        if (!Array.isArray(state[list])) state[list] = [];
+        for (const raw of changes.put?.[list] || []) {
+          const { _pos, ...item } = raw;
+          const at = state[list].findIndex((x) => x?.id === item.id);
+          if (at >= 0) state[list][at] = item;
+          else state[list].push(item);
+        }
+        const gone = new Set(changes.remove?.[list] || []);
+        if (gone.size) state[list] = state[list].filter((x) => !gone.has(x?.id));
+      }
+      if ("user" in changes) {
+        state.user = changes.user;
+        state.fxRatesUpdatedAt = changes.fxRatesUpdatedAt ?? void 0;
+        state._transferDirBackfilled = changes._transferDirBackfilled ?? void 0;
+      }
+      if ("fxRates" in changes) state.fxRates = changes.fxRates;
+      if ("merchantCategories" in changes) state.merchantCategories = changes.merchantCategories;
+      if ("bookExtra" in changes) {
+        for (const k of Object.keys(_BookDiff.#extra(state))) delete state[k];
+        Object.assign(state, changes.bookExtra || {});
+      }
+      return state;
+    }
+    /**
+     * A deep copy of book data (plain JSON), safe to mutate. JSON rather than
+     * structuredClone so it also works on older browsers.
+     */
+    static clone(v) {
+      return v == null ? v : JSON.parse(JSON.stringify(v));
+    }
+    /** Row keys (table + id) a change set writes, for spotting our own echoes. */
+    static touchedKeys(changes) {
+      const keys = /* @__PURE__ */ new Set();
+      if (!changes) return keys;
+      for (const list of _BookDiff.LISTS) {
+        for (const it of changes.put?.[list] || []) keys.add(`${list}:${it.id}`);
+        for (const id of changes.remove?.[list] || []) keys.add(`${list}:${id}`);
+      }
+      return keys;
+    }
+    /** Top-level data with no table of its own (e.g. legacy `regularLogs`). */
+    static #extra(state) {
+      const out = {};
+      for (const [k, v] of Object.entries(state || {})) {
+        if (!_BookDiff.#KNOWN_TOP.has(k) && !k.startsWith("_") && v !== void 0) out[k] = v;
+      }
+      return out;
+    }
+    static #hasId(it) {
+      return it && typeof it === "object" && it.id != null;
+    }
+    /** Order-independent fingerprint, so a re-ordered key list isn't a change. */
+    static #key(v) {
+      return JSON.stringify(_BookDiff.#sorted(v));
+    }
+    static #sorted(v) {
+      if (Array.isArray(v)) return v.map((x) => _BookDiff.#sorted(x));
+      if (v && typeof v === "object") {
+        const o = {};
+        for (const k of Object.keys(v).sort()) if (v[k] !== void 0) o[k] = _BookDiff.#sorted(v[k]);
+        return o;
+      }
+      return v ?? null;
+    }
+  };
+
+  // src/core/SyncBaseline.js
+  var SyncBaseline = class _SyncBaseline {
+    static #KEY = "pocket.v2.baseline";
+    #userId = null;
+    #state = null;
+    /** Load the stored copy for this user (null when none). */
+    load(userId) {
+      this.#userId = userId;
+      this.#state = null;
+      try {
+        const raw = localStorage.getItem(_SyncBaseline.#KEY);
+        const rec = raw ? JSON.parse(raw) : null;
+        if (rec?.userId === userId) this.#state = rec.state ?? null;
+      } catch (_) {
+      }
+      return this.#state;
+    }
+    /** @returns {object|null} the copy the cloud last confirmed */
+    get state() {
+      return this.#state;
+    }
+    /**
+     * Record what the cloud now holds.
+     * @param {object} state  already stripped of transient keys
+     */
+    set(state) {
+      this.#state = BookDiff.clone(state);
+      try {
+        localStorage.setItem(_SyncBaseline.#KEY, JSON.stringify({ userId: this.#userId, state: this.#state }));
+      } catch (_) {
+      }
+    }
+    /** Forget it (sign-out). */
+    clear() {
+      this.#state = null;
+      this.#userId = null;
+      try {
+        localStorage.removeItem(_SyncBaseline.#KEY);
+      } catch (_) {
+      }
+    }
+  };
+
   // src/domain/services/SyncService.js
   var PUSH_DEBOUNCE_MS = 1e3;
   var MAX_PUSH_WAIT_MS = 3e3;
   var RETRY_BASE_MS = 4e3;
   var MAX_PUSH_RETRIES = 4;
+  var ECHO_WINDOW_MS = 8e3;
+  var LIVE_DEBOUNCE_MS = 400;
+  var BOOK_TABLES = Object.freeze([
+    ["transactions", "transactions", "id"],
+    ["transaction_splits", "transactions", "transaction_id"],
+    ["accounts", "accounts", "id"],
+    ["account_groups", "accountGroups", "id"],
+    ["categories", "categories", "id"],
+    ["budgets", "budgets", "id"],
+    ["budget_categories", "budgets", "budget_id"],
+    ["debts", "debts", "id"],
+    ["regular_items", "regularItems", "id"],
+    ["family_members", "family", "id"],
+    ["member_account_permissions", "family", "member_id"],
+    ["member_budget_permissions", "family", "member_id"],
+    ["spaces", "spaces", "id"],
+    ["space_accounts", "spaces", "space_id"],
+    ["space_budgets", "spaces", "space_id"],
+    ["space_members", "spaces", "space_id"],
+    ["book_settings", "settings", null],
+    ["book_fx_rates", "settings", null],
+    ["merchant_categories", "settings", null]
+  ]);
   var SyncService = class {
     /** @type {Store} */
     #store;
@@ -3581,26 +3882,18 @@ RULES:
     #sb = null;
     #user = null;
     /**
-     * Version of the cloud row this device last saw.
-     *   null → UNKNOWN: no pull has succeeded this session.
-     *   0    → confirmed no row exists yet (genuine first sign-in).
-     *   >0   → the row's version.
-     * The null/0 distinction is load-bearing: #commitState treats 0 as "insert
-     * the first row" and upserts without a CAS guard, so conflating "we never
-     * managed to read the cloud" with "the cloud is empty" let a device that
-     * failed its pull overwrite the entire remote history — with seed data, if
-     * localStorage happened to be empty too.
+     * Whether the cloud copy has been read this session. Saving before that
+     * would compare against an unknown baseline, so pushes wait for it.
      */
-    #cloudVersion = null;
-    // The version THIS device last wrote. Realtime UPDATE events carrying this
-    // version are our own echo and are ignored, so a local push no longer triggers
-    // a redundant self-pull (replaceState + re-render + recurring re-scan).
-    #lastSelfVersion = 0;
+    #loaded = false;
     #saveTimer = null;
     #channel = null;
-    #sharesChannel = null;
-    #contribChannel = null;
+    #sharesChannels = [];
     #subscribed = false;
+    #liveTimer = null;
+    #sharesTimer = null;
+    /** Rows this device just wrote ("list:id" → expiry), to skip their echoes. */
+    #echo = /* @__PURE__ */ new Map();
     // Serialises push/pull so overlapping cloud operations can't interleave and
     // clobber each other (last-pull-wins races).
     #syncing = Promise.resolve();
@@ -3621,6 +3914,9 @@ RULES:
     /** Durable "there are uncommitted local edits" marker — survives a reload. */
     /** @type {SyncJournal} */
     #journal;
+    /** The copy of the book the cloud last confirmed — survives a reload. */
+    /** @type {SyncBaseline} */
+    #baseline;
     /** True only for a user-initiated sign-out (not a failed token refresh). */
     #explicitSignOut = false;
     constructor() {
@@ -3628,6 +3924,7 @@ RULES:
       this.#bus = EventBus.getInstance();
       this.#fx = new CurrencyService();
       this.#journal = new SyncJournal();
+      this.#baseline = new SyncBaseline();
     }
     // ── Init ─────────────────────────────────────────────────────────────
     /** @returns {boolean} true if Supabase is configured */
@@ -3655,14 +3952,13 @@ RULES:
       }
     }
     /**
-     * Flush any pending push the moment the page stops being visible.
+     * Flush any pending push the moment the page stops being visible, and catch
+     * up on shared books when it comes back.
      *
      * `visibilitychange → hidden` is the last event a mobile browser reliably
      * delivers: switching apps, locking the screen or changing tab all fire it,
      * and the OS may then discard the tab without ever running `unload` or
-     * `beforeunload`. `pagehide` covers the navigation/refresh case. Between them
-     * the 1s debounce can no longer swallow a save just because the user put the
-     * phone down.
+     * `beforeunload`. `pagehide` covers the navigation/refresh case.
      */
     #bindLifecycleFlush() {
       if (this.#lifecycleBound) return;
@@ -3676,6 +3972,7 @@ RULES:
       };
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") flush();
+        else if (this.#user) this.scheduleSharesRefresh(0);
       });
       window.addEventListener("pagehide", flush);
     }
@@ -3701,7 +3998,7 @@ RULES:
     }
     /** Remove all realtime channels so they don't leak across sessions/users. */
     #teardownChannels() {
-      for (const ch of [this.#channel, this.#sharesChannel, this.#contribChannel]) {
+      for (const ch of [this.#channel, ...this.#sharesChannels]) {
         if (ch) {
           try {
             this.#sb?.removeChannel(ch);
@@ -3709,7 +4006,8 @@ RULES:
           }
         }
       }
-      this.#channel = this.#sharesChannel = this.#contribChannel = null;
+      this.#channel = null;
+      this.#sharesChannels = [];
       this.#subscribed = false;
     }
     async restoreSession() {
@@ -3742,6 +4040,7 @@ RULES:
     async #adoptSession(user) {
       if (this.#user) return false;
       this.#user = user;
+      this.#baseline.load(user.id);
       this.#emitUser(user);
       this.#emitStatus("syncing");
       this.#bus.emit("auth:changed", { user });
@@ -3761,18 +4060,19 @@ RULES:
      *   true  — deliberate sign-out: reset to seed so the next user at this
      *           browser never sees the previous one's records.
      *   false — the session merely lapsed (failed token refresh, offline). Keep
-     *           every local record: the user didn't ask to discard anything, and
-     *           any un-pushed edit still lives only here.
+     *           every local record (and the baseline): any unsaved edit still
+     *           lives only here and is replayed after the next sign-in.
      */
     #resetToGuest(showSignIn, { wipeLocal = false } = {}) {
       this.#teardownChannels();
       this.#user = null;
-      this.#cloudVersion = null;
+      this.#loaded = false;
       this.#sharedData = [];
       this.#pendingRemovals.clear();
       this.#pendingAdditions.clear();
       if (wipeLocal) {
         this.#markClean();
+        this.#baseline.clear();
         this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
       } else {
         const state = this.#store.getState();
@@ -3794,21 +4094,13 @@ RULES:
     }
     /**
      * Resolve a share by its stable owner id.
-     *
-     * Prefer this over indexing into sharedData: the array is rebuilt on every
-     * pull, so a positional index captured when a sheet opened can point at a
-     * different owner by the time the user submits.
      * @param {string} ownerId
      * @returns {object|null}
      */
     shareByOwner(ownerId) {
       return this.#sharedData.find((s) => s._ownerId === ownerId) || null;
     }
-    /**
-     * Public entry point to re-pull family shares from the cloud and notify the
-     * UI.  The heavy lifting stays in the private #pullFamilyShares(); this
-     * wrapper exists because private fields are inaccessible from app.js (#3/#16).
-     */
+    /** Re-read the books shared with this user and notify the UI. */
     async pullFamilyShares() {
       await this.#pullFamilyShares();
       this.#bus.emit("state:changed", this.#store.getState());
@@ -3818,7 +4110,7 @@ RULES:
     schedulePush() {
       if (!this.#sb || !this.#user) return;
       this.#dirty = true;
-      this.#journal.mark(this.#user.id, this.#cloudVersion);
+      this.#journal.mark(this.#user.id, null);
       const now = Date.now();
       if (!this.#dirtySince) this.#dirtySince = now;
       const wait = Math.max(0, Math.min(
@@ -3835,13 +4127,7 @@ RULES:
       this.#pushRetries = 0;
       this.#journal.clear();
     }
-    /**
-     * Re-arm a failed push with exponential backoff.
-     *
-     * Previously a failed push was simply dropped: one flaky request and the edit
-     * stayed local forever with no further attempt, which is how a transient
-     * mobile-network blip turned into permanent divergence.
-     */
+    /** Re-arm a failed push with exponential backoff. */
     #retryPushLater() {
       if (this.#pushRetries >= MAX_PUSH_RETRIES) return;
       const delay = RETRY_BASE_MS * 2 ** this.#pushRetries;
@@ -3856,64 +4142,83 @@ RULES:
       return this.#syncing;
     }
     /**
-     * The SINGLE choke point for writing local state to the cloud. Performs an
-     * ATOMIC compare-and-swap: the write only succeeds when the row's version
-     * still equals the one we last saw. If another device advanced it, zero rows
-     * come back and this returns false so the caller can pull+merge instead of
-     * blindly clobbering newer data. Every cloud write — the normal push AND the
-     * family-contribution writeback — must go through here; a blind upsert
-     * anywhere else reintroduces the lost-update race.
-     * @param {object} state  the state snapshot to persist
-     * @returns {Promise<boolean>} true on success, false if a newer version won
+     * What the cloud should hold for the current state: persisted keys only.
+     * (`_transferDirBackfilled` is a real book flag despite its underscore.)
      */
-    async #commitState(rawState) {
-      const state = Repository.stripTransient(rawState);
-      const expected = this.#cloudVersion;
-      if (expected === null) {
-        throw new Error("Cloud state not loaded yet \u2014 skipping upload to avoid overwriting it");
+    #snapshot(state = this.#store.getState()) {
+      const snap = BookDiff.clone(Repository.stripTransient(state));
+      if (state._transferDirBackfilled !== void 0) snap._transferDirBackfilled = state._transferDirBackfilled;
+      this.#stampSharedSpend(snap);
+      return snap;
+    }
+    /**
+     * A member granted a budget sees its spend, but only receives the
+     * transactions of accounts shared with them — so they can't work it out.
+     * The owner's app records the current figure on each shared budget
+     * (`sharedSpend`, computed over ALL the owner's accounts); granting the
+     * budget is the consent to disclose that total. It refreshes with each save.
+     * @param {object} snap  the snapshot being saved (mutated)
+     */
+    #stampSharedSpend(snap) {
+      const granted = new Set((snap.family || []).flatMap((m) => (m.budgetPermissions || []).map((p) => p.budgetId)));
+      if (!granted.size) {
+        for (const b of snap.budgets || []) delete b.sharedSpend;
+        return;
       }
-      if (expected > 0) {
-        const { data: rows2, error: error2 } = await this.#sb.from("user_data").update({ data: state, version: expected + 1, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", this.#user.id).eq("version", expected).select("version");
-        if (error2) throw error2;
-        if (!rows2 || !rows2.length) return false;
-        this.#cloudVersion = expected + 1;
-        this.#lastSelfVersion = this.#cloudVersion;
-        return true;
+      const svc = new BudgetService();
+      for (const b of snap.budgets || []) {
+        if (!granted.has(b.id)) {
+          delete b.sharedSpend;
+          continue;
+        }
+        try {
+          b.sharedSpend = Math.round(svc.currentSpend(b));
+        } catch (_) {
+          b.sharedSpend = 0;
+        }
       }
-      const { data: rows, error } = await this.#sb.from("user_data").upsert({
-        id: this.#user.id,
-        data: state,
-        version: 1,
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      }, { onConflict: "id", ignoreDuplicates: true }).select("version");
+    }
+    /**
+     * Send one change set to a book. Rows written are remembered briefly so
+     * their echo on the live feed doesn't trigger a pointless reload.
+     * @param {string} bookId   owner id of the book written to
+     * @param {object} changes  see BookDiff
+     */
+    async #send(bookId, changes) {
+      const { error } = await this.#sb.rpc("pocket_apply_changes", { book: bookId, changes });
       if (error) throw error;
-      if (!rows || !rows.length) return false;
-      this.#cloudVersion = 1;
-      this.#lastSelfVersion = this.#cloudVersion;
-      return true;
+      const until = Date.now() + ECHO_WINDOW_MS;
+      for (const k of BookDiff.touchedKeys(changes)) this.#echo.set(k, until);
+      if (changes.user || changes.fxRates || changes.merchantCategories || changes.bookExtra) {
+        this.#echo.set("settings", until);
+      }
     }
     async #doPush() {
       if (!this.#sb || !this.#user) return;
-      if (this.#cloudVersion === null) {
+      if (!this.#loaded) {
         console.warn("[SyncService] Skipping push: cloud state not loaded yet");
         this.#emitStatus("error");
         this.#retryPushLater();
         return;
       }
-      this.#emitStatus("syncing");
-      try {
-        const ok = await this.#commitState(this.#store.getState());
-        if (!ok) {
-          this.#stashConflict();
-          this.#toast("Another device saved first \u2014 your local copy was kept as a backup");
-          await this.#doPull();
-          this.#markClean();
-          return;
-        }
+      const snap = this.#snapshot();
+      const changes = BookDiff.changes(this.#baseline.state, snap);
+      if (!changes) {
         this.#markClean();
         this.#emitStatus("synced");
-        await this.#pushFamilyShares();
-        await this.#pullMemberContributions();
+        return;
+      }
+      this.#emitStatus("syncing");
+      try {
+        await this.#send(this.#user.id, changes);
+        this.#baseline.set(snap);
+        if (BookDiff.changes(snap, this.#snapshot())) {
+          this.#pushRetries = 0;
+          this.schedulePush();
+        } else {
+          this.#markClean();
+        }
+        this.#emitStatus("synced");
       } catch (e) {
         console.error("[SyncService] Cloud save error:", e);
         this.#emitStatus("error");
@@ -3923,8 +4228,8 @@ RULES:
     }
     // ── Pull ──────────────────────────────────────────────────────────────
     /**
-     * Public pull — serialised through the sync queue so concurrent realtime
-     * events can't interleave replaceState() calls.
+     * Public pull — serialised through the sync queue so concurrent live
+     * updates can't interleave replaceState() calls.
      * @returns {Promise<boolean>} isFirstSignIn
      */
     pull() {
@@ -3984,68 +4289,30 @@ RULES:
       }
     }
     /**
-     * Cold-start recovery for edits that never reached the cloud.
+     * The edits made on this device that the cloud hasn't received: the
+     * difference between the local state and the last confirmed copy.
      *
-     * The failure this exists to prevent: three transactions entered back-to-back
-     * collapse into ONE debounced push; the tab is refreshed before it fires; the
-     * next boot reads the cloud row — which predates all three — and
-     * replaceState()s it over both memory AND localStorage. All three vanish, the
-     * first one included, with no recovery copy anywhere.
-     *
-     * The durable SyncJournal marker makes that situation detectable. Once it is,
-     * the row's own version is a valid CAS baseline, so the correct move is to
-     * commit local state OVER the stale row. If another device legitimately wrote
-     * while this one was away the compare-and-swap fails, and we fall back to
-     * adopting the cloud — but only after stashing a restorable backup.
-     *
-     * @param {{data: object, version: number}} row  the cloud row just read
-     * @returns {Promise<boolean>} true when the caller must NOT adopt the snapshot
+     * Only meaningful when there is something outstanding (this session's
+     * #dirty flag, or the durable journal from a previous one). Without a
+     * baseline the edits can't be told apart from stale data, so — as before —
+     * the local copy is kept as a restorable backup and the cloud wins.
+     * @returns {object|null} a change set, or null when nothing is pending
      */
-    async #recoverPendingLocalEdits(row) {
-      if (this.#flushing) return false;
-      if (this.#cloudVersion !== null) return false;
-      const pending = this.#journal.read();
-      if (!pending || pending.userId !== this.#user.id) return false;
-      const rowVersion = row.version ?? 0;
-      if (pending.baseVersion == null || pending.baseVersion !== rowVersion) {
+    #pendingLocalChanges() {
+      const outstanding = this.#dirty || this.#journal.read()?.userId === this.#user.id;
+      if (!outstanding) return null;
+      if (!this.#baseline.state) {
         this.#stashConflict();
         this.#markClean();
-        this.#toast("Another device saved while you were away \u2014 your unsynced copy was kept as a backup");
-        return false;
+        this.#toast("Unsynced changes from before couldn't be matched \u2014 kept as a backup in Settings");
+        return null;
       }
-      this.#flushing = true;
-      this.#cloudVersion = rowVersion;
-      this.#dirty = true;
-      try {
-        const ok = await this.#commitState(this.#store.getState());
-        if (ok) {
-          this.#markClean();
-          this.#emitStatus("synced");
-          this.#toast("Recovered changes that had not finished syncing");
-          await this.#pushFamilyShares();
-          await this.#pullMemberContributions();
-          await this.#pullFamilyShares();
-          this.#bus.emit("state:changed", this.#store.getState());
-          return true;
-        }
-        this.#stashConflict();
-        this.#markClean();
-        this.#toast("Another device saved first \u2014 your unsynced copy was kept as a backup");
-        return false;
-      } catch (e) {
-        console.error("[SyncService] Pending-edit recovery failed:", e);
-        this.#emitStatus("error");
-        this.#toast("Could not sync your unsaved changes yet \u2014 they are safe on this device");
-        this.#retryPushLater();
-        return true;
-      } finally {
-        this.#flushing = false;
-      }
+      return BookDiff.changes(this.#baseline.state, this.#snapshot());
     }
     /** @returns {boolean} isFirstSignIn */
     async #doPull() {
       if (!this.#sb || !this.#user) return false;
-      if (this.#dirty && !this.#flushing && this.#cloudVersion !== null) {
+      if (this.#dirty && !this.#flushing && this.#loaded) {
         this.#flushing = true;
         clearTimeout(this.#saveTimer);
         try {
@@ -4054,29 +4321,36 @@ RULES:
         } finally {
           this.#flushing = false;
         }
-        if (!this.#dirty && this.#cloudVersion !== null) return false;
       }
       this.#emitStatus("syncing");
       try {
-        const { data, error } = await this.#sb.from("user_data").select("data, version, updated_at").eq("id", this.#user.id).single();
-        if (error && error.code !== "PGRST116") throw error;
-        if (data?.data) {
-          if (await this.#recoverPendingLocalEdits(data)) return false;
-          this.#store.replaceState(data.data, (s) => this.#migrateDefaults(s));
-          this.#cloudVersion = data.version ?? 0;
-          this.#markClean();
-          new RecurringService().process();
-          await this.#pullFamilyShares();
-          await this.#pullMemberContributions();
-          this.#emitStatus("synced");
-          this.#bus.emit("state:changed", this.#store.getState());
-          return false;
-        } else {
-          this.#cloudVersion = 0;
+        const { data: book, error } = await this.#sb.rpc("pocket_get_book");
+        if (error) throw error;
+        if (!book) {
+          this.#loaded = true;
+          this.#dirty = true;
           await this.#doPush();
           this.#emitStatus("synced");
           return true;
         }
+        const pending = this.#pendingLocalChanges();
+        const coldStart = !this.#loaded;
+        const next = BookDiff.apply(BookDiff.clone(book), pending);
+        this.#store.replaceState(next, (s) => this.#migrateDefaults(s));
+        this.#baseline.set(book);
+        this.#loaded = true;
+        if (BookDiff.changes(book, this.#snapshot())) {
+          this.#dirty = true;
+          await this.#doPush();
+          if (pending && coldStart) this.#toast("Recovered changes that had not finished syncing");
+        } else {
+          this.#markClean();
+        }
+        new RecurringService().process();
+        await this.#pullFamilyShares();
+        this.#emitStatus(this.#dirty ? "error" : "synced");
+        this.#bus.emit("state:changed", this.#store.getState());
+        return false;
       } catch (e) {
         console.error("[SyncService] Cloud load error:", e);
         this.#emitStatus("error");
@@ -4084,120 +4358,130 @@ RULES:
         return false;
       }
     }
-    // ── Real-time subscription ────────────────────────────────────────────
+    // ── Live updates ──────────────────────────────────────────────────────
+    /** True when a live-feed row is the echo of our own recent write. */
+    #isEcho(list, row) {
+      const now = Date.now();
+      for (const [k, until] of this.#echo) if (until < now) this.#echo.delete(k);
+      const key = list === "settings" ? "settings" : `${list}:${row}`;
+      return (this.#echo.get(key) || 0) >= now;
+    }
     #subscribe() {
       if (!this.#sb || !this.#user || this.#subscribed) return;
       this.#subscribed = true;
-      this.#channel = this.#sb.channel("pocket_realtime_" + this.#user.id).on("postgres_changes", {
-        event: "UPDATE",
-        schema: "public",
-        table: "user_data",
-        filter: `id=eq.${this.#user.id}`
-      }, (payload) => {
-        const v = payload?.new?.version;
-        if (v != null && v === this.#lastSelfVersion) return;
-        this.pull();
-      }).subscribe();
-      const email = this.#user.email?.toLowerCase().replace(/[^a-z0-9]/g, "_") || "";
-      const sharesChannel = this.#sb.channel("pocket_family_" + email).on("broadcast", { event: "share_updated" }, async () => {
-        await this.#pullFamilyShares();
-        this.#bus.emit("state:changed", this.#store.getState());
-      }).subscribe();
-      const contribChannel = this.#sb.channel("pocket_contrib_" + this.#user.id).on("postgres_changes", {
-        event: "INSERT",
-        schema: "public",
-        table: "family_contributions",
-        filter: `owner_id=eq.${this.#user.id}`
-      }, () => this.#pullMemberContributions()).subscribe();
-      this.#sharesChannel = sharesChannel;
-      this.#contribChannel = contribChannel;
+      let ch = this.#sb.channel("pocket_book_" + this.#user.id);
+      for (const [table, list, idCol] of BOOK_TABLES) {
+        ch = ch.on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table,
+          filter: `owner_id=eq.${this.#user.id}`
+        }, (payload) => {
+          const row = payload?.new?.[idCol] ?? payload?.old?.[idCol];
+          if (this.#isEcho(list, row)) return;
+          clearTimeout(this.#liveTimer);
+          this.#liveTimer = setTimeout(() => this.pull(), LIVE_DEBOUNCE_MS);
+        });
+      }
+      this.#channel = ch.subscribe();
     }
-    // ── Family sharing (private) ─────────────────────────────────────────
+    /** Live updates for the shared books this user reads (member side). */
+    #subscribeShares() {
+      for (const c of this.#sharesChannels) {
+        try {
+          this.#sb?.removeChannel(c);
+        } catch (_) {
+        }
+      }
+      this.#sharesChannels = [];
+      if (!this.#sb || !this.#user) return;
+      const owners = [...new Set(this.#sharedData.map((s) => s._ownerId))];
+      for (const ownerId of owners) {
+        let ch = this.#sb.channel(`pocket_shared_${ownerId}_${this.#user.id}`);
+        for (const table of ["transactions", "transaction_splits", "accounts", "categories"]) {
+          ch = ch.on("postgres_changes", {
+            event: "*",
+            schema: "public",
+            table,
+            filter: `owner_id=eq.${ownerId}`
+          }, (payload) => {
+            const row = payload?.new?.id ?? payload?.old?.id ?? payload?.new?.transaction_id;
+            if (table === "transactions" && this.#isEcho("shared", `${ownerId}:${row}`)) return;
+            this.scheduleSharesRefresh(LIVE_DEBOUNCE_MS);
+          });
+        }
+        this.#sharesChannels.push(ch.subscribe());
+      }
+    }
+    // ── Family sharing (member side) ─────────────────────────────────────
+    /** The share (book) a member is writing into, if it's loaded. */
+    #shareOf(ownerId) {
+      return this.#sharedData.find((s) => s._ownerId === ownerId) || null;
+    }
+    /** Write to a shared book, remembering the rows as our own echo. */
+    async #sendShared(ownerId, changes) {
+      const { error } = await this.#sb.rpc("pocket_apply_changes", { book: ownerId, changes });
+      if (error) throw error;
+      const until = Date.now() + ECHO_WINDOW_MS;
+      for (const k of BookDiff.touchedKeys(changes)) {
+        const id = k.slice(k.indexOf(":") + 1);
+        this.#echo.set(`shared:${ownerId}:${id}`, until);
+      }
+    }
     /**
-     * Submit a transaction on behalf of a shared-account member.
-     *
-     * Uses upsert with ignoreDuplicates so a retry never causes a constraint error.
-     * Applies an optimistic balance update to #sharedData immediately so the
-     * member sees the correct balance without waiting for the owner snapshot.
-     * Tracks the tx in #pendingAdditions so it survives the next pullFamilyShares.
+     * Add a transaction to an account someone shared with this user. It goes
+     * straight into their book; the database checks this user may add there.
      *
      * @param {string} ownerId  Supabase user ID of the account owner
-     * @param {object} txData   Transaction object to contribute
+     * @param {object} txData   Transaction object to add
      */
     async submitContribution(ownerId, txData) {
       if (!this.#sb || !this.#user) throw new Error("Not signed in");
-      const share = this.#sharedData.find((s) => s._ownerId === ownerId);
-      const accountId = txData.accountId ?? txData.splits?.[0]?.accountId ?? share?.accounts?.[0]?.id ?? (share?.permission ? Object.keys(share.permission)[0] : null);
-      const { error } = await this.#sb.from("family_contributions").upsert({
-        owner_id: ownerId,
-        member_email: this.#user.email.toLowerCase(),
-        account_id: accountId,
-        tx_data: txData,
-        synced: false
-      }, { onConflict: "id", ignoreDuplicates: true });
-      if (error) throw error;
+      const email = this.#user.email.toLowerCase();
+      const tx = { ...txData, addedBy: txData.addedBy || email };
+      await this.#sendShared(ownerId, { put: { transactions: [tx] } });
+      const share = this.#shareOf(ownerId);
       if (share) {
-        share.transactions = [txData, ...share.transactions || []];
+        share.transactions = [tx, ...(share.transactions || []).filter((t) => t.id !== tx.id)];
         this.#deriveShareBalances(share);
-        this.#pendingAdditions.set(txData.id, { tx: txData, ownerId });
+        this.#pendingAdditions.set(tx.id, { tx, ownerId });
         this.#bus.emit("state:changed", this.#store.getState());
       }
     }
     /**
-     * Ask the owner to delete a specific transaction the member previously added.
-     *
-     * Uses upsert with a stable `del_${txId}` id so the marker is idempotent:
-     * a double-tap never causes a unique-constraint error.
-     * Applies an optimistic balance revert and hides the tx from #sharedData
-     * immediately via #pendingRemovals.
+     * Delete a transaction in a shared book. Allowed for the entries this user
+     * added, or anything with 'full' access — the database decides.
      *
      * @param {string} ownerId  Owner's Supabase user ID
      * @param {string} txId     Transaction ID to delete
      */
     async deleteContribution(ownerId, txId) {
       if (!this.#sb || !this.#user) throw new Error("Not signed in");
-      if (this.#pendingRemovals.has(txId)) {
-        this.#sharedData.forEach((share2) => {
-          share2.transactions = (share2.transactions || []).filter((t) => t.id !== txId);
-        });
-        this.#bus.emit("state:changed", this.#store.getState());
-        return;
-      }
-      const share = this.#sharedData.find(
-        (s) => (s.transactions || []).some((t) => t.id === txId)
-      );
-      const target = share?.transactions?.find((t) => t.id === txId) || null;
-      const accountId = target?.accountId ?? target?.splits?.[0]?.accountId ?? share?.accounts?.[0]?.id ?? (share?.permission ? Object.keys(share.permission)[0] : null);
+      if (this.#pendingRemovals.has(txId)) return;
+      const share = this.#sharedData.find((s) => s._ownerId === ownerId) || this.#sharedData.find((s) => (s.transactions || []).some((t) => t.id === txId));
+      const owner = share?._ownerId || ownerId;
       this.#pendingRemovals.add(txId);
+      const before = share?.transactions;
       if (share) {
         share.transactions = (share.transactions || []).filter((t) => t.id !== txId);
         this.#deriveShareBalances(share);
         this.#bus.emit("state:changed", this.#store.getState());
       }
-      const { error } = await this.#sb.from("family_contributions").upsert({
-        owner_id: ownerId,
-        member_email: this.#user.email.toLowerCase(),
-        account_id: accountId,
-        tx_data: { _delete: true, id: `del_${txId}`, targetId: txId },
-        synced: false
-      }, { onConflict: "id", ignoreDuplicates: true });
-      if (error) {
+      try {
+        await this.#sendShared(owner, { remove: { transactions: [txId] } });
+      } catch (error) {
         this.#pendingRemovals.delete(txId);
+        if (share && before) {
+          share.transactions = before;
+          this.#deriveShareBalances(share);
+          this.#bus.emit("state:changed", this.#store.getState());
+        }
         throw error;
       }
     }
     /**
-     * Edit a transaction the member previously contributed to a shared account.
-     *
-     * An edit is a REPLACE, not a second add: the owner is sent a `_replace`
-     * marker for the old row plus an add carrying the SAME transaction id. The
-     * owner applies deletes before computing which adds are new, so the pair
-     * lands as an in-place update. Sending only the add would be skipped as a
-     * duplicate id; minting a fresh id (the old behaviour) left the original in
-     * the owner's ledger and the account was double-charged.
-     *
-     * `_replace` also tells the owner this needs EDIT rights rather than DELETE
-     * rights, so a member with 'edit' can still correct their own entry.
+     * Edit a transaction in a shared book, in place (same id). Allowed for the
+     * entries this user added, or with 'edit'/'full' access.
      *
      * @param {string} ownerId
      * @param {string} txId     the id being replaced (kept on the new row)
@@ -4205,26 +4489,9 @@ RULES:
      */
     async updateContribution(ownerId, txId, txData) {
       if (!this.#sb || !this.#user) throw new Error("Not signed in");
-      const share = this.#sharedData.find((s) => s._ownerId === ownerId);
       const next = { ...txData, id: txId };
-      const accountId = next.accountId ?? next.splits?.[0]?.accountId ?? share?.accounts?.[0]?.id ?? (share?.permission ? Object.keys(share.permission)[0] : null);
-      const email = this.#user.email.toLowerCase();
-      const { error: delErr } = await this.#sb.from("family_contributions").upsert({
-        owner_id: ownerId,
-        member_email: email,
-        account_id: accountId,
-        tx_data: { _delete: true, _replace: true, id: `rep_${txId}`, targetId: txId },
-        synced: false
-      }, { onConflict: "id", ignoreDuplicates: true });
-      if (delErr) throw delErr;
-      const { error: addErr } = await this.#sb.from("family_contributions").upsert({
-        owner_id: ownerId,
-        member_email: email,
-        account_id: accountId,
-        tx_data: next,
-        synced: false
-      }, { onConflict: "id", ignoreDuplicates: true });
-      if (addErr) throw addErr;
+      await this.#sendShared(ownerId, { put: { transactions: [next] } });
+      const share = this.#shareOf(ownerId);
       if (share) {
         share.transactions = (share.transactions || []).map((t) => t.id === txId ? next : t);
         this.#deriveShareBalances(share);
@@ -4233,12 +4500,12 @@ RULES:
       }
     }
     /**
-     * Schedule a pullFamilyShares + state:changed after a delay.
-     * Called after shared tx submit/delete to get the owner's confirmed snapshot.
+     * Re-read the shared books after `delayMs` (debounced).
      * @param {number} delayMs
      */
     scheduleSharesRefresh(delayMs) {
-      setTimeout(async () => {
+      clearTimeout(this.#sharesTimer);
+      this.#sharesTimer = setTimeout(async () => {
         if (!this.#sb || !this.#user) return;
         try {
           await this.#pullFamilyShares();
@@ -4248,12 +4515,8 @@ RULES:
       }, delayMs);
     }
     /**
-     * Re-derive a shared snapshot's account balances from its own transaction
-     * list using the SAME LedgerMath authority the rest of the app uses. Replaces
-     * the old bespoke optimistic-balance arithmetic, so there is one balance model
-     * everywhere. The owner's snapshot carries openingBalance per account, so
-     * `openingBalance + ledger(share.transactions)` reproduces the owner's
-     * derived balance for each shared account.
+     * Re-derive a shared book's account balances from its transactions using the
+     * SAME LedgerMath authority the rest of the app uses.
      * @param {object} share
      */
     #deriveShareBalances(share) {
@@ -4262,165 +4525,27 @@ RULES:
       for (const a of share.accounts) a.balance = balances.get(a.id) ?? a.balance ?? 0;
     }
     /**
-     * Revoke a member's access: delete their family_shares row and tell their
-     * client to refresh.
-     *
-     * Removing someone from state.family alone was not enough — the row survived,
-     * so their #pullFamilyShares() kept returning the last snapshot (every shared
-     * account, its transactions, and ALL of the owner's categories) indefinitely.
-     *
-     * @param {string} email
+     * Revoking a member is now just removing them (or their permissions) from
+     * the family list: that save soft-deletes their grants, and the database
+     * stops serving them anything at once. Kept for the callers that still ask.
+     * @param {string} _email
+     * @param {string} [_spaceId]
      */
-    /**
-     * Drop a member's share row so their device stops serving the snapshot.
-     *
-     * @param {string} email
-     * @param {string} [spaceId]  when given, revokes only that space's row.
-     *   Omitted revokes every space you share with them — which is what the old
-     *   single-row behaviour did, and still the right default for "remove this
-     *   person entirely".
-     */
-    async revokeMemberShare(email, spaceId = null) {
-      if (!this.#sb || !this.#user || !email) return;
-      const addr = email.toLowerCase().trim();
-      try {
-        let q = this.#sb.from("family_shares").delete().eq("owner_id", this.#user.id).eq("member_email", addr);
-        if (spaceId) q = q.eq("space_id", spaceId);
-        await q;
-        this.#broadcastToMember(addr);
-      } catch (e) {
-        console.warn("[SyncService] revokeMemberShare error:", e);
-      }
-    }
-    /**
-     * The shared budgets, each carrying the owner-computed spend for its current
-     * period. See the comment at the call site for why the figure travels rather
-     * than the inputs.
-     * @param {object} state
-     * @param {string[]} ids
-     * @returns {object[]}
-     */
-    #sharedBudgets(state, ids) {
-      if (!ids.length) return [];
-      const svc = new BudgetService();
-      return (state.budgets || []).filter((b) => ids.includes(b.id)).map((b) => {
-        let spent = 0;
-        try {
-          spent = svc.currentSpend(b);
-        } catch (e) {
-          console.warn("[SyncService] budget spend failed for", b.id, e);
-        }
-        return { ...b, spent };
-      });
-    }
-    /**
-     * The space id a member's snapshot is filed under.
-     *
-     * Until phase C of the family_shares migration the primary key is still
-     * (owner_id, member_email), so a member can only have ONE row — but writing
-     * the real space id from now on means the row is already correctly labelled
-     * when the key changes, rather than needing a backfill.
-     * @param {object} member
-     * @returns {string}
-     */
-    #spaceIdFor(member) {
-      const spaces = this.#store.getState().spaces || [];
-      const owning = spaces.find((sp) => (sp.members || []).some((m) => m.memberId === member.id));
-      return owning?.id || "default";
-    }
-    async #pushFamilyShares() {
-      const state = this.#store.getState();
-      if (!this.#sb || !this.#user) return;
-      for (const member of state.family || []) {
-        if (!member.email) continue;
-        const permMap = {};
-        (member.permissions || []).forEach((p) => {
-          permMap[p.accountId] = p.access;
-        });
-        const sharedIds = Object.keys(permMap);
-        const budgetPermMap = {};
-        (member.budgetPermissions || []).forEach((p) => {
-          budgetPermMap[p.budgetId] = p.access;
-        });
-        const sharedBudgetIds = Object.keys(budgetPermMap);
-        if (!sharedIds.length && !sharedBudgetIds.length) {
-          await this.revokeMemberShare(member.email);
-          continue;
-        }
-        const snapshot = {
-          // What this member will see the space called. Per-member, because
-          // family_shares is keyed (owner_id, member_email) — so "Household" for
-          // one person and "Business" for another already works, without any
-          // schema change. Falling back to the owner's own name is what it used
-          // to be unconditionally, which made every space you shared carry your
-          // personal name whatever it actually contained.
-          sharedBy: member.spaceName || state.user.name || this.#user.email,
-          ownerName: state.user.name || this.#user.email,
-          // Owner's home currency so members can embed correct exchangeRate /
-          // refAmount on contributed transactions (#21).
-          homeCurrency: state.user.homeCurrency,
-          permission: permMap,
-          accounts: state.accounts.filter((a) => sharedIds.includes(a.id)),
-          transactions: state.transactions.filter(
-            (t) => permMap[t.accountId] || (t.splits || []).some((s) => permMap[s.accountId])
-          ),
-          categories: state.categories,
-          // Debts and regular items carry an accountId, so they scope exactly the
-          // way transactions do — sharing an account shares what hangs off it.
-          debts: (state.debts || []).filter((d) => permMap[d.accountId]),
-          regularItems: (state.regularItems || []).filter((r) => permMap[r.accountId]),
-          // Budgets need the SPEND SENT, not computed. BudgetService.currentSpend
-          // sums over ALL the owner's transactions; the member only receives the
-          // ones touching shared accounts, so computing it their side would
-          // understate it — by more, the more the owner spends elsewhere. Sending
-          // every transaction to fix that is the leak the filter above exists to
-          // prevent. Granting a budget IS the consent to disclose its total; a
-          // budget without its real spend is not worth sharing.
-          budgets: this.#sharedBudgets(state, sharedBudgetIds),
-          budgetPermission: budgetPermMap,
-          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        try {
-          await this.#sb.from("family_shares").upsert({
-            owner_id: this.#user.id,
-            member_email: member.email.toLowerCase().trim(),
-            snapshot,
-            space_id: this.#spaceIdFor(member)
-            // Targets the unique index added in phase A of the migration. While
-            // the old two-column primary key is still in place both targets are
-            // valid, which is what lets an un-updated client keep working.
-          }, { onConflict: "owner_id,member_email,space_id" });
-          this.#broadcastToMember(member.email.toLowerCase().trim());
-        } catch (e) {
-          console.warn("[SyncService] pushFamilyShares error:", e);
-        }
-      }
-    }
-    #broadcastToMember(email) {
-      if (!this.#sb) return;
-      const chanName = "pocket_family_" + email.replace(/[^a-z0-9]/g, "_");
-      const ch = this.#sb.channel(chanName);
-      ch.subscribe((status) => {
-        if (status !== "SUBSCRIBED") return;
-        ch.send({ type: "broadcast", event: "share_updated", payload: {} });
-        setTimeout(() => {
-          try {
-            this.#sb.removeChannel(ch);
-          } catch (_) {
-          }
-        }, 3e3);
-      });
+    async revokeMemberShare(_email, _spaceId = null) {
+      this.schedulePush();
     }
     async #pullFamilyShares() {
       if (!this.#sb || !this.#user?.email) return;
       try {
-        const { data, error } = await this.#sb.from("family_shares").select("owner_id, space_id, snapshot").eq("member_email", this.#user.email.toLowerCase()).order("owner_id");
+        const { data, error } = await this.#sb.rpc("pocket_get_shared");
         if (error) {
           console.warn("[SyncService] pullFamilyShares error:", error);
           return;
         }
-        const rawIds = new Set((data || []).flatMap((r) => (r.snapshot?.transactions || []).map((t) => t.id)));
-        this.#sharedData = (data || []).filter((r) => r.snapshot && r.owner_id !== this.#user.id).map((r) => ({ ...r.snapshot, _ownerId: r.owner_id, _spaceId: r.space_id || "default" })).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)) || String(a._spaceId).localeCompare(String(b._spaceId)));
+        const shares = Array.isArray(data) ? data : [];
+        const rawIds = new Set(shares.flatMap((s) => (s.transactions || []).map((t) => t.id)));
+        const ownersBefore = this.#sharedData.map((s) => s._ownerId).join(",");
+        this.#sharedData = shares.filter((s) => s._ownerId !== this.#user.id).sort((a, b) => String(a._ownerId).localeCompare(String(b._ownerId)) || String(a._spaceId).localeCompare(String(b._spaceId)));
         for (const txId of [...this.#pendingRemovals]) {
           if (!rawIds.has(txId)) this.#pendingRemovals.delete(txId);
         }
@@ -4435,120 +4560,17 @@ RULES:
             this.#pendingAdditions.delete(txId);
             continue;
           }
-          const alreadyIn = (share.transactions || []).some((t) => t.id === txId);
-          if (alreadyIn) {
+          const served = (share.transactions || []).find((t) => t.id === txId);
+          if (served) {
             this.#pendingAdditions.delete(txId);
             continue;
           }
           share.transactions = [tx, ...share.transactions || []];
         }
         for (const share of this.#sharedData) this.#deriveShareBalances(share);
+        if (this.#sharedData.map((s) => s._ownerId).join(",") !== ownersBefore) this.#subscribeShares();
       } catch (e) {
         console.warn("[SyncService] pullFamilyShares error:", e);
-      }
-    }
-    /**
-     * Current access level a member holds on each of the owner's accounts.
-     * @param {string} email
-     * @returns {Record<string,string>} accountId → 'view'|'add'|'edit'|'full'
-     */
-    #memberPermissions(email) {
-      const key = (email || "").toLowerCase().trim();
-      const member = (this.#store.getState().family || []).find((m) => (m.email || "").toLowerCase().trim() === key);
-      const map = {};
-      for (const p of member?.permissions || []) map[p.accountId] = p.access;
-      return map;
-    }
-    /**
-     * Decide whether an incoming contribution is allowed, against the CURRENT
-     * permission map rather than whatever the member's cached snapshot claimed.
-     *
-     * This is the owner's only enforcement point: permissions are otherwise
-     * checked in render code, which a stale or hostile client never runs. Access
-     * levels follow FAMILY_ACCESS_LEVELS — add ≤ edit ≤ full.
-     *
-     * @param {object} row  a family_contributions row
-     * @returns {{ok:true}|{ok:false, reason:string}}
-     */
-    #authoriseContribution(row) {
-      const perms = this.#memberPermissions(row.member_email);
-      const tx = row.tx_data || {};
-      const level = (accId) => perms[accId] || null;
-      if (tx._delete === true) {
-        const targetId = tx.targetId || tx.id;
-        const target = (this.#store.getState().transactions || []).find((t) => t.id === targetId);
-        if (!target) return { ok: true };
-        const access = level(target.accountId);
-        const allowed = tx._replace ? ["edit", "full"].includes(access) : access === "full";
-        return allowed ? { ok: true } : { ok: false, reason: `no ${tx._replace ? "edit" : "delete"} access on ${target.accountId}` };
-      }
-      const touched = new Set([tx.accountId, ...(tx.splits || []).map((s) => s.accountId || tx.accountId)].filter(Boolean));
-      if (!touched.size) return { ok: false, reason: "no account on the contribution" };
-      for (const accId of touched) {
-        if (!["add", "edit", "full"].includes(level(accId))) {
-          return { ok: false, reason: `no write access on ${accId}` };
-        }
-      }
-      return { ok: true };
-    }
-    async #pullMemberContributions() {
-      if (!this.#sb || !this.#user) return;
-      try {
-        const { data, error } = await this.#sb.from("family_contributions").select("id, tx_data, member_email, account_id").eq("owner_id", this.#user.id).eq("synced", false);
-        if (error || !data?.length) return;
-        const state = this.#store.getState();
-        const rejected = [];
-        const rows = [];
-        for (const row of data) {
-          const verdict = this.#authoriseContribution(row);
-          if (verdict.ok) rows.push(row);
-          else {
-            rejected.push(row);
-            console.warn(
-              "[SyncService] Rejected contribution from",
-              row.member_email,
-              "\u2014",
-              verdict.reason
-            );
-          }
-        }
-        if (rejected.length) {
-          try {
-            await this.#sb.from("family_contributions").update({ synced: true }).in("id", rejected.map((r) => r.id));
-          } catch (_) {
-          }
-          this.#toast(`${rejected.length} family change${rejected.length > 1 ? "s" : ""} blocked \u2014 permission removed`);
-        }
-        if (!rows.length) return;
-        const deleteRows = rows.filter((r) => r.tx_data?._delete === true);
-        const addRows = rows.filter((r) => !r.tx_data?._delete && r.tx_data?.id);
-        if (deleteRows.length) {
-          const deleteIds = new Set(deleteRows.map((r) => r.tx_data.targetId || r.tx_data.id));
-          state.transactions = state.transactions.filter((t) => !deleteIds.has(t.id));
-        }
-        const existingIds = new Set(state.transactions.map((t) => t.id));
-        const newRows = addRows.filter((r) => r.tx_data?.id && !existingIds.has(r.tx_data.id));
-        newRows.forEach((row) => {
-          const tx = { ...row.tx_data, _fromFamily: true };
-          state.transactions.push(tx);
-        });
-        if (newRows.length || deleteRows.length) {
-          this.#store.withoutLocalChange(() => this.#store.persist());
-          const committed = await this.#commitState(state);
-          if (committed) {
-            const ids = rows.map((r) => r.id);
-            await this.#sb.from("family_contributions").update({ synced: true }).in("id", ids);
-            await this.#pushFamilyShares();
-            this.#bus.emit("state:changed", state);
-            const n = newRows.length + deleteRows.length;
-            if (n > 0) this.#toast(`${n} family change${n > 1 ? "s" : ""} synced`);
-          } else {
-            this.#toast("Another device saved first \u2014 merging\u2026");
-            await this.#doPull();
-          }
-        }
-      } catch (e) {
-        console.warn("[SyncService] pullMemberContributions error:", e);
       }
     }
     // ── Private helpers ──────────────────────────────────────────────────
@@ -12551,9 +12573,15 @@ This replaces your current grouping.`
               <i data-lucide="file-text"></i> Export CSV
             </button>
             <button class="btn btn-outline justify-center text-rose-500"
-                    onclick="window.__app.resetData()">
+                    onclick="window.__app.resetData()"
+                    title="Delete every transaction, account, budget and debt">
               <i data-lucide="rotate-ccw"></i> Reset data
             </button>
+            ${BookCleaner.hasSample(state) ? `
+            <button class="btn btn-outline justify-center col-span-2"
+                    onclick="window.__app.removeSampleData()">
+              <i data-lucide="eraser"></i> Remove sample data
+            </button>` : ""}
           </div>
         </div>
 
@@ -13826,43 +13854,68 @@ alter publication supabase_realtime add table public.family_contributions;</div>
   };
 
   // src/ui/modals/CurrencySetupModal.js
-  var CurrencySetupModal = class {
+  var CurrencySetupModal = class _CurrencySetupModal {
+    static #STEP_LABELS = Object.freeze({ currency: "Currency", sample: "Sample data", hijri: "Calendar" });
     #store;
     #hijri;
-    #step;
-    // 1 | 2
+    /** @type {string[]} */
+    #steps = ["currency", "hijri"];
+    #index = 0;
     constructor({ store }) {
       this.#store = store;
       this.#hijri = new HijriCalendarService();
-      this.#step = 1;
     }
-    /** Reset to step 1 (called each time the modal is opened). */
+    /** Start from the first step (called each time the modal is opened). */
     onOpen() {
-      this.#step = 1;
+      const withSample = BookCleaner.hasSample(this.#store.getState());
+      this.#steps = withSample ? ["currency", "sample", "hijri"] : ["currency", "hijri"];
+      this.#index = 0;
     }
     render() {
-      return this.#step === 1 ? this.#renderStep1() : this.#renderStep2();
+      switch (this.#steps[this.#index]) {
+        case "sample":
+          return this.#renderSample();
+        case "hijri":
+          return this.#renderHijri();
+        default:
+          return this.#renderCurrency();
+      }
     }
-    // ── Step 1: currency ───────────────────────────────────────────────
-    #renderStep1() {
+    /** Move to the next step (app.js refreshes the modal afterwards). */
+    advance() {
+      this.#index = Math.min(this.#index + 1, this.#steps.length - 1);
+    }
+    // ── Step indicator ──────────────────────────────────────────────────
+    #renderIndicator() {
+      const dots = this.#steps.map((step, i) => {
+        const label = _CurrencySetupModal.#STEP_LABELS[step];
+        if (i < this.#index) {
+          return `
+          <div class="flex items-center gap-1.5">
+            <div class="w-6 h-6 rounded-full bg-emerald-500 text-white text-xs grid place-items-center">
+              <i data-lucide="check" style="width:12px;height:12px"></i>
+            </div>
+            <div class="text-xs text-zinc-400">${label}</div>
+          </div>`;
+        }
+        const current = i === this.#index;
+        return `
+          <div class="flex items-center gap-1.5">
+            <div class="w-6 h-6 rounded-full ${current ? "bg-zinc-900 text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-400"} text-xs grid place-items-center font-bold">${i + 1}</div>
+            <div class="text-xs ${current ? "font-medium" : "text-zinc-400"}">${label}</div>
+          </div>`;
+      });
+      return `<div class="flex items-center gap-2 mb-5">${dots.join('<div class="flex-1 h-px bg-zinc-200 dark:bg-zinc-700"></div>')}</div>`;
+    }
+    // ── Step: currency ──────────────────────────────────────────────────
+    #renderCurrency() {
       const cur = this.#store.getState().user?.homeCurrency || "USD";
       const options = CURRENCIES.map(
         (c) => `<option value="${c}" ${c === cur ? "selected" : ""}>${c}</option>`
       ).join("");
       return `
       <div class="p-6" style="min-width:320px;max-width:420px">
-        <!-- Step indicator -->
-        <div class="flex items-center gap-2 mb-5">
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full bg-zinc-900 text-white text-xs grid place-items-center font-bold">1</div>
-            <div class="text-xs font-medium">Currency</div>
-          </div>
-          <div class="flex-1 h-px bg-zinc-200 dark:bg-zinc-700"></div>
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full bg-zinc-200 dark:bg-zinc-700 text-zinc-400 text-xs grid place-items-center font-bold">2</div>
-            <div class="text-xs text-zinc-400">Calendar</div>
-          </div>
-        </div>
+        ${this.#renderIndicator()}
 
         <div class="w-12 h-12 rounded-2xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center text-xl font-bold mb-4">P</div>
         <h2 class="text-xl font-semibold mb-1">Welcome to Pocket!</h2>
@@ -13876,27 +13929,40 @@ alter publication supabase_realtime add table public.family_contributions;</div>
         </button>
       </div>`;
     }
-    // ── Step 2: Hijri offset calibration ───────────────────────────────
-    #renderStep2() {
+    // ── Step: sample data ───────────────────────────────────────────────
+    #renderSample() {
+      return `
+      <div class="p-6" style="min-width:320px;max-width:420px">
+        ${this.#renderIndicator()}
+
+        <div class="w-10 h-10 rounded-xl grid place-items-center mb-4" style="background:#10b98122;color:#10b981">
+          <i data-lucide="sparkles" style="width:22px;height:22px"></i>
+        </div>
+        <h2 class="text-xl font-semibold mb-1">Start clean?</h2>
+        <p class="text-sm text-zinc-500 mb-5">
+          Pocket opened with sample accounts, transactions and budgets so you could look around.
+          Remove them and start with an empty book, or keep them for now.
+        </p>
+
+        <button class="btn btn-primary w-full mb-2" onclick="window.__app.chooseSampleData(false)">
+          <i data-lucide="eraser"></i> Remove sample data \u2014 start clean
+        </button>
+        <button class="btn btn-outline w-full" onclick="window.__app.chooseSampleData(true)">
+          Keep sample data for now
+        </button>
+        <div class="text-xs text-zinc-400 text-center mt-3">
+          You can remove it later in Settings \u2192 Data
+        </div>
+      </div>`;
+    }
+    // ── Step: Hijri offset calibration ──────────────────────────────────
+    #renderHijri() {
       const u = this.#store.getState().user;
       const offset = u?.hijriOffset ?? 0;
       const todayHijri = this.#hijri.format(/* @__PURE__ */ new Date(), { long: true });
       return `
       <div class="p-6" style="min-width:320px;max-width:420px">
-        <!-- Step indicator -->
-        <div class="flex items-center gap-2 mb-5">
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full bg-emerald-500 text-white text-xs grid place-items-center">
-              <i data-lucide="check" style="width:12px;height:12px"></i>
-            </div>
-            <div class="text-xs text-zinc-400">Currency</div>
-          </div>
-          <div class="flex-1 h-px bg-zinc-200 dark:bg-zinc-700"></div>
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full bg-zinc-900 text-white text-xs grid place-items-center font-bold">2</div>
-            <div class="text-xs font-medium">Calendar</div>
-          </div>
-        </div>
+        ${this.#renderIndicator()}
 
         <div class="w-10 h-10 rounded-xl grid place-items-center mb-4" style="background:#0ea5e922;color:#0ea5e9">
           <i data-lucide="moon-star" style="width:22px;height:22px"></i>
@@ -13937,10 +14003,6 @@ alter publication supabase_realtime add table public.family_contributions;</div>
           <i data-lucide="check"></i> Done \u2014 open Pocket
         </button>
       </div>`;
-    }
-    /** Called by app.js to advance from step 1 → step 2. */
-    advanceToStep2() {
-      this.#step = 2;
     }
     #esc(s) {
       return (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
@@ -16716,16 +16778,42 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       if (el) el.value = (qty * unit).toFixed(2);
     }
     /**
-     * Step 1 → Step 2: save selected currency then advance to the
-     * Hijri calibration step by calling advanceToStep2() on the modal
-     * and refreshing in-place (no close/reopen flash).
+     * Currency step done: save the selected currency, then move to the next
+     * onboarding step in place (no close/reopen flash).
      */
     currencySetupNext() {
       const sel = document.getElementById("setupCurrency");
       if (sel) this.#store.getState().user.homeCurrency = sel.value;
       this.#store.persist();
-      this.#currencySetupModal.advanceToStep2();
+      this.#currencySetupModal.advance();
       this.#modal.refresh();
+    }
+    /**
+     * Sample-data step: keep the demo records, or remove them so the new user
+     * starts with an empty book. Removal is saved like any edit, so the cloud
+     * copy loses the sample rows too.
+     * @param {boolean} keep
+     */
+    chooseSampleData(keep) {
+      if (!keep) this.#clearSampleData();
+      this.#currencySetupModal.advance();
+      this.#modal.refresh();
+    }
+    /** Settings → Data: remove whatever sample data is left. */
+    removeSampleData() {
+      if (!BookCleaner.hasSample(this.#store.getState())) {
+        this.#toast.show("No sample data left");
+        return;
+      }
+      if (!confirm("Remove the sample accounts, transactions and budgets? Your own entries are kept.")) return;
+      this.#clearSampleData();
+      this.#toast.show("Sample data removed");
+      this.#render();
+    }
+    #clearSampleData() {
+      BookCleaner.removeSample(this.#store.getState());
+      this.#accounts.recompute();
+      this.#store.persist();
     }
     /**
      * Step 2 done: close the onboarding modal and enter the app.
@@ -17157,14 +17245,26 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#renderImportDone({ transactions: txCount, accounts: plan.newAccounts.length, categories: plan.newCategories.length, debts: 0 });
       this.#render();
     }
+    /**
+     * Delete every entry in the user's book — transactions, accounts, budgets,
+     * debts, regular items and account groups — here and in the cloud. Categories,
+     * settings and family sharing are kept. Asks for the word DELETE first,
+     * because this cannot be undone.
+     */
     resetData() {
-      if (!confirm("Reset ALL data? This cannot be undone.")) return;
-      this.#store.replaceState(SeedFactory.create(), (s) => StateMigrator.migrate(s));
-      this.#ensureUserDefaults();
+      const typed = prompt(
+        "This deletes ALL your transactions, accounts, budgets, debts and regular items, on every device. Categories and settings are kept. It cannot be undone \u2014 consider exporting a backup first.\n\nType DELETE to confirm."
+      );
+      if (typed == null) return;
+      if (typed.trim().toUpperCase() !== "DELETE") {
+        this.#toast.show("Reset cancelled \u2014 you didn't type DELETE");
+        return;
+      }
+      const removed = BookCleaner.wipe(this.#store.getState());
       this.#accounts.recompute();
       this.#store.persist();
       this.#render();
-      this.#toast.show("Data reset");
+      this.#toast.show(`Data reset \u2014 ${removed} record${removed === 1 ? "" : "s"} deleted`);
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Private: render

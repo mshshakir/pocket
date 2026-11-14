@@ -6,6 +6,7 @@ import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { CURRENCIES }      from '../../data/constants.js';
+import { BookCleaner }     from '../../domain/services/BookCleaner.js';
 
 export class SettingsModal {
   /** @type {Store} */                #store;
@@ -146,9 +147,15 @@ export class SettingsModal {
               <i data-lucide="file-text"></i> Export CSV
             </button>
             <button class="btn btn-outline justify-center text-rose-500"
-                    onclick="window.__app.resetData()">
+                    onclick="window.__app.resetData()"
+                    title="Delete every transaction, account, budget and debt">
               <i data-lucide="rotate-ccw"></i> Reset data
             </button>
+            ${BookCleaner.hasSample(state) ? `
+            <button class="btn btn-outline justify-center col-span-2"
+                    onclick="window.__app.removeSampleData()">
+              <i data-lucide="eraser"></i> Remove sample data
+            </button>` : ''}
           </div>
         </div>
 
