@@ -1,7 +1,8 @@
 /**
- * PocketBook — read-only view over an owner's book (as `pocket_export_book` returns it): their
- * preferences, accounts, categories and family permissions. It resolves the
- * hints a message carries (#account, @category) against that data.
+ * PocketBook — read-only view over an owner's book (as `pocket_bot_book` returns it): their
+ * preferences, accounts, categories, how often each category is used, and
+ * family permissions — no transactions. It resolves the hints a message
+ * carries (#account, @category) against that data.
  */
 export interface Account { id: string; name: string; currency: string; archived?: boolean }
 export interface Category { id: string; name: string; type?: string; parentId?: string | null }
@@ -43,15 +44,6 @@ export class PocketBook {
 
   get accounts(): Account[] {
     return (this.#data.accounts || []).filter((a: Account) => !a.archived);
-  }
-
-  hasTransaction(id: string): boolean {
-    return (this.#data.transactions || []).some((t: { id: string }) => t.id === id);
-  }
-
-  /** The account a stored transaction belongs to, if it is in the book. */
-  accountOfTransaction(id: string): string | null {
-    return (this.#data.transactions || []).find((t: { id: string }) => t.id === id)?.accountId ?? null;
   }
 
   /** Accounts a family member may add to; everything when `memberEmail` is null (the owner). */
@@ -162,12 +154,10 @@ export class PocketBook {
       .filter((c: Category) => (!c.type || c.type === type) && !this.isMain(c));
   }
 
+  /** How many entries of this type use each category (counted by the database). */
   #uses(type: string): Map<string, number> {
-    const uses = new Map<string, number>();
-    for (const t of this.#data.transactions || []) {
-      if (t.type === type && t.categoryId) uses.set(t.categoryId, (uses.get(t.categoryId) ?? 0) + 1);
-    }
-    return uses;
+    const counts: Record<string, number> = this.#data.categoryUses?.[type] ?? {};
+    return new Map(Object.entries(counts).map(([id, n]) => [id, Number(n) || 0]));
   }
 
   #parentName(c: Category): string {

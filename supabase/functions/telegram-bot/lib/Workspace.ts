@@ -35,20 +35,22 @@ export class Workspace {
     this.#accesses = accesses;
   }
 
+  /** The person's own book and every book shared with them, loaded in parallel. */
   static async load(store: PocketStore, link: TelegramLink): Promise<Workspace> {
+    const [own, shares] = await Promise.all([store.tryLoadBook(link.user_id), store.sharesFor(link.email)]);
     const accesses: BookAccess[] = [];
-    const own = await store.tryLoadBook(link.user_id);
     if (own) {
       accesses.push({ ownerId: link.user_id, isOwn: true, label: 'you', book: own, accounts: own.accounts });
     }
-    for (const share of await store.sharesFor(link.email)) {
-      if (share.ownerId === link.user_id) continue;
-      const book = await store.tryLoadBook(share.ownerId);
+    const others = shares.filter((share) => share.ownerId !== link.user_id);
+    const books = await Promise.all(others.map((share) => store.tryLoadBook(share.ownerId)));
+    others.forEach((share, i) => {
+      const book = books[i];
       const accounts = book?.writableAccounts(link.email) ?? [];
       if (book && accounts.length) {
         accesses.push({ ownerId: share.ownerId, isOwn: false, label: share.ownerName, book, accounts });
       }
-    }
+    });
     return new Workspace(accesses);
   }
 

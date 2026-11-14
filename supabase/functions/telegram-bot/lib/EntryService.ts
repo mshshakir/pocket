@@ -39,6 +39,7 @@ export interface RecordRequest {
   defer?: boolean;                  // don't ask for a category yet; report 'deferred'
   queue?: QueuedEntry[];            // lines of the same message to handle after this one
   shared?: boolean;                 // this line's category is the message's shared one
+  workspace?: Workspace;            // already loaded for this message (lines of one message share it)
 }
 
 /** What happened to one entry. */
@@ -113,7 +114,7 @@ export class EntryService {
 
   async #recordOne(req: RecordRequest): Promise<{ outcome: RecordOutcome; category: Category | null }> {
     const { link, chatId } = req;
-    const ws = await Workspace.load(this.#store, link);
+    const ws = req.workspace ?? await Workspace.load(this.#store, link);
 
     const parsed = new EntryParser(ws.paymentTypes).parse(req.text);
     if (!parsed.ok) return await this.#reject(req, parsed.reason);
@@ -211,6 +212,7 @@ export class EntryService {
       await this.record({
         link: req.link, chatId: req.chatId, seed: next.seed, text: next.text, replace: false,
         label: next.line, categoryId: next.categoryId, queue: rest, shared: next.shared,
+        workspace: req.workspace,
       });
     } catch (err) {
       // Only reached for the last line: record() reports the others itself.

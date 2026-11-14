@@ -173,9 +173,13 @@ export class PocketStore {
     return book;
   }
 
-  /** A user's book, or null if they have none yet. */
+  /**
+   * A user's book, or null if they have none yet: what the bot reads of it
+   * (settings, accounts, categories and their use counts, family permissions),
+   * never the transactions themselves — see migration 0013.
+   */
   async tryLoadBook(ownerId: string): Promise<PocketBook | null> {
-    const { data, error } = await this.#sb.rpc('pocket_export_book', { owner: ownerId });
+    const { data, error } = await this.#sb.rpc('pocket_bot_book', { owner: ownerId });
     if (error) throw error;
     return data ? new PocketBook(data) : null;
   }

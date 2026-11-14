@@ -7,6 +7,9 @@
  * category are then asked about one at a time, in order; a shared category
  * that needs choosing (e.g. @food, a main category) is asked once and used
  * for every line that relies on it.
+ *
+ * The person's books are loaded once for the whole message and shared by
+ * every line.
  */
 import { EntryBatch } from './EntryBatch.ts';
 import { EntryService } from './EntryService.ts';
@@ -47,7 +50,7 @@ export class BatchEntryService {
       try {
         const outcome = await this.#entries.record({
           link, chatId, seed: item.seed, text: item.text, replace: false,
-          replyTo: messageId, label: item.line, defer: true,
+          replyTo: messageId, label: item.line, defer: true, workspace: ws,
         });
         if (outcome === 'deferred') waiting.push({ seed: item.seed, line: item.line, text: item.text, shared: item.shared });
       } catch (err) {
@@ -61,7 +64,7 @@ export class BatchEntryService {
     try {
       await this.#entries.record({
         link, chatId, seed: first.seed, text: first.text, replace: false,
-        replyTo: messageId, label: first.line, queue: rest, shared: first.shared,
+        replyTo: messageId, label: first.line, queue: rest, shared: first.shared, workspace: ws,
       });
     } catch (err) {
       await this.#telegram.reply(chatId, `⚠️ Not saved: “${first.line}” — ${EntryService.reason(err)}`, messageId);
