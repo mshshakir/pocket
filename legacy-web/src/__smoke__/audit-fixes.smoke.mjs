@@ -8,7 +8,7 @@
  *   C2  CSV import re-denominated existing accounts
  *   C3  transfer → expense orphaned the paired leg (money created)
  *   C4  expense → transfer produced a leg-less, zero-impact row (money lost)
- *   C5  a failed pull let the next push overwrite the cloud from version 0
+ *   C5  a failed load let the next save overwrite the cloud
  *   C6  a pull inside the push debounce discarded the local edit
  *   C7  an involuntary sign-out wiped local storage
  *   C8  importJson dropped every key the file omitted
@@ -18,6 +18,7 @@
  */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -311,77 +312,24 @@ console.log('\naudit regression suite');
   w.close();
 }
 
-// ═══ C5 / C6 / C7 — sync guards, driven through a fake Supabase ════════════
+// ═══ C5 / C6 / C7 — sync guards, driven through a fake cloud ════════════════
 {
-  // Minimal Supabase stand-in: a single user_data row with CAS semantics.
-  const cloud = { row: { id: 'u1', data: { marker: 'CLOUD' }, version: 7 }, failNextSelect: false, writes: [] };
-  const makeSb = () => ({
-    auth: {
-      onAuthStateChange(cb) { cloud.authCb = cb; },
-      getSession: async () => ({ data: { session: null } }),
-      signOut: async () => {},
-      signInWithOAuth: async () => ({}),
-    },
-    removeChannel() {},
-    channel(name) {
-      const ch = {
-        on(kind, cfg, handler) {
-          // Capture the user_data UPDATE handler so a test can simulate another
-          // device advancing the row.
-          if (cfg?.table === 'user_data') cloud.onUserDataUpdate = handler;
-          return ch;
-        },
-        subscribe() { return ch; },
-      };
-      return ch;
-    },
-    from(table) {
-      const q = {
-        _table: table, _eq: {},
-        select() { return q; },
-        eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; },
-        order() { return q; },
-        async single() {
-          if (cloud.failNextSelect) { cloud.failNextSelect = false; throw new Error('network down'); }
-          return { data: cloud.row, error: null };
-        },
-        update(patch) { q._patch = patch; return q; },
-        async upsert(payload) { cloud.writes.push({ kind: 'upsert', payload }); cloud.row = { ...payload }; return { error: null }; },
-        then(res) { // awaited without .single()
-          if (q._patch) {
-            const casOk = q._eq.version === undefined || q._eq.version === cloud.row.version;
-            if (casOk && q._patch.version !== undefined) {
-              cloud.writes.push({ kind: 'update', payload: q._patch });
-              cloud.row = { ...cloud.row, ...q._patch };
-              return res({ data: [{ version: q._patch.version }], error: null });
-            }
-            return res({ data: [], error: null });
-          }
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
-
-  const signIn = async (w) => {
-    cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
+  const user = { id: 'u1', email: 'a@b.c' };
+  const signIn = async () => {
+    cloud.authCb?.('SIGNED_IN', { user });
     await wait(150);
   };
+  let cloud;
 
-  // ---- C5: a failed pull must block the next push -------------------------
+  // ---- C5: a failed load must block the next save --------------------------
   {
-    cloud.row = { id: 'u1', data: { marker: 'CLOUD' }, version: 7 };
-    cloud.writes = [];
-    cloud.failNextSelect = true;
-    const w = boot(baseState(), { supabase: { createClient: () => makeSb() } });
+    cloud = new FakeCloud();
+    cloud.setBook('u1', { ...baseState(), marker: 'CLOUD' });
+    cloud.failNext = 'pocket_get_book';
+    const w = boot(baseState(), { supabase: { createClient: cloud.client(user) } });
     await wait(80);
-    await signIn(w);                        // pull runs and throws
+    await signIn();                         // load runs and fails
 
-    // Use a mutation that genuinely calls schedulePush(). NB: many settings
-    // mutations do not — that is audit finding H7, deliberately out of scope
-    // here, but it makes them useless as a trigger for this test.
     const doc = w.document, $ = (s) => doc.querySelector(s);
     w.__app.openModal('transaction', {});
     await wait(20);
@@ -389,31 +337,23 @@ console.log('\naudit regression suite');
     await w.__app.submitTx({ preventDefault() {}, target: $('#txForm') }, '');
     await wait(1400);                       // past the 1s debounce
 
-    const upserts = cloud.writes.filter((x) => x.kind === 'upsert');
-    ok('C5 no blind upsert after a failed pull', upserts.length === 0,
-       JSON.stringify(upserts.map((x) => x.payload?.version)));
-    ok('C5 cloud row left untouched at version 7',
-       cloud.row.version === 7 && cloud.row.data?.marker === 'CLOUD',
-       JSON.stringify({ v: cloud.row.version, m: cloud.row.data?.marker }));
+    ok('C5 no blind save after a failed load', cloud.saves === 0, String(cloud.saves));
+    ok('C5 cloud book left untouched',
+       cloud.book('u1').marker === 'CLOUD' && cloud.book('u1').transactions.length === 0);
     w.close();
   }
 
-  // ---- C6: a pull inside the debounce must not discard the local edit -----
+  // ---- C6: a load inside the debounce must not discard the local edit -----
   {
-    cloud.row = {
-      id: 'u1', version: 7,
-      data: { ...baseState(), transactions: [] },
-    };
-    cloud.writes = [];
-    cloud.failNextSelect = false;
-    const w = boot(baseState(), { supabase: { createClient: () => makeSb() } });
+    cloud = new FakeCloud();
+    cloud.setBook('u1', baseState());
+    const w = boot(baseState(), { supabase: { createClient: cloud.client(user) } });
     await wait(80);
-    await signIn(w);                        // pull succeeds → version 7
+    await signIn();
 
     const app = w.__app, doc = w.document, $ = (s) => doc.querySelector(s);
     const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
 
-    // Save a transaction — schedulePush queues a push for +1000 ms.
     app.openModal('transaction', {});
     await wait(20);
     $('#txForm [name=amount]').value = '77';
@@ -422,35 +362,37 @@ console.log('\naudit regression suite');
     ok('C6 transaction saved locally', saved().transactions.length === 1,
        String(saved().transactions.length));
 
-    // 300 ms in — well inside the debounce — another device's UPDATE arrives.
-    cloud.onUserDataUpdate?.({ new: { version: 99 } });
-    await wait(400);
+    // Inside the debounce, another device changes a row in this book.
+    cloud.book('u1').categories.push({ id: 'c2', name: 'Fuel', type: 'expense', parentId: null });
+    cloud.emit('categories', 'u1', { id: 'c2' });
+    await wait(700);
 
-    ok('C6 local transaction survived the mid-debounce pull',
+    ok('C6 local transaction survived the mid-debounce load',
        saved().transactions.length === 1, `${saved().transactions.length} rows`);
     ok('C6 it was flushed to the cloud rather than dropped',
-       (cloud.row.data?.transactions || []).length === 1,
-       `${(cloud.row.data?.transactions || []).length} rows in cloud`);
-    ok('C6 the cloud version advanced', cloud.row.version > 7, String(cloud.row.version));
+       cloud.book('u1').transactions.length === 1,
+       `${cloud.book('u1').transactions.length} rows in cloud`);
+    ok('C6 the other device\'s change arrived too',
+       saved().categories.some((c) => c.id === 'c2'));
     w.close();
   }
 
   // ---- C7: an involuntary sign-out must not wipe local data ---------------
   {
-    cloud.row = { id: 'u1', version: 7, data: { ...baseState(), transactions: [] } };
-    cloud.writes = [];
+    cloud = new FakeCloud();
+    cloud.setBook('u1', baseState());
     const st = baseState();
     st.transactions = [{ id: 't1', accountId: 'a1', categoryId: 'c1', amount: 4200,
       currency: 'USD', type: 'expense', date: '2026-03-01', paymentType: 'card',
       recordState: 'cleared', tags: [] }];
-    const w = boot(st, { supabase: { createClient: () => makeSb() } });
+    const w = boot(st, { supabase: { createClient: cloud.client(user) } });
     await wait(80);
     const saved = () => JSON.parse(w.localStorage.getItem('pocket.v1'));
 
-    cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-    await wait(150);
+    await signIn();
 
-    // Put a local-only edit in place, then let the token refresh fail.
+    // Put a local-only edit in place, then let the token refresh fail before
+    // the debounced save goes out.
     w.__app.openModal('transaction', {});
     await wait(20);
     w.document.querySelector('#txForm [name=amount]').value = '9';
@@ -462,9 +404,6 @@ console.log('\naudit regression suite');
     cloud.authCb?.('SIGNED_OUT', null);     // NOT app.signOut() — a lapsed session
     await wait(120);
 
-    // NB: the sign-in pull legitimately replaced the pre-existing guest data
-    // with the cloud snapshot — that is normal sync behaviour. What must NOT
-    // happen is the lapsed session destroying the edit made while signed in.
     ok('C7 local transactions survive a lapsed session',
        saved().transactions.length === beforeCount && beforeCount > 0,
        `${saved().transactions.length} vs ${beforeCount}`);
@@ -472,9 +411,14 @@ console.log('\naudit regression suite');
        saved().transactions.some((t) => t.amount === 900),
        JSON.stringify(saved().transactions.map((t) => t.amount)));
 
+    // Signing back in replays the edit the cloud never received.
+    await signIn();
+    await wait(300);
+    ok('C7 the edit reaches the cloud after signing back in',
+       cloud.book('u1').transactions.some((t) => t.amount === 900),
+       JSON.stringify(cloud.book('u1').transactions.map((t) => t.amount)));
+
     // ...but a deliberate sign-out still clears the device.
-    cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-    await wait(150);
     await w.__app.signOut?.();
     await wait(150);
     ok('C7 an explicit sign-out still wipes local data',

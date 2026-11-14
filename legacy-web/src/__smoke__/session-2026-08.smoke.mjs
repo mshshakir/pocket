@@ -2,8 +2,11 @@
  * session-2026-08.smoke.mjs — regression tests for the 2026-08-15 fixes.
  *
  *   D1  Three transactions entered back-to-back then the tab is refreshed:
- *       nothing had been pushed, and the boot pull adopted the stale cloud row
- *       over all three. Cold-start recovery must now commit local first.
+ *       nothing had been pushed, and the boot pull adopted the stale cloud copy
+ *       over all three. Cold-start recovery must replay them onto the cloud.
+ *   D1b Edits from another device made meanwhile are kept alongside them.
+ *   D1c With no record of what the cloud last had, the local copy is kept as
+ *       a restorable backup rather than lost.
  *   D2  The push debounce was re-armed by every save, so a burst could
  *       postpone the only durable write indefinitely (MAX_PUSH_WAIT_MS).
  *   D3  visibilitychange → hidden must flush a pending push (the mobile case:
@@ -30,6 +33,7 @@
  */
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
+import { FakeCloud } from './FakeCloud.mjs';
 
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 
@@ -88,57 +92,18 @@ function boot(state, { supabase, storage, storageQuota } = {}) {
   return window;
 }
 
-/** Minimal Supabase stand-in with compare-and-swap semantics on user_data. */
-function makeCloud() {
-  const cloud = { row: null, writes: [], failNextSelect: false, blockWrites: false, authCb: null };
-  cloud.sb = () => ({
-    auth: {
-      onAuthStateChange(cb) { cloud.authCb = cb; },
-      getSession: async () => ({ data: { session: null } }),
-      signOut: async () => {}, signInWithOAuth: async () => ({}),
-    },
-    removeChannel() {},
-    channel() { const ch = { on() { return ch; }, subscribe() { return ch; }, send() {} }; return ch; },
-    from() {
-      const q = {
-        _eq: {},
-        select() { return q; }, eq(k, v) { q._eq[k] = v; return q; },
-        in() { return q; }, order() { return q; },
-        async single() {
-          if (cloud.failNextSelect) { cloud.failNextSelect = false; throw new Error('network down'); }
-          // Deep-clone, as a real HTTP response would be. replaceState() copies
-          // the returned object into live state BY REFERENCE, so handing out the
-          // stored row let local mutations write straight back into the fake
-          // cloud — the harness would then claim a push had happened.
-          const copy = cloud.row ? JSON.parse(JSON.stringify(cloud.row)) : null;
-          return { data: copy, error: copy ? null : { code: 'PGRST116' } };
-        },
-        update(patch) { q._patch = patch; return q; },
-        async upsert(payload) {
-          if (cloud.blockWrites) throw new Error('network down');
-          cloud.writes.push({ kind: 'upsert', payload });
-          if (!cloud.row) cloud.row = { ...payload };
-          return { data: [{ version: payload.version }], error: null };
-        },
-        then(res) {
-          if (cloud.blockWrites) throw new Error('network down');
-          if (q._patch) {
-            const casOk = q._eq.version === undefined || q._eq.version === cloud.row?.version;
-            if (casOk && q._patch.version !== undefined) {
-              cloud.writes.push({ kind: 'update', payload: q._patch });
-              cloud.row = { ...cloud.row, ...q._patch };
-              return res({ data: [{ version: q._patch.version }], error: null });
-            }
-            return res({ data: [], error: null });
-          }
-          return res({ data: [], error: null });
-        },
-      };
-      return q;
-    },
-  });
-  return cloud;
-}
+const USER = { id: 'u1', email: 'a@b.c' };
+const signIn = async (cloud, ms = 150) => {
+  cloud.authCb?.('SIGNED_IN', { user: USER });
+  await wait(ms);
+};
+/** What a closing tab leaves behind in storage. */
+const carry = (w) => Object.fromEntries(['pocket.v1', 'pocket.v1.pending', 'pocket.v2.baseline']
+  .map((k) => [k, w.localStorage.getItem(k)]));
+const restore = (carried) => (win) => {
+  for (const [k, v] of Object.entries(carried)) if (v) win.localStorage.setItem(k, v);
+};
+const cloudAmounts = (cloud) => (cloud.book('u1').transactions || []).map((t) => t.amount);
 
 const addTx = async (w, amount) => {
   const $ = (s) => w.document.querySelector(s);
@@ -151,21 +116,20 @@ const addTx = async (w, amount) => {
 
 console.log('\n2026-08 session regression suite');
 
-// ═══ D1 — three entries + refresh must not be swallowed by a stale cloud row ═
+// ═══ D1 — three entries + refresh must not be swallowed by the cloud copy ══
 {
   console.log('\n D — durability');
-  const cloud = makeCloud();
-  cloud.row = { id: 'u1', version: 7, data: { ...baseState(), transactions: [] } };
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
 
   // ── Visit 1: sign in, enter three transactions, "close the tab" ──────────
-  const w1 = boot(baseState(), { supabase: { createClient: cloud.sb } });
+  const w1 = boot(baseState(), { supabase: { createClient: cloud.client(USER) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(150);
+  await signIn(cloud);
 
   // The tab is going to die before anything reaches the cloud. Simulating that
-  // by blocking writes is deterministic, where racing the debounce is not.
-  cloud.blockWrites = true;
+  // by failing saves is deterministic, where racing the debounce is not.
+  cloud.offline = true;
   await addTx(w1, 11);
   await addTx(w1, 22);
   await addTx(w1, 33);
@@ -176,34 +140,19 @@ console.log('\n2026-08 session regression suite');
      `${local1.transactions.length}`);
   ok('D1 a durable pending marker was written',
      !!w1.localStorage.getItem('pocket.v1.pending'));
+  ok('D1 …and the copy the cloud last confirmed was kept',
+     !!w1.localStorage.getItem('pocket.v2.baseline'));
 
-  // Snapshot storage exactly as the browser would leave it, then kill the tab
-  // BEFORE the debounce fires — the original failure.
-  const carried = {
-    'pocket.v1':         w1.localStorage.getItem('pocket.v1'),
-    'pocket.v1.pending': w1.localStorage.getItem('pocket.v1.pending'),
-  };
-  const cloudVersionAtClose = cloud.row.version;
+  const carried = carry(w1);
   w1.close();
-  cloud.blockWrites = false;
-
-  ok('D1 the cloud never received them',
-     cloudVersionAtClose === 7 && (cloud.row.data.transactions || []).length === 0,
-     `v${cloudVersionAtClose}/${(cloud.row.data.transactions || []).length} rows`);
-  ok('D1 the pending marker survived the tab dying',
-     !!carried['pocket.v1.pending']);
-  ok('D1 …and it recorded the baseline the edits were made against',
-     JSON.parse(carried['pocket.v1.pending'] || '{}').baseVersion === 7,
-     carried['pocket.v1.pending']);
+  cloud.offline = false;
+  ok('D1 the cloud never received them', cloudAmounts(cloud).length === 0,
+     JSON.stringify(cloudAmounts(cloud)));
 
   // ── Visit 2: fresh boot over the same storage ────────────────────────────
-  const w2 = boot(null, {
-    supabase: { createClient: cloud.sb },
-    storage: (win) => { for (const [k, v] of Object.entries(carried)) if (v) win.localStorage.setItem(k, v); },
-  });
+  const w2 = boot(null, { supabase: { createClient: cloud.client(USER) }, storage: restore(carried) });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(300);
+  await signIn(cloud, 300);
 
   const local2 = JSON.parse(w2.localStorage.getItem('pocket.v1'));
   ok('D1 all three survived the reload', local2.transactions.length === 3,
@@ -211,147 +160,150 @@ console.log('\n2026-08 session regression suite');
   ok('D1 the first one survived too',
      local2.transactions.some((t) => t.amount === 1100),
      JSON.stringify(local2.transactions.map((t) => t.amount)));
-  ok('D1 local state was pushed OVER the stale cloud row',
-     (cloud.row.data.transactions || []).length === 3,
-     `${(cloud.row.data.transactions || []).length} rows in cloud`);
+  ok('D1 all three reached the cloud', cloudAmounts(cloud).length === 3,
+     JSON.stringify(cloudAmounts(cloud)));
   ok('D1 the pending marker was cleared once committed',
      !w2.localStorage.getItem('pocket.v1.pending'));
   w2.close();
 }
 
-// ═══ D1b — a genuine conflict keeps a restorable backup ════════════════════
+// ═══ D1b — another device's entries and ours are both kept ════════════════
 {
-  const cloud = makeCloud();
-  cloud.row = { id: 'u1', version: 7, data: { ...baseState(), transactions: [] } };
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
 
-  const w1 = boot(baseState(), { supabase: { createClient: cloud.sb } });
+  const w1 = boot(baseState(), { supabase: { createClient: cloud.client(USER) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(150);
-  cloud.blockWrites = true;
+  await signIn(cloud);
+  cloud.offline = true;
   await addTx(w1, 44);
   await wait(1200);
-  const carried = {
-    'pocket.v1':         w1.localStorage.getItem('pocket.v1'),
-    'pocket.v1.pending': w1.localStorage.getItem('pocket.v1.pending'),
-  };
+  const carried = carry(w1);
   w1.close();
-  cloud.blockWrites = false;
+  cloud.offline = false;
 
-  // Another device writes while we are away → our recorded baseline is stale.
-  cloud.row = { id: 'u1', version: 12, data: { ...baseState(), transactions: [
+  // Another device saves while we are away.
+  cloud.book('u1').transactions.push(
     { id: 'other', accountId: 'a1', categoryId: 'c1', amount: 999, currency: 'USD',
-      type: 'expense', date: '2026-08-01', paymentType: 'card', recordState: 'cleared', tags: [] },
-  ] } };
+      type: 'expense', date: '2026-08-01', paymentType: 'card', recordState: 'cleared', tags: [] });
 
-  const w2 = boot(null, {
-    supabase: { createClient: cloud.sb },
-    storage: (win) => { for (const [k, v] of Object.entries(carried)) if (v) win.localStorage.setItem(k, v); },
-  });
+  const w2 = boot(null, { supabase: { createClient: cloud.client(USER) }, storage: restore(carried) });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(300);
+  await signIn(cloud, 300);
+
+  const local = JSON.parse(w2.localStorage.getItem('pocket.v1')).transactions.map((t) => t.amount).sort((a, b) => a - b);
+  ok('D1b this device has both entries', JSON.stringify(local) === '[999,4400]', JSON.stringify(local));
+  ok('D1b the cloud has both entries',
+     JSON.stringify(cloudAmounts(cloud).sort((a, b) => a - b)) === '[999,4400]', JSON.stringify(cloudAmounts(cloud)));
+  w2.close();
+}
+
+// ═══ D1c — unsynced edits with no known baseline keep a restorable backup ══
+{
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
+
+  const w1 = boot(baseState(), { supabase: { createClient: cloud.client(USER) } });
+  await wait(80);
+  await signIn(cloud);
+  cloud.offline = true;
+  await addTx(w1, 55);
+  await wait(1200);
+  const carried = carry(w1);
+  delete carried['pocket.v2.baseline'];   // e.g. left over from the old sync
+  w1.close();
+  cloud.offline = false;
+
+  const w2 = boot(null, { supabase: { createClient: cloud.client(USER) }, storage: restore(carried) });
+  await wait(80);
+  await signIn(cloud, 300);
 
   const backups = JSON.parse(w2.localStorage.getItem('pocket.v1.conflicts') || '[]');
-  ok('D1b the losing local copy was stashed, not destroyed', backups.length >= 1,
+  ok('D1c the unmatched local copy was stashed, not destroyed', backups.length >= 1,
      JSON.stringify(backups));
   const stashed = backups[0] && JSON.parse(w2.localStorage.getItem(backups[0].key) || 'null');
-  ok('D1b the backup actually contains the unsynced transaction',
-     (stashed?.state?.transactions || []).some((t) => t.amount === 4400),
+  ok('D1c the backup actually contains the unsynced transaction',
+     (stashed?.state?.transactions || []).some((t) => t.amount === 5500),
      JSON.stringify((stashed?.state?.transactions || []).map((t) => t.amount)));
   w2.close();
 }
 
 // ═══ D2 — a burst of saves cannot postpone the push indefinitely ═══════════
 {
-  const cloud = makeCloud();
-  cloud.row = { id: 'u1', version: 3, data: { ...baseState(), transactions: [] } };
-  const w = boot(baseState(), { supabase: { createClient: cloud.sb } });
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
+  const w = boot(baseState(), { supabase: { createClient: cloud.client(USER) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(150);
+  await signIn(cloud);
 
   // Save every ~700ms — always inside the 1000ms debounce, so a pure
   // trailing-edge implementation would never fire.
-  const startVersion = cloud.row.version;
   for (let i = 0; i < 6; i++) { await addTx(w, i + 1); await wait(670); }
 
-  ok('D2 the push fired despite continuous saves', cloud.row.version > startVersion,
-     `v${startVersion} → v${cloud.row.version}`);
-  ok('D2 the cloud has the entries', (cloud.row.data.transactions || []).length >= 4,
-     `${(cloud.row.data.transactions || []).length} rows`);
+  ok('D2 the cloud has the entries despite continuous saves', cloudAmounts(cloud).length >= 4,
+     `${cloudAmounts(cloud).length} rows`);
   w.close();
 }
 
 // ═══ D3 — hiding the page flushes a pending push ═══════════════════════════
 {
-  const cloud = makeCloud();
-  cloud.row = { id: 'u1', version: 5, data: { ...baseState(), transactions: [] } };
-  const w = boot(baseState(), { supabase: { createClient: cloud.sb } });
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
+  const w = boot(baseState(), { supabase: { createClient: cloud.client(USER) } });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(150);
+  await signIn(cloud);
 
   await addTx(w, 77);
-  const before = cloud.row.version;
+  const before = cloud.saves;
 
   // Background the tab well inside the debounce.
   Object.defineProperty(w.document, 'visibilityState', { value: 'hidden', configurable: true });
   w.document.dispatchEvent(new w.Event('visibilitychange'));
   await wait(200);
 
-  ok('D3 backgrounding the tab flushed the push', cloud.row.version > before,
-     `v${before} → v${cloud.row.version}`);
-  ok('D3 the transaction reached the cloud',
-     (cloud.row.data.transactions || []).some((t) => t.amount === 7700),
-     JSON.stringify((cloud.row.data.transactions || []).map((t) => t.amount)));
+  ok('D3 backgrounding the tab flushed the push', cloud.saves > before,
+     `${before} → ${cloud.saves}`);
+  ok('D3 the transaction reached the cloud', cloudAmounts(cloud).includes(7700),
+     JSON.stringify(cloudAmounts(cloud)));
   w.close();
 }
 
 // ═══ D4 — a failed local write must not also suppress the cloud push ═══════
 {
-  const cloud = makeCloud();
-  cloud.row = { id: 'u1', version: 9, data: { ...baseState(), transactions: [] } };
+  const cloud = new FakeCloud();
+  cloud.setBook('u1', baseState());
   // A real quota, not a stubbed setItem: jsdom's localStorage is a Proxy, so
   // assigning over setItem silently does nothing and the test would pass
   // whatever the app did.
-  const w = boot(baseState(), { supabase: { createClient: cloud.sb }, storageQuota: 60000 });
+  const w = boot(baseState(), { supabase: { createClient: cloud.client(USER) }, storageQuota: 60000 });
   await wait(80);
-  cloud.authCb?.('SIGNED_IN', { user: { id: 'u1', email: 'a@b.c' } });
-  await wait(150);
+  await signIn(cloud);
 
   // Eat the remaining quota so every further `pocket.v1` write fails, exactly
   // as it does in a full or InPrivate browser profile.
   const snapshot = w.localStorage.getItem('pocket.v1') || '';
-  // Leave less headroom than one more transaction needs, so the next real save
-  // is the one that tips it over.
-  w.localStorage.setItem('filler', 'x'.repeat(Math.max(0, 60000 - snapshot.length - 200)));
+  w.localStorage.setItem('filler', 'x'.repeat(Math.max(0, 60000 - snapshot.length
+    - (w.localStorage.getItem('pocket.v2.baseline') || '').length - 200)));
   let localWriteFailed = false;
   try { w.localStorage.setItem('pocket.v1', snapshot + ' '.repeat(400)); }
   catch (_) { localWriteFailed = true; }
   ok('D4 the harness really did exhaust local storage', localWriteFailed);
 
-  const before = cloud.row.version;
   await addTx(w, 88);
   await wait(1400);
 
-  ok('D4 the cloud push still ran when localStorage failed', cloud.row.version > before,
-     `v${before} → v${cloud.row.version}`);
-  ok('D4 and it carried the transaction',
-     (cloud.row.data.transactions || []).some((t) => t.amount === 8800),
-     JSON.stringify((cloud.row.data.transactions || []).map((t) => t.amount)));
+  ok('D4 the cloud push still ran when localStorage failed', cloudAmounts(cloud).includes(8800),
+     JSON.stringify(cloudAmounts(cloud)));
 
-  // submitTx also calls schedulePush() explicitly, so the assertions above pass
-  // even if Store's local-change hook is suppressed. Every OTHER mutation path
-  // relies on that hook alone — drive one, or the guard goes untested.
-  const before2 = cloud.row.version;
+  // submitTx also calls schedulePush() explicitly, so the assertion above
+  // passes even if Store's local-change hook is suppressed. Every OTHER
+  // mutation path relies on that hook alone — drive one, or the guard goes
+  // untested.
   w.__app.setDefaultPaymentType('cash');
   await wait(1400);
-  ok('D4 a hook-only mutation also still pushes', cloud.row.version > before2,
-     `v${before2} → v${cloud.row.version}`);
-  ok('D4 …and the change reached the cloud',
-     cloud.row.data?.user?.defaultPaymentType === 'cash',
-     String(cloud.row.data?.user?.defaultPaymentType));
+  ok('D4 a hook-only mutation also reached the cloud',
+     cloud.book('u1').user?.defaultPaymentType === 'cash',
+     String(cloud.book('u1').user?.defaultPaymentType));
   w.close();
 }
 
@@ -408,8 +360,9 @@ console.log('\n2026-08 session regression suite');
   const st = baseState({
     transactions: [{
       id: 't1', accountId: 'a1', categoryId: 'c1', amount: 5000, currency: 'USD',
-      type: 'expense', date: '2026-08-10', paymentType: 'card', recordState: 'cleared',
-      tags: [], payee: 'Shop',
+      // This month, so the Transactions view's default period shows it.
+      type: 'expense', date: `${new Date().toISOString().slice(0, 7)}-10`, paymentType: 'card',
+      recordState: 'cleared', tags: [], payee: 'Shop',
     }],
   });
   const w = boot(st);
