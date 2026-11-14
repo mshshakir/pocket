@@ -127,6 +127,11 @@ export class BotController {
   async handleCallback(cb: TelegramCallback): Promise<void> {
     const msg = cb.message;
     if (!msg) return void await this.#telegram.answer(cb.id);
+    if (HelpMenu.isButton(cb.data)) {
+      const page = HelpMenu.page(HelpMenu.pageFor(cb.data));
+      await this.#telegram.answer(cb.id);
+      return void await this.#telegram.edit(msg.chat.id, msg.message_id, page.text, page.keyboard, true);
+    }
     if (msg.chat.type && msg.chat.type !== 'private') {
       try {
         return void await this.#groups.handleCallback(cb);
@@ -227,7 +232,8 @@ export class BotController {
 
   async #help(chatId: number): Promise<void> {
     await this.#telegram.setCommands(HelpMenu.COMMANDS);
-    await this.#telegram.send(chatId, HelpMenu.GUIDE, { html: true });
+    const page = HelpMenu.page();
+    await this.#telegram.send(chatId, page.text, { html: true, keyboard: page.keyboard });
   }
 
   /** Drops a waiting step; a category question, and any lines queued behind it, are marked as not saved. */

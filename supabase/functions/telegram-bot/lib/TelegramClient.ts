@@ -56,11 +56,12 @@ export class TelegramClient {
   }
 
   /** Replaces a message's text and buttons (no keyboard removes them). */
-  async edit(chatId: number, messageId: number, text: string, keyboard?: Keyboard): Promise<void> {
+  async edit(chatId: number, messageId: number, text: string, keyboard?: Keyboard, html = false): Promise<void> {
     await this.#call('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text,
+      parse_mode: html ? 'HTML' : undefined,
       reply_markup: { inline_keyboard: keyboard ?? [] },
     });
   }

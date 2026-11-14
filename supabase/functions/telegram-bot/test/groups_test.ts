@@ -403,8 +403,20 @@ console.log('\ngroup summaries');
   await say('/help');
   ok('H1 /help in a group: the summary guide, and the group menu shows /summary', /\/summary time 8:30pm/.test(tg.last) && tg.menus.includes('all_group_chats'));
   const { HelpMenu } = await import('../lib/HelpMenu.ts');
-  ok('H2 the private /help explains group summaries and their commands',
-    /Family group summaries/.test(HelpMenu.GUIDE) && /summary time 8:30pm/.test(HelpMenu.GUIDE) && /summary calendar hijri/.test(HelpMenu.GUIDE) && /never personal/.test(HelpMenu.GUIDE));
+  const home = HelpMenu.page();
+  const topics = home.keyboard.flat().map((b) => b.callback_data);
+  ok('H2 /help: a short first page with a button for every topic',
+    home.text.length < 600 && topics.length === HelpMenu.pages.length - 1 && topics.every((t) => HelpMenu.isButton(t)), home.text);
+  const pages = topics.map((t) => ({ t, p: HelpMenu.page(HelpMenu.pageFor(t)) }));
+  ok('H3 every topic page fits one message and has a Back button',
+    pages.every(({ p }) => p.text.length < 4096 && p.keyboard.flat().some((b) => b.callback_data === 'help:home')),
+    pages.map(({ t, p }) => `${t}:${p.text.length}`).join(' '));
+  const family = HelpMenu.page('family').text;
+  ok('H4 the Family page explains group summaries and their commands',
+    /summary time 8:30pm/.test(family) && /summary calendar hijri/.test(family) && /summary yearly 31 march/.test(family) && /never personal/.test(family));
+  ok('H5 an unknown button falls back to the first page', HelpMenu.pageFor('help:nope') === 'home' && !HelpMenu.isButton('tz:Asia/Kolkata'));
+  const all = HelpMenu.pages.map((k) => HelpMenu.page(k).text).join('\n');
+  ok('H6 nothing from the old guide was lost', ['@rest', '=7750', '8/11/2025', '🗑', '/unlink', '#mpesa @groceries', 'yesterday'].every((x) => all.includes(x)));
 }
 {
   const { SummaryYears: Y } = await import('../lib/SummaryYears.ts');
