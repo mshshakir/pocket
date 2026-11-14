@@ -12263,8 +12263,9 @@ This replaces your current grouping.`
       </div>`;
     }
     // ── Helpers ───────────────────────────────────────────────────────────
+    /** Hijri off in Settings means a plain Gregorian calendar, whatever mode was chosen before. */
     #calMode() {
-      return this.state.user.calendarMode || "both";
+      return this.state.user.showHijri ? this.state.user.calendarMode || "both" : "gregorian";
     }
     #ensureFocus() {
       if (!this.#focus) this.#focus = this.#isoDate(/* @__PURE__ */ new Date());
@@ -12777,7 +12778,7 @@ This replaces your current grouping.`
       const todayH = this.#hijri.toHijri(data.date);
       const miqaat = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
       const hijriLabel = this.#hijri.format(data.date, { long: true });
-      const hijriPreview = `${hijriLabel}${miqaat ? ` \xB7 <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ""}`;
+      const hijriPreview = state.user?.showHijri ? `${hijriLabel}${miqaat ? ` \xB7 <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ""}` : "";
       const current = data.paymentType || window.__app?.paymentTypeService?.defaultType?.() || "card";
       const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
       const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
@@ -14901,6 +14902,7 @@ This replaces your current grouping.`
       const items = s.regularItems || [];
       const logs = this.#regularLogs ? this.#regularLogs.onDate(date) : (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
       const hijriStr = (() => {
+        if (!s.user?.showHijri) return "";
         try {
           return this.#hijriService.format(date);
         } catch {

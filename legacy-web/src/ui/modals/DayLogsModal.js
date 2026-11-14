@@ -27,6 +27,7 @@ export class DayLogsModal {
       ? this.#regularLogs.onDate(date)
       : (s.transactions || []).filter(t => t.regularItemId && t.date === date);
     const hijriStr = (() => {
+      if (!s.user?.showHijri) return '';   // Hijri off in Settings
       try { return this.#hijriService.format(date); } catch { return ''; }
     })();
 

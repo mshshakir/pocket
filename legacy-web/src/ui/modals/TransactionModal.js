@@ -327,7 +327,10 @@ export class TransactionModal {
     const todayH      = this.#hijri.toHijri(data.date);
     const miqaat      = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
     const hijriLabel  = this.#hijri.format(data.date, { long: true });
-    const hijriPreview= `${hijriLabel}${miqaat ? ` · <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ''}`;
+    // Hijri off in Settings → no Hijri date (or miqaat) under the date field.
+    const hijriPreview= state.user?.showHijri
+      ? `${hijriLabel}${miqaat ? ` · <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ''}`
+      : '';
 
     // Pre-compute payment type options to avoid triple-nested template literals
     // which cause a parse error in some V8/Node versions (Bug #Bug).

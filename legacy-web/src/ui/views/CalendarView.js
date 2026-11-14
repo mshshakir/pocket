@@ -312,7 +312,8 @@ export class CalendarView extends BaseView {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  #calMode()  { return this.state.user.calendarMode || 'both'; }
+  /** Hijri off in Settings means a plain Gregorian calendar, whatever mode was chosen before. */
+  #calMode()  { return this.state.user.showHijri ? (this.state.user.calendarMode || 'both') : 'gregorian'; }
   #ensureFocus() { if (!this.#focus) this.#focus = this.#isoDate(new Date()); }
   // Local-component ISO (B1): toISOString() is UTC and shifted the calendar grid
   // by a day in non-UTC timezones, mismatching stored local 'YYYY-MM-DD' dates.
