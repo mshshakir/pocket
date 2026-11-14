@@ -108,3 +108,25 @@ Commands (also in the bot's menu button): `/help` shows the full guide; `/accoun
 `/categories` lists expense categories; `/link` and `/unlink` connect or disconnect a chat;
 `/default` shows or changes the default account; `/cancel` drops an entry waiting for a category,
 or an edit.
+
+## Family group summaries
+
+The bot can post a summary of one **shared space** to a Telegram group: every evening at 9 pm
+(India time, or `BOT_TIMEZONE`), and on Sunday evenings a weekly one (Monday to Sunday, compared
+with the week before). Only entries in that space's own accounts are counted. Personal accounts
+never are, and transfers are left out.
+
+1. Add the bot to the family's group. Keep BotFather's **Group Privacy** setting on (the default):
+   the bot then receives only commands addressed to it, never the family's conversation.
+2. The space's owner (Family plan, chat already linked with `/link`) sends `/summary on` in the
+   group, or `/summary on <space name>` if they have several shared spaces.
+3. In the group: `/summary` (settings), `/summary now` (today so far),
+   `/summary daily|weekly|names on|off`, `/summary off`. Only the owner can change settings.
+
+Entries are still sent to the bot in a private chat; in a group it records nothing.
+
+How it runs: migration `0022_telegram_group_summaries.sql` adds `telegram_groups`, the
+`pocket_space_summary` totals and a pg_cron job that calls the `telegram-summaries` function every
+hour at :07. The function works out what is due and claims each summary in the database before
+sending, so it posts once however often it is called. If the owner's Family plan ends, the group is
+told once that summaries are paused; if the bot is removed from the group, the link is deleted.

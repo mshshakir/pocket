@@ -76,6 +76,9 @@ export class HelpMenu {
     '/unlink  disconnect this chat',
     '/help  this guide',
     '',
+    '<b>👪 Family group</b>',
+    'Add me to your family\'s Telegram group and send /summary on there: I\'ll post a daily summary of your shared space (Family plan). Entries still come here.',
+    '',
     '<i>The word "to" in a note never makes a transfer — only &gt; or two #accounts do.</i>',
     '<i>If a name matches several accounts, I\'ll list them; type a bit more (e.g. #inrm).</i>',
   ].join('\n');

@@ -13,10 +13,12 @@ export interface SendOptions {
 
 export class TelegramClient {
   readonly #token: string;
+  readonly #fetch: typeof fetch;
 
-  constructor(token: string) {
+  constructor(token: string, fetcher: typeof fetch = fetch) {
     if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not set');
     this.#token = token;
+    this.#fetch = fetcher;
   }
 
   /** Sends a message and returns its id (0 if Telegram refused it). */
@@ -29,6 +31,17 @@ export class TelegramClient {
       reply_markup: TelegramClient.#markup(opts),
     });
     return (result as { message_id?: number } | null)?.message_id ?? 0;
+  }
+
+  /**
+   * Sends a message and says whether the chat is gone for good (the bot was
+   * removed from the group, or the group no longer exists).
+   */
+  async post(chatId: number, text: string, html = false): Promise<{ ok: boolean; gone: boolean }> {
+    const res = await this.#raw('sendMessage', { chat_id: chatId, text, parse_mode: html ? 'HTML' : undefined });
+    if (res.ok) return { ok: true, gone: false };
+    const gone = res.status === 403 || (res.status === 400 && /chat not found|group chat was (upgraded|deactivated)/i.test(res.description));
+    return { ok: false, gone };
   }
 
   /** Shorthand kept for plain replies. */
@@ -63,15 +76,29 @@ export class TelegramClient {
   }
 
   async #call(method: string, body: Record<string, unknown>): Promise<unknown> {
-    const res = await fetch(`https://api.telegram.org/bot${this.#token}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      console.error(`[telegram] ${method} failed`, res.status, await res.text());
-      return null;
+    const res = await this.#raw(method, body);
+    return res.ok ? res.result : null;
+  }
+
+  async #raw(method: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; description: string; result: unknown }> {
+    let res: Response;
+    try {
+      res = await this.#fetch(`https://api.telegram.org/bot${this.#token}/${method}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      console.error(`[telegram] ${method} failed`, e);
+      return { ok: false, status: 0, description: String(e), result: null };
     }
-    return (await res.json())?.result ?? null;
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[telegram] ${method} failed`, res.status, text);
+      let description = text;
+      try { description = JSON.parse(text)?.description ?? text; } catch (_) { /* not JSON */ }
+      return { ok: false, status: res.status, description, result: null };
+    }
+    return { ok: true, status: res.status, description: '', result: (await res.json())?.result ?? null };
   }
 }

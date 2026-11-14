@@ -25,13 +25,15 @@ export class PlanAccess {
 
   readonly #state: string;
   readonly #telegram: Access;
+  readonly #sharing: Access;
   readonly #endsAt: Date | null;
   readonly #graceUntil: Date | null;
   readonly #coveredBy: Coverage[];
 
-  private constructor(state: string, telegram: Access, endsAt: Date | null, graceUntil: Date | null, coveredBy: Coverage[]) {
+  private constructor(state: string, telegram: Access, sharing: Access, endsAt: Date | null, graceUntil: Date | null, coveredBy: Coverage[]) {
     this.#state = state;
     this.#telegram = telegram;
+    this.#sharing = sharing;
     this.#endsAt = endsAt;
     this.#graceUntil = graceUntil;
     this.#coveredBy = coveredBy;
@@ -51,12 +53,18 @@ export class PlanAccess {
     return new PlanAccess(
       typeof r.state === 'string' ? r.state : 'free',
       level(access.telegram),
+      level(access.sharing),
       date(r.endsAt),
       date(r.graceUntil),
       covered
         .filter((c) => typeof c?.ownerId === 'string')
         .map((c) => ({ ownerId: c.ownerId as string, ownerEmail: String(c.ownerEmail ?? ''), access: level(c.access) })),
     );
+  }
+
+  /** Their own Family plan is active: they may share spaces (and post group summaries of them). */
+  get canShare(): boolean {
+    return this.#sharing === 'write';
   }
 
   /** May log into their own book. */

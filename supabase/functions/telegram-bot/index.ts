@@ -16,9 +16,12 @@ import { BatchEntryService } from './lib/BatchEntryService.ts';
 import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
 import { EntryService } from './lib/EntryService.ts';
 import { ExchangeRates } from './lib/ExchangeRates.ts';
+import { GroupService } from './lib/GroupService.ts';
+import { GroupSummaries } from './lib/GroupSummaries.ts';
 import { LinkService } from './lib/LinkService.ts';
 import { LocalClock } from './lib/LocalClock.ts';
 import { PocketStore } from './lib/PocketStore.ts';
+import { SummaryReport } from './lib/SummaryReport.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
 
 /** Reads secrets by name, ignoring capitalisation (TELEGRAM_BOT_TOKEN = Telegram_Bot_Token). */
@@ -81,12 +84,8 @@ const auth = createClient(
 
 const store = new PocketStore(supabase);
 const telegram = new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN'));
-const entries = new EntryService(
-  store,
-  telegram,
-  new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata'),
-  new ExchangeRates(),
-);
+const clock = new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata');
+const entries = new EntryService(store, telegram, clock, new ExchangeRates());
 
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
@@ -94,6 +93,7 @@ const server = new WebhookServer(
     store, telegram, entries,
     new LinkService(store, telegram, auth),
     new BatchEntryService(store, telegram, entries),
+    new GroupService(store, telegram, new GroupSummaries(store, new SummaryReport()), clock),
   ),
 );
 

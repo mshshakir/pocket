@@ -56,6 +56,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-14 · Telegram group summaries:** migration 0022 (`telegram_groups`, `pocket_group_claim`,
+  `pocket_space_summary` — only the space's own accounts, expense/income, no transfers; pg_cron job
+  `telegram-summaries` hourly at :07 → edge function `supabase/functions/telegram-summaries`,
+  `--no-verify-jwt`, time-gated 9 pm IST + claim-before-send). Bot: groups now route to
+  `lib/GroupService.ts` (`/summary on [space]|off|now|daily/weekly/names on|off`, owner-only changes,
+  Family plan `PlanAccess.canShare`); `GroupSummaries`, `SummaryReport`, `SummaryRunner`;
+  `TelegramClient.post` reports a chat that's gone; supergroup migration moves the link. Groups never
+  record entries. Tests: `telegram-bot/test/groups_test.ts` (27). Verified on live data that space +
+  personal spending = whole book.
 - **2026-11-14 · phase 5, Razorpay one-time payments (off until switched on):** migration 0021
   (`billing_settings.payments_enabled`, `payment_orders`, `pocket_payment_products/quote/fulfil`,
   `paymentsOpen` in entitlements; fulfil is idempotent and extends the same plan from its end date).

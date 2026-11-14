@@ -3,13 +3,15 @@
  * (and answer with the emailed code). Linked chats get the commands (/help,
  * /accounts, /categories, /default, /cancel, /unlink), entry messages,
  * answers to a pending step, and button taps. A message with several lines
- * records one entry per line (BatchEntryService).
+ * records one entry per line (BatchEntryService). In groups the bot only
+ * handles summary commands (GroupService) and never records entries.
  */
 import type { BatchEntryService } from './BatchEntryService.ts';
 import { CategoryDirectory } from './CategoryDirectory.ts';
 import { EntryBatch } from './EntryBatch.ts';
 import { EntryParser } from './EntryParser.ts';
 import { EntryService } from './EntryService.ts';
+import type { GroupService } from './GroupService.ts';
 import { HelpMenu } from './HelpMenu.ts';
 import { LinkService } from './LinkService.ts';
 import { PlanAccess } from './PlanAccess.ts';
@@ -19,8 +21,10 @@ import { Workspace } from './Workspace.ts';
 
 export interface TelegramMessage {
   message_id: number;
-  chat: { id: number; type?: string };
+  chat: { id: number; type?: string; title?: string };
+  from?: { id: number };
   text?: string;
+  migrate_to_chat_id?: number; // a group became a supergroup, with this new id
 }
 
 export interface TelegramCallback {
@@ -35,24 +39,34 @@ export class BotController {
   readonly #entries: EntryService;
   readonly #links: LinkService;
   readonly #batches: BatchEntryService;
+  readonly #groups: GroupService;
 
   constructor(
     store: PocketStore, telegram: TelegramClient, entries: EntryService,
-    links: LinkService, batches: BatchEntryService,
+    links: LinkService, batches: BatchEntryService, groups: GroupService,
   ) {
     this.#store = store;
     this.#telegram = telegram;
     this.#entries = entries;
     this.#links = links;
     this.#batches = batches;
+    this.#groups = groups;
   }
 
   async handleMessage(message: TelegramMessage): Promise<void> {
     const chatId = message.chat.id;
+    if (message.migrate_to_chat_id) return void await this.#store.moveGroup(chatId, message.migrate_to_chat_id);
     const text = (message.text || '').trim();
     if (!text) return;
     if (message.chat.type && message.chat.type !== 'private') {
-      return void await this.#telegram.reply(chatId, 'Please message me directly, not in a group.');
+      if (message.chat.type === 'channel') return;
+      try {
+        await this.#groups.handle(message);
+      } catch (err) {
+        console.error('[telegram-bot] group', err);
+        await this.#telegram.reply(chatId, '⚠️ Something went wrong. Please try again.', message.message_id);
+      }
+      return;
     }
 
     try {

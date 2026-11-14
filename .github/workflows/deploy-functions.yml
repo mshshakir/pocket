@@ -54,3 +54,9 @@ jobs:
       # and checks webhooks by signature. Needs the RAZORPAY_* function secrets.
       - name: Deploy payments
         run: supabase functions deploy payments --remote="$PROJECT_REF" --no-verify-jwt --yes
+
+      # Daily/weekly summaries for Telegram groups tied to a shared space.
+      # Called hourly by pg_cron (migration 0022); it decides what's due and
+      # posts each summary once, so it needs no sign-in check or secret.
+      - name: Deploy telegram-summaries
+        run: supabase functions deploy telegram-summaries --remote="$PROJECT_REF" --no-verify-jwt --yes

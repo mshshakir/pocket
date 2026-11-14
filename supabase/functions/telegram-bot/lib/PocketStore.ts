@@ -63,6 +63,39 @@ export interface PendingStep {
 
 export type SaveResult = 'saved' | 'duplicate';
 
+/** A Telegram group that gets summaries of one of its owner's shared spaces (migration 0022). */
+export interface GroupLink {
+  chat_id: number;
+  owner_id: string;
+  space_id: string;
+  title: string | null;
+  daily: boolean;
+  weekly: boolean;
+  names: boolean;
+  last_daily: string | null;
+  last_weekly: string | null;
+  paused_notice: boolean;
+}
+
+/** One of an owner's shared spaces. */
+export interface SharedSpace {
+  id: string;
+  name: string;
+  accounts: number;
+}
+
+/** What happened in a shared space over some days (pocket_space_summary). */
+export interface SpaceSummary {
+  space: string;
+  currency: string;
+  accounts: number;
+  spent: number;      // home-currency minor units
+  received: number;
+  entries: number;
+  categories: { name: string; amount: number }[];
+  people: { name: string; entries: number }[];
+}
+
 export interface EntryWriter {
   /** Saves all rows of one entry (one row, or a transfer's two legs) together. */
   add(txs: PocketTransaction[]): Promise<SaveResult>;
@@ -211,6 +244,74 @@ export class PocketStore {
       ownerId,
       ownerName: names.get(ownerId) || rows.find((r) => r.owner_id === ownerId)?.space_name || 'a family member',
     }));
+  }
+
+  // ── Group summaries (migration 0022) ─────────────────────────────────────
+
+  /** The owner's live shared spaces, with how many accounts each holds. */
+  async spacesOf(ownerId: string): Promise<SharedSpace[]> {
+    const { data, error } = await this.#sb.from('spaces').select('id, name')
+      .eq('owner_id', ownerId).is('deleted_at', null).order('position', { ascending: true });
+    if (error) throw error;
+    const spaces = (data ?? []) as Array<{ id: string; name: string }>;
+    if (!spaces.length) return [];
+    const { data: rows, error: e2 } = await this.#sb.from('space_accounts').select('space_id')
+      .eq('owner_id', ownerId).in('space_id', spaces.map((x) => x.id));
+    if (e2) throw e2;
+    const counts = new Map<string, number>();
+    for (const r of (rows ?? []) as Array<{ space_id: string }>) counts.set(r.space_id, (counts.get(r.space_id) ?? 0) + 1);
+    return spaces.map((x) => ({ id: x.id, name: x.name, accounts: counts.get(x.id) ?? 0 }));
+  }
+
+  async findGroup(chatId: number): Promise<GroupLink | null> {
+    const { data, error } = await this.#sb.from('telegram_groups').select('*').eq('chat_id', chatId).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  async groups(): Promise<GroupLink[]> {
+    const { data, error } = await this.#sb.from('telegram_groups').select('*');
+    if (error) throw error;
+    return (data ?? []) as GroupLink[];
+  }
+
+  /** Ties a group to a space, keeping its settings if it was tied before. */
+  async saveGroup(chatId: number, ownerId: string, spaceId: string, title: string | null): Promise<void> {
+    const { error } = await this.#sb.from('telegram_groups').upsert({
+      chat_id: chatId, owner_id: ownerId, space_id: spaceId, title, paused_notice: false,
+    });
+    if (error) throw error;
+  }
+
+  async updateGroup(chatId: number, patch: Partial<Pick<GroupLink, 'daily' | 'weekly' | 'names' | 'title' | 'paused_notice'>>): Promise<void> {
+    const { error } = await this.#sb.from('telegram_groups').update(patch).eq('chat_id', chatId);
+    if (error) throw error;
+  }
+
+  async removeGroup(chatId: number): Promise<boolean> {
+    const { data, error } = await this.#sb.from('telegram_groups').delete().eq('chat_id', chatId).select('chat_id');
+    if (error) throw error;
+    return !!data?.length;
+  }
+
+  /** A group became a supergroup, which gives it a new chat id. */
+  async moveGroup(from: number, to: number): Promise<void> {
+    const { error } = await this.#sb.from('telegram_groups').update({ chat_id: to }).eq('chat_id', from);
+    if (error) throw error;
+  }
+
+  /** Marks a summary as sent for that day; false when it already was. */
+  async claimSummary(chatId: number, kind: 'daily' | 'weekly', day: string): Promise<boolean> {
+    const { data, error } = await this.#sb.rpc('pocket_group_claim', { p_chat: chatId, p_kind: kind, p_day: day });
+    if (error) throw error;
+    return data === true;
+  }
+
+  /** Totals for one shared space between two dates (inclusive); null when the space is gone. */
+  async spaceSummary(ownerId: string, spaceId: string, from: string, to: string): Promise<SpaceSummary | null> {
+    const { data, error } = await this.#sb.rpc('pocket_space_summary', { p_owner: ownerId, p_space: spaceId, p_from: from, p_to: to });
+    if (error) throw error;
+    return (data ?? null) as SpaceSummary | null;
   }
 
   /** Writes entries into a book as this person, under the sharing rules. */
