@@ -6,6 +6,7 @@
  */
 import { Store }       from '../../core/Store.js';
 import { IdGenerator } from './IdGenerator.js';
+import { CategoryMerge } from './CategoryMerge.js';
 import { CATEGORY_APPEARANCE_DEFAULTS, NAME_COLOR_PALETTE } from '../../data/constants.js';
 
 export class CategoryService {
@@ -210,6 +211,52 @@ export class CategoryService {
     return NAME_COLOR_PALETTE[h % NAME_COLOR_PALETTE.length];
   }
 
+  /**
+   * Another category with this name in the same place (same parent and type),
+   * ignoring case. Used to offer a merge instead of a duplicate on rename.
+   * @param {string} name
+   * @param {{parentId?:string|null, type?:string, exceptId?:string}} [where]
+   * @returns {object|undefined}
+   */
+  sameName(name, { parentId = null, type = 'expense', exceptId = '' } = {}) {
+    const key = (name || '').trim().toLowerCase();
+    if (!key) return undefined;
+    return this.#store.getState().categories.find((c) =>
+      c.id !== exceptId && (c.parentId || null) === (parentId || null) &&
+      c.type === type && c.name.trim().toLowerCase() === key);
+  }
+
+  /** Categories this one can be merged into. @param {string} id */
+  mergeTargets(id) { return this.#merger().targets(id); }
+
+  /** What merging would move. @param {string} id @param {string} intoId */
+  mergePreview(id, intoId) { return this.#merger().preview(id, intoId); }
+
+  /**
+   * Everything in the book that points at a category or its sub-categories
+   * (entries, regulars, budgets, habits). Zero means a plain delete is safe.
+   * @param {string} id
+   */
+  usageEverywhere(id) { return this.#merger().usage(id); }
+
+  /**
+   * Merge a category into another; see CategoryMerge.
+   * @param {string} id
+   * @param {string} intoId
+   * @returns {{ok:true, summary:object, undo:object}|{ok:false, reason:string}}
+   */
+  mergeInto(id, intoId) {
+    const res = this.#merger().apply(id, intoId);
+    if (res.ok) this.#store.flush();
+    return res;
+  }
+
+  /** Put a merge back. @param {object} undo  from mergeInto() */
+  undoMerge(undo) {
+    this.#merger().revert(undo);
+    this.#store.flush();
+  }
+
   // ── Mutations ────────────────────────────────────────────────────────
 
   /**
@@ -304,4 +351,6 @@ export class CategoryService {
       (Array.isArray(t.splits) && t.splits.some((s) => s.categoryId === id)),
     ).length;
   }
+
+  #merger() { return new CategoryMerge(this.#store.getState()); }
 }

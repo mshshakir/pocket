@@ -2292,6 +2292,198 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/CategoryMerge.js
+  var CategoryMerge = class _CategoryMerge {
+    /** @type {object} */
+    #state;
+    /** @param {object} state  the book (Store.getState()) */
+    constructor(state) {
+      this.#state = state;
+    }
+    // ── Queries ──────────────────────────────────────────────────────────
+    /**
+     * Where a category could be merged into: same type, not itself, not one of
+     * its own sub-categories. A category with sub-categories can only go into a
+     * main category (the tree is two levels deep).
+     * @param {string} sourceId
+     * @returns {object[]} sorted by full name
+     */
+    targets(sourceId) {
+      const src = this.#find(sourceId);
+      if (!src) return [];
+      return this.#cats().filter((c) => this.check(sourceId, c.id).ok).sort((a, b) => this.#fullName(a).localeCompare(this.#fullName(b)));
+    }
+    /**
+     * @param {string} sourceId
+     * @param {string} targetId
+     * @returns {{ok:true}|{ok:false, reason:string}}
+     */
+    check(sourceId, targetId) {
+      const src = this.#find(sourceId), tgt = this.#find(targetId);
+      if (!src || !tgt) return { ok: false, reason: "Category not found" };
+      if (src.id === tgt.id) return { ok: false, reason: "Pick a different category" };
+      if (src.type !== tgt.type) return { ok: false, reason: `${tgt.name} is a ${tgt.type} category` };
+      if (tgt.parentId === src.id) return { ok: false, reason: `${tgt.name} is inside ${src.name}` };
+      if (this.#children(src.id).length && tgt.parentId) {
+        return { ok: false, reason: `${src.name} has sub-categories, so it can only go into a main category` };
+      }
+      return { ok: true };
+    }
+    /**
+     * What a merge would change, for the confirm line.
+     * @param {string} sourceId
+     * @param {string} targetId
+     * @returns {{entries:number, regulars:number, budgets:number, habits:number, movedSubs:string[], mergedSubs:string[]}}
+     */
+    preview(sourceId, targetId) {
+      const map = this.#idMap(sourceId, targetId);
+      const from = new Set(map.keys());
+      const movedSubs = [], mergedSubs = [];
+      for (const ch of this.#children(sourceId)) (map.has(ch.id) ? mergedSubs : movedSubs).push(ch.name);
+      return {
+        entries: this.#list("transactions").filter((t) => this.#txUses(t, from)).length,
+        regulars: this.#list("regularItems").filter((i) => from.has(i.categoryId)).length,
+        budgets: this.#list("budgets").filter((b) => this.#budgetIds(b).some((id) => from.has(id))).length,
+        habits: this.#list("habits").filter((h) => (h.categoryIds || []).some((id) => from.has(id))).length,
+        movedSubs,
+        mergedSubs
+      };
+    }
+    /**
+     * How much of the book uses a category (and its sub-categories). Zero means
+     * it can simply be deleted.
+     * @param {string} id
+     * @returns {number}
+     */
+    usage(id) {
+      const ids = /* @__PURE__ */ new Set([id, ...this.#children(id).map((c) => c.id)]);
+      return this.#list("transactions").filter((t) => this.#txUses(t, ids)).length + this.#list("regularItems").filter((i) => ids.has(i.categoryId)).length + this.#list("budgets").filter((b) => this.#budgetIds(b).some((x) => ids.has(x))).length + this.#list("habits").filter((h) => (h.categoryIds || []).some((x) => ids.has(x))).length;
+    }
+    // ── Mutations ────────────────────────────────────────────────────────
+    /**
+     * Merge source into target.
+     * @param {string} sourceId
+     * @param {string} targetId
+     * @returns {{ok:true, summary:object, undo:object}|{ok:false, reason:string}}
+     */
+    apply(sourceId, targetId) {
+      const can = this.check(sourceId, targetId);
+      if (!can.ok) return can;
+      const summary = this.preview(sourceId, targetId);
+      const map = this.#idMap(sourceId, targetId);
+      const undo = { objects: [], removed: [], merchant: null, collapsed: null };
+      const keep = (coll, obj) => undo.objects.push({ coll, id: obj.id, copy: _CategoryMerge.#copy(obj) });
+      const to = (id) => map.get(id) ?? id;
+      for (const t of this.#list("transactions")) {
+        if (!this.#txUses(t, map)) continue;
+        keep("transactions", t);
+        if (map.has(t.categoryId)) t.categoryId = to(t.categoryId);
+        if (Array.isArray(t.splits)) {
+          for (const s of t.splits) if (map.has(s.categoryId)) s.categoryId = to(s.categoryId);
+        }
+      }
+      for (const i of this.#list("regularItems")) {
+        if (!map.has(i.categoryId)) continue;
+        keep("regularItems", i);
+        i.categoryId = to(i.categoryId);
+      }
+      for (const b of this.#list("budgets")) {
+        if (!this.#budgetIds(b).some((id) => map.has(id))) continue;
+        keep("budgets", b);
+        b.categoryIds = _CategoryMerge.#unique(this.#budgetIds(b).map(to));
+        b.categoryId = b.categoryIds[0] ?? null;
+      }
+      for (const h of this.#list("habits")) {
+        if (!(h.categoryIds || []).some((id) => map.has(id))) continue;
+        keep("habits", h);
+        h.categoryIds = _CategoryMerge.#unique(h.categoryIds.map(to));
+      }
+      const merchant = this.#state.merchantCategories;
+      if (merchant && Object.values(merchant).some((id) => map.has(id))) {
+        undo.merchant = { ...merchant };
+        for (const k of Object.keys(merchant)) merchant[k] = to(merchant[k]);
+      }
+      const collapsed = this.#state.user?.collapsedCategories;
+      if (Array.isArray(collapsed) && collapsed.some((id) => map.has(id))) {
+        undo.collapsed = collapsed.slice();
+        this.#state.user.collapsedCategories = collapsed.filter((id) => !map.has(id));
+      }
+      for (const ch of this.#children(sourceId)) {
+        if (map.has(ch.id)) continue;
+        keep("categories", ch);
+        ch.parentId = targetId;
+      }
+      this.#state.categories = this.#cats().filter((c) => {
+        if (!map.has(c.id)) return true;
+        undo.removed.push(_CategoryMerge.#copy(c));
+        return false;
+      });
+      return { ok: true, summary, undo };
+    }
+    /**
+     * Put a merge back.
+     * @param {object} undo  from apply()
+     */
+    revert(undo) {
+      if (!undo) return;
+      const cats = this.#cats();
+      for (const c of undo.removed) if (!cats.some((x) => x.id === c.id)) cats.push(_CategoryMerge.#copy(c));
+      for (const { coll, id, copy } of undo.objects) {
+        const obj = this.#list(coll).find((x) => x.id === id);
+        if (!obj) continue;
+        for (const k of Object.keys(obj)) if (!(k in copy)) delete obj[k];
+        Object.assign(obj, _CategoryMerge.#copy(copy));
+      }
+      if (undo.merchant) this.#state.merchantCategories = { ...undo.merchant };
+      if (undo.collapsed && this.#state.user) this.#state.user.collapsedCategories = undo.collapsed.slice();
+    }
+    // ── Private ──────────────────────────────────────────────────────────
+    /** source → target, plus each source sub-category → same-named target sub-category */
+    #idMap(sourceId, targetId) {
+      const map = /* @__PURE__ */ new Map([[sourceId, targetId]]);
+      const theirs = new Map(this.#children(targetId).map((c) => [_CategoryMerge.#key(c.name), c.id]));
+      for (const ch of this.#children(sourceId)) {
+        const match = theirs.get(_CategoryMerge.#key(ch.name));
+        if (match) map.set(ch.id, match);
+      }
+      return map;
+    }
+    /** @param {{has:(id:string)=>boolean}} ids  a Set or a Map */
+    #txUses(t, ids) {
+      return ids.has(t.categoryId) || Array.isArray(t.splits) && t.splits.some((s) => ids.has(s.categoryId));
+    }
+    #budgetIds(b) {
+      if (Array.isArray(b.categoryIds) && b.categoryIds.length) return b.categoryIds;
+      return b.categoryId ? [b.categoryId] : [];
+    }
+    #cats() {
+      return this.#state.categories || (this.#state.categories = []);
+    }
+    #list(coll) {
+      return coll === "categories" ? this.#cats() : this.#state[coll] || [];
+    }
+    #find(id) {
+      return this.#cats().find((c) => c.id === id);
+    }
+    #children(id) {
+      return this.#cats().filter((c) => c.parentId === id);
+    }
+    #fullName(c) {
+      const p = c.parentId ? this.#find(c.parentId) : null;
+      return p ? `${p.name} / ${c.name}` : c.name;
+    }
+    /** Plain book data, so a JSON copy is exact (structuredClone isn't everywhere). */
+    static #copy(v) {
+      return JSON.parse(JSON.stringify(v));
+    }
+    static #key(name) {
+      return (name || "").trim().toLowerCase();
+    }
+    static #unique(arr) {
+      return [...new Set(arr.filter(Boolean))];
+    }
+  };
+
   // src/domain/services/CategoryService.js
   var CategoryService = class _CategoryService {
     /** @type {Store} */
@@ -2467,6 +2659,50 @@ var _PocketApp = (() => {
       for (const c of name || "") h = h * 31 + c.charCodeAt(0) >>> 0;
       return NAME_COLOR_PALETTE[h % NAME_COLOR_PALETTE.length];
     }
+    /**
+     * Another category with this name in the same place (same parent and type),
+     * ignoring case. Used to offer a merge instead of a duplicate on rename.
+     * @param {string} name
+     * @param {{parentId?:string|null, type?:string, exceptId?:string}} [where]
+     * @returns {object|undefined}
+     */
+    sameName(name, { parentId = null, type = "expense", exceptId = "" } = {}) {
+      const key = (name || "").trim().toLowerCase();
+      if (!key) return void 0;
+      return this.#store.getState().categories.find((c) => c.id !== exceptId && (c.parentId || null) === (parentId || null) && c.type === type && c.name.trim().toLowerCase() === key);
+    }
+    /** Categories this one can be merged into. @param {string} id */
+    mergeTargets(id) {
+      return this.#merger().targets(id);
+    }
+    /** What merging would move. @param {string} id @param {string} intoId */
+    mergePreview(id, intoId) {
+      return this.#merger().preview(id, intoId);
+    }
+    /**
+     * Everything in the book that points at a category or its sub-categories
+     * (entries, regulars, budgets, habits). Zero means a plain delete is safe.
+     * @param {string} id
+     */
+    usageEverywhere(id) {
+      return this.#merger().usage(id);
+    }
+    /**
+     * Merge a category into another; see CategoryMerge.
+     * @param {string} id
+     * @param {string} intoId
+     * @returns {{ok:true, summary:object, undo:object}|{ok:false, reason:string}}
+     */
+    mergeInto(id, intoId) {
+      const res = this.#merger().apply(id, intoId);
+      if (res.ok) this.#store.flush();
+      return res;
+    }
+    /** Put a merge back. @param {object} undo  from mergeInto() */
+    undoMerge(undo) {
+      this.#merger().revert(undo);
+      this.#store.flush();
+    }
     // ── Mutations ────────────────────────────────────────────────────────
     /**
      * Create a new category.
@@ -2550,6 +2786,9 @@ var _PocketApp = (() => {
       return this.#store.getState().transactions.filter(
         (t) => t.categoryId === id || Array.isArray(t.splits) && t.splits.some((s) => s.categoryId === id)
       ).length;
+    }
+    #merger() {
+      return new CategoryMerge(this.#store.getState());
     }
   };
 
@@ -15090,6 +15329,8 @@ This replaces your current grouping.`
           </div>
         </div>
 
+        ${editing ? this.#moreOptions(editing) : ""}
+
         <div class="flex items-center gap-2">
           ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteCategory('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : ""}
           <div class="flex-1"></div>
@@ -15098,11 +15339,113 @@ This replaces your current grouping.`
         </div>
       </form>`;
     }
+    /** Advanced actions, folded away so the everyday form stays simple. */
+    #moreOptions(cat) {
+      return `
+        <details class="category-more mb-4 rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <summary class="cursor-pointer select-none px-3 py-2 text-sm text-zinc-500">More options</summary>
+          <div class="px-3 pb-3">
+            <button type="button" class="btn btn-outline w-full justify-start" onclick="window.__app.openCategoryMerge('${cat.id}')">
+              <i data-lucide="merge"></i> Merge into another category\u2026
+            </button>
+            <div class="text-xs text-zinc-500 mt-1">Moves its entries, regulars, budgets and sub-categories, then removes ${this.#esc(cat.name)}. You can undo it.</div>
+          </div>
+        </details>`;
+    }
     #esc(s) {
       return (s || "").toString().replace(
         /[&<>"']/g,
         (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]
       );
+    }
+  };
+
+  // src/ui/modals/CategoryMergeModal.js
+  var CategoryMergeModal = class _CategoryMergeModal {
+    /** @type {() => import('../../domain/services/CategoryService.js').CategoryService} */
+    #categories;
+    /** @param {{categories: () => object}} deps */
+    constructor({ categories }) {
+      this.#categories = categories;
+    }
+    render(opts = {}) {
+      const cats = this.#categories();
+      const src = cats.find(opts.id);
+      const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
+      if (!src) return `<div class="p-5"><div class="flex justify-between items-center"><b>Category not found</b>${close}</div></div>`;
+      const del = opts.mode === "delete";
+      const targets = cats.mergeTargets(src.id);
+      const into = targets.find((t) => t.id === opts.into)?.id || "";
+      const name = Html.escape(src.name);
+      const title = del ? `Delete ${name}` : `Merge ${name}`;
+      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : `Everything in ${name} moves to the category you pick, then ${name} is removed. The other category keeps its name, colour and limit.`;
+      if (!targets.length) {
+        return `
+        <div class="p-5">
+          <div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">${title}</h3>${close}</div>
+          <p class="text-sm text-zinc-500">There's no other ${Html.escape(src.type)} category to move it to. Add one first.</p>
+        </div>`;
+      }
+      return `
+      <form onsubmit="window.__app.mergeCategory(event,'${src.id}','${del ? "delete" : "merge"}')" class="p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg font-semibold">${title}</h3>${close}
+        </div>
+        <p class="text-sm text-zinc-500 mb-4">${intro}</p>
+
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">Move to</label>
+          <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${src.id}', this.value)">
+            <option value="">\u2014 Pick a category \u2014</option>
+            ${targets.map((t) => `<option value="${t.id}" ${t.id === into ? "selected" : ""}>${Html.escape(cats.fullName(t.id))}</option>`).join("")}
+          </select>
+        </div>
+
+        <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(src.id, into) : ""}</div>
+
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn ${del ? "btn-outline text-rose-500" : "btn-primary"}">
+            <i data-lucide="${del ? "trash-2" : "merge"}"></i> ${del ? "Move and delete" : "Merge"}
+          </button>
+        </div>
+      </form>`;
+    }
+    /**
+     * The plain-words line under the picker, e.g.
+     * "Moves 42 entries and 2 regulars to Food. Its sub-category Snacks moves too."
+     * @param {string} id
+     * @param {string} intoId
+     * @returns {string} HTML
+     */
+    previewText(id, intoId) {
+      const cats = this.#categories();
+      const tgt = cats.find(intoId);
+      if (!tgt) return "";
+      const p = cats.mergePreview(id, intoId);
+      const parts = [
+        _CategoryMergeModal.#count(p.entries, "entry", "entries"),
+        _CategoryMergeModal.#count(p.regulars, "regular", "regulars"),
+        _CategoryMergeModal.#count(p.budgets, "budget", "budgets"),
+        _CategoryMergeModal.#count(p.habits, "habit", "habits")
+      ].filter(Boolean);
+      const what = parts.length ? `Moves ${_CategoryMergeModal.#join(parts)}` : "Nothing uses it yet; it just goes";
+      const lines = [`${what} to <b>${Html.escape(cats.fullName(tgt.id))}</b>.`];
+      if (p.movedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.movedSubs)} moves under ${Html.escape(tgt.name)}.`);
+      if (p.mergedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.mergedSubs)} joins the one with the same name.`);
+      return lines.map((l) => `<div>${l}</div>`).join("") + `<div class="text-xs text-zinc-500 mt-1">You can undo this straight after.</div>`;
+    }
+    // ── Private ──────────────────────────────────────────────────────────
+    static #count(n, one, many) {
+      return n ? `${n} ${n === 1 ? one : many}` : "";
+    }
+    static #join(parts) {
+      return parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+    }
+    static #subs(names) {
+      const list = names.map((n) => Html.escape(n));
+      return names.length === 1 ? `Its sub-category ${list[0]}` : `Its sub-categories ${_CategoryMergeModal.#join(list)}`;
     }
   };
 
@@ -18942,6 +19285,8 @@ This replaces your current grouping.`
     #vendorDues;
     /** @type {BillService}          */
     #bills;
+    /** @type {CategoryMergeModal}   */
+    #categoryMergeModal;
     /** @type {HabitService}         */
     #habits;
     /** @type {SyncService}          */
@@ -19156,6 +19501,7 @@ This replaces your current grouping.`
       this.#modal.register("transaction", this.#txModal);
       this.#modal.register("account", new AccountModal());
       this.#modal.register("category", new CategoryModal());
+      this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
       this.#modal.register("budget", new BudgetModal());
       this.#modal.register("settings", new SettingsModal());
       this.#modal.register("csv", new CsvModal());
@@ -19287,6 +19633,7 @@ This replaces your current grouping.`
       "account",
       "budget",
       "category",
+      "categoryMerge",
       "debt",
       "debtPayment",
       "regularItem",
@@ -21351,6 +21698,15 @@ Leave empty to use your own name.`,
       if (id && parentId && state.categories.some((c) => c.parentId === id)) {
         return this.#toast.show("This category already has sub-categories \u2014 cannot itself become a sub-category");
       }
+      const twin = this.#categories.sameName(data.name, { parentId, type: data.type, exceptId: id || "" });
+      if (twin) {
+        if (!id) return this.#toast.show(`${twin.name} already exists here`);
+        if (!this.#categories.mergeTargets(id).some((c) => c.id === twin.id)) {
+          return this.#toast.show(`${twin.name} already exists here \u2014 pick another name`);
+        }
+        if (!confirm(`${twin.name} already exists. Merge into it?`)) return;
+        return this.#runCategoryMerge(id, twin.id);
+      }
       const payload = { name: data.name, type: data.type, color: data.color, icon: data.icon, parentId };
       if (id) this.#categories.update(id, payload);
       else this.#categories.create(payload);
@@ -21360,17 +21716,50 @@ Leave empty to use your own name.`,
       this.#sync.schedulePush?.();
     }
     deleteCategory(id) {
-      const used = this.#categories.usageCount(id);
-      if (used > 0) {
-        return this.#toast.show(
-          `${used} transaction${used === 1 ? "" : "s"} still use this \u2014 reassign them first`
-        );
-      }
+      if (this.#categories.usageEverywhere(id) > 0) return this.openCategoryMerge(id, "delete");
       if (!confirm("Delete this category?")) return;
       this.#categories.delete(id);
       this.closeModal();
       this.#render();
       this.#sync.schedulePush?.();
+    }
+    /**
+     * Open the merge picker (Edit category → More options, or Delete when used).
+     * @param {string} id
+     * @param {'merge'|'delete'} [mode='merge']
+     */
+    openCategoryMerge(id, mode = "merge") {
+      this.openModal("categoryMerge", { id, mode });
+    }
+    /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
+    previewCategoryMerge(id, intoId) {
+      const el = document.getElementById("categoryMergePreview");
+      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(id, intoId) : "";
+    }
+    mergeCategory(event, id) {
+      event.preventDefault();
+      const intoId = new FormData(event.target).get("into");
+      if (!intoId) return this.#toast.show("Pick a category to move it to");
+      this.#runCategoryMerge(id, String(intoId));
+    }
+    #runCategoryMerge(id, intoId) {
+      const from = this.#categories.find(id)?.name || "Category";
+      const into = this.#categories.fullName(intoId);
+      const res = this.#categories.mergeInto(id, intoId);
+      if (!res.ok) return this.#toast.show(res.reason);
+      this.closeModal();
+      this.#render();
+      this.#sync.schedulePush?.();
+      const n = res.summary.entries;
+      this.#toast.show(`${from} merged into ${into}${n ? ` \xB7 ${n} ${n === 1 ? "entry" : "entries"} moved` : ""}`, {
+        action: { label: "Undo", run: () => this.#undoCategoryMerge(res.undo, from) }
+      });
+    }
+    #undoCategoryMerge(undo, name) {
+      this.#categories.undoMerge(undo);
+      this.#render();
+      this.#sync.schedulePush?.();
+      this.#toast.show(`Undone \xB7 ${name} is back`);
     }
     toggleCategoryCollapse(id) {
       const state = this.#store.getState();

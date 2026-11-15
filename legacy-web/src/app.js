@@ -79,6 +79,7 @@ import { FamilyView }        from './ui/views/FamilyView.js';
 import { TransactionModal } from './ui/modals/TransactionModal.js';
 import { AccountModal }     from './ui/modals/AccountModal.js';
 import { CategoryModal }    from './ui/modals/CategoryModal.js';
+import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
 import { BudgetModal }      from './ui/modals/BudgetModal.js';
 import { SettingsModal }    from './ui/modals/SettingsModal.js';
 import { CsvModal }         from './ui/modals/CsvModal.js';
@@ -140,6 +141,7 @@ export class Application {
   /** @type {RegularLogService}    */ #regularLogs;
   /** @type {VendorDues}           */ #vendorDues;
   /** @type {BillService}          */ #bills;
+  /** @type {CategoryMergeModal}   */ #categoryMergeModal;
   /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
@@ -369,6 +371,7 @@ export class Application {
     this.#modal.register('transaction',  this.#txModal);
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
+    this.#modal.register('categoryMerge', this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
     this.#modal.register('budget',       new BudgetModal());
     this.#modal.register('settings',     new SettingsModal());
     this.#modal.register('csv',          new CsvModal());
@@ -533,7 +536,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
+    'account', 'budget', 'category', 'categoryMerge', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -2738,6 +2741,16 @@ export class Application {
     if (id && parentId && state.categories.some((c) => c.parentId === id)) {
       return this.#toast.show('This category already has sub-categories — cannot itself become a sub-category');
     }
+    // Same name in the same place: offer to merge instead of making a twin.
+    const twin = this.#categories.sameName(data.name, { parentId, type: data.type, exceptId: id || '' });
+    if (twin) {
+      if (!id) return this.#toast.show(`${twin.name} already exists here`);
+      if (!this.#categories.mergeTargets(id).some((c) => c.id === twin.id)) {
+        return this.#toast.show(`${twin.name} already exists here — pick another name`);
+      }
+      if (!confirm(`${twin.name} already exists. Merge into it?`)) return;
+      return this.#runCategoryMerge(id, twin.id);
+    }
     // Delegate the actual mutation to CategoryService (single source of truth).
     const payload = { name: data.name, type: data.type, color: data.color, icon: data.icon, parentId };
     if (id) this.#categories.update(id, payload);
@@ -2748,17 +2761,55 @@ export class Application {
   }
 
   deleteCategory(id) {
-    // Counts split legs as well as whole-transaction references.
-    const used = this.#categories.usageCount(id);
-    if (used > 0) {
-      return this.#toast.show(
-        `${used} transaction${used === 1 ? '' : 's'} still use this — reassign them first`,
-      );
-    }
+    // Still used anywhere (entries, split legs, regulars, budgets, habits)?
+    // Then its things need a new home first: the same flow as a merge.
+    if (this.#categories.usageEverywhere(id) > 0) return this.openCategoryMerge(id, 'delete');
     if (!confirm('Delete this category?')) return;
     this.#categories.delete(id);  // also re-parents any orphaned children to root
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Open the merge picker (Edit category → More options, or Delete when used).
+   * @param {string} id
+   * @param {'merge'|'delete'} [mode='merge']
+   */
+  openCategoryMerge(id, mode = 'merge') {
+    this.openModal('categoryMerge', { id, mode });
+  }
+
+  /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
+  previewCategoryMerge(id, intoId) {
+    const el = document.getElementById('categoryMergePreview');
+    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(id, intoId) : '';
+  }
+
+  mergeCategory(event, id) {
+    event.preventDefault();
+    const intoId = new FormData(event.target).get('into');
+    if (!intoId) return this.#toast.show('Pick a category to move it to');
+    this.#runCategoryMerge(id, String(intoId));
+  }
+
+  #runCategoryMerge(id, intoId) {
+    const from = this.#categories.find(id)?.name || 'Category';
+    const into = this.#categories.fullName(intoId);
+    const res  = this.#categories.mergeInto(id, intoId);
+    if (!res.ok) return this.#toast.show(res.reason);
+    this.closeModal(); this.#render();
+    this.#sync.schedulePush?.();
+    const n = res.summary.entries;
+    this.#toast.show(`${from} merged into ${into}${n ? ` · ${n} ${n === 1 ? 'entry' : 'entries'} moved` : ''}`, {
+      action: { label: 'Undo', run: () => this.#undoCategoryMerge(res.undo, from) },
+    });
+  }
+
+  #undoCategoryMerge(undo, name) {
+    this.#categories.undoMerge(undo);
+    this.#render();
+    this.#sync.schedulePush?.();
+    this.#toast.show(`Undone · ${name} is back`);
   }
 
   toggleCategoryCollapse(id) {
