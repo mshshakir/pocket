@@ -9,6 +9,8 @@ import { CurrencyService } from './CurrencyService.js';
 import { CategoryService } from './CategoryService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
 import { CountedEntries } from './CountedEntries.js';
+import { BudgetPeriod }   from './BudgetPeriod.js';
+import { DateService }    from './DateService.js';
 
 export class BudgetService {
   /** @type {Store} */               #store;
@@ -34,6 +36,19 @@ export class BudgetService {
   targetCategoryIds(budget) {
     if (Array.isArray(budget.categoryIds) && budget.categoryIds.length) return budget.categoryIds;
     return budget.categoryId ? [budget.categoryId] : [];
+  }
+
+  /** Every category id that counts toward the budget (targets and their sub-categories). */
+  countedCategoryIds(budget) { return this.#expandedIds(budget); }
+
+  /**
+   * The budget's current window (month, Hijri month, week, year or dates).
+   * @param {object} budget
+   * @param {string} [today]
+   * @returns {BudgetPeriod}
+   */
+  period(budget, today = DateService.todayIso()) {
+    return new BudgetPeriod(budget, { today, hijri: this.#hijri });
   }
 
   /** Every category that counts toward the budget = each target + its descendants. */
@@ -92,14 +107,12 @@ export class BudgetService {
   #inCurrentPeriod(budget, t) {
     if (t.type !== 'expense') return false;
     if (!t.date) return false; // guard against malformed transactions with missing date
-    if (budget.period === 'hijri') {
+    if (BudgetPeriod.normalize(budget.period, budget) === 'hijri') {
       const h      = this.#hijriOf(t);
       const todayH = this.#todayInEpochOf(t);
       return h.year === todayH.year && h.month === todayH.month;
     }
-    const now = new Date();
-    const d   = new Date(t.date + 'T12:00:00');
-    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    return this.period(budget).contains(t.date);
   }
 
   // ── Queries ─────────────────────────────────────────────────────────
@@ -172,12 +185,15 @@ export class BudgetService {
 
     const state     = this.#store.getState();
     const ids       = this.#expandedIds(budget);
-    const now       = new Date();
+
+    const period = this.period(budget);
+    if (!period.repeats) return { limit: budget.amount, rollover: 0 };
+    const prev = period.kind === 'hijri' ? null : period.previous();
 
     const prevMatches = (t) => {
       if (t.type !== 'expense') return false;
       if (!t.date) return false; // guard against missing date
-      if (budget.period === 'hijri') {
+      if (period.kind === 'hijri') {
         // Evaluate "last month" in this transaction's own epoch, for the same
         // reason #inCurrentPeriod() does — otherwise the rollover window drifts
         // away from the transactions it is meant to cover.
@@ -187,10 +203,7 @@ export class BudgetService {
         const h = this.#hijriOf(t);
         return h.year === py && h.month === pm;
       }
-      const d  = new Date(t.date + 'T12:00:00');
-      const pm = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
-      const py = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-      return d.getFullYear() === py && d.getMonth() === pm;
+      return t.date >= prev.from && t.date <= prev.to;
     };
 
     let prevSpent = 0;
@@ -237,12 +250,23 @@ export class BudgetService {
       categoryId:  ids[0] ?? null,   // kept in sync for backward compatibility
       amount:      data.amount,
       currency:    data.currency,
-      period:      data.period === 'hijri' ? 'hijri' : 'gregorian',
-      rollover:    data.rollover || false,
+      ...BudgetService.periodFields(data),
     };
     this.#store.getState().budgets.push(budget);
     this.#store.flush();
     return budget;
+  }
+
+  /**
+   * The period fields to store: a known kind, its dates for a range (removed
+   * otherwise), and rollover only where the period repeats.
+   * @param {{period?: string, startDate?: string, endDate?: string, rollover?: boolean}} data
+   */
+  static periodFields(data) {
+    const period = BudgetPeriod.normalize(data.period, data);
+    const out = { period, rollover: period !== 'range' && !!data.rollover };
+    if (period === 'range') { out.startDate = data.startDate; out.endDate = data.endDate; }
+    return out;
   }
 
   /**
@@ -254,6 +278,10 @@ export class BudgetService {
     const budget = this.#store.getState().budgets.find((b) => b.id === id);
     if (!budget) return null;
     Object.assign(budget, changes);
+    if ('period' in changes) {
+      Object.assign(budget, BudgetService.periodFields({ ...budget, ...changes }));
+      if (budget.period !== 'range') { delete budget.startDate; delete budget.endDate; }
+    }
     this.#store.flush();
     return budget;
   }

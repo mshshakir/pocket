@@ -101,6 +101,19 @@ export class BaseView {
   }
 
   /**
+   * Bills and deliveries still to come in a budget's period (BudgetOutlook).
+   * None in someone else's space — their bills aren't in this book.
+   * @param {object} budget
+   * @param {string} today YYYY-MM-DD
+   * @returns {{total:number, items:object[]}}
+   */
+  dueFor(budget, today) {
+    const none = { total: 0, items: [] };
+    if (this.inGuestSpace) return none;
+    try { return window.__app?.budgetOutlook?.stillDue(budget, today) || none; } catch (_) { return none; }
+  }
+
+  /**
    * Totals convert to the OWNER's home currency inside their space — showing
    * their balances in the member's currency would misrepresent their book.
    */

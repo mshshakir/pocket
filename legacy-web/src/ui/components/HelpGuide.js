@@ -59,8 +59,10 @@ export class HelpGuide {
       intro: 'Set a limit for what you spend, and see how much is left.',
       points: [
         'A budget covers one or more categories. A budget on a main category includes all its sub-categories.',
-        'Pick a Gregorian or a Hijri month for it.',
-        '<b>Roll over</b>: what you don’t spend this month is added to next month’s.',
+        'Pick a period: a month, a Hijri month, a week (Monday to Sunday), a year, or <b>set dates</b> for a trip or a few special days.',
+        'The thin mark on the bar shows where you’d be if you spent evenly. The line under it says if you’re on track and about how much you can spend each day.',
+        'Bills and deliveries still to come in the period show as a lighter part of the bar, so you can see what’s really free.',
+        '<b>Roll over</b>: what you don’t spend is added to the next month, week or year. Not for set dates.',
         'Spending in other currencies is converted to the budget’s currency.',
         'You can share a budget with family members you’ve added.',
       ],

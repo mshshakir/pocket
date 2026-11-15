@@ -9,19 +9,20 @@
  */
 import { BaseView }               from './BaseView.js';
 import { BudgetService }          from '../../domain/services/BudgetService.js';
-import { HijriCalendarService }   from '../../domain/services/HijriCalendarService.js';
+import { DateService }            from '../../domain/services/DateService.js';
+import { BudgetMeter }            from '../components/BudgetMeter.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 
 export class BudgetDetailView extends BaseView {
   /** @type {BudgetService} */          #budgets;
-  /** @type {HijriCalendarService} */   #hijri;
+  /** @type {BudgetMeter} */            #meter;
   /** @type {TransactionRowRenderer} */ #rowRenderer;
   /** @type {string|null} */            #budgetId = null;
 
   constructor() {
     super();
     this.#budgets     = new BudgetService();
-    this.#hijri       = new HijriCalendarService();
+    this.#meter       = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
     this.#rowRenderer = new TransactionRowRenderer();
   }
 
@@ -38,18 +39,12 @@ export class BudgetDetailView extends BaseView {
     const cats      = targetIds.map((id) => state.categories.find((c) => c.id === id)).filter(Boolean);
     const spent     = this.spendFor(b, () => this.#budgets.currentSpend(b));
     const eff       = this.#budgets.effectiveLimit(b);
-    const limit     = eff.limit;
-    const pct       = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
-    const color     = pct >= 100 ? '#ef4444' : pct >= 80 ? '#f59e0b' : '#10b981';
     const split     = this.#budgets.spendByCategory(b);
     const txs       = this.#budgets.periodTransactions(b);
-
-    const isHijri   = b.period === 'hijri';
-    const now       = new Date();
-    const todayH    = this.#hijri.toHijri(now);
-    const periodLabel = isHijri
-      ? `${this.#hijri.monthsLong[todayH.month]} ${todayH.year} H`
-      : now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const today     = DateService.todayIso();
+    const period    = this.#budgets.period(b, today);
+    const due       = this.dueFor(b, today);
+    const periodLabel = period.kind === 'gregorian' ? `${period.label} ${period.from.slice(0, 4)}` : period.label;
 
     const title      = cats.length ? cats.map((c) => c.name).join(', ') : 'Budget';
     const firstColor = cats[0]?.color || '#10b981';
@@ -77,26 +72,14 @@ export class BudgetDetailView extends BaseView {
           <div class="flex-1 min-w-0">
             <div class="text-xl font-semibold">${this.escapeHtml(title)}</div>
             <div class="text-xs text-zinc-500">
-              <i data-lucide="${isHijri ? 'moon-star' : 'calendar'}" style="width:11px;height:11px;display:inline"></i>
-              ${periodLabel}${b.rollover ? ' · rollover on' : ''}
+              <i data-lucide="${period.icon}" style="width:11px;height:11px;display:inline"></i>
+              ${this.escapeHtml(periodLabel)}${b.rollover ? ' · rollover on' : ''}
             </div>
           </div>
         </div>
 
         <div class="mt-4">
-          <div class="flex items-baseline justify-between">
-            <div class="text-2xl font-semibold">${this.formatMoney(spent, b.currency)}</div>
-            <div class="text-sm text-zinc-500">/ ${this.formatMoney(limit, b.currency)}${eff.rollover ? ` <span class="text-emerald-600">(+${this.formatMoney(eff.rollover, b.currency)})</span>` : ''}</div>
-          </div>
-          <div class="progress mt-2"><div style="width:${pct}%; background:${color}"></div></div>
-          <div class="flex items-center justify-between mt-2 text-xs">
-            <span class="text-zinc-500">${pct}% used</span>
-            <span class="${spent >= limit ? 'text-rose-500' : 'text-emerald-500'}">
-              ${spent >= limit
-                ? `Over by ${this.formatMoney(spent - limit, b.currency)}`
-                : `${this.formatMoney(limit - spent, b.currency)} left`}
-            </span>
-          </div>
+          ${this.#meter.render({ spent, limit: eff.limit, rollover: eff.rollover, currency: b.currency, period, due, large: true })}
         </div>
 
         ${split.length > 1 ? `

@@ -3746,8 +3746,229 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/BudgetPeriod.js
+  var BudgetPeriod = class _BudgetPeriod {
+    static KINDS = Object.freeze(["gregorian", "hijri", "week", "year", "range"]);
+    static #MONTHS = Object.freeze(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]);
+    static #LONG = Object.freeze([
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December"
+    ]);
+    /** @type {string} */
+    #kind;
+    /** @type {string} */
+    #today;
+    /** @type {string} */
+    #from;
+    /** @type {string} */
+    #to;
+    /** @type {HijriCalendarService} */
+    #hijri;
+    /** @type {{year:number, month:number}|null} */
+    #hijriMonth = null;
+    /**
+     * @param {object} budget
+     * @param {{today?: string, hijri?: HijriCalendarService}} [opts]
+     */
+    constructor(budget, { today = DateService.todayIso(), hijri = null } = {}) {
+      this.#kind = _BudgetPeriod.normalize(budget?.period, budget);
+      this.#today = today;
+      this.#hijri = hijri;
+      [this.#from, this.#to] = this.#window(budget, today);
+    }
+    /**
+     * A known kind, else 'gregorian'. A range without valid dates (start ≤ end)
+     * also falls back, so a half-filled budget still works as a month.
+     * @param {string} kind
+     * @param {object} [budget]
+     */
+    static normalize(kind, budget = null) {
+      if (!_BudgetPeriod.KINDS.includes(kind)) return "gregorian";
+      if (kind === "range" && budget && !_BudgetPeriod.validRange(budget.startDate, budget.endDate)) return "gregorian";
+      return kind;
+    }
+    /** @param {string} from @param {string} to */
+    static validRange(from, to) {
+      return _BudgetPeriod.isIso(from) && _BudgetPeriod.isIso(to) && from <= to;
+    }
+    static isIso(s) {
+      return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    }
+    // ── The window ──────────────────────────────────────────────────────
+    get kind() {
+      return this.#kind;
+    }
+    get from() {
+      return this.#from;
+    }
+    get to() {
+      return this.#to;
+    }
+    get today() {
+      return this.#today;
+    }
+    /** Days in the window. */
+    get days() {
+      return _BudgetPeriod.#diff(this.#from, this.#to) + 1;
+    }
+    /** 'upcoming' (dated budget not started) | 'active' | 'ended' (dated budget over). */
+    get status() {
+      if (this.#today < this.#from) return "upcoming";
+      if (this.#today > this.#to) return "ended";
+      return "active";
+    }
+    /** Days gone, today included (0 before it starts, all of them once it ends). */
+    get elapsed() {
+      if (this.status === "upcoming") return 0;
+      if (this.status === "ended") return this.days;
+      return _BudgetPeriod.#diff(this.#from, this.#today) + 1;
+    }
+    /** Days still to go, today included. */
+    get remaining() {
+      return this.days - this.elapsed + (this.status === "active" ? 1 : 0);
+    }
+    /** Days left after today — the count the cards have always shown. */
+    get daysAfterToday() {
+      return this.status === "active" ? _BudgetPeriod.#diff(this.#today, this.#to) : 0;
+    }
+    /** Rollover makes sense only for a window that repeats. */
+    get repeats() {
+      return this.#kind !== "range";
+    }
+    /** @param {string} iso */
+    contains(iso) {
+      return _BudgetPeriod.isIso(iso) && iso >= this.#from && iso <= this.#to;
+    }
+    /**
+     * The window just before this one (null for a range). For Hijri it is the
+     * day-count of the month before, ending the day before this one starts.
+     * @returns {{from:string, to:string}|null}
+     */
+    previous() {
+      switch (this.#kind) {
+        case "range":
+          return null;
+        case "week":
+          return { from: _BudgetPeriod.addDays(this.#from, -7), to: _BudgetPeriod.addDays(this.#from, -1) };
+        case "year": {
+          const y = Number(this.#from.slice(0, 4)) - 1;
+          return { from: `${y}-01-01`, to: `${y}-12-31` };
+        }
+        case "hijri": {
+          const { year, month } = this.#hijriMonth;
+          const py = month === 0 ? year - 1 : year, pm = month === 0 ? 11 : month - 1;
+          const len = this.#hijriSvc().daysInMonth(py, pm);
+          return { from: _BudgetPeriod.addDays(this.#from, -len), to: _BudgetPeriod.addDays(this.#from, -1) };
+        }
+        default: {
+          const [y, m] = this.#from.split("-").map(Number);
+          const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+          return { from: _BudgetPeriod.#ym(py, pm, 1), to: _BudgetPeriod.#ym(py, pm, _BudgetPeriod.#monthLen(py, pm)) };
+        }
+      }
+    }
+    // ── Words ───────────────────────────────────────────────────────────
+    /** e.g. "November", "Jumada I 1448 H", "10–16 Nov", "2026", "1–10 Dec 2026" */
+    get label() {
+      switch (this.#kind) {
+        case "hijri": {
+          const { year, month } = this.#hijriMonth;
+          return `${this.#hijriSvc().monthsShort[month]} ${year} H`;
+        }
+        case "week":
+          return _BudgetPeriod.rangeLabel(this.#from, this.#to, false);
+        case "year":
+          return this.#from.slice(0, 4);
+        case "range":
+          return _BudgetPeriod.rangeLabel(this.#from, this.#to, true);
+        default:
+          return _BudgetPeriod.#LONG[Number(this.#from.slice(5, 7)) - 1];
+      }
+    }
+    /** The word for one period, for "roll over to next …". */
+    get unit() {
+      return { week: "week", year: "year", range: "period" }[this.#kind] || "month";
+    }
+    /** Icon name for the kind. */
+    get icon() {
+      return { hijri: "moon-star", week: "calendar-days", year: "calendar-range", range: "calendar-clock" }[this.#kind] || "calendar";
+    }
+    /** "1–10 Dec 2026", "28 Nov – 4 Dec", "30 Dec 2026 – 2 Jan 2027" */
+    static rangeLabel(from, to, withYear) {
+      const [fy, fm, fd] = from.split("-").map(Number);
+      const [ty, tm, td] = to.split("-").map(Number);
+      const M = _BudgetPeriod.#MONTHS;
+      const yr = (y) => withYear ? ` ${y}` : "";
+      if (fy !== ty) return `${fd} ${M[fm - 1]} ${fy} \u2013 ${td} ${M[tm - 1]} ${ty}`;
+      if (fm !== tm) return `${fd} ${M[fm - 1]} \u2013 ${td} ${M[tm - 1]}${yr(ty)}`;
+      if (fd === td) return `${fd} ${M[fm - 1]}${yr(ty)}`;
+      return `${fd}\u2013${td} ${M[tm - 1]}${yr(ty)}`;
+    }
+    /** "1 Dec" */
+    static shortDate(iso) {
+      const [, m, d] = iso.split("-").map(Number);
+      return `${d} ${_BudgetPeriod.#MONTHS[m - 1]}`;
+    }
+    // ── Date maths (calendar days, timezone-free) ───────────────────────
+    static addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+    static #diff(a, b) {
+      const t = (iso) => {
+        const [y, m, d] = iso.split("-").map(Number);
+        return Date.UTC(y, m - 1, d);
+      };
+      return Math.round((t(b) - t(a)) / 864e5);
+    }
+    static #ym(y, m, d) {
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+    static #monthLen(y, m) {
+      return new Date(Date.UTC(y, m, 0)).getUTCDate();
+    }
+    // ── Private ─────────────────────────────────────────────────────────
+    #hijriSvc() {
+      return this.#hijri || (this.#hijri = new HijriCalendarService());
+    }
+    #window(budget, today) {
+      switch (this.#kind) {
+        case "range":
+          return [budget.startDate, budget.endDate];
+        case "week": {
+          const [y, m, d] = today.split("-").map(Number);
+          const back = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+          const from = _BudgetPeriod.addDays(today, -back);
+          return [from, _BudgetPeriod.addDays(from, 6)];
+        }
+        case "year":
+          return [`${today.slice(0, 4)}-01-01`, `${today.slice(0, 4)}-12-31`];
+        case "hijri": {
+          const h = this.#hijriSvc().toHijri(today);
+          this.#hijriMonth = { year: h.year, month: h.month };
+          const from = _BudgetPeriod.addDays(today, -(h.day - 1));
+          return [from, _BudgetPeriod.addDays(from, this.#hijriSvc().daysInMonth(h.year, h.month) - 1)];
+        }
+        default: {
+          const [y, m] = today.split("-").map(Number);
+          return [_BudgetPeriod.#ym(y, m, 1), _BudgetPeriod.#ym(y, m, _BudgetPeriod.#monthLen(y, m))];
+        }
+      }
+    }
+  };
+
   // src/domain/services/BudgetService.js
-  var BudgetService = class {
+  var BudgetService = class _BudgetService {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -3772,6 +3993,19 @@ var _PocketApp = (() => {
     targetCategoryIds(budget) {
       if (Array.isArray(budget.categoryIds) && budget.categoryIds.length) return budget.categoryIds;
       return budget.categoryId ? [budget.categoryId] : [];
+    }
+    /** Every category id that counts toward the budget (targets and their sub-categories). */
+    countedCategoryIds(budget) {
+      return this.#expandedIds(budget);
+    }
+    /**
+     * The budget's current window (month, Hijri month, week, year or dates).
+     * @param {object} budget
+     * @param {string} [today]
+     * @returns {BudgetPeriod}
+     */
+    period(budget, today = DateService.todayIso()) {
+      return new BudgetPeriod(budget, { today, hijri: this.#hijri });
     }
     /** Every category that counts toward the budget = each target + its descendants. */
     #expandedIds(budget) {
@@ -3824,14 +4058,12 @@ var _PocketApp = (() => {
     #inCurrentPeriod(budget, t) {
       if (t.type !== "expense") return false;
       if (!t.date) return false;
-      if (budget.period === "hijri") {
+      if (BudgetPeriod.normalize(budget.period, budget) === "hijri") {
         const h = this.#hijriOf(t);
         const todayH = this.#todayInEpochOf(t);
         return h.year === todayH.year && h.month === todayH.month;
       }
-      const now = /* @__PURE__ */ new Date();
-      const d = /* @__PURE__ */ new Date(t.date + "T12:00:00");
-      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+      return this.period(budget).contains(t.date);
     }
     // ── Queries ─────────────────────────────────────────────────────────
     /**
@@ -3895,24 +4127,23 @@ var _PocketApp = (() => {
       if (!budget.rollover) return { limit: budget.amount, rollover: 0 };
       const state = this.#store.getState();
       const ids = this.#expandedIds(budget);
-      const now = /* @__PURE__ */ new Date();
+      const period = this.period(budget);
+      if (!period.repeats) return { limit: budget.amount, rollover: 0 };
+      const prev = period.kind === "hijri" ? null : period.previous();
       const prevMatches = (t) => {
         if (t.type !== "expense") return false;
         if (!t.date) return false;
-        if (budget.period === "hijri") {
+        if (period.kind === "hijri") {
           const ref = this.#todayInEpochOf(t);
-          let pm2 = ref.month - 1, py2 = ref.year;
-          if (pm2 < 0) {
-            pm2 = 11;
-            py2 -= 1;
+          let pm = ref.month - 1, py = ref.year;
+          if (pm < 0) {
+            pm = 11;
+            py -= 1;
           }
           const h = this.#hijriOf(t);
-          return h.year === py2 && h.month === pm2;
+          return h.year === py && h.month === pm;
         }
-        const d = /* @__PURE__ */ new Date(t.date + "T12:00:00");
-        const pm = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
-        const py = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-        return d.getFullYear() === py && d.getMonth() === pm;
+        return t.date >= prev.from && t.date <= prev.to;
       };
       let prevSpent = 0;
       for (const t of CountedEntries.list(state)) {
@@ -3952,12 +4183,25 @@ var _PocketApp = (() => {
         // kept in sync for backward compatibility
         amount: data.amount,
         currency: data.currency,
-        period: data.period === "hijri" ? "hijri" : "gregorian",
-        rollover: data.rollover || false
+        ..._BudgetService.periodFields(data)
       };
       this.#store.getState().budgets.push(budget);
       this.#store.flush();
       return budget;
+    }
+    /**
+     * The period fields to store: a known kind, its dates for a range (removed
+     * otherwise), and rollover only where the period repeats.
+     * @param {{period?: string, startDate?: string, endDate?: string, rollover?: boolean}} data
+     */
+    static periodFields(data) {
+      const period = BudgetPeriod.normalize(data.period, data);
+      const out = { period, rollover: period !== "range" && !!data.rollover };
+      if (period === "range") {
+        out.startDate = data.startDate;
+        out.endDate = data.endDate;
+      }
+      return out;
     }
     /**
      * Update a budget.
@@ -3968,6 +4212,13 @@ var _PocketApp = (() => {
       const budget = this.#store.getState().budgets.find((b) => b.id === id);
       if (!budget) return null;
       Object.assign(budget, changes);
+      if ("period" in changes) {
+        Object.assign(budget, _BudgetService.periodFields({ ...budget, ...changes }));
+        if (budget.period !== "range") {
+          delete budget.startDate;
+          delete budget.endDate;
+        }
+      }
       this.#store.flush();
       return budget;
     }
@@ -4552,6 +4803,97 @@ var _PocketApp = (() => {
     #entries() {
       if (this.#logs) return this.#logs.all();
       return (this.#store.getState().transactions || []).filter((t) => t.regularItemId);
+    }
+  };
+
+  // src/domain/services/BudgetOutlook.js
+  var BudgetOutlook = class _BudgetOutlook {
+    static #OPEN = /* @__PURE__ */ new Set(["upcoming", "due", "overdue"]);
+    /** @type {object} */
+    #budgets;
+    /** @type {object|null} */
+    #bills;
+    /** @type {object|null} */
+    #dues;
+    /** @type {{convert:(minor:number, from:string, to:string) => number}} */
+    #fx;
+    /**
+     * @param {object} deps
+     * @param {{countedCategoryIds:Function, period:Function}} deps.budgets   BudgetService
+     * @param {{occurrences:Function}|null} deps.bills                        BillService
+     * @param {{items:Function, due:Function, plan:Function}|null} deps.vendorDues  VendorDues
+     * @param {{convert:Function}} deps.fx                                    CurrencyService
+     */
+    constructor({ budgets, bills = null, vendorDues = null, fx }) {
+      this.#budgets = budgets;
+      this.#bills = bills;
+      this.#dues = vendorDues;
+      this.#fx = fx;
+    }
+    /**
+     * @param {object} budget
+     * @param {string} [today]  YYYY-MM-DD
+     * @returns {{total:number, items:{kind:'bill'|'delivery', name:string, date:string, amount:number}[]}}
+     */
+    stillDue(budget, today) {
+      const period = this.#budgets.period(budget, today);
+      if (period.status === "ended") return { total: 0, items: [] };
+      const ids = this.#budgets.countedCategoryIds(budget);
+      const items = [...this.#billsDue(budget, period, ids), ...this.#deliveriesDue(budget, period, ids)];
+      return { total: items.reduce((s, i) => s + i.amount, 0), items: items.sort((a, b) => a.date.localeCompare(b.date)) };
+    }
+    // ── Private ─────────────────────────────────────────────────────────
+    #billsDue(budget, period, ids) {
+      if (!this.#bills) return [];
+      const out = [];
+      for (const o of this.#bills.occurrences(period.from, period.to, period.today)) {
+        const t = o.template;
+        if (!_BudgetOutlook.#OPEN.has(o.status) || t.type !== "expense") continue;
+        const amount = this.#share(t, ids, o.amount);
+        if (amount <= 0) continue;
+        out.push({
+          kind: "bill",
+          name: _BudgetOutlook.#name(t),
+          date: o.date,
+          amount: Math.round(this.#fx.convert(amount, o.currency || t.currency, budget.currency))
+        });
+      }
+      return out;
+    }
+    /** The part of a bill that falls in the budget: all of it, or its split legs that do. */
+    #share(t, ids, amount) {
+      if (Array.isArray(t.splits) && t.splits.length) {
+        const whole = t.splits.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+        const mine = t.splits.filter((x) => ids.has(x.categoryId)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+        return whole > 0 ? Math.round(amount * mine / whole) : 0;
+      }
+      return ids.has(t.categoryId) ? amount : 0;
+    }
+    #deliveriesDue(budget, period, ids) {
+      if (!this.#dues) return [];
+      const out = [];
+      const tomorrow = period.today < period.from ? period.from : _BudgetOutlook.#next(period.today);
+      for (const item of this.#dues.items()) {
+        if (!ids.has(item.categoryId)) continue;
+        const owed = this.#dues.due(item, period.today)?.amount || 0;
+        const rest = tomorrow <= period.to ? this.#dues.plan(item).totals(tomorrow, period.to).amount : 0;
+        const amount = owed + rest;
+        if (amount <= 0) continue;
+        out.push({
+          kind: "delivery",
+          name: item.name || "Delivery",
+          date: period.today,
+          amount: Math.round(this.#fx.convert(amount, item.currency || budget.currency, budget.currency))
+        });
+      }
+      return out;
+    }
+    static #name(t) {
+      return String(t.payee || t.description || "").trim() || "Bill";
+    }
+    static #next(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
     }
   };
 
@@ -11399,8 +11741,10 @@ This replaces your current grouping.`
         intro: "Set a limit for what you spend, and see how much is left.",
         points: [
           "A budget covers one or more categories. A budget on a main category includes all its sub-categories.",
-          "Pick a Gregorian or a Hijri month for it.",
-          "<b>Roll over</b>: what you don\u2019t spend this month is added to next month\u2019s.",
+          "Pick a period: a month, a Hijri month, a week (Monday to Sunday), a year, or <b>set dates</b> for a trip or a few special days.",
+          "The thin mark on the bar shows where you\u2019d be if you spent evenly. The line under it says if you\u2019re on track and about how much you can spend each day.",
+          "Bills and deliveries still to come in the period show as a lighter part of the bar, so you can see what\u2019s really free.",
+          "<b>Roll over</b>: what you don\u2019t spend is added to the next month, week or year. Not for set dates.",
           "Spending in other currencies is converted to the budget\u2019s currency.",
           "You can share a budget with family members you\u2019ve added."
         ]
@@ -11562,6 +11906,22 @@ This replaces your current grouping.`
     spendFor(budget, compute) {
       if (this.inGuestSpace) return Number(budget?.spent) || 0;
       return compute();
+    }
+    /**
+     * Bills and deliveries still to come in a budget's period (BudgetOutlook).
+     * None in someone else's space — their bills aren't in this book.
+     * @param {object} budget
+     * @param {string} today YYYY-MM-DD
+     * @returns {{total:number, items:object[]}}
+     */
+    dueFor(budget, today) {
+      const none = { total: 0, items: [] };
+      if (this.inGuestSpace) return none;
+      try {
+        return window.__app?.budgetOutlook?.stillDue(budget, today) || none;
+      } catch (_) {
+        return none;
+      }
     }
     /**
      * Totals convert to the OWNER's home currency inside their space — showing
@@ -13595,28 +13955,186 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/BudgetPace.js
+  var BudgetPace = class _BudgetPace {
+    static TOLERANCE = 0.03;
+    /** @type {number} */
+    #limit;
+    /** @type {number} */
+    #spent;
+    /** @type {number} */
+    #due;
+    /** @type {{status:string, days:number, elapsed:number, remaining:number}} */
+    #period;
+    /**
+     * @param {{limit:number, spent:number, due?:number, period:{status:string, days:number, elapsed:number, remaining:number}}} p
+     */
+    constructor({ limit, spent, due = 0, period }) {
+      this.#limit = Math.max(0, Number(limit) || 0);
+      this.#spent = Math.max(0, Number(spent) || 0);
+      this.#due = Math.max(0, Number(due) || 0);
+      this.#period = period;
+    }
+    /** Pace only means something while a period of more than a day is running. */
+    get applies() {
+      return this.#period.status === "active" && this.#period.days > 1 && this.#limit > 0;
+    }
+    get expected() {
+      if (!this.applies) return 0;
+      return Math.round(this.#limit * this.#period.elapsed / this.#period.days);
+    }
+    /** Where the plan says you should be today, as a percent of the bar. */
+    get markerPct() {
+      return this.applies ? Math.min(100, 100 * this.#period.elapsed / this.#period.days) : null;
+    }
+    /** Spent already at or past the limit. */
+    get overLimit() {
+      return this.#limit > 0 && this.#spent >= this.#limit;
+    }
+    get ahead() {
+      return this.#spent - this.expected;
+    }
+    /** Left to spend once bills still to come are paid. */
+    get free() {
+      return this.#limit - this.#spent - this.#due;
+    }
+    get perDay() {
+      const days = this.#period.remaining;
+      if (!this.applies || days <= 0) return 0;
+      return Math.max(0, Math.floor(this.free / days));
+    }
+    get state() {
+      if (!this.applies) return "idle";
+      if (this.#spent + this.#due > this.#limit) return "over";
+      const gap = this.ahead;
+      if (Math.abs(gap) <= this.#limit * _BudgetPace.TOLERANCE) return "on-track";
+      return gap > 0 ? "ahead" : "behind";
+    }
+  };
+
+  // src/ui/components/BudgetMeter.js
+  var BudgetMeter = class _BudgetMeter {
+    static RED = "#ef4444";
+    static AMBER = "#f59e0b";
+    static GREEN = "#10b981";
+    /** @type {(minor:number, currency:string) => string} */
+    #money;
+    /** @type {(s:string) => string} */
+    #esc;
+    /**
+     * @param {{money:(minor:number, currency:string) => string, escape:(s:string) => string}} deps
+     */
+    constructor({ money, escape }) {
+      this.#money = money;
+      this.#esc = escape;
+    }
+    /**
+     * @param {object} p
+     * @param {number} p.spent
+     * @param {number} p.limit
+     * @param {number} [p.rollover]
+     * @param {string} p.currency
+     * @param {BudgetPeriod} p.period
+     * @param {{total:number, items:object[]}} [p.due]
+     * @param {boolean} [p.large]  the budget's own page: bigger amount, bills listed
+     */
+    render({ spent, limit, rollover = 0, currency, period, due = { total: 0, items: [] }, large = false }) {
+      const pace = new BudgetPace({ limit, spent, due: due.total, period });
+      const color = this.color({ spent, limit, due: due.total, pace });
+      const m = (v) => this.#money(v, currency);
+      const pct = (v) => limit > 0 ? Math.min(100, 100 * v / limit) : 0;
+      const usedPct = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
+      const spentW = pct(spent);
+      const dueW = Math.min(100 - spentW, pct(due.total));
+      const marker = pace.markerPct;
+      return `
+      <div class="flex items-baseline justify-between">
+        <div class="${large ? "text-2xl" : "text-lg"} font-semibold">${m(spent)}</div>
+        <div class="text-sm text-zinc-500">/ ${m(limit)}${rollover ? ` <span class="text-emerald-600">(+${m(rollover)})</span>` : ""}</div>
+      </div>
+      <div class="progress budget-bar mt-2" style="position:relative;display:flex">
+        <div style="width:${spentW}%; background:${color}; border-radius:0"></div>
+        ${dueW > 0 ? `<div class="budget-due" style="width:${dueW}%; background:${color}; opacity:.35; border-radius:0" title="Still to come"></div>` : ""}
+        ${marker !== null ? `<span class="budget-pace-mark" title="Where you'd be if you spent evenly" style="position:absolute;top:-2px;bottom:-2px;left:calc(${marker}% - 1px);width:2px;background:currentColor;opacity:.55;border-radius:1px"></span>` : ""}
+      </div>
+      <div class="flex items-center justify-between mt-2 text-xs">
+        <span class="text-zinc-500">${this.#timeLine(period, usedPct)}</span>
+        <span class="${spent >= limit ? "text-rose-500" : "text-emerald-500"}">
+          ${spent >= limit ? `Over by ${m(spent - limit)}` : `${m(limit - spent)} left`}
+        </span>
+      </div>
+      ${due.total > 0 ? this.#dueLine(due, m, large) : ""}
+      ${this.#paceLine(pace, period, m)}`;
+    }
+    /** Red once over; amber when close, when bills will take it over, or when spending runs ahead. */
+    color({ spent, limit, due = 0, pace = null }) {
+      if (limit > 0 && spent >= limit) return _BudgetMeter.RED;
+      const used = limit > 0 ? spent / limit : 0;
+      if (used >= 0.8 || limit > 0 && spent + due > limit || pace?.state === "ahead") return _BudgetMeter.AMBER;
+      return _BudgetMeter.GREEN;
+    }
+    // ── Private ─────────────────────────────────────────────────────────
+    #timeLine(period, usedPct) {
+      if (period.status === "upcoming") return `Starts ${BudgetPeriod.shortDate(period.from)}`;
+      if (period.status === "ended") return `${usedPct}% used \xB7 ended ${BudgetPeriod.shortDate(period.to)}`;
+      const left = period.daysAfterToday;
+      const word = period.kind === "hijri" ? "Hijri day" : "day";
+      return `${usedPct}% used \xB7 ${left} ${word}${left === 1 ? "" : "s"} left`;
+    }
+    #dueLine(due, m, large) {
+      const bills = due.items.filter((i) => i.kind === "bill").length;
+      const deliveries = due.items.length - bills;
+      const what = [bills ? `${bills} bill${bills === 1 ? "" : "s"}` : "", deliveries ? `${deliveries === 1 ? "a delivery" : `${deliveries} deliveries`}` : ""].filter(Boolean).join(" and ");
+      const list = large ? `
+      <div class="mt-1.5 space-y-1">
+        ${due.items.map((i) => `
+          <div class="flex items-center justify-between text-xs text-zinc-500">
+            <span class="truncate">${this.#esc(i.name)}${i.kind === "bill" ? ` \xB7 ${BudgetPeriod.shortDate(i.date)}` : " \xB7 owed and coming"}</span>
+            <span class="flex-shrink-0">${m(i.amount)}</span>
+          </div>`).join("")}
+      </div>` : "";
+      return `
+      <div class="budget-due-line mt-1.5 text-xs text-zinc-500 flex items-center gap-1.5">
+        <span class="inline-block w-2.5 h-2 rounded-sm flex-shrink-0" style="background:currentColor;opacity:.35"></span>
+        <span>${m(due.total)} still to come (${what})</span>
+      </div>${list}`;
+    }
+    #paceLine(pace, period, m) {
+      if (!pace.applies) return "";
+      const days = period.remaining;
+      const daily = days > 0 && pace.perDay > 0 ? ` \xB7 about ${m(pace.perDay)} a day for ${days === 1 ? "today" : `${days} days`}` : "";
+      switch (pace.state) {
+        case "over":
+          return pace.overLimit ? "" : `<div class="budget-pace mt-1 text-xs text-rose-500">What's still to come takes it ${m(-pace.free)} over the limit</div>`;
+        case "ahead":
+          return `<div class="budget-pace mt-1 text-xs text-amber-600">Spending faster than planned by ${m(pace.ahead)}${daily}</div>`;
+        case "behind":
+          return `<div class="budget-pace mt-1 text-xs text-emerald-600">${m(-pace.ahead)} below plan so far${daily}</div>`;
+        default:
+          return `<div class="budget-pace mt-1 text-xs text-zinc-500">On track${daily}</div>`;
+      }
+    }
+  };
+
   // src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
-    /** @type {HijriCalendarService} */
-    #hijri;
+    /** @type {BudgetMeter} */
+    #meter;
     constructor() {
       super();
       this.#budgets = new BudgetService();
-      this.#hijri = new HijriCalendarService();
+      this.#meter = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
     }
     render() {
       const state = this.state;
       const todayIso = DateService.todayIso();
-      const todayH = this.#hijri.toHijri(todayIso);
-      const now = /* @__PURE__ */ new Date();
-      const eom = new Date(now.getFullYear(), now.getMonth() + 1, 0);
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets${this.helpButton("budgets")}</h1>${this.helpHint("budgets")}
-          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Shared with you \xB7 spend counted ${this.escapeHtml(this.space?.scopeNote ? "across all their accounts" : "")}` : "Gregorian-month or Hijri-month tracking"}</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Shared with you \xB7 spend counted ${this.escapeHtml(this.space?.scopeNote ? "across all their accounts" : "")}` : "By month, Hijri month, week, year or set dates"}</div>
         </div>
         ${this.inGuestSpace ? "" : `
         <button class="btn btn-primary" onclick="window.__app.openModal('budget')">
@@ -13625,27 +14143,24 @@ This replaces your current grouping.`
       </div>
 
       ${state.budgets.length === 0 ? `<div class="card p-10 text-center">${this.inGuestSpace ? this.emptyState("No budgets shared with you", "They haven\u2019t shared any budgets from this space.") : this.emptyState("No budgets yet", "Set a monthly limit per category to stay on track.")}</div>` : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            ${state.budgets.map((b) => this.#budgetCard(b, todayH, now, eom)).join("")}
+            ${state.budgets.map((b) => this.#budgetCard(b, todayIso)).join("")}
           </div>`}
     `;
     }
     // ── Private ───────────────────────────────────────────────────────────
-    #budgetCard(b, todayH, now, eom) {
+    #budgetCard(b, todayIso) {
       const targetIds = this.#budgets.targetCategoryIds(b);
       const cats = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
       const firstCat = cats[0];
-      const isHijri = b.period === "hijri";
+      const period = this.#budgets.period(b, todayIso);
       const spent = this.spendFor(b, () => this.#budgets.currentSpend(b));
       const eff = this.#budgets.effectiveLimit(b);
-      const limit = eff.limit;
-      const pct = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
-      const color = pct >= 100 ? "#ef4444" : pct >= 80 ? "#f59e0b" : "#10b981";
-      const daysLeft = isHijri ? this.#hijri.daysInMonth(todayH.year, todayH.month) - todayH.day : eom.getDate() - now.getDate();
+      const due = this.dueFor(b, todayIso);
       const multi = targetIds.length > 1;
       const hasSubs = !multi && this.state.categories.some((c) => c.parentId === firstCat?.id);
       const title = cats.length ? cats.map((c) => this.escapeHtml(c.name)).join(", ") : "Category";
       const split = multi ? this.#budgets.spendByCategory(b) : [];
-      const periodLabel = isHijri ? `<span class="inline-flex items-center gap-1"><i data-lucide="moon-star" style="width:11px;height:11px"></i> ${this.#hijri.monthsShort[todayH.month]} ${todayH.year} H</span>` : `<span class="inline-flex items-center gap-1"><i data-lucide="calendar" style="width:11px;height:11px"></i> ${now.toLocaleDateString(void 0, { month: "long" })}</span>`;
+      const periodLabel = `<span class="inline-flex items-center gap-1"><i data-lucide="${period.icon}" style="width:11px;height:11px"></i> ${this.escapeHtml(period.label)}</span>`;
       return `
       <div class="card p-5 cursor-pointer hover:shadow-md transition-shadow" onclick="window.__app.openBudgetDetail('${b.id}')">
         <div class="flex items-start gap-3">
@@ -13670,17 +14185,7 @@ This replaces your current grouping.`
           </div>
         </div>
         <div class="mt-4">
-          <div class="flex items-baseline justify-between">
-            <div class="text-lg font-semibold">${this.formatMoney(spent, b.currency)}</div>
-            <div class="text-sm text-zinc-500">/ ${this.formatMoney(limit, b.currency)}${eff.rollover ? ` <span class="text-emerald-600">(+${this.formatMoney(eff.rollover, b.currency)})</span>` : ""}</div>
-          </div>
-          <div class="progress mt-2"><div style="width:${pct}%; background:${color}"></div></div>
-          <div class="flex items-center justify-between mt-2 text-xs">
-            <span class="text-zinc-500">${pct}% used \xB7 ${Math.max(0, daysLeft)} ${isHijri ? "Hijri " : ""}day${daysLeft === 1 ? "" : "s"} left</span>
-            <span class="${spent >= limit ? "text-rose-500" : "text-emerald-500"}">
-              ${spent >= limit ? `Over by ${this.formatMoney(spent - limit, b.currency)}` : `${this.formatMoney(limit - spent, b.currency)} left`}
-            </span>
-          </div>
+          ${this.#meter.render({ spent, limit: eff.limit, rollover: eff.rollover, currency: b.currency, period, due })}
           ${multi ? `
             <div class="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-1">
               ${split.map((s) => `
@@ -13701,8 +14206,8 @@ This replaces your current grouping.`
   var BudgetDetailView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
-    /** @type {HijriCalendarService} */
-    #hijri;
+    /** @type {BudgetMeter} */
+    #meter;
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
     /** @type {string|null} */
@@ -13710,7 +14215,7 @@ This replaces your current grouping.`
     constructor() {
       super();
       this.#budgets = new BudgetService();
-      this.#hijri = new HijriCalendarService();
+      this.#meter = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
       this.#rowRenderer = new TransactionRowRenderer();
     }
     setBudget(id) {
@@ -13728,15 +14233,12 @@ This replaces your current grouping.`
       const cats = targetIds.map((id) => state.categories.find((c) => c.id === id)).filter(Boolean);
       const spent = this.spendFor(b, () => this.#budgets.currentSpend(b));
       const eff = this.#budgets.effectiveLimit(b);
-      const limit = eff.limit;
-      const pct = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
-      const color = pct >= 100 ? "#ef4444" : pct >= 80 ? "#f59e0b" : "#10b981";
       const split = this.#budgets.spendByCategory(b);
       const txs = this.#budgets.periodTransactions(b);
-      const isHijri = b.period === "hijri";
-      const now = /* @__PURE__ */ new Date();
-      const todayH = this.#hijri.toHijri(now);
-      const periodLabel = isHijri ? `${this.#hijri.monthsLong[todayH.month]} ${todayH.year} H` : now.toLocaleDateString(void 0, { month: "long", year: "numeric" });
+      const today = DateService.todayIso();
+      const period = this.#budgets.period(b, today);
+      const due = this.dueFor(b, today);
+      const periodLabel = period.kind === "gregorian" ? `${period.label} ${period.from.slice(0, 4)}` : period.label;
       const title = cats.length ? cats.map((c) => c.name).join(", ") : "Budget";
       const firstColor = cats[0]?.color || "#10b981";
       const firstIcon = cats[0]?.icon || "target";
@@ -13763,24 +14265,14 @@ This replaces your current grouping.`
           <div class="flex-1 min-w-0">
             <div class="text-xl font-semibold">${this.escapeHtml(title)}</div>
             <div class="text-xs text-zinc-500">
-              <i data-lucide="${isHijri ? "moon-star" : "calendar"}" style="width:11px;height:11px;display:inline"></i>
-              ${periodLabel}${b.rollover ? " \xB7 rollover on" : ""}
+              <i data-lucide="${period.icon}" style="width:11px;height:11px;display:inline"></i>
+              ${this.escapeHtml(periodLabel)}${b.rollover ? " \xB7 rollover on" : ""}
             </div>
           </div>
         </div>
 
         <div class="mt-4">
-          <div class="flex items-baseline justify-between">
-            <div class="text-2xl font-semibold">${this.formatMoney(spent, b.currency)}</div>
-            <div class="text-sm text-zinc-500">/ ${this.formatMoney(limit, b.currency)}${eff.rollover ? ` <span class="text-emerald-600">(+${this.formatMoney(eff.rollover, b.currency)})</span>` : ""}</div>
-          </div>
-          <div class="progress mt-2"><div style="width:${pct}%; background:${color}"></div></div>
-          <div class="flex items-center justify-between mt-2 text-xs">
-            <span class="text-zinc-500">${pct}% used</span>
-            <span class="${spent >= limit ? "text-rose-500" : "text-emerald-500"}">
-              ${spent >= limit ? `Over by ${this.formatMoney(spent - limit, b.currency)}` : `${this.formatMoney(limit - spent, b.currency)} left`}
-            </span>
-          </div>
+          ${this.#meter.render({ spent, limit: eff.limit, rollover: eff.rollover, currency: b.currency, period, due, large: true })}
         </div>
 
         ${split.length > 1 ? `
@@ -18098,7 +18590,14 @@ This replaces your current grouping.`
   };
 
   // src/ui/modals/BudgetModal.js
-  var BudgetModal = class {
+  var BudgetModal = class _BudgetModal {
+    static #PERIODS = Object.freeze([
+      ["gregorian", "calendar", "Month"],
+      ["hijri", "moon-star", "Hijri month"],
+      ["week", "calendar-days", "Week"],
+      ["year", "calendar-range", "Year"],
+      ["range", "calendar-clock", "Set dates"]
+    ]);
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -18119,7 +18618,10 @@ This replaces your current grouping.`
         rollover: false
       };
       const amount = editing ? this.#fx.fromMinor(b.amount, b.currency) : 0;
-      const isHijri = b.period === "hijri";
+      const kind = BudgetPeriod.KINDS.includes(b.period) ? b.period : "gregorian";
+      const today = DateService.todayIso();
+      const start = b.startDate || today;
+      const end = b.endDate || BudgetPeriod.addDays(today, 6);
       const selectedIds = Array.isArray(b.categoryIds) && b.categoryIds.length ? b.categoryIds : b.categoryId ? [b.categoryId] : [];
       return `
       <form onsubmit="window.__app.submitBudget(event,'${editing?.id || ""}')" class="p-5">
@@ -18145,19 +18647,27 @@ This replaces your current grouping.`
 
         <div class="mb-3">
           <label class="text-xs text-zinc-500 mb-1 block">Period</label>
-          <div class="grid grid-cols-2 gap-2">
+          <div class="grid grid-cols-3 gap-2" id="budgetPeriods"
+               onchange="const k=this.querySelector('input[name=period]:checked')?.value; document.getElementById('budgetRange').classList.toggle('hidden', k!=='range'); document.getElementById('budgetRollover').classList.toggle('hidden', k==='range');">
+            ${_BudgetModal.#PERIODS.map(([value, icon, label]) => `
             <label class="cursor-pointer">
-              <input type="radio" name="period" value="gregorian" ${!isHijri ? "checked" : ""} class="peer sr-only">
-              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full">
-                <i data-lucide="calendar"></i> Gregorian month
+              <input type="radio" name="period" value="${value}" ${kind === value ? "checked" : ""} class="peer sr-only">
+              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full text-sm">
+                <i data-lucide="${icon}"></i> ${label}
               </div>
-            </label>
-            <label class="cursor-pointer">
-              <input type="radio" name="period" value="hijri" ${isHijri ? "checked" : ""} class="peer sr-only">
-              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full">
-                <i data-lucide="moon-star"></i> Hijri month
-              </div>
-            </label>
+            </label>`).join("")}
+          </div>
+          <div class="text-xs text-zinc-500 mt-1">A week runs Monday to Sunday. Use set dates for a trip, a wedding or a few special days.</div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mb-3 ${kind === "range" ? "" : "hidden"}" id="budgetRange">
+          <div>
+            <label class="text-xs text-zinc-500">From</label>
+            <input class="input" name="startDate" type="date" value="${this.#esc(start)}">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">To</label>
+            <input class="input" name="endDate" type="date" value="${this.#esc(end)}">
           </div>
         </div>
 
@@ -18174,12 +18684,12 @@ This replaces your current grouping.`
           </div>
         </div>
 
-        <div class="mb-4">
+        <div class="mb-4 ${kind === "range" ? "hidden" : ""}" id="budgetRollover">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
             <input type="checkbox" name="rollover" ${b.rollover ? "checked" : ""}>
-            <span>Roll over unspent budget to next month</span>
+            <span>Roll over what's left to the next period</span>
           </label>
-          <div class="text-xs text-zinc-500 mt-1">When enabled, any remaining amount carries forward as a bonus allowance.</div>
+          <div class="text-xs text-zinc-500 mt-1">What you don't spend is added to the next month, week or year.</div>
         </div>
 
         <div class="flex items-center gap-2">
@@ -22058,6 +22568,8 @@ This replaces your current grouping.`
     #regularLogs;
     /** @type {VendorDues}           */
     #vendorDues;
+    /** @type {BudgetOutlook}        */
+    #budgetOutlook;
     /** @type {BillService}          */
     #bills;
     /** @type {CategoryMergeModal}   */
@@ -22180,6 +22692,7 @@ This replaces your current grouping.`
       this.#habits = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
       this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+      this.#budgetOutlook = new BudgetOutlook({ budgets: this.#budgets, bills: this.#bills, vendorDues: this.#vendorDues, fx: this.#fx });
       this.#holdings = new HoldingService({ state: () => this.#store.getState(), fx: this.#fx });
       this.#owed = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
       this.#sync = new SyncService();
@@ -22527,6 +23040,10 @@ This replaces your current grouping.`
     /** Recurring bills that wait to be paid (amount changes). */
     get bills() {
       return this.#bills;
+    }
+    /** Bills and deliveries still to come inside each budget's period. */
+    get budgetOutlook() {
+      return this.#budgetOutlook;
     }
     get owed() {
       return this.#owed;
@@ -25294,8 +25811,17 @@ Leave empty to use your own name.`,
       const categoryIds = fd.getAll("categoryIds").filter(Boolean);
       if (!categoryIds.length) return this.#toast.show("Pick at least one category");
       const minor = this.#fx.toMinor(data.amount, data.currency);
-      const period = data.period === "hijri" ? "hijri" : "gregorian";
-      const payload = { categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency, period, rollover: !!data.rollover };
+      const period = BudgetPeriod.KINDS.includes(data.period) ? data.period : "gregorian";
+      if (period === "range" && !BudgetPeriod.validRange(data.startDate, data.endDate)) {
+        return this.#toast.show("Pick a start date and an end date on or after it");
+      }
+      const payload = {
+        categoryIds,
+        categoryId: categoryIds[0],
+        amount: minor,
+        currency: data.currency,
+        ...BudgetService.periodFields({ period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover })
+      };
       if (id) this.#budgets.update(id, payload);
       else this.#budgets.create(payload);
       this.closeModal();
@@ -27283,7 +27809,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       }
       if (Array.isArray(state.budgets)) {
         state.budgets.forEach((b) => {
-          if (b && b.period !== "hijri") b.period = "gregorian";
+          if (b && !BudgetPeriod.KINDS.includes(b.period)) b.period = "gregorian";
           if (b && !Array.isArray(b.categoryIds)) b.categoryIds = b.categoryId ? [b.categoryId] : [];
         });
       }

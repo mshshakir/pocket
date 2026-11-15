@@ -1,28 +1,25 @@
 /**
- * BudgetsView — Monthly budget tracking cards.
- * Supports both Gregorian-month and Hijri-month periods.
+ * BudgetsView — budget cards: month, Hijri month, week, year or set dates.
+ * Each card shows spent, bills still to come and the pace (BudgetMeter).
  */
 import { BaseView }          from './BaseView.js';
 import { BudgetService }     from '../../domain/services/BudgetService.js';
-import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { DateService }          from '../../domain/services/DateService.js';
+import { BudgetMeter }          from '../components/BudgetMeter.js';
 
 export class BudgetsView extends BaseView {
   /** @type {BudgetService} */         #budgets;
-  /** @type {HijriCalendarService} */  #hijri;
+  /** @type {BudgetMeter} */           #meter;
 
   constructor() {
     super();
     this.#budgets = new BudgetService();
-    this.#hijri   = new HijriCalendarService();
+    this.#meter   = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
   }
 
   render() {
     const state    = this.state;
     const todayIso = DateService.todayIso();
-    const todayH   = this.#hijri.toHijri(todayIso);
-    const now      = new Date();
-    const eom      = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
     return `
       <div class="flex items-center justify-between mb-6">
@@ -30,7 +27,7 @@ export class BudgetsView extends BaseView {
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets${this.helpButton('budgets')}</h1>${this.helpHint('budgets')}
           <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace
              ? `Shared with you · spend counted ${this.escapeHtml(this.space?.scopeNote ? 'across all their accounts' : '')}`
-             : 'Gregorian-month or Hijri-month tracking'}</div>
+             : 'By month, Hijri month, week, year or set dates'}</div>
         </div>
         ${this.inGuestSpace ? '' : `
         <button class="btn btn-primary" onclick="window.__app.openModal('budget')">
@@ -43,33 +40,26 @@ export class BudgetsView extends BaseView {
              ? this.emptyState('No budgets shared with you', 'They haven\u2019t shared any budgets from this space.')
              : this.emptyState('No budgets yet', 'Set a monthly limit per category to stay on track.')}</div>`
         : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            ${state.budgets.map((b) => this.#budgetCard(b, todayH, now, eom)).join('')}
+            ${state.budgets.map((b) => this.#budgetCard(b, todayIso)).join('')}
           </div>`}
     `;
   }
 
   // ── Private ───────────────────────────────────────────────────────────
 
-  #budgetCard(b, todayH, now, eom) {
+  #budgetCard(b, todayIso) {
     const targetIds = this.#budgets.targetCategoryIds(b);
     const cats      = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
     const firstCat  = cats[0];
-    const isHijri  = b.period === 'hijri';
+    const period   = this.#budgets.period(b, todayIso);
     const spent    = this.spendFor(b, () => this.#budgets.currentSpend(b));
     const eff      = this.#budgets.effectiveLimit(b);
-    const limit    = eff.limit;
-    const pct      = limit === 0 ? 0 : Math.min(100, Math.round(100 * spent / limit));
-    const color    = pct >= 100 ? '#ef4444' : pct >= 80 ? '#f59e0b' : '#10b981';
-    const daysLeft = isHijri
-      ? (this.#hijri.daysInMonth(todayH.year, todayH.month) - todayH.day)
-      : (eom.getDate() - now.getDate());
+    const due      = this.dueFor(b, todayIso);
     const multi    = targetIds.length > 1;
     const hasSubs  = !multi && this.state.categories.some((c) => c.parentId === firstCat?.id);
     const title    = cats.length ? cats.map((c) => this.escapeHtml(c.name)).join(', ') : 'Category';
     const split    = multi ? this.#budgets.spendByCategory(b) : [];
-    const periodLabel = isHijri
-      ? `<span class="inline-flex items-center gap-1"><i data-lucide="moon-star" style="width:11px;height:11px"></i> ${this.#hijri.monthsShort[todayH.month]} ${todayH.year} H</span>`
-      : `<span class="inline-flex items-center gap-1"><i data-lucide="calendar" style="width:11px;height:11px"></i> ${now.toLocaleDateString(undefined, {month:'long'})}</span>`;
+    const periodLabel = `<span class="inline-flex items-center gap-1"><i data-lucide="${period.icon}" style="width:11px;height:11px"></i> ${this.escapeHtml(period.label)}</span>`;
 
     return `
       <div class="card p-5 cursor-pointer hover:shadow-md transition-shadow" onclick="window.__app.openBudgetDetail('${b.id}')">
@@ -97,19 +87,7 @@ export class BudgetsView extends BaseView {
           </div>
         </div>
         <div class="mt-4">
-          <div class="flex items-baseline justify-between">
-            <div class="text-lg font-semibold">${this.formatMoney(spent, b.currency)}</div>
-            <div class="text-sm text-zinc-500">/ ${this.formatMoney(limit, b.currency)}${eff.rollover ? ` <span class="text-emerald-600">(+${this.formatMoney(eff.rollover, b.currency)})</span>` : ''}</div>
-          </div>
-          <div class="progress mt-2"><div style="width:${pct}%; background:${color}"></div></div>
-          <div class="flex items-center justify-between mt-2 text-xs">
-            <span class="text-zinc-500">${pct}% used · ${Math.max(0, daysLeft)} ${isHijri ? 'Hijri ' : ''}day${daysLeft === 1 ? '' : 's'} left</span>
-            <span class="${spent >= limit ? 'text-rose-500' : 'text-emerald-500'}">
-              ${spent >= limit
-                ? `Over by ${this.formatMoney(spent - limit, b.currency)}`
-                : `${this.formatMoney(limit - spent, b.currency)} left`}
-            </span>
-          </div>
+          ${this.#meter.render({ spent, limit: eff.limit, rollover: eff.rollover, currency: b.currency, period, due })}
           ${multi ? `
             <div class="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-1">
               ${split.map((s) => `

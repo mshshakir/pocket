@@ -1,13 +1,23 @@
 /**
  * BudgetModal — New / edit budget form.
- * Supports Gregorian and Hijri monthly periods with rollover.
+ * Periods: month, Hijri month, week, year, or set dates (no rollover there).
  */
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
 import { CategoryField }    from '../components/CategoryField.js';
+import { BudgetPeriod }     from '../../domain/services/BudgetPeriod.js';
+import { DateService }      from '../../domain/services/DateService.js';
 
 export class BudgetModal {
+  static #PERIODS = Object.freeze([
+    ['gregorian', 'calendar',       'Month'],
+    ['hijri',     'moon-star',      'Hijri month'],
+    ['week',      'calendar-days',  'Week'],
+    ['year',      'calendar-range', 'Year'],
+    ['range',     'calendar-clock', 'Set dates'],
+  ]);
+
   /** @type {Store} */           #store;
   /** @type {CurrencyService} */ #fx;
 
@@ -28,7 +38,10 @@ export class BudgetModal {
       rollover:   false,
     };
     const amount  = editing ? this.#fx.fromMinor(b.amount, b.currency) : 0;
-    const isHijri = b.period === 'hijri';
+    const kind    = BudgetPeriod.KINDS.includes(b.period) ? b.period : 'gregorian';
+    const today   = DateService.todayIso();
+    const start   = b.startDate || today;
+    const end     = b.endDate || BudgetPeriod.addDays(today, 6);
     // Backward-compatible: a legacy budget may carry a single categoryId.
     const selectedIds = Array.isArray(b.categoryIds) && b.categoryIds.length
       ? b.categoryIds
@@ -58,19 +71,27 @@ export class BudgetModal {
 
         <div class="mb-3">
           <label class="text-xs text-zinc-500 mb-1 block">Period</label>
-          <div class="grid grid-cols-2 gap-2">
+          <div class="grid grid-cols-3 gap-2" id="budgetPeriods"
+               onchange="const k=this.querySelector('input[name=period]:checked')?.value; document.getElementById('budgetRange').classList.toggle('hidden', k!=='range'); document.getElementById('budgetRollover').classList.toggle('hidden', k==='range');">
+            ${BudgetModal.#PERIODS.map(([value, icon, label]) => `
             <label class="cursor-pointer">
-              <input type="radio" name="period" value="gregorian" ${!isHijri?'checked':''} class="peer sr-only">
-              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full">
-                <i data-lucide="calendar"></i> Gregorian month
+              <input type="radio" name="period" value="${value}" ${kind === value ? 'checked' : ''} class="peer sr-only">
+              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full text-sm">
+                <i data-lucide="${icon}"></i> ${label}
               </div>
-            </label>
-            <label class="cursor-pointer">
-              <input type="radio" name="period" value="hijri" ${isHijri?'checked':''} class="peer sr-only">
-              <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full">
-                <i data-lucide="moon-star"></i> Hijri month
-              </div>
-            </label>
+            </label>`).join('')}
+          </div>
+          <div class="text-xs text-zinc-500 mt-1">A week runs Monday to Sunday. Use set dates for a trip, a wedding or a few special days.</div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mb-3 ${kind === 'range' ? '' : 'hidden'}" id="budgetRange">
+          <div>
+            <label class="text-xs text-zinc-500">From</label>
+            <input class="input" name="startDate" type="date" value="${this.#esc(start)}">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">To</label>
+            <input class="input" name="endDate" type="date" value="${this.#esc(end)}">
           </div>
         </div>
 
@@ -87,12 +108,12 @@ export class BudgetModal {
           </div>
         </div>
 
-        <div class="mb-4">
+        <div class="mb-4 ${kind === 'range' ? 'hidden' : ''}" id="budgetRollover">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
             <input type="checkbox" name="rollover" ${b.rollover?'checked':''}>
-            <span>Roll over unspent budget to next month</span>
+            <span>Roll over what's left to the next period</span>
           </label>
-          <div class="text-xs text-zinc-500 mt-1">When enabled, any remaining amount carries forward as a bonus allowance.</div>
+          <div class="text-xs text-zinc-500 mt-1">What you don't spend is added to the next month, week or year.</div>
         </div>
 
         <div class="flex items-center gap-2">

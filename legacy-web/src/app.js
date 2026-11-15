@@ -33,6 +33,8 @@ import { AccountRef }          from './domain/services/AccountRef.js';
 import { RegularLogService }   from './domain/services/RegularLogService.js';
 import { DeliveryPlan }        from './domain/services/DeliveryPlan.js';
 import { VendorDues }          from './domain/services/VendorDues.js';
+import { BudgetOutlook }       from './domain/services/BudgetOutlook.js';
+import { BudgetPeriod }        from './domain/services/BudgetPeriod.js';
 import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
@@ -157,6 +159,7 @@ export class Application {
   /** @type {RecurringService}     */ #recurring;
   /** @type {RegularLogService}    */ #regularLogs;
   /** @type {VendorDues}           */ #vendorDues;
+  /** @type {BudgetOutlook}        */ #budgetOutlook;
   /** @type {BillService}          */ #bills;
   /** @type {CategoryMergeModal}   */ #categoryMergeModal;
   /** @type {OwedService}          */ #owed;
@@ -251,6 +254,7 @@ export class Application {
     this.#habits      = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
     this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+    this.#budgetOutlook = new BudgetOutlook({ budgets: this.#budgets, bills: this.#bills, vendorDues: this.#vendorDues, fx: this.#fx });
     this.#holdings    = new HoldingService({ state: () => this.#store.getState(), fx: this.#fx });
     this.#owed        = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
     this.#sync        = new SyncService();
@@ -659,6 +663,8 @@ export class Application {
   get vendorDues() { return this.#vendorDues; }
   /** Recurring bills that wait to be paid (amount changes). */
   get bills() { return this.#bills; }
+  /** Bills and deliveries still to come inside each budget's period. */
+  get budgetOutlook() { return this.#budgetOutlook; }
   get owed()  { return this.#owed; }
   get holdings() { return this.#holdings; }
   /** Habits followed in Reports. */
@@ -3557,10 +3563,16 @@ export class Application {
     const categoryIds = fd.getAll('categoryIds').filter(Boolean);
     if (!categoryIds.length) return this.#toast.show('Pick at least one category');
     const minor  = this.#fx.toMinor(data.amount, data.currency);
-    const period = data.period === 'hijri' ? 'hijri' : 'gregorian';
-    // Delegate to BudgetService (it also normalizes period on create). categoryId
+    const period = BudgetPeriod.KINDS.includes(data.period) ? data.period : 'gregorian';
+    if (period === 'range' && !BudgetPeriod.validRange(data.startDate, data.endDate)) {
+      return this.#toast.show('Pick a start date and an end date on or after it');
+    }
+    // Delegate to BudgetService (it normalizes the period fields). categoryId
     // is kept in sync with the first selection for backward compatibility.
-    const payload = { categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency, period, rollover: !!data.rollover };
+    const payload = {
+      categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency,
+      ...BudgetService.periodFields({ period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover }),
+    };
     if (id) this.#budgets.update(id, payload);
     else    this.#budgets.create(payload);
     this.closeModal(); this.#render();
@@ -5563,13 +5575,13 @@ export class Application {
       delete state.regularLogs;
     }
 
-    // Budget period schema: collapse legacy 'monthly' to the canonical
-    // 'gregorian'. Only 'hijri' is special-cased everywhere else, so this keeps
-    // a single non-hijri value and stops the first edit from silently mutating
+    // Budget period schema: collapse legacy 'monthly' (and anything unknown)
+    // to the canonical 'gregorian'; the known kinds are BudgetPeriod.KINDS.
+    // Keeping one value per kind stops the first edit from silently mutating
     // the stored period (#12/#18).
     if (Array.isArray(state.budgets)) {
       state.budgets.forEach((b) => {
-        if (b && b.period !== 'hijri') b.period = 'gregorian';
+        if (b && !BudgetPeriod.KINDS.includes(b.period)) b.period = 'gregorian';
         // Multi-category budgets: backfill categoryIds from the legacy single id.
         if (b && !Array.isArray(b.categoryIds)) b.categoryIds = b.categoryId ? [b.categoryId] : [];
       });
