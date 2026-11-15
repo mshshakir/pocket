@@ -2,6 +2,7 @@
  * DashboardView — Overview screen: balance, income/expense summary,
  * top-spending donut chart, recent transactions, today's Hijri date.
  */
+import { BillService } from '../../domain/services/BillService.js';
 import { BaseView }         from './BaseView.js';
 import { ReportService }    from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
@@ -206,7 +207,7 @@ export class DashboardView extends BaseView {
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium truncate">${this.escapeHtml(b.template.payee || b.template.description || 'Bill')}</div>
+              <div class="text-sm font-medium truncate">${this.escapeHtml(BillService.nameOf(b.template, this.state))}</div>
               <div class="flex items-center gap-2">${when(b)}<span class="text-xs text-zinc-500">last ${this.formatMoney(b.lastAmount, b.currency)}</span></div>
             </div>
             <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${this.escapeHtml(b.template.id)}',date:'${b.date}'})">Pay</button>

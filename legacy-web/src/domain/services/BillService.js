@@ -114,6 +114,14 @@ export class BillService {
     return out.sort((a, b) => a.date.localeCompare(b.date));
   }
 
+  /** What a bill is called: its name, else its description, else its category. */
+  static nameOf(t, state) {
+    const own = String(t?.payee || t?.description || '').trim();
+    if (own) return own;
+    const cat = (state?.categories || []).find((c) => c.id === t?.categoryId);
+    return cat?.name || 'Bill';
+  }
+
   /** What was paid last time (the template's amount before any payment). */
   lastAmount(template) {
     const paid = (this.#store.getState().transactions || [])

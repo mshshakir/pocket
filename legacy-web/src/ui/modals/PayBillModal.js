@@ -5,6 +5,7 @@
  *
  * opts: { templateId: string, date: 'YYYY-MM-DD' }  (date = the occurrence)
  */
+import { BillService } from '../../domain/services/BillService.js';
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { DateService }     from '../../domain/services/DateService.js';
@@ -33,7 +34,7 @@ export class PayBillModal {
     if (!t) return '<div class="p-5 text-sm text-zinc-500">Bill not found.</div>';
     const last = this.#bills().lastAmount(t);
     const id = Html.escape(t.id), date = Html.escape(opts.date);
-    const name = t.payee || t.description || 'Bill';
+    const name = BillService.nameOf(t, state);
     const accounts = (state.accounts || []).filter((a) => !a.archived)
       .map((a) => `<option value="${Html.escape(a.id)}" ${a.id === t.accountId ? 'selected' : ''}>${Html.escape(a.name)}</option>`).join('');
     return `

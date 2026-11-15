@@ -10,6 +10,7 @@
  * out from the usual pattern (DeliveryPlan), so this only changes the days
  * that were different — and not once the vendor has been paid for them.
  */
+import { BillService } from '../../domain/services/BillService.js';
 import { DeliveryPlan } from '../../domain/services/DeliveryPlan.js';
 import { Html }         from '../../core/Html.js';
 import { DateService }  from '../../domain/services/DateService.js';
@@ -141,7 +142,7 @@ export class DayLogsModal {
       return `
         <div class="flex items-center justify-between gap-2 p-3 card mb-2">
           <div class="min-w-0">
-            <div class="text-sm font-medium truncate">${this.#esc(t.payee || 'Bill')}</div>
+            <div class="text-sm font-medium truncate">${this.#esc(BillService.nameOf(t, s))}</div>
             <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? (o.status === 'paid' ? '' : ' · last time') : ''}</div>
           </div>
           <span class="bill-state ${o.status}">${word[o.status]}</span>

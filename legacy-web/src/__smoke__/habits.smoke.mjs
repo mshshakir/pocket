@@ -16,6 +16,7 @@
  *   G2  a payee on 8+ of the last 14 days is offered as a delivery
  *   M1  shortcuts can be found, edited and deleted (Regulars → Shortcuts; a pencil chip in Add)
  *   C1  bills on the calendar: paid green, not paid red, coming up dashed; the day window has Pay
+ *   N1  a bill is named at the top of its form, and a repeat can't be saved without a name; an unnamed old one shows its category
  *   G3  in the app: "Make it a bill" turns the last payment into a monthly repeat; No thanks is remembered
  *
  * Run: node src/__smoke__/habits.smoke.mjs
@@ -324,6 +325,30 @@ const recent = (d) => addDays(appToday, -d);
   app.submitBill({ preventDefault() {}, target: pf }, rent.id, due);
   await wait(20);
   ok('C1 once paid it turns green', app.bills.occurrences(due, due, appToday).at(0).status === 'paid');
+}
+
+{
+  const w = boot([{ ...tx(addDays(appToday, -40), '', 120000), recurring: { rule: 'monthly', interval: 1, until: null }, askFirst: true }]);
+  await wait(100);
+  const app = w.__app;
+  app.startRegular('billAsk');
+  await wait(20);
+  let f = w.document.querySelector('form');
+  ok('N1 New bill asks for the bill name first', /New bill/.test(f.textContent) && f.querySelector('#txPayee').required && /Bill name/.test(f.textContent)
+     && f.querySelectorAll('[name="payee"]').length === 1);
+  f.querySelector('[name="amount"]').value = '500';
+  const n0 = app.store.getState().transactions.length;
+  await app.submitTx({ preventDefault() {}, target: f });
+  await wait(20);
+  ok('N1 without a name nothing is saved', app.store.getState().transactions.length === n0 && /Give it a name/.test(w.document.body.textContent));
+  f.querySelector('[name="payee"]').value = 'Electricity';
+  await app.submitTx({ preventDefault() {}, target: f });
+  await wait(20);
+  ok('N1 with a name it saves as Electricity', app.store.getState().transactions.at(-1).payee === 'Electricity');
+  app.navigate('calendar'); app.setCalTab('bills');
+  await wait(20);
+  const body = w.document.getElementById('viewContent').textContent;
+  ok('N1 the old unnamed bill shows its category (Food), not "Bill"', /Food/.test(body) && /Electricity/.test(body));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

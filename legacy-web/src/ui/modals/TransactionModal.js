@@ -364,14 +364,16 @@ export class TransactionModal {
     const isTransfer = type === 'transfer';
     // Repeat and payee live under "More options"; open it when this entry
     // already uses one, so nothing set is hidden.
-    const moreOpen  = !!(data.payee && data.payee !== 'Transfer') || !!data.recurring;
+    // A bill (an entry that repeats) is named up top: "Rent", "Electricity".
+    const isBill    = !isTransfer && !!data.recurring && !data.recurringSourceId;
+    const moreOpen  = (!isBill && !!(data.payee && data.payee !== 'Transfer')) || !!data.recurring;
     const types     = sharedBook ? ['expense', 'income'] : ['expense', 'income', 'transfer'];
 
     return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ''}')" class="p-5">
         <div class="sheet-handle" aria-hidden="true"></div>
         <div class="flex items-center gap-1 mb-4">
-          <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
+          <h3 class="text-lg font-semibold flex-1">${isBill ? (editing ? 'Edit bill' : 'New bill') : editing || sharedEditTx ? 'Edit transaction' : 'New transaction'}</h3>
           <label class="btn btn-ghost px-2.5 cursor-pointer" title="${signedIn ? 'Scan a receipt' : 'Scan a receipt (sign in first)'}"
                  aria-label="Scan a receipt">
             <i data-lucide="scan-line" style="color:#8b5cf6"></i>
@@ -396,6 +398,13 @@ export class TransactionModal {
             </button>`).join('')}
         </div>
         ${!editing && !sharedEditTx && !isSharedMode && type === 'expense' ? this.#shortcuts(state, data) : ''}
+ ${isBill ? `
+        <div class="mb-3">
+          <label class="field-label" for="txPayee">Bill name</label>
+          <input id="txPayee" class="input" name="payee" required maxlength="80" value="${this.#esc(data.payee || '')}"
+                 oninput="window.__app.suggestCategory(this.value)" placeholder="e.g. Rent, Electricity, Netflix">
+          <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
+        </div>` : ''}
         ${data.regularItemId && !editing ? `<input type="hidden" name="regularItemId" value="${this.#esc(data.regularItemId)}">` : ''}
         ${sharedBook ? `
         <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
@@ -451,17 +460,17 @@ export class TransactionModal {
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
             <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
             More options
-            <span class="text-xs font-normal text-zinc-400">${isTransfer ? 'payee' : 'repeat, payee'}</span>
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? 'payee' : isBill ? 'repeat' : 'repeat, payee'}</span>
           </summary>
           <div class="pt-2">
             ${!isTransfer ? this.#recurringSection(data) : ''}
-            <div class="mb-1">
+            ${isBill ? '' : `<div class="mb-1">
               <label class="field-label" for="txPayee">Payee / merchant</label>
               <input id="txPayee" class="input" name="payee" value="${this.#esc(data.payee || '')}"
                      oninput="window.__app.suggestCategory(this.value)"
                      placeholder="e.g. Whole Foods">
               <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
-            </div>
+            </div>`}
           </div>
         </details>
 

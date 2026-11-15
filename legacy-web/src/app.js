@@ -1361,6 +1361,13 @@ export class Application {
 
     // Recurring rule
     let recurring = null;
+    if (data.type !== 'transfer' && fd.get('recurringEnabled') && !String(data.payee || '').trim()) {
+      // a repeat is listed by its name (Bills, the calendar, reminders)
+      const field = event.target.querySelector('[name="payee"]');
+      field?.closest('details')?.setAttribute('open', '');
+      field?.focus?.();
+      return this.#toast.show('Give it a name — e.g. Rent, Electricity');
+    }
     if (data.type !== 'transfer' && fd.get('recurringEnabled')) {
       recurring = {
         rule:     fd.get('recurringRule') || 'monthly',
@@ -3658,7 +3665,7 @@ export class Application {
     this.#sync.schedulePush?.();
     this.closeModal();
     this.#render();
-    this.#toast.show(`${t.payee || 'Bill'} paid · ${this.#fx.formatMoney(amount, t.currency)}`);
+    this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} paid · ${this.#fx.formatMoney(amount, t.currency)}`);
   }
 
   /**
@@ -3695,7 +3702,7 @@ export class Application {
     this.#sync.schedulePush?.();
     this.closeModal();
     this.#render();
-    this.#toast.show(`${t.payee || 'Bill'} skipped this time`);
+    this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} skipped this time`);
   }
 
   /**

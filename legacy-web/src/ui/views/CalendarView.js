@@ -10,6 +10,7 @@
  *
  * Supports Gregorian, Hijri, and "both" display modes.
  */
+import { BillService } from '../../domain/services/BillService.js';
 import { BaseView }          from './BaseView.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { DateService }          from '../../domain/services/DateService.js';
@@ -208,7 +209,7 @@ export class CalendarView extends BaseView {
               `<span class="cal-bill ${status}" title="${this.escapeHtml(it.name)} · ${CalendarView.#DELIVERY_WORD[status]}"><i data-lucide="${Html.icon(it.icon)}"></i></span>`).join('');
             // Desktop: the bill's category icon, green when paid, red when not; phones: a dot.
             const billTags = bills.slice(0, 3).map((o) => {
-              const title = `${this.escapeHtml(o.template.payee || 'Bill')} · ${CalendarView.#BILL_WORD[o.status]}`;
+              const title = `${this.escapeHtml(BillService.nameOf(o.template, state))} · ${CalendarView.#BILL_WORD[o.status]}`;
               const cat = (state.categories || []).find((c) => c.id === o.template.categoryId);
               return `<span class="cal-bill ${o.status}" title="${title}"><i data-lucide="${Html.icon(cat?.icon, 'receipt')}"></i></span>`;
             }).join('') + (bills.length > 3 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 3}</span>` : '');
@@ -337,7 +338,7 @@ export class CalendarView extends BaseView {
     return `
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
         ${rows.map(({ t, next, ask, open }) => {
-          const name = this.escapeHtml(t.payee || t.description || 'Bill');
+          const name = this.escapeHtml(BillService.nameOf(t, state));
           const every = this.#every(t.recurring);
           const amount = ask ? `asks each time · last ${this.formatMoney(bills.lastAmount(t), t.currency)}` : this.formatMoney(t.amount, t.currency);
           const ended = !next;

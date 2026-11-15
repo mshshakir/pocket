@@ -10305,6 +10305,159 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/BillService.js
+  var BillService = class _BillService {
+    /** Days ahead that count as "coming up". */
+    static AHEAD = 7;
+    /** @type {{getState: () => object}} */
+    #store;
+    /** @type {{stepDate: Function}} */
+    #recurring;
+    /**
+     * @param {{store: object, recurring: {stepDate: (iso: string, rule: string, interval: number, anchorDay: number) => string}}} deps
+     */
+    constructor({ store, recurring }) {
+      this.#store = store;
+      this.#recurring = recurring;
+    }
+    /** Templates of bills (askFirst, not a copy, not a transfer). */
+    templates() {
+      return (this.#store.getState().transactions || []).filter((t) => t.recurring && t.askFirst === true && !t.recurringSourceId && t.type !== "transfer");
+    }
+    /**
+     * Occurrences not yet paid or skipped, up to `today + AHEAD` days, oldest first:
+     * [{ template, date, overdue, today, lastAmount, currency }]
+     * @param {string} today YYYY-MM-DD
+     */
+    due(today) {
+      const until = _BillService.#addDays(today, _BillService.AHEAD);
+      const ids = new Set((this.#store.getState().transactions || []).map((t) => t.id));
+      const out = [];
+      for (const t of this.templates()) {
+        const { rule, interval = 1 } = t.recurring;
+        const anchor = Number(t.date.slice(8, 10)) || 1;
+        const skipped = new Set(t.recurring.skipped || []);
+        let next = this.#recurring.stepDate(t.date, rule, interval, anchor);
+        for (let i = 0; next <= until && (!t.recurring.until || next <= t.recurring.until) && i < 400; i++) {
+          if (!ids.has(`${t.id}__${next}`) && !skipped.has(next)) {
+            out.push({ template: t, date: next, overdue: next < today, today: next === today, lastAmount: this.lastAmount(t), currency: t.currency });
+          }
+          next = this.#recurring.stepDate(next, rule, interval, anchor);
+        }
+      }
+      return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+    /** Every repeating entry (the originals, not their copies), "ask me" bills included. */
+    allRepeats(state = this.#store.getState()) {
+      return (state.transactions || []).filter((t) => t.recurring && !t.recurringSourceId && t.type !== "transfer");
+    }
+    /**
+     * The next date a repeat falls on, from `today` (inclusive), skipping dates
+     * skipped or already made; null when it has ended.
+     */
+    nextDate(template, today, state = this.#store.getState()) {
+      const { rule, interval = 1, until } = template.recurring || {};
+      if (!rule) return null;
+      const anchor = Number(template.date.slice(8, 10)) || 1;
+      const ids = new Set((state.transactions || []).map((t) => t.id));
+      const skipped = new Set(template.recurring.skipped || []);
+      let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
+      for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      return until && next > until ? null : next;
+    }
+    /**
+     * Every repeat's dates between two days (inclusive), with where each stands,
+     * for the calendar: [{ template, date, status, amount, currency }].
+     *   paid      the first date (the entry itself) or a copy made for that date
+     *   skipped   skipped on purpose
+     *   overdue   a bill ("ask me") whose date has passed without a payment
+     *   due       a bill due today
+     *   upcoming  still ahead
+     * Ordinary repeats are copied on their date, so past ones are paid (a
+     * deleted copy reads as skipped).
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to   YYYY-MM-DD
+     * @param {string} today YYYY-MM-DD
+     */
+    occurrences(from, to, today, state = this.#store.getState()) {
+      const byId = new Map((state.transactions || []).map((t) => [t.id, t]));
+      const out = [];
+      for (const t of this.allRepeats(state)) {
+        const { rule, interval = 1, until } = t.recurring;
+        if (!rule) continue;
+        const anchor = Number(t.date.slice(8, 10)) || 1;
+        const skipped = new Set(t.recurring.skipped || []);
+        let d = t.date;
+        for (let i = 0; i < 2e3 && d <= to && (!until || d <= until); i++) {
+          if (d >= from) {
+            const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
+            const status = copy ? "paid" : skipped.has(d) ? "skipped" : d > today ? "upcoming" : t.askFirst === true ? d === today ? "due" : "overdue" : d === today ? "due" : "skipped";
+            out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
+          }
+          const next = this.#recurring.stepDate(d, rule, interval, anchor);
+          if (!next || next <= d) break;
+          d = next;
+        }
+      }
+      return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+    /** What a bill is called: its name, else its description, else its category. */
+    static nameOf(t, state) {
+      const own = String(t?.payee || t?.description || "").trim();
+      if (own) return own;
+      const cat = (state?.categories || []).find((c) => c.id === t?.categoryId);
+      return cat?.name || "Bill";
+    }
+    /** What was paid last time (the template's amount before any payment). */
+    lastAmount(template) {
+      const paid = (this.#store.getState().transactions || []).filter((t) => t.recurringSourceId === template.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      return paid[0]?.amount ?? template.amount;
+    }
+    /**
+     * Records an occurrence as paid. The copy carries the template's account,
+     * category and payee unless given; its id ties it to the occurrence.
+     * @param {object} template
+     * @param {string} occurrence   the due date being paid (YYYY-MM-DD)
+     * @param {{amount: number, accountId?: string, paidOn: string, hijriDate?: object, refAmount?: number, exchangeRate?: number}} p
+     * @returns {object} the new entry
+     */
+    pay(template, occurrence, p) {
+      const state = this.#store.getState();
+      const id = `${template.id}__${occurrence}`;
+      if (state.transactions.some((t) => t.id === id)) throw new Error("Already paid");
+      const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, ...rest } = template;
+      const copy = {
+        ...rest,
+        id,
+        date: p.paidOn,
+        hijriDate: p.hijriDate ?? template.hijriDate,
+        amount: p.amount,
+        refAmount: p.refAmount ?? p.amount,
+        exchangeRate: p.exchangeRate ?? template.exchangeRate,
+        accountId: p.accountId || template.accountId,
+        recurringSourceId: template.id,
+        recurring: null,
+        splits: null,
+        tags: (template.tags || []).slice(),
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        note: template.note || ""
+      };
+      state.transactions.push(copy);
+      return copy;
+    }
+    /** Marks an occurrence as skipped (nothing to pay this time). */
+    skip(template, occurrence) {
+      const skipped = new Set(template.recurring.skipped || []);
+      skipped.add(occurrence);
+      template.recurring = { ...template.recurring, skipped: [...skipped].sort() };
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -11102,7 +11255,7 @@ This replaces your current grouping.`
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium truncate">${this.escapeHtml(b.template.payee || b.template.description || "Bill")}</div>
+              <div class="text-sm font-medium truncate">${this.escapeHtml(BillService.nameOf(b.template, this.state))}</div>
               <div class="flex items-center gap-2">${when(b)}<span class="text-xs text-zinc-500">last ${this.formatMoney(b.lastAmount, b.currency)}</span></div>
             </div>
             <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${this.escapeHtml(b.template.id)}',date:'${b.date}'})">Pay</button>
@@ -13323,7 +13476,7 @@ This replaces your current grouping.`
         const delivered = dues ? tracked.map((it) => ({ it, status: dues.statusOn(it, c.iso, todayStr) })).filter((x) => x.status) : [];
         const deliveryTags = delivered.slice(0, 3).map(({ it, status }) => `<span class="cal-bill ${status}" title="${this.escapeHtml(it.name)} \xB7 ${_CalendarView.#DELIVERY_WORD[status]}"><i data-lucide="${Html.icon(it.icon)}"></i></span>`).join("");
         const billTags = bills.slice(0, 3).map((o) => {
-          const title = `${this.escapeHtml(o.template.payee || "Bill")} \xB7 ${_CalendarView.#BILL_WORD[o.status]}`;
+          const title = `${this.escapeHtml(BillService.nameOf(o.template, state))} \xB7 ${_CalendarView.#BILL_WORD[o.status]}`;
           const cat = (state.categories || []).find((c2) => c2.id === o.template.categoryId);
           return `<span class="cal-bill ${o.status}" title="${title}"><i data-lucide="${Html.icon(cat?.icon, "receipt")}"></i></span>`;
         }).join("") + (bills.length > 3 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 3}</span>` : "");
@@ -13445,7 +13598,7 @@ This replaces your current grouping.`
       return `
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
         ${rows.map(({ t, next, ask, open }) => {
-        const name = this.escapeHtml(t.payee || t.description || "Bill");
+        const name = this.escapeHtml(BillService.nameOf(t, state));
         const every = this.#every(t.recurring);
         const amount = ask ? `asks each time \xB7 last ${this.formatMoney(bills.lastAmount(t), t.currency)}` : this.formatMoney(t.amount, t.currency);
         const ended = !next;
@@ -14251,13 +14404,14 @@ This replaces your current grouping.`
       }).join("");
       const signedIn = !!window.__app?.getSbUser?.();
       const isTransfer = type === "transfer";
-      const moreOpen = !!(data.payee && data.payee !== "Transfer") || !!data.recurring;
+      const isBill = !isTransfer && !!data.recurring && !data.recurringSourceId;
+      const moreOpen = !isBill && !!(data.payee && data.payee !== "Transfer") || !!data.recurring;
       const types = sharedBook ? ["expense", "income"] : ["expense", "income", "transfer"];
       return `
       <form id="txForm" onsubmit="window.__app.submitTx(event,'${editing?.id || ""}')" class="p-5">
         <div class="sheet-handle" aria-hidden="true"></div>
         <div class="flex items-center gap-1 mb-4">
-          <h3 class="text-lg font-semibold flex-1">${editing || sharedEditTx ? "Edit transaction" : "New transaction"}</h3>
+          <h3 class="text-lg font-semibold flex-1">${isBill ? editing ? "Edit bill" : "New bill" : editing || sharedEditTx ? "Edit transaction" : "New transaction"}</h3>
           <label class="btn btn-ghost px-2.5 cursor-pointer" title="${signedIn ? "Scan a receipt" : "Scan a receipt (sign in first)"}"
                  aria-label="Scan a receipt">
             <i data-lucide="scan-line" style="color:#8b5cf6"></i>
@@ -14282,6 +14436,13 @@ This replaces your current grouping.`
             </button>`).join("")}
         </div>
         ${!editing && !sharedEditTx && !isSharedMode && type === "expense" ? this.#shortcuts(state, data) : ""}
+ ${isBill ? `
+        <div class="mb-3">
+          <label class="field-label" for="txPayee">Bill name</label>
+          <input id="txPayee" class="input" name="payee" required maxlength="80" value="${this.#esc(data.payee || "")}"
+                 oninput="window.__app.suggestCategory(this.value)" placeholder="e.g. Rent, Electricity, Netflix">
+          <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
+        </div>` : ""}
         ${data.regularItemId && !editing ? `<input type="hidden" name="regularItemId" value="${this.#esc(data.regularItemId)}">` : ""}
         ${sharedBook ? `
         <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
@@ -14337,17 +14498,17 @@ This replaces your current grouping.`
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
             <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
             More options
-            <span class="text-xs font-normal text-zinc-400">${isTransfer ? "payee" : "repeat, payee"}</span>
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? "payee" : isBill ? "repeat" : "repeat, payee"}</span>
           </summary>
           <div class="pt-2">
             ${!isTransfer ? this.#recurringSection(data) : ""}
-            <div class="mb-1">
+            ${isBill ? "" : `<div class="mb-1">
               <label class="field-label" for="txPayee">Payee / merchant</label>
               <input id="txPayee" class="input" name="payee" value="${this.#esc(data.payee || "")}"
                      oninput="window.__app.suggestCategory(this.value)"
                      placeholder="e.g. Whole Foods">
               <div id="catSuggest" class="text-xs text-emerald-600 mt-1"></div>
-            </div>
+            </div>`}
           </div>
         </details>
 
@@ -16517,7 +16678,7 @@ This replaces your current grouping.`
         return `
         <div class="flex items-center justify-between gap-2 p-3 card mb-2">
           <div class="min-w-0">
-            <div class="text-sm font-medium truncate">${this.#esc(t.payee || "Bill")}</div>
+            <div class="text-sm font-medium truncate">${this.#esc(BillService.nameOf(t, s))}</div>
             <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? o.status === "paid" ? "" : " \xB7 last time" : ""}</div>
           </div>
           <span class="bill-state ${o.status}">${word[o.status]}</span>
@@ -16764,7 +16925,7 @@ This replaces your current grouping.`
       if (!t) return '<div class="p-5 text-sm text-zinc-500">Bill not found.</div>';
       const last = this.#bills().lastAmount(t);
       const id = Html.escape(t.id), date = Html.escape(opts.date);
-      const name = t.payee || t.description || "Bill";
+      const name = BillService.nameOf(t, state);
       const accounts = (state.accounts || []).filter((a) => !a.archived).map((a) => `<option value="${Html.escape(a.id)}" ${a.id === t.accountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("");
       return `
       <form class="p-5" style="min-width:300px;max-width:420px" onsubmit="window.__app.submitBill(event,'${id}','${date}')">
@@ -16893,152 +17054,6 @@ This replaces your current grouping.`
           <button class="btn btn-primary" type="submit"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
-    }
-  };
-
-  // src/domain/services/BillService.js
-  var BillService = class _BillService {
-    /** Days ahead that count as "coming up". */
-    static AHEAD = 7;
-    /** @type {{getState: () => object}} */
-    #store;
-    /** @type {{stepDate: Function}} */
-    #recurring;
-    /**
-     * @param {{store: object, recurring: {stepDate: (iso: string, rule: string, interval: number, anchorDay: number) => string}}} deps
-     */
-    constructor({ store, recurring }) {
-      this.#store = store;
-      this.#recurring = recurring;
-    }
-    /** Templates of bills (askFirst, not a copy, not a transfer). */
-    templates() {
-      return (this.#store.getState().transactions || []).filter((t) => t.recurring && t.askFirst === true && !t.recurringSourceId && t.type !== "transfer");
-    }
-    /**
-     * Occurrences not yet paid or skipped, up to `today + AHEAD` days, oldest first:
-     * [{ template, date, overdue, today, lastAmount, currency }]
-     * @param {string} today YYYY-MM-DD
-     */
-    due(today) {
-      const until = _BillService.#addDays(today, _BillService.AHEAD);
-      const ids = new Set((this.#store.getState().transactions || []).map((t) => t.id));
-      const out = [];
-      for (const t of this.templates()) {
-        const { rule, interval = 1 } = t.recurring;
-        const anchor = Number(t.date.slice(8, 10)) || 1;
-        const skipped = new Set(t.recurring.skipped || []);
-        let next = this.#recurring.stepDate(t.date, rule, interval, anchor);
-        for (let i = 0; next <= until && (!t.recurring.until || next <= t.recurring.until) && i < 400; i++) {
-          if (!ids.has(`${t.id}__${next}`) && !skipped.has(next)) {
-            out.push({ template: t, date: next, overdue: next < today, today: next === today, lastAmount: this.lastAmount(t), currency: t.currency });
-          }
-          next = this.#recurring.stepDate(next, rule, interval, anchor);
-        }
-      }
-      return out.sort((a, b) => a.date.localeCompare(b.date));
-    }
-    /** Every repeating entry (the originals, not their copies), "ask me" bills included. */
-    allRepeats(state = this.#store.getState()) {
-      return (state.transactions || []).filter((t) => t.recurring && !t.recurringSourceId && t.type !== "transfer");
-    }
-    /**
-     * The next date a repeat falls on, from `today` (inclusive), skipping dates
-     * skipped or already made; null when it has ended.
-     */
-    nextDate(template, today, state = this.#store.getState()) {
-      const { rule, interval = 1, until } = template.recurring || {};
-      if (!rule) return null;
-      const anchor = Number(template.date.slice(8, 10)) || 1;
-      const ids = new Set((state.transactions || []).map((t) => t.id));
-      const skipped = new Set(template.recurring.skipped || []);
-      let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
-      for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
-      for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
-      return until && next > until ? null : next;
-    }
-    /**
-     * Every repeat's dates between two days (inclusive), with where each stands,
-     * for the calendar: [{ template, date, status, amount, currency }].
-     *   paid      the first date (the entry itself) or a copy made for that date
-     *   skipped   skipped on purpose
-     *   overdue   a bill ("ask me") whose date has passed without a payment
-     *   due       a bill due today
-     *   upcoming  still ahead
-     * Ordinary repeats are copied on their date, so past ones are paid (a
-     * deleted copy reads as skipped).
-     * @param {string} from YYYY-MM-DD
-     * @param {string} to   YYYY-MM-DD
-     * @param {string} today YYYY-MM-DD
-     */
-    occurrences(from, to, today, state = this.#store.getState()) {
-      const byId = new Map((state.transactions || []).map((t) => [t.id, t]));
-      const out = [];
-      for (const t of this.allRepeats(state)) {
-        const { rule, interval = 1, until } = t.recurring;
-        if (!rule) continue;
-        const anchor = Number(t.date.slice(8, 10)) || 1;
-        const skipped = new Set(t.recurring.skipped || []);
-        let d = t.date;
-        for (let i = 0; i < 2e3 && d <= to && (!until || d <= until); i++) {
-          if (d >= from) {
-            const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
-            const status = copy ? "paid" : skipped.has(d) ? "skipped" : d > today ? "upcoming" : t.askFirst === true ? d === today ? "due" : "overdue" : d === today ? "due" : "skipped";
-            out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
-          }
-          const next = this.#recurring.stepDate(d, rule, interval, anchor);
-          if (!next || next <= d) break;
-          d = next;
-        }
-      }
-      return out.sort((a, b) => a.date.localeCompare(b.date));
-    }
-    /** What was paid last time (the template's amount before any payment). */
-    lastAmount(template) {
-      const paid = (this.#store.getState().transactions || []).filter((t) => t.recurringSourceId === template.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-      return paid[0]?.amount ?? template.amount;
-    }
-    /**
-     * Records an occurrence as paid. The copy carries the template's account,
-     * category and payee unless given; its id ties it to the occurrence.
-     * @param {object} template
-     * @param {string} occurrence   the due date being paid (YYYY-MM-DD)
-     * @param {{amount: number, accountId?: string, paidOn: string, hijriDate?: object, refAmount?: number, exchangeRate?: number}} p
-     * @returns {object} the new entry
-     */
-    pay(template, occurrence, p) {
-      const state = this.#store.getState();
-      const id = `${template.id}__${occurrence}`;
-      if (state.transactions.some((t) => t.id === id)) throw new Error("Already paid");
-      const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, ...rest } = template;
-      const copy = {
-        ...rest,
-        id,
-        date: p.paidOn,
-        hijriDate: p.hijriDate ?? template.hijriDate,
-        amount: p.amount,
-        refAmount: p.refAmount ?? p.amount,
-        exchangeRate: p.exchangeRate ?? template.exchangeRate,
-        accountId: p.accountId || template.accountId,
-        recurringSourceId: template.id,
-        recurring: null,
-        splits: null,
-        tags: (template.tags || []).slice(),
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        note: template.note || ""
-      };
-      state.transactions.push(copy);
-      return copy;
-    }
-    /** Marks an occurrence as skipped (nothing to pay this time). */
-    skip(template, occurrence) {
-      const skipped = new Set(template.recurring.skipped || []);
-      skipped.add(occurrence);
-      template.recurring = { ...template.recurring, skipped: [...skipped].sort() };
-    }
-    static #addDays(iso, n) {
-      const [y, m, d] = iso.split("-").map(Number);
-      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
     }
   };
 
@@ -19917,6 +19932,12 @@ Leave empty to use your own name.`,
         data.accountId = splits[0].accountId;
       }
       let recurring = null;
+      if (data.type !== "transfer" && fd.get("recurringEnabled") && !String(data.payee || "").trim()) {
+        const field = event.target.querySelector('[name="payee"]');
+        field?.closest("details")?.setAttribute("open", "");
+        field?.focus?.();
+        return this.#toast.show("Give it a name \u2014 e.g. Rent, Electricity");
+      }
       if (data.type !== "transfer" && fd.get("recurringEnabled")) {
         recurring = {
           rule: fd.get("recurringRule") || "monthly",
@@ -22068,7 +22089,7 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       this.#sync.schedulePush?.();
       this.closeModal();
       this.#render();
-      this.#toast.show(`${t.payee || "Bill"} paid \xB7 ${this.#fx.formatMoney(amount, t.currency)}`);
+      this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} paid \xB7 ${this.#fx.formatMoney(amount, t.currency)}`);
     }
     /**
      * Stops a repeat after today: its To date becomes today, so no more copies
@@ -22105,7 +22126,7 @@ Nothing new is added from tomorrow. Entries already made stay; delete any you do
       this.#sync.schedulePush?.();
       this.closeModal();
       this.#render();
-      this.#toast.show(`${t.payee || "Bill"} skipped this time`);
+      this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} skipped this time`);
     }
     /**
      * Undoes the newest payment to a vendor: its entries are deleted, so the
