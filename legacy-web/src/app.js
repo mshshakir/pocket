@@ -3572,6 +3572,7 @@ export class Application {
     // is kept in sync with the first selection for backward compatibility.
     const payload = {
       categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency,
+      alerts: !!data.alerts,
       ...BudgetService.periodFields({
         period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover,
         rolloverOverspend: !!data.rolloverOverspend,

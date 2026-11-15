@@ -318,6 +318,7 @@ export class BudgetService {
       amount:      data.amount,
       currency:    data.currency,
       ...BudgetService.periodFields(data),
+      alerts:      data.alerts !== false,
     };
     this.#store.getState().budgets.push(budget);
     this.#store.flush();

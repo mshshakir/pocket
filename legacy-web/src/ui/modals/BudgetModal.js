@@ -132,6 +132,13 @@ export class BudgetModal {
           </div>
         </div>
 
+        <div class="mb-4">
+          <label class="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="alerts" class="mt-0.5" ${b.alerts === false ? '' : 'checked'}>
+            <span>Telegram alerts<span class="block text-xs text-zinc-500">A message at 80%, at 100%, and if you're spending faster than planned. Needs Telegram linked and a plan that includes it.</span></span>
+          </label>
+        </div>
+
         <div class="flex items-center gap-2">
           ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteBudget('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : ''}
           <div class="flex-1"></div>

@@ -24,6 +24,8 @@
  *   B3  the budget page shows the periods before and who spent it
  *   B4  Suggest fills the limit from past spending
  *   B5  rollover options are saved; overspending carried shows as a minus
+ *   T1  Telegram totals: spent, limit, ahead, the period and names only; none when off or not running
+ *   T2  the form's Telegram alerts switch: on for new budgets, saved off when unticked
  *
  * Run: node src/__smoke__/budgets.smoke.mjs
  */
@@ -32,6 +34,7 @@ import { BudgetPace } from '../domain/services/BudgetPace.js';
 import { BudgetOutlook } from '../domain/services/BudgetOutlook.js';
 import { BudgetAdvisor } from '../domain/services/BudgetAdvisor.js';
 import { BudgetSummary } from '../domain/services/BudgetSummary.js';
+import { BudgetAlertStatus } from '../domain/services/BudgetAlertStatus.js';
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
 
@@ -180,6 +183,24 @@ const P = (budget, today) => new BudgetPeriod(budget, { today });
   const rk = (x) => BudgetSummary.rank({ spent: 0, limit: 1000, due: 0, period: act, paceState: 'on-track', ...x });
   ok('S1 order', rk({ spent: 1000 }) === 0 && rk({ spent: 500, due: 600 }) === 1 && rk({ paceState: 'ahead' }) === 2 && rk({}) === 3
     && rk({ period: { status: 'upcoming' } }) === 4 && rk({ period: { status: 'ended' }, spent: 5000 }) === 5);
+}
+
+// ── T: Telegram totals ──────────────────────────────────────────────────
+{
+  const fake = {
+    period: (b, today) => new BudgetPeriod(b, { today }),
+    currentSpend: () => 25000,
+    effectiveLimit: (b) => ({ limit: b.amount, rollover: 0 }),
+    targetCategoryIds: (b) => b.categoryIds,
+  };
+  const names = { c1: 'Food', c2: 'Home', c3: 'Fun' };
+  const of = (b, today = '2026-11-10') => BudgetAlertStatus.of({ currency: 'INR', categoryIds: ['c1'], amount: 30000, period: 'gregorian', ...b }, { budgets: fake, categoryName: (id) => names[id], today });
+  const st = of({});
+  ok('T1 totals for the period: 250 of 300 on day 10 of 30 is ahead by 150', st && st.key === '2026-11-01…2026-11-30' && st.spent === 25000 && st.limit === 30000 && st.ahead === 15000 && st.name === 'Food' && st.label === 'November' && st.at === '2026-11-10', JSON.stringify(st));
+  ok('T1 only totals and names', Object.keys(st).sort().join() === 'ahead,at,currency,from,key,label,limit,name,spent,to');
+  ok('T1 none when switched off, before set dates start, or with no limit',
+    of({ alerts: false }) === null && of({ period: 'range', startDate: '2026-12-01', endDate: '2026-12-05' }) === null && of({ amount: 0 }) === null);
+  ok('T1 names: two shown, the rest counted', BudgetAlertStatus.name(['A', 'B', 'C', 'D']) === 'A, B +2' && of({ categoryIds: ['c1', 'c2'] }).name === 'Food, Home');
 }
 
 // ── in the app ──────────────────────────────────────────────────────────
@@ -361,6 +382,28 @@ const month = new BudgetPeriod({ period: 'gregorian' }, { today });
   await wait(30);
   const card = [...v.querySelectorAll('.card')].find((c) => /incl\. overspending/.test(c.textContent))?.textContent.replace(/\s+/g, ' ') || '';
   ok('B5 the card shows the limit taken to zero, (−₹400)', /\/ ₹\s?0(\.00)? \(−₹\s?400/.test(card), card.slice(0, 200));
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  app.openModal('budget');
+  await wait(20);
+  const f = w.document.querySelector('form');
+  ok('T2 Telegram alerts ticked for a new budget', f.querySelector('[name="alerts"]').checked === true);
+  f.querySelectorAll('[name="categoryIds"]').forEach((i) => i.remove());
+  const inp = w.document.createElement('input'); inp.type = 'hidden'; inp.name = 'categoryIds'; inp.value = 'c1'; f.appendChild(inp);
+  f.querySelector('[name="amount"]').value = '100';
+  app.submitBudget({ preventDefault() {}, target: f });
+  const b = app.store.getState().budgets[0];
+  ok('T2 saved with alerts on', b && b.alerts === true, JSON.stringify(b));
+  app.openModal('budget', { id: b.id });
+  await wait(20);
+  const f2 = w.document.querySelector('form');
+  f2.querySelector('[name="alerts"]').checked = false;
+  app.submitBudget({ preventDefault() {}, target: f2 }, b.id);
+  ok('T2 unticked is saved off', app.store.getState().budgets[0].alerts === false);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

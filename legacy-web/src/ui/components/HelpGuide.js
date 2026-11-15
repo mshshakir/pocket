@@ -64,6 +64,7 @@ export class HelpGuide {
         'Bills and deliveries still to come in the period show as a lighter part of the bar, so you can see what’s really free.',
         '<b>Roll over</b>: what you don’t spend is added to the next month, week or year. You can also carry overspending (it’s taken off next time) and set the most that carries over. Not for set dates.',
         'The top card adds up your monthly budgets and shows what you spent this month with no budget. Budgets that need attention come first.',
+        '<b>Telegram alerts</b>: a message when a budget reaches 80%, goes over, or you’re spending faster than planned — once each per period. Only the budget’s totals are sent, never your entries, and they update when the app saves. Untick it in the budget to stop.',
         'Tap <b>Suggest</b> in the form to fill the limit from what you usually spend. A budget’s page shows the periods before and, when family add spending, who spent what.',
         'Spending in other currencies is converted to the budget’s currency.',
         'You can share a budget with family members you’ve added.',

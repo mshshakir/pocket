@@ -47,6 +47,8 @@ import { RecurringService }  from './RecurringService.js';
 import { CurrencyService }   from './CurrencyService.js';
 import { LedgerMath }        from './LedgerMath.js';
 import { BudgetService }     from './BudgetService.js';
+import { BudgetAlertStatus } from './BudgetAlertStatus.js';
+import { DateService }       from './DateService.js';
 import { PlanService }       from '../billing/PlanService.js';
 import { AiGateway }         from './AiGateway.js';
 import { PaymentService }    from '../billing/PaymentService.js';
@@ -542,6 +544,7 @@ export class SyncService {
     const snap = BookDiff.clone(Repository.stripTransient(state));
     if (state._transferDirBackfilled !== undefined) snap._transferDirBackfilled = state._transferDirBackfilled;
     this.#stampSharedSpend(snap);
+    this.#stampAlertStatus(snap);
     return snap;
   }
 
@@ -565,6 +568,25 @@ export class SyncService {
       if (!granted.has(b.id)) { delete b.sharedSpend; continue; }
       // A broken budget (deleted category, bad period) must not stop a save.
       try { b.sharedSpend = Math.round(svc.currentSpend(b)); } catch (_) { b.sharedSpend = 0; }
+    }
+  }
+
+  /**
+   * Telegram budget alerts: each budget with alerts on carries its current
+   * totals (`alertStatus`: spent, limit, how far ahead of plan, the period
+   * and the categories' names — never entries). The owner chose this for
+   * Telegram alerts on 15 Nov 2026; the bot still never reads transactions.
+   * @param {object} snap  the snapshot being saved (mutated)
+   */
+  #stampAlertStatus(snap) {
+    const svc = new BudgetService();
+    const names = new Map((snap.categories || []).map((c) => [c.id, c.name]));
+    const today = DateService.todayIso();
+    for (const b of snap.budgets || []) {
+      let status = null;
+      // A broken budget (deleted category, bad period) must not stop a save.
+      try { status = BudgetAlertStatus.of(b, { budgets: svc, categoryName: (id) => names.get(id) || null, today }); } catch (_) { status = null; }
+      if (status) b.alertStatus = status; else delete b.alertStatus;
     }
   }
 

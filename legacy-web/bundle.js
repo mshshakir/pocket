@@ -4248,7 +4248,8 @@ var _PocketApp = (() => {
         // kept in sync for backward compatibility
         amount: data.amount,
         currency: data.currency,
-        ..._BudgetService.periodFields(data)
+        ..._BudgetService.periodFields(data),
+        alerts: data.alerts !== false
       };
       this.#store.getState().budgets.push(budget);
       this.#store.flush();
@@ -5985,6 +5986,99 @@ RULES:
     }
   };
 
+  // src/domain/services/BudgetPace.js
+  var BudgetPace = class _BudgetPace {
+    static TOLERANCE = 0.03;
+    /** @type {number} */
+    #limit;
+    /** @type {number} */
+    #spent;
+    /** @type {number} */
+    #due;
+    /** @type {{status:string, days:number, elapsed:number, remaining:number}} */
+    #period;
+    /**
+     * @param {{limit:number, spent:number, due?:number, period:{status:string, days:number, elapsed:number, remaining:number}}} p
+     */
+    constructor({ limit, spent, due = 0, period }) {
+      this.#limit = Math.max(0, Number(limit) || 0);
+      this.#spent = Math.max(0, Number(spent) || 0);
+      this.#due = Math.max(0, Number(due) || 0);
+      this.#period = period;
+    }
+    /** Pace only means something while a period of more than a day is running. */
+    get applies() {
+      return this.#period.status === "active" && this.#period.days > 1 && this.#limit > 0;
+    }
+    get expected() {
+      if (!this.applies) return 0;
+      return Math.round(this.#limit * this.#period.elapsed / this.#period.days);
+    }
+    /** Where the plan says you should be today, as a percent of the bar. */
+    get markerPct() {
+      return this.applies ? Math.min(100, 100 * this.#period.elapsed / this.#period.days) : null;
+    }
+    /** Spent already at or past the limit. */
+    get overLimit() {
+      return this.#limit > 0 && this.#spent >= this.#limit;
+    }
+    get ahead() {
+      return this.#spent - this.expected;
+    }
+    /** Left to spend once bills still to come are paid. */
+    get free() {
+      return this.#limit - this.#spent - this.#due;
+    }
+    get perDay() {
+      const days = this.#period.remaining;
+      if (!this.applies || days <= 0) return 0;
+      return Math.max(0, Math.floor(this.free / days));
+    }
+    get state() {
+      if (!this.applies) return "idle";
+      if (this.#spent + this.#due > this.#limit) return "over";
+      const gap = this.ahead;
+      if (Math.abs(gap) <= this.#limit * _BudgetPace.TOLERANCE) return "on-track";
+      return gap > 0 ? "ahead" : "behind";
+    }
+  };
+
+  // src/domain/services/BudgetAlertStatus.js
+  var BudgetAlertStatus = class _BudgetAlertStatus {
+    /**
+     * @param {object} budget
+     * @param {{budgets:object, categoryName:(id:string)=>string|null, today:string}} deps
+     *   budgets: BudgetService (period, currentSpend, effectiveLimit, targetCategoryIds)
+     * @returns {object|null}
+     */
+    static of(budget, { budgets, categoryName, today }) {
+      if (!budget || budget.alerts === false) return null;
+      const period = budgets.period(budget, today);
+      if (period.status !== "active") return null;
+      const spent = Math.round(budgets.currentSpend(budget));
+      const limit = Math.round(budgets.effectiveLimit(budget).limit);
+      if (!(limit > 0)) return null;
+      const pace = new BudgetPace({ limit, spent, period });
+      return {
+        key: `${period.from}\u2026${period.to}`,
+        from: period.from,
+        to: period.to,
+        label: period.label,
+        name: _BudgetAlertStatus.name(budgets.targetCategoryIds(budget).map(categoryName).filter(Boolean)),
+        currency: budget.currency,
+        spent,
+        limit,
+        ahead: pace.state === "ahead" ? Math.round(pace.ahead) : 0,
+        at: today
+      };
+    }
+    /** "Food", "Food, Home", "Food, Home +2" */
+    static name(names) {
+      if (!names.length) return "Budget";
+      return names.length <= 2 ? names.join(", ") : `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+    }
+  };
+
   // src/domain/billing/Entitlements.js
   var Entitlements = class _Entitlements {
     static FEATURES = Object.freeze(["sync", "telegram", "sharing"]);
@@ -6904,6 +6998,7 @@ RULES:
       const snap = BookDiff.clone(Repository.stripTransient(state));
       if (state._transferDirBackfilled !== void 0) snap._transferDirBackfilled = state._transferDirBackfilled;
       this.#stampSharedSpend(snap);
+      this.#stampAlertStatus(snap);
       return snap;
     }
     /**
@@ -6931,6 +7026,28 @@ RULES:
         } catch (_) {
           b.sharedSpend = 0;
         }
+      }
+    }
+    /**
+     * Telegram budget alerts: each budget with alerts on carries its current
+     * totals (`alertStatus`: spent, limit, how far ahead of plan, the period
+     * and the categories' names — never entries). The owner chose this for
+     * Telegram alerts on 15 Nov 2026; the bot still never reads transactions.
+     * @param {object} snap  the snapshot being saved (mutated)
+     */
+    #stampAlertStatus(snap) {
+      const svc = new BudgetService();
+      const names = new Map((snap.categories || []).map((c) => [c.id, c.name]));
+      const today = DateService.todayIso();
+      for (const b of snap.budgets || []) {
+        let status = null;
+        try {
+          status = BudgetAlertStatus.of(b, { budgets: svc, categoryName: (id) => names.get(id) || null, today });
+        } catch (_) {
+          status = null;
+        }
+        if (status) b.alertStatus = status;
+        else delete b.alertStatus;
       }
     }
     /**
@@ -11889,6 +12006,7 @@ This replaces your current grouping.`
           "Bills and deliveries still to come in the period show as a lighter part of the bar, so you can see what\u2019s really free.",
           "<b>Roll over</b>: what you don\u2019t spend is added to the next month, week or year. You can also carry overspending (it\u2019s taken off next time) and set the most that carries over. Not for set dates.",
           "The top card adds up your monthly budgets and shows what you spent this month with no budget. Budgets that need attention come first.",
+          "<b>Telegram alerts</b>: a message when a budget reaches 80%, goes over, or you\u2019re spending faster than planned \u2014 once each per period. Only the budget\u2019s totals are sent, never your entries, and they update when the app saves. Untick it in the budget to stop.",
           "Tap <b>Suggest</b> in the form to fill the limit from what you usually spend. A budget\u2019s page shows the periods before and, when family add spending, who spent what.",
           "Spending in other currencies is converted to the budget\u2019s currency.",
           "You can share a budget with family members you\u2019ve added."
@@ -14097,63 +14215,6 @@ This replaces your current grouping.`
     #accessLabel(perm) {
       const MAP = { owner: "Owner", full: "Full access", edit: "Can edit", view: "View only" };
       return MAP[perm] || perm;
-    }
-  };
-
-  // src/domain/services/BudgetPace.js
-  var BudgetPace = class _BudgetPace {
-    static TOLERANCE = 0.03;
-    /** @type {number} */
-    #limit;
-    /** @type {number} */
-    #spent;
-    /** @type {number} */
-    #due;
-    /** @type {{status:string, days:number, elapsed:number, remaining:number}} */
-    #period;
-    /**
-     * @param {{limit:number, spent:number, due?:number, period:{status:string, days:number, elapsed:number, remaining:number}}} p
-     */
-    constructor({ limit, spent, due = 0, period }) {
-      this.#limit = Math.max(0, Number(limit) || 0);
-      this.#spent = Math.max(0, Number(spent) || 0);
-      this.#due = Math.max(0, Number(due) || 0);
-      this.#period = period;
-    }
-    /** Pace only means something while a period of more than a day is running. */
-    get applies() {
-      return this.#period.status === "active" && this.#period.days > 1 && this.#limit > 0;
-    }
-    get expected() {
-      if (!this.applies) return 0;
-      return Math.round(this.#limit * this.#period.elapsed / this.#period.days);
-    }
-    /** Where the plan says you should be today, as a percent of the bar. */
-    get markerPct() {
-      return this.applies ? Math.min(100, 100 * this.#period.elapsed / this.#period.days) : null;
-    }
-    /** Spent already at or past the limit. */
-    get overLimit() {
-      return this.#limit > 0 && this.#spent >= this.#limit;
-    }
-    get ahead() {
-      return this.#spent - this.expected;
-    }
-    /** Left to spend once bills still to come are paid. */
-    get free() {
-      return this.#limit - this.#spent - this.#due;
-    }
-    get perDay() {
-      const days = this.#period.remaining;
-      if (!this.applies || days <= 0) return 0;
-      return Math.max(0, Math.floor(this.free / days));
-    }
-    get state() {
-      if (!this.applies) return "idle";
-      if (this.#spent + this.#due > this.#limit) return "over";
-      const gap = this.ahead;
-      if (Math.abs(gap) <= this.#limit * _BudgetPace.TOLERANCE) return "on-track";
-      return gap > 0 ? "ahead" : "behind";
     }
   };
 
@@ -19015,6 +19076,13 @@ This replaces your current grouping.`
                      placeholder="No limit" value="${b.rolloverCap ? this.#fx.fromMinor(b.rolloverCap, b.currency) : ""}">
             </div>
           </div>
+        </div>
+
+        <div class="mb-4">
+          <label class="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="alerts" class="mt-0.5" ${b.alerts === false ? "" : "checked"}>
+            <span>Telegram alerts<span class="block text-xs text-zinc-500">A message at 80%, at 100%, and if you're spending faster than planned. Needs Telegram linked and a plan that includes it.</span></span>
+          </label>
         </div>
 
         <div class="flex items-center gap-2">
@@ -26145,6 +26213,7 @@ Leave empty to use your own name.`,
         categoryId: categoryIds[0],
         amount: minor,
         currency: data.currency,
+        alerts: !!data.alerts,
         ...BudgetService.periodFields({
           period,
           startDate: data.startDate,

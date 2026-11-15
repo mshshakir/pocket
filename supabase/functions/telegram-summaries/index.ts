@@ -8,14 +8,17 @@
  * time, a repeated call, or a call by anyone else posts nothing extra. That is
  * why it is deployed with --no-verify-jwt and needs no secret of its own.
  *
- * It also sends the morning delivery check-ins (CheckinRunner) and bill
- * reminders (BillReminderRunner) that are due, claimed the same way.
+ * It also sends the morning delivery check-ins (CheckinRunner), bill
+ * reminders (BillReminderRunner) and budget alerts (BudgetAlertRunner, from
+ * the totals the app stamps on each budget) that are due, claimed the same way.
  *
  * Secrets: TELEGRAM_BOT_TOKEN (shared with telegram-bot), BOT_TIMEZONE
  * (optional, Asia/Kolkata), and SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { BillReminderRunner } from '../telegram-bot/lib/BillReminderRunner.ts';
+import { BudgetAlertRunner } from '../telegram-bot/lib/BudgetAlertRunner.ts';
+import { BudgetAlertStore } from '../telegram-bot/lib/BudgetAlertStore.ts';
 import { CheckinRunner } from '../telegram-bot/lib/CheckinRunner.ts';
 import { DeliveryStore } from '../telegram-bot/lib/DeliveryStore.ts';
 import { GroupSummaries } from '../telegram-bot/lib/GroupSummaries.ts';
@@ -36,12 +39,13 @@ const clock = new LocalClock(get('BOT_TIMEZONE') || 'Asia/Kolkata');
 const runner = new SummaryRunner(store, telegram, new GroupSummaries(store, new SummaryReport()), clock);
 const checkins = new CheckinRunner(store, deliveries, telegram, clock);
 const bills = new BillReminderRunner(store, deliveries, telegram, clock);
+const budgetAlerts = new BudgetAlertRunner(store, new BudgetAlertStore(sb), telegram, clock);
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('ok');
   try {
     // Each part runs even if another fails.
-    const parts = await Promise.allSettled([runner.run(), checkins.run(), bills.run()]);
+    const parts = await Promise.allSettled([runner.run(), checkins.run(), bills.run(), budgetAlerts.run()]);
     for (const p of parts) if (p.status === 'rejected') console.error('[scheduled]', p.reason);
     return Response.json(parts.map((p) => (p.status === 'fulfilled' ? p.value : { failed: true })));
   } catch (e) {
