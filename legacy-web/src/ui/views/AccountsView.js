@@ -3,10 +3,24 @@
  * plus "shared with me" cards from family sharing.
  */
 import { BaseView } from './BaseView.js';
+import { AccountService } from '../../domain/services/AccountService.js';
 
 export class AccountsView extends BaseView {
+  /** Reorder mode: compact rows with a drag handle and arrows. */
+  #reordering = false;
+
   constructor() {
     super();
+  }
+
+  get reordering() { return this.#reordering; }
+  toggleReorder()  { this.#reordering = !this.#reordering; }
+  stopReorder()    { this.#reordering = false; }
+
+  /** The ids in one section (a group, or '__none__'), in list order. */
+  sectionIds(key) {
+    const valid = new Set((this.state.accountGroups || []).map((g) => g.id));
+    return this.state.accounts.filter((a) => (a.groupId && valid.has(a.groupId) ? a.groupId : '__none__') === key).map((a) => a.id);
   }
 
   render() {
@@ -43,6 +57,10 @@ export class AccountsView extends BaseView {
             ${anyExpanded  ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ''}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllAccountGroups()" title="Expand all groups"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ''}
           ` : ''}
+          ${!this.inGuestSpace && state.accounts.length > 1 ? `
+          <button class="btn ${this.#reordering ? 'btn-primary' : 'btn-outline'} text-sm acc-reorder-toggle" onclick="window.__app.toggleAccountReorder()" title="Change the order of accounts">
+            <i data-lucide="${this.#reordering ? 'check' : 'arrow-up-down'}" style="width:14px;height:14px"></i><span class="${this.#reordering ? '' : 'hidden md:inline'} ml-1">${this.#reordering ? 'Done' : 'Reorder'}</span>
+          </button>` : ''}
           <button class="btn btn-outline text-sm" onclick="window.__app.openAccountGroups()"
                   title="Create, rename and fill account groups">
             <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
@@ -54,7 +72,7 @@ export class AccountsView extends BaseView {
         </div>
       </div>
 
-      ${state.accounts.length === 0
+      ${this.#reordering ? this.#reorderList(sections, home) : state.accounts.length === 0
         ? `<div class="card p-10 text-center">${this.emptyState('No accounts', 'Add your first account to start tracking.')}</div>`
         : sections.map((sec) => `
             <div class="mb-6">
@@ -65,7 +83,7 @@ export class AccountsView extends BaseView {
                 </div>`}
             </div>`).join('')}
 
-      ${this.#sharedCards(state, home)}
+      ${this.#reordering ? '' : this.#sharedCards(state, home)}
     `;
   }
 
@@ -95,6 +113,7 @@ export class AccountsView extends BaseView {
             <div class="flex items-center gap-2">
               <div class="font-semibold">${this.escapeHtml(a.name)}</div>
               ${a.archived ? '<span class="chip">Archived</span>' : ''}
+              ${!a.archived && a.excludeFromTotals ? '<span class="chip not-in-totals" title="Left out of totals">Not in totals</span>' : ''}
               ${isSharedOut ? `<span title="Shared with family" style="display:inline-flex;align-items:center;gap:2px;font-size:.6rem;background:#818cf822;color:#818cf8;border-radius:6px;padding:1px 5px"><i data-lucide="users" style="width:10px;height:10px"></i> Shared</span>` : ''}
             </div>
             <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} · ${this.escapeHtml(a.currency)} · ${txCount} transaction${txCount === 1 ? '' : 's'}</div>
@@ -121,9 +140,35 @@ export class AccountsView extends BaseView {
       </div>`;
   }
 
+  /** Reorder mode: each section as a short list of rows to drag or nudge. */
+  #reorderList(sections, home) {
+    return `
+      <div class="text-sm text-zinc-500 mb-4 px-1">Drag <i data-lucide="grip-vertical" style="width:13px;height:13px;display:inline"></i> or use the arrows. This order is used in lists and pickers.</div>
+      ${sections.map((sec) => `
+        <div class="mb-5">
+          <div class="flex items-center gap-2 mb-2 px-1">
+            <span class="inline-block rounded-full" style="background:${sec.color};width:8px;height:8px"></span>
+            <span class="text-xs uppercase tracking-wider text-zinc-500">${this.escapeHtml(sec.name)}</span>
+          </div>
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 acc-sort-list" data-sort-list="${this.escapeHtml(sec.id)}">
+            ${sec.accs.map((a, i) => `
+              <div class="flex items-center gap-2 px-2 py-2 bg-white dark:bg-zinc-900" data-sort-id="${this.escapeHtml(a.id)}">
+                <button type="button" data-sort-handle class="p-2 text-zinc-400 cursor-grab" style="touch-action:none" aria-label="Drag to move ${this.escapeHtml(a.name)}">
+                  <i data-lucide="grip-vertical"></i>
+                </button>
+                <span class="icon-pill" style="background:${this.safeColor(a.color, '#818cf8')};color:white;width:28px;height:28px"><i data-lucide="${this.safeIcon(a.icon, 'wallet')}" style="width:14px;height:14px"></i></span>
+                <span class="flex-1 min-w-0 truncate text-sm font-medium">${this.escapeHtml(a.name)}</span>
+                <span class="text-xs text-zinc-500 hidden sm:inline">${this.formatMoney(a.balance, a.currency)}</span>
+                <button type="button" class="btn btn-ghost px-2" ${i === 0 ? 'disabled' : ''} onclick="window.__app.moveAccount('${this.jsArg(a.id)}',-1)" aria-label="Move up"><i data-lucide="chevron-up"></i></button>
+                <button type="button" class="btn btn-ghost px-2" ${i === sec.accs.length - 1 ? 'disabled' : ''} onclick="window.__app.moveAccount('${this.jsArg(a.id)}',1)" aria-label="Move down"><i data-lucide="chevron-down"></i></button>
+              </div>`).join('')}
+          </div>
+        </div>`).join('')}`;
+  }
+
   #sectionHeader(sec, collapsed, home) {
     const isCollapsed = collapsed.has(sec.id);
-    const totalHome   = sec.accs.reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+    const totalHome   = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
     return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"

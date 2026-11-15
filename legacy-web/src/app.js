@@ -81,7 +81,9 @@ import { AccountModal }     from './ui/modals/AccountModal.js';
 import { CategoryModal }    from './ui/modals/CategoryModal.js';
 import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
 import { HelpModal }        from './ui/modals/HelpModal.js';
+import { FeedbackModal }    from './ui/modals/FeedbackModal.js';
 import { HelpGuide }        from './ui/components/HelpGuide.js';
+import { SortableList }     from './ui/components/SortableList.js';
 import { OwedService }      from './domain/services/OwedService.js';
 import { CardCycle }        from './domain/services/CardCycle.js';
 import { LoanInstalments }  from './domain/services/LoanInstalments.js';
@@ -148,6 +150,7 @@ export class Application {
   /** @type {BillService}          */ #bills;
   /** @type {CategoryMergeModal}   */ #categoryMergeModal;
   /** @type {OwedService}          */ #owed;
+  /** @type {SettingsModal}        */ #settingsModal;
   /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
@@ -379,9 +382,12 @@ export class Application {
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
     this.#modal.register('help',         new HelpModal());
+    this.#modal.register('feedback',     new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
+    // Drag-to-reorder lists (Accounts → Reorder); one listener for every render.
+    new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
     this.#modal.register('categoryMerge', this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
     this.#modal.register('budget',       new BudgetModal());
-    this.#modal.register('settings',     new SettingsModal());
+    this.#modal.register('settings',     this.#settingsModal = new SettingsModal());
     this.#modal.register('csv',          new CsvModal());
     this.#exportModal = new ExportModal({ store: this.#store });
     this.#modal.register('export',       this.#exportModal);
@@ -484,6 +490,7 @@ export class Application {
     if (id === '__add')  return this.openModal('transaction', {});
     if (id === '__more') return this.#openMoreMenu();
     if (id !== 'categories') this.#views.get('categories')?.clearPicking?.(); // leaving ends merge ticking
+    if (id !== 'accounts') this.#views.get('accounts')?.stopReorder?.();
     // Regulars always opens on its Calendar tab; links that want another tab
     // navigate first and then call setCalTab.
     if (id === 'calendar' && this.#router.current !== 'calendar') this.#views.get('calendar')?.setTab?.('grid');
@@ -524,10 +531,16 @@ export class Application {
             ${items}
           </div>
           <div class="pt-3 border-t border-zinc-200 dark:border-zinc-800 mt-2">
-            <button class="btn btn-outline w-full gap-2"
-              onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('settings',{}),50)">
-              <i data-lucide="settings"></i> Settings
-            </button>
+            <div class="grid grid-cols-2 gap-2">
+              <button class="btn btn-outline w-full gap-2"
+                onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('settings',{}),50)">
+                <i data-lucide="settings"></i> Settings
+              </button>
+              <button class="btn btn-outline w-full gap-2 more-feedback"
+                onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('feedback',{}),50)">
+                <i data-lucide="message-circle"></i> Feedback
+              </button>
+            </div>
           </div>
         </div>`,
     });
@@ -943,14 +956,14 @@ export class Application {
   setHomeCurrency(v) {
     this.#store.getState().user.homeCurrency = v;
     this.#store.persist();
-    this.closeModal(); this.#render();
+    this.#render(); this.#keepSettingsOpen();
     this.#toast.show('Home currency: ' + v);
   }
 
   setDefaultCurrency(v) {
     this.#store.getState().user.defaultCurrency = v;
     this.#store.persist();
-    this.closeModal(); this.#render();
+    this.#render(); this.#keepSettingsOpen();
     this.#toast.show('Default currency: ' + v);
   }
 
@@ -981,7 +994,7 @@ export class Application {
   setDateFormat(v) {
     this.#store.getState().user.dateFormat = v;
     this.#store.persist();
-    this.closeModal(); this.#render();
+    this.#render(); this.#keepSettingsOpen();
     this.#toast.show('Date format: ' + v);
   }
 
@@ -994,7 +1007,7 @@ export class Application {
   setTheme(v) {
     // ThemeService.set() persists + emits state:changed itself — no extra persist (#15).
     this.#themeService.set(v);
-    this.closeModal(); this.#render();
+    this.#render(); this.#keepSettingsOpen();
     this.#toast.show(`Theme: ${v}`);
   }
 
@@ -1177,7 +1190,7 @@ export class Application {
     const u = this.#store.getState().user;
     u.showHijri = !u.showHijri;
     this.#store.persist();
-    this.closeModal(); this.#render();
+    this.#render(); this.#keepSettingsOpen();
   }
 
   /**
@@ -1893,6 +1906,11 @@ export class Application {
    *   captured and then adjusted the draft — re-capturing would read the stale
    *   DOM back over the adjustment.
    */
+  /** A setting changed: re-draw the page behind and keep Settings open on its tab. */
+  #keepSettingsOpen() {
+    if (this.#modal.active === 'settings') this.#refreshModal({ capture: false });
+  }
+
   #refreshModal({ capture = true } = {}) {
     if (capture && this.#modal.active === 'transaction') this.#txModal?.captureForm?.();
     this.#modal.refresh();
@@ -2462,7 +2480,7 @@ export class Application {
 
       // Delegate the entity update to AccountService (mutates the same object);
       // the balance-adjustment ledger entry is orchestrated here.
-      this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data) });
+      this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data), ...this.#accountExtras(data) });
 
       // A pure currency switch re-denominates the account; it is not a
       // real-world balance change, so it must not mint a ledger entry. The
@@ -2499,8 +2517,8 @@ export class Application {
 
     // New account — AccountService owns the entity row; opening-balance ledger
     // entry is orchestrated here.
-    const a     = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: 'wallet', groupId });
-    Object.assign(a, this.#cardFields(data));
+    const a     = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: data.icon || AccountService.typeIcon(data.type), groupId });
+    Object.assign(a, this.#cardFields(data), this.#accountExtras(data));
     const newId = a.id;
     if (newMinor !== 0) {
       const positive = newMinor > 0;
@@ -2537,6 +2555,70 @@ export class Application {
       statementDay: day(data.statementDay),
       dueDay:       day(data.dueDay),
     };
+  }
+
+  /** Accounts → Reorder / Done. */
+  toggleAccountReorder() {
+    this.#views.get('accounts')?.toggleReorder?.();
+    this.#render();
+  }
+
+  /**
+   * Nudge an account one place up (-1) or down (+1) within its group.
+   * @param {string} id
+   * @param {-1|1} dir
+   */
+  moveAccount(id, dir) {
+    const view = this.#views.get('accounts');
+    const a = this.#store.getState().accounts.find((x) => x.id === id);
+    if (!view || !a) return;
+    const valid = new Set((this.#store.getState().accountGroups || []).map((g) => g.id));
+    const ids = view.sectionIds(a.groupId && valid.has(a.groupId) ? a.groupId : '__none__');
+    const i = ids.indexOf(id), j = i + Number(dir);
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    this.#saveAccountOrder(ids);
+  }
+
+  /** A drag ended on a sortable list. */
+  #onSortDrop(key, ids) {
+    if (this.#router.current !== 'accounts' || !this.#views.get('accounts')?.reordering) return;
+    this.#saveAccountOrder(ids);
+  }
+
+  #saveAccountOrder(ids) {
+    if (this.#accounts.reorder(ids)) this.#sync.schedulePush?.();
+    this.#render();
+  }
+
+  /** Icon, low-balance floor and "Leave out of totals" from the account form. */
+  #accountExtras(data) {
+    const floor = Number(data.lowBalance);
+    return {
+      icon: data.icon || AccountService.typeIcon(data.type),
+      lowBalance: data.type !== 'card' && floor > 0 ? this.#fx.toMinor(floor, data.currency) : null,
+      excludeFromTotals: !!data.excludeFromTotals,
+    };
+  }
+
+  /**
+   * Account form: the type changed. Show card fields for a card (and hide the
+   * low-balance floor), and move the icon to the new type's — unless the icon
+   * was picked by hand (anything other than the old type's default).
+   */
+  onAccountTypeChange(select) {
+    const form = select.form;
+    const isCard = select.value === 'card';
+    const show = (id, on) => { const el = form?.querySelector('#' + id); if (el) el.style.display = on ? '' : 'none'; };
+    show('accCardFields', isCard);
+    show('accLowField', !isCard);
+    const prev = select.dataset.prevType || select.querySelector('option[selected]')?.value || '';
+    const picked = form?.querySelector('input[name="icon"]:checked');
+    if (!picked || picked.value === AccountService.typeIcon(prev)) {
+      const next = form?.querySelector(`input[name="icon"][value="${AccountService.typeIcon(select.value)}"]`);
+      if (next) next.checked = true;
+    }
+    select.dataset.prevType = select.value;
   }
 
   deleteAccount(id) {
@@ -2755,6 +2837,48 @@ export class Application {
     this.#store.getState().user.collapsedAccountGroups = [];
     this.#store.persist();
     this.#render();
+  }
+
+  /** Settings → General / Account / Data / Help, without a re-render. */
+  setSettingsTab(key) {
+    if (this.#settingsModal) this.#settingsModal.tab = key;
+    for (const el of document.querySelectorAll('[data-settings-tab]')) el.style.display = el.dataset.settingsTab === key ? '' : 'none';
+    for (const b of document.querySelectorAll('[data-settings-tab-btn]')) {
+      const on = b.dataset.settingsTabBtn === key;
+      b.setAttribute('aria-selected', String(on));
+      b.classList.toggle('bg-white', on); b.classList.toggle('dark:bg-zinc-900', on); b.classList.toggle('shadow-sm', on); b.classList.toggle('text-zinc-500', !on);
+    }
+  }
+
+  /** Feedback window: switch between "Feedback" and "Feature idea" without losing the text. */
+  setFeedbackKind(kind) {
+    const form = document.querySelector('form.feedback-form');
+    if (!form) return;
+    form.querySelector('input[name="kind"]').value = kind;
+    for (const b of form.querySelectorAll('[data-feedback-kind]')) {
+      const on = b.dataset.feedbackKind === kind;
+      b.classList.toggle('btn-primary', on); b.classList.toggle('btn-outline', !on);
+    }
+    const area = form.querySelector('textarea[name="message"]');
+    if (area) area.placeholder = FeedbackModal.placeholder(kind);
+  }
+
+  async sendFeedback(event) {
+    event.preventDefault();
+    const fd = new FormData(event.target);
+    const kind = String(fd.get('kind') || 'feedback');
+    const message = String(fd.get('message') || '').trim();
+    if (!message) return this.#toast.show('Write a message first');
+    const btn = event.target.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    try {
+      await this.#sync.sendFeedback(kind, message, this.#router.current || '');
+      this.closeModal();
+      this.#toast.show(kind === 'feature' ? 'Thanks — your idea was sent' : 'Thanks — your feedback was sent');
+    } catch (err) {
+      if (btn) btn.disabled = false;
+      this.#toast.show(`Not sent: ${err.message || err}`);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────

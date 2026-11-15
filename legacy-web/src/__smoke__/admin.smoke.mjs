@@ -226,7 +226,7 @@ const formOf = (html, selector) => {
   const root2 = document.createElement('div');
   const s2 = { user: async () => ({ id: 'a', email: 'admin@x.com' }), rpc: async (n) => (n === 'pocket_is_admin' ? true : n === 'pocket_adm_stats' ? { plans: {}, programme: {}, signupsByWeek: [], revenueByMonth: [] } : []), signIn: async () => {}, signOut: async () => {} };
   await new AdminApp(s2, root2).start();
-  ok('A6 an admin gets the six tabs and the overview', (root2.innerHTML.match(/class="nav-item/g) ?? []).length === 6 && root2.innerHTML.includes('Signed up'));
+  ok('A6 an admin gets the seven tabs (Feedback included) and the overview', (root2.innerHTML.match(/class="nav-item/g) ?? []).length === 7 && root2.innerHTML.includes('#feedback') && root2.innerHTML.includes('Signed up'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

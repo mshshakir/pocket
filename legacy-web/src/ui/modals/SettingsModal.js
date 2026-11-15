@@ -1,6 +1,9 @@
 /**
- * SettingsModal — App preferences: currency, date format, theme,
- * Hijri calendar, data import/export, cloud sync, AI receipt scanner.
+ * SettingsModal — App preferences in four tabs, so nothing needs a long scroll:
+ *   General  currencies, defaults, date format, theme, Hijri calendar
+ *   Account  sign-in and cloud sync, plan, AI
+ *   Data     move in (CSV), export / import, reset, saved copies
+ *   Help     feedback and feature requests
  */
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
@@ -14,6 +17,15 @@ export class SettingsModal {
   /** @type {CurrencyService} */      #fx;
   /** @type {HijriCalendarService} */ #hijri;
   /** @type {PlanCard} */             #planCard;
+  /** @type {string} */               #tab = 'general';
+
+  /** [key, label, icon] */
+  static #TABS = [
+    ['general', 'General', 'sliders-horizontal'],
+    ['account', 'Account', 'user-round'],
+    ['data',    'Data',    'database'],
+    ['help',    'Help',    'life-buoy'],
+  ];
 
   constructor() {
     this.#store = Store.getInstance();
@@ -27,162 +39,101 @@ export class SettingsModal {
     const u        = state.user;
     const isSaaS   = window.__app?.isManagedMode?.() ?? true;
     const sbUser   = window.__app?.getSbUser?.() ?? null;
+    const tab      = SettingsModal.#TABS.some(([k]) => k === this.#tab) ? this.#tab : 'general';
+    const panel    = (key, html) => `<div data-settings-tab="${key}" ${key === tab ? '' : 'style="display:none"'}>${html}</div>`;
 
     return `
       <div class="p-5">
-        <!-- Pinned while the long panel scrolls, so Close is always in reach on a phone. -->
-        <div class="sheet-header flex items-center justify-between">
-          <h3 class="text-lg font-semibold">Settings</h3>
-          <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close settings" title="Close">
-            <i data-lucide="x"></i>
+        <!-- Pinned while the panel scrolls, so Close and the tabs are always in reach on a phone. -->
+        <div class="sheet-header">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-semibold">Settings</h3>
+            <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close settings" title="Close">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+          <div class="grid grid-cols-4 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
+            ${SettingsModal.#TABS.map(([k, label, icon]) => `
+              <button type="button" role="tab" data-settings-tab-btn="${k}" aria-selected="${k === tab}"
+                      class="flex flex-col sm:flex-row items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-medium ${k === tab ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-zinc-500'}"
+                      onclick="window.__app.setSettingsTab('${k}')">
+                <i data-lucide="${icon}" style="width:15px;height:15px"></i>${label}
+              </button>`).join('')}
+          </div>
+        </div>
+        <div class="mt-3">
+          ${panel('general', this.#general(u, state))}
+          ${panel('account', this.#account(u, state, isSaaS, sbUser))}
+          ${panel('data', this.#data(state))}
+          ${panel('help', this.#help(sbUser))}
+        </div>
+
+        <!-- Phones: a Done button that stays at the bottom of the sheet. -->
+        <div class="form-footer phone-only mt-4">
+          <button class="btn btn-primary w-full justify-center py-3" onclick="window.__app.closeModal()">
+            <i data-lucide="check"></i> Done
           </button>
         </div>
+      </div>`;
+  }
 
-        <!-- Home currency -->
+  /** The tab to show; kept across re-renders (every setting re-draws the sheet). */
+  get tab() { return this.#tab; }
+  set tab(key) { this.#tab = key; }
+
+  /** General: currencies, defaults, date format, theme, Hijri calendar. */
+  #general(u, state) {
+    const ccy = (cur) => CURRENCIES.map((c) => `<option value="${c}" ${cur === c ? 'selected' : ''}>${this.#fx.label(c)}</option>`).join('');
+    return `
         <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Home currency</label>
-          <div class="text-xs text-zinc-500 mb-1">All balances and totals are converted to this currency.</div>
-          <select class="select" onchange="window.__app.setHomeCurrency(this.value)">
-            ${CURRENCIES.map((c) => `<option value="${c}" ${u.homeCurrency === c ? 'selected' : ''}>${this.#fx.label(c)}</option>`).join('')}
-          </select>
-        </div>
-
-        <!-- Default currency -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default currency for new entries</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, account, budget, or regular item.</div>
-          <select class="select" onchange="window.__app.setDefaultCurrency(this.value)">
-            ${CURRENCIES.map((c) => `<option value="${c}" ${u.defaultCurrency === c ? 'selected' : ''}>${this.#fx.label(c)}</option>`).join('')}
-          </select>
-        </div>
-
-        <!-- Default account -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default account</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, debt, or regular item.</div>
-          <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
-            <option value="" ${!u.defaultAccountId ? 'selected' : ''}>First account in the list</option>
-            ${state.accounts.filter((a) => !a.archived).map((a) =>
-              `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? 'selected' : ''}>${this.#esc(a.name)} · ${this.#esc(a.currency)}</option>`).join('')}
-          </select>
-        </div>
-
-        <!-- Default payment method -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default payment method</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected on the payment chips when adding a transaction.</div>
-          <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
-            ${this.#paymentTypes().map((p) =>
-              `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? 'selected' : ''}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join('')}
-          </select>
-        </div>
-
-        <!-- Date format -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Date format</label>
-          <div class="text-xs text-zinc-500 mb-1">Used everywhere dates are displayed.</div>
-          <select class="select" onchange="window.__app.setDateFormat(this.value)">
-            <option value="auto"       ${u.dateFormat === 'auto'       ? 'selected' : ''}>Auto (system locale)</option>
-            <option value="YYYY-MM-DD" ${u.dateFormat === 'YYYY-MM-DD' ? 'selected' : ''}>YYYY-MM-DD (2026-05-20)</option>
-            <option value="MM/DD/YYYY" ${u.dateFormat === 'MM/DD/YYYY' ? 'selected' : ''}>MM/DD/YYYY (05/20/2026)</option>
-            <option value="DD/MM/YYYY" ${u.dateFormat === 'DD/MM/YYYY' ? 'selected' : ''}>DD/MM/YYYY (20/05/2026)</option>
-          </select>
-        </div>
-
-        <!-- Theme -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500 mb-1 block">Theme</label>
-          <div class="grid grid-cols-3 gap-2">
-            ${['light', 'dark', 'system'].map((t) => `
-              <button class="btn ${u.theme === t ? 'btn-primary' : 'btn-outline'} justify-center"
-                      onclick="window.__app.setTheme('${t}')">${t}</button>
-            `).join('')}
-          </div>
-        </div>
-
-        ${this.#renderHijriSection(u)}
-
-        <!-- Migrate from CSV -->
-        <div class="card-muted p-3 mb-3">
-          <div class="flex items-start gap-3 mb-3">
-            <div class="icon-pill" style="background:#10b98122;color:#10b981"><i data-lucide="file-down"></i></div>
-            <div class="flex-1">
-              <div class="font-medium text-sm">Migrate from another app</div>
-              <div class="text-xs text-zinc-500">
-                Download the CSV template, paste your transactions, then re-upload.
-                Accounts, categories and subcategories are auto-created.
-                Transfers, currencies, notes, payees and tags are preserved.
-                <span class="text-zinc-700 dark:text-zinc-300">Dates:</span>
-                <code>YYYY-MM-DD</code> is preferred (e.g. <code>2026-05-22</code>), but
-                <code>DD/MM/YYYY</code>, <code>MM/DD/YYYY</code>, and <code>YYYY/MM/DD</code>
-                also work — ambiguous slash dates follow your Settings → Date format preference.
-                <span class="text-zinc-700 dark:text-zinc-300">Splits:</span> rows that share
-                the same <code>SplitOf</code> value are merged into one transaction.
-                <span class="text-zinc-700 dark:text-zinc-300">Debts:</span> use
-                <code>borrowed</code> or <code>lent</code> as the Type.
-              </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-zinc-500" title="All balances and totals are converted to this currency">Home currency</label>
+              <select class="select" onchange="window.__app.setHomeCurrency(this.value)">${ccy(u.homeCurrency)}</select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on new entries, accounts, budgets and regulars">New entries in</label>
+              <select class="select" onchange="window.__app.setDefaultCurrency(this.value)">${ccy(u.defaultCurrency)}</select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on new entries, debts and regulars">Default account</label>
+              <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
+                <option value="" ${!u.defaultAccountId ? 'selected' : ''}>First in the list</option>
+                ${state.accounts.filter((a) => !a.archived).map((a) =>
+                  `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? 'selected' : ''}>${this.#esc(a.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on the payment chips">Default payment</label>
+              <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
+                ${this.#paymentTypes().map((p) =>
+                  `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? 'selected' : ''}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Date format</label>
+              <select class="select" onchange="window.__app.setDateFormat(this.value)">
+                <option value="auto"       ${u.dateFormat === 'auto'       ? 'selected' : ''}>Auto</option>
+                <option value="YYYY-MM-DD" ${u.dateFormat === 'YYYY-MM-DD' ? 'selected' : ''}>2026-05-20</option>
+                <option value="MM/DD/YYYY" ${u.dateFormat === 'MM/DD/YYYY' ? 'selected' : ''}>05/20/2026</option>
+                <option value="DD/MM/YYYY" ${u.dateFormat === 'DD/MM/YYYY' ? 'selected' : ''}>20/05/2026</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Theme</label>
+              <select class="select" onchange="window.__app.setTheme(this.value)">
+                ${[['light', 'Light'], ['dark', 'Dark'], ['system', 'System']].map(([t, l]) => `<option value="${t}" ${u.theme === t ? 'selected' : ''}>${l}</option>`).join('')}
+              </select>
             </div>
           </div>
-          <div class="grid grid-cols-2 gap-2">
-            <button class="btn btn-outline justify-center"
-                    onclick="window.__app.downloadImportTemplate()">
-              <i data-lucide="download"></i> Download template
-            </button>
-            <label class="btn btn-primary justify-center cursor-pointer">
-              <i data-lucide="upload"></i> Import CSV
-              <input type="file" accept=".csv,text/csv" class="hidden"
-                     onchange="window.__app.startImport(this)">
-            </label>
-          </div>
         </div>
 
-        <!-- Data -->
-        <div class="card-muted p-3 mb-3">
-          <div class="text-sm font-medium mb-2">Data</div>
-          <div class="grid grid-cols-2 gap-2">
-            <button class="btn btn-outline justify-center" onclick="window.__app.exportJson()">
-              <i data-lucide="download"></i> Export JSON
-            </button>
-            <label class="btn btn-outline justify-center cursor-pointer">
-              <i data-lucide="upload"></i> Import JSON
-              <input type="file" accept="application/json" class="hidden"
-                     onchange="window.__app.importJson(this)">
-            </label>
-            <button class="btn btn-outline justify-center"
-                    onclick="window.__app.openModal('csv',{})">
-              <i data-lucide="file-text"></i> Export CSV
-            </button>
-            <button class="btn btn-outline justify-center text-rose-500"
-                    onclick="window.__app.resetData()"
-                    title="Delete every transaction, account, budget and debt">
-              <i data-lucide="rotate-ccw"></i> Reset data
-            </button>
-            ${BookCleaner.hasSample(state) ? `
-            <button class="btn btn-outline justify-center col-span-2"
-                    onclick="window.__app.removeSampleData()">
-              <i data-lucide="eraser"></i> Remove sample data
-            </button>` : ''}
-          </div>
-        </div>
+        ${this.#renderHijriSection(u)}`;
+  }
 
-        ${(() => {
-          const backups = window.__app?.conflictBackups?.() ?? [];
-          if (!backups.length) return '';
-          return `
-        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
-          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
-            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
-          </div>
-          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
-          ${backups.map((b) => `
-            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
-              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
-              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
-              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
-            </div>`).join('')}
-        </div>`;
-        })()}
-
+  /** Account: sign-in and sync, plan, AI. */
+  #account(u, state, isSaaS, sbUser) {
+    return `
         ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying, window.__app.coupon, window.__app.planUi) : ''}
 
         <!-- Cloud sync -->
@@ -264,15 +215,111 @@ export class SettingsModal {
           </div>
         </div>
 
-        <div class="text-xs text-zinc-500 text-center mt-4">Pocket · v2.0</div>
+`;
+  }
 
-        <!-- Phones: a Done button that stays at the bottom of the sheet. -->
-        <div class="form-footer phone-only mt-4">
-          <button class="btn btn-primary w-full justify-center py-3" onclick="window.__app.closeModal()">
-            <i data-lucide="check"></i> Done
-          </button>
+  /** Data: move in, export / import, reset, saved copies. */
+  #data(state) {
+    return `
+        <!-- Migrate from another app (CSV) -->
+        <div class="card-muted p-3 mb-3">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="file-down" style="width:16px;height:16px" class="text-emerald-600"></i>
+            <div class="font-medium text-sm flex-1">Move in from another app</div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center"
+                    onclick="window.__app.downloadImportTemplate()">
+              <i data-lucide="download"></i> Template
+            </button>
+            <label class="btn btn-primary justify-center cursor-pointer">
+              <i data-lucide="upload"></i> Import CSV
+              <input type="file" accept=".csv,text/csv" class="hidden"
+                     onchange="window.__app.startImport(this)">
+            </label>
+          </div>
+          <details class="mt-2 text-xs text-zinc-500">
+            <summary class="cursor-pointer">How it works</summary>
+            <div class="mt-1 leading-relaxed">
+              Download the template, paste your transactions, then import it. Accounts, categories and
+              subcategories are made for you; transfers, currencies, notes, payees and tags are kept.
+              Dates: <code>YYYY-MM-DD</code> is best; <code>DD/MM/YYYY</code>, <code>MM/DD/YYYY</code> and
+              <code>YYYY/MM/DD</code> also work (slash dates follow your date format). Rows sharing a
+              <code>SplitOf</code> value become one split entry. For debts, use <code>borrowed</code> or
+              <code>lent</code> as the Type.
+            </div>
+          </details>
         </div>
-      </div>`;
+        <!-- Data -->
+        <div class="card-muted p-3 mb-3">
+          <div class="text-sm font-medium mb-2">Data</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center" onclick="window.__app.exportJson()">
+              <i data-lucide="download"></i> Export JSON
+            </button>
+            <label class="btn btn-outline justify-center cursor-pointer">
+              <i data-lucide="upload"></i> Import JSON
+              <input type="file" accept="application/json" class="hidden"
+                     onchange="window.__app.importJson(this)">
+            </label>
+            <button class="btn btn-outline justify-center"
+                    onclick="window.__app.openModal('csv',{})">
+              <i data-lucide="file-text"></i> Export CSV
+            </button>
+            <button class="btn btn-outline justify-center text-rose-500"
+                    onclick="window.__app.resetData()"
+                    title="Delete every transaction, account, budget and debt">
+              <i data-lucide="rotate-ccw"></i> Reset data
+            </button>
+            ${BookCleaner.hasSample(state) ? `
+            <button class="btn btn-outline justify-center col-span-2"
+                    onclick="window.__app.removeSampleData()">
+              <i data-lucide="eraser"></i> Remove sample data
+            </button>` : ''}
+          </div>
+        </div>
+
+        ${(() => {
+          const backups = window.__app?.conflictBackups?.() ?? [];
+          if (!backups.length) return '';
+          return `
+        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
+          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
+            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
+          ${backups.map((b) => `
+            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
+              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
+              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
+              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
+            </div>`).join('')}
+        </div>`;
+        })()}
+
+`;
+  }
+
+  /** Help: feedback and feature requests, version. */
+  #help(sbUser) {
+    return `
+        <div class="card-muted p-3 mb-3">
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="message-square-heart" style="width:16px;height:16px" class="text-indigo-500"></i>
+            <div class="font-medium text-sm">Feedback &amp; ideas</div>
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Tell us what’s working, what isn’t, or what you’d like Pocket to do. Every message is read.</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center settings-feedback" onclick="window.__app.openModal('feedback',{kind:'feedback'})">
+              <i data-lucide="message-circle"></i> Send feedback
+            </button>
+            <button class="btn btn-outline justify-center settings-feature" onclick="window.__app.openModal('feedback',{kind:'feature'})">
+              <i data-lucide="lightbulb"></i> Suggest a feature
+            </button>
+          </div>
+          ${sbUser ? '' : '<div class="text-xs text-zinc-500 mt-2">Sign in to send.</div>'}
+        </div>
+        <div class="text-xs text-zinc-500 text-center mt-4">Pocket · v2.0</div>`;
   }
 
   /**

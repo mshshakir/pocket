@@ -4,7 +4,8 @@
  *
  * Nothing is copied: each kind stays where it lives and keeps its own rules.
  *   loans    debts you borrowed (with LoanInstalments when set)
- *   cards    Credit Card accounts with something owed (CardCycle)
+ *   cards    Credit Card accounts with something owed (CardCycle); not ones
+ *            set to "Leave out of totals"
  *   bills    "ask me" bills overdue or due today (counted, at last time's
  *            amount) and in the next 7 days (shown, not counted)
  *   vendors  what's owed for deliveries (VendorDues)
@@ -51,7 +52,7 @@ export class OwedService {
       });
 
     const cards = (state.accounts || [])
-      .filter((a) => CardCycle.isCard(a) && !a.archived)
+      .filter((a) => CardCycle.isCard(a) && !a.archived && !a.excludeFromTotals)
       .map((account) => ({ account, cycle: this.cardCycle(account, today) }))
       .filter((c) => c.cycle.owed > 0 || c.cycle.billLeft > 0);
 

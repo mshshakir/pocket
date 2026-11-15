@@ -2,6 +2,7 @@
  * DashboardView — Overview screen: balance, income/expense summary,
  * top-spending donut chart, recent transactions, today's Hijri date.
  */
+import { AccountService } from '../../domain/services/AccountService.js';
 import { BillService } from '../../domain/services/BillService.js';
 import { BaseView }         from './BaseView.js';
 import { ReportService }    from '../../domain/services/ReportService.js';
@@ -30,8 +31,8 @@ export class DashboardView extends BaseView {
       .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
     const expense    = monthTx.filter((t) => t.type === 'expense')
       .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
-    const total      = state.accounts
-      .filter((a) => !a.archived)
+    const counted    = state.accounts.filter((a) => AccountService.inTotals(a));
+    const total      = counted
       .reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
     const recent     = [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
 
@@ -52,6 +53,7 @@ export class DashboardView extends BaseView {
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ''}
+      ${this.#lowBalanceCard()}
       ${this.#billsCard(todayIso)}
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -59,7 +61,7 @@ export class DashboardView extends BaseView {
           <div class="text-xs text-zinc-500 mb-1">Total balance</div>
           <div class="text-3xl font-semibold tracking-tight">${this.formatMoney(total, home)}</div>
           <div class="text-xs text-zinc-500 mt-2">
-            ${state.accounts.filter((a) => !a.archived).length} accounts · ${home}
+            ${counted.length} accounts · ${home}
           </div>
         </div>
         <div class="card p-5">
@@ -183,6 +185,23 @@ export class DashboardView extends BaseView {
    * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
    * to vendors for pay-later items — only when there is something.
    */
+  /** Accounts that have dropped below the floor their owner set. */
+  #lowBalanceCard() {
+    if (this.inGuestSpace) return '';
+    const low = window.__app?.accountService?.lowAccounts?.() ?? [];
+    if (!low.length) return '';
+    return `
+      <div class="card p-4 mb-4 low-balance-card" style="border-color:#fcd34d">
+        <h3 class="font-semibold flex items-center gap-2 mb-1 text-amber-600"><i data-lucide="alert-triangle" style="width:16px;height:16px"></i> Low balance</h3>
+        ${low.map(({ account: a, balance, floor }) => `
+          <button class="w-full flex items-center justify-between py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0 text-left"
+                  onclick="window.__app.openAccountDetail('${this.escapeHtml(a.id)}')">
+            <span class="text-sm">${this.escapeHtml(a.name)} <span class="text-xs text-zinc-500">· below ${this.formatMoney(floor, a.currency)}</span></span>
+            <span class="text-sm font-semibold ${balance < 0 ? 'text-rose-500' : 'text-amber-600'}">${this.formatMoney(balance, a.currency)}</span>
+          </button>`).join('')}
+      </div>`;
+  }
+
   #billsCard(today) {
     if (this.inGuestSpace) return '';
     const bills = window.__app?.bills?.due(today) ?? [];

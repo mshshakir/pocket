@@ -26,6 +26,8 @@ export class HelpGuide {
         'Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.',
         'Balance doesn’t match? Edit the account and type the current balance — Pocket adds a “Balance adjustment” entry. If <b>Reconcile</b> shows on an account, tap it.',
         '<b>Groups</b> keep things tidy, like Personal and Business. Closed an account? Mark it <b>Archived</b>: its history stays, it’s out of the way.',
+        'Set <b>Warn me when the balance drops below</b> to see a Low balance note on the Dashboard. Tick <b>Leave out of totals</b> for a business or investment account you don’t want in your total balance.',
+        'Tap <b>Reorder</b> to drag accounts into the order you like; lists and pickers follow it.',
         'You can share an account with family so they can add entries to it.',
       ],
     },

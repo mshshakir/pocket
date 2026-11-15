@@ -13,6 +13,7 @@
  * balance that was previously stored. This keeps displayed balances identical
  * across the switch to derived balances.
  */
+import { ACCOUNT_TYPES } from './constants.js';
 import { LedgerMath }      from '../domain/services/LedgerMath.js';
 import { CurrencyService } from '../domain/services/CurrencyService.js';
 import { OwnerSpaceService } from '../domain/services/OwnerSpaceService.js';
@@ -48,6 +49,11 @@ export class StateMigrator {
 
     // ── collection defaults ────────────────────────────────────────────
     if (!Array.isArray(state.accounts))      state.accounts = [];
+    // New accounts used to all get the wallet icon, whatever their type (there
+    // was no icon choice). Give those their type's icon; Cash keeps the wallet.
+    for (const a of state.accounts) {
+      if (a && a.icon === 'wallet' && a.type && a.type !== 'cash') a.icon = ACCOUNT_TYPES.find((t) => t.id === a.type)?.icon || 'wallet';
+    }
     if (!Array.isArray(state.transactions))  state.transactions = [];
     if (!Array.isArray(state.categories))    state.categories = [];
     if (!Array.isArray(state.budgets))       state.budgets = [];

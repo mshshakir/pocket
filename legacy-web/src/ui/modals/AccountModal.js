@@ -6,6 +6,10 @@
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
+import { AccountService } from '../../domain/services/AccountService.js';
+
+/** Icons to choose from; each type's default is among them. */
+const ACCOUNT_ICONS = ['wallet', 'landmark', 'credit-card', 'vault', 'trending-up', 'briefcase', 'smartphone', 'home', 'car', 'gift'];
 
 export class AccountModal {
   /** @type {Store} */           #store;
@@ -26,6 +30,7 @@ export class AccountModal {
       balance: 0, color: '#0ea5e9', icon: 'landmark', archived: false,
     };
     const balanceDisplay = editing ? this.#fx.fromMinor(a.balance, a.currency) : 0;
+    const icon = editing && a.icon ? a.icon : AccountService.typeIcon(a.type);
     const groups = state.accountGroups || [];
 
     return `
@@ -43,7 +48,7 @@ export class AccountModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Type</label>
-            <select class="select" name="type" onchange="document.getElementById('accCardFields').style.display = this.value === 'card' ? '' : 'none'">
+            <select class="select" name="type" onchange="window.__app.onAccountTypeChange(this)">
               ${ACCOUNT_TYPES.map((t) => `<option value="${t.id}" ${a.type===t.id?'selected':''}>${t.label}</option>`).join('')}
             </select>
           </div>
@@ -72,6 +77,19 @@ export class AccountModal {
             : 'A non-zero starting balance is recorded as an <b>Opening balance</b> transaction in the ledger.'}
         </div>
 
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">Icon</label>
+          <div class="grid grid-cols-10 gap-1.5 mt-1 acc-icons">
+            ${ACCOUNT_ICONS.map((ic) => `
+              <label class="cursor-pointer">
+                <input type="radio" name="icon" value="${ic}" ${icon === ic ? 'checked' : ''} class="peer sr-only">
+                <span class="icon-pill bg-zinc-100 dark:bg-zinc-800 peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900" style="width:30px;height:30px">
+                  <i data-lucide="${ic}" style="width:15px;height:15px"></i>
+                </span>
+              </label>`).join('')}
+          </div>
+        </div>
+
         <div id="accCardFields" class="card-muted p-3 mb-3" ${a.type === 'card' ? '' : 'style="display:none"'}>
           <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="credit-card" style="width:14px;height:14px"></i> Credit card</div>
           <div class="grid grid-cols-3 gap-2">
@@ -91,6 +109,11 @@ export class AccountModal {
           <div class="text-xs text-zinc-500 mt-2">The statement day is when the bank closes each bill; the due day is when it must be paid. Pocket works out each bill from your entries. For the balance, enter what you owe as a minus amount (e.g. −12000).</div>
         </div>
 
+        <div id="accLowField" class="mb-3" ${a.type === 'card' ? 'style="display:none"' : ''}>
+          <label class="text-xs text-zinc-500">Warn me when the balance drops below</label>
+          <input class="input" name="lowBalance" type="number" min="0" step="${CurrencyService.stepFor(a.currency)}" value="${a.lowBalance ? this.#fx.fromMinor(a.lowBalance, a.currency) : ''}" placeholder="optional, e.g. 5000">
+        </div>
+
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Group</label>
           <select class="select" name="groupId" id="accGroupSelect"
@@ -103,9 +126,15 @@ export class AccountModal {
                  placeholder="New group name (e.g. Personal, Family, Business)">
         </div>
 
-        <div class="flex items-center gap-2 mb-4">
-          <input type="checkbox" name="archived" id="archChk" ${a.archived?'checked':''}>
-          <label for="archChk" class="text-sm">Archived</label>
+        <div class="mb-4 space-y-2">
+          <label class="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="excludeFromTotals" class="mt-0.5" ${a.excludeFromTotals ? 'checked' : ''}>
+            <span>Leave out of totals<span class="block text-xs text-zinc-500">For a business or investment account: kept out of your total balance, net worth and “You owe”. Its entries still show in reports.</span></span>
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="archived" id="archChk" ${a.archived?'checked':''}>
+            <span>Archived</span>
+          </label>
         </div>
 
         <div class="flex items-center gap-2">

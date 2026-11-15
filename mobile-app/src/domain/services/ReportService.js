@@ -124,7 +124,8 @@ export class ReportService {
   netWorthSeries() {
     const state = this.#store.getState();
     const home  = state.user.homeCurrency;
-    const accounts = state.accounts;
+    // Accounts set to "Leave out of totals" stay out of net worth too.
+    const accounts = state.accounts.filter((a) => !a.excludeFromTotals);
 
     // Net worth at a point = Σ openingBalance + Σ (ledger impact so far),
     // all converted to home. Computed WITHOUT mutating any real balances — the

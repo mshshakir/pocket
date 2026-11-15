@@ -86,7 +86,7 @@ export const ACCOUNT_TYPES = Object.freeze([
   { id: 'cash',    label: 'Cash',        icon: 'wallet'      },
   { id: 'bank',    label: 'Bank',        icon: 'landmark'    },
   { id: 'card',    label: 'Credit Card', icon: 'credit-card' },
-  { id: 'savings', label: 'Savings',     icon: 'landmark'    },
+  { id: 'savings', label: 'Savings',     icon: 'vault'       },
   { id: 'invest',  label: 'Investment',  icon: 'trending-up' },
 ]);
 

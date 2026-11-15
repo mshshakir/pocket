@@ -911,6 +911,21 @@ export class SyncService {
     return data;
   }
 
+  /**
+   * Send feedback or a feature idea (pocket_feedback_send, migration 0035).
+   * Read by the admins in the dashboard; nothing from the book is attached.
+   * @param {'feedback'|'feature'} kind
+   * @param {string} message
+   * @param {string} [page]  the screen it was sent from
+   * @returns {Promise<{id:number}>}
+   */
+  async sendFeedback(kind, message, page = '') {
+    if (!this.#sb || !this.#user) throw new Error('Sign in to send feedback');
+    const { data, error } = await this.#sb.rpc('pocket_feedback_send', { p_kind: kind, p_message: message, p_page: page || null, p_version: 'web' });
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
   async submitContribution(ownerId, txData) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
     const email = this.#user.email.toLowerCase();

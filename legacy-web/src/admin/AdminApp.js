@@ -11,6 +11,7 @@ import { PaymentsView } from './views/PaymentsView.js';
 import { PricingView } from './views/PricingView.js';
 import { ProgrammeView } from './views/ProgrammeView.js';
 import { AuditView } from './views/AuditView.js';
+import { FeedbackView } from './views/FeedbackView.js';
 
 export class AdminApp {
   static #TABS = [
@@ -19,6 +20,7 @@ export class AdminApp {
     ['payments', PaymentsView, 'receipt-indian-rupee'],
     ['pricing', PricingView, 'tags'],
     ['programme', ProgrammeView, 'sprout'],
+    ['feedback', FeedbackView, 'message-square-heart'],
     ['audit', AuditView, 'history'],
   ];
 

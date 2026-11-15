@@ -867,7 +867,7 @@ var _PocketApp = (() => {
     { id: "cash", label: "Cash", icon: "wallet" },
     { id: "bank", label: "Bank", icon: "landmark" },
     { id: "card", label: "Credit Card", icon: "credit-card" },
-    { id: "savings", label: "Savings", icon: "landmark" },
+    { id: "savings", label: "Savings", icon: "vault" },
     { id: "invest", label: "Investment", icon: "trending-up" }
   ]);
   var DEFAULT_CATEGORIES = Object.freeze([
@@ -1899,6 +1899,9 @@ var _PocketApp = (() => {
       if (typeof state.user.defaultAccountId !== "string") state.user.defaultAccountId = "";
       if (typeof state.user.defaultPaymentType !== "string") state.user.defaultPaymentType = "card";
       if (!Array.isArray(state.accounts)) state.accounts = [];
+      for (const a of state.accounts) {
+        if (a && a.icon === "wallet" && a.type && a.type !== "cash") a.icon = ACCOUNT_TYPES.find((t) => t.id === a.type)?.icon || "wallet";
+      }
       if (!Array.isArray(state.transactions)) state.transactions = [];
       if (!Array.isArray(state.categories)) state.categories = [];
       if (!Array.isArray(state.budgets)) state.budgets = [];
@@ -2146,7 +2149,7 @@ var _PocketApp = (() => {
   };
 
   // src/domain/services/AccountService.js
-  var AccountService = class {
+  var AccountService = class _AccountService {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -2193,7 +2196,59 @@ var _PocketApp = (() => {
      */
     totalBalanceInHome() {
       const state = this.#store.getState();
-      return state.accounts.filter((a) => !a.archived).reduce((sum, a) => sum + this.#fx.convert(a.balance ?? 0, a.currency, state.user.homeCurrency), 0);
+      return state.accounts.filter((a) => _AccountService.inTotals(a)).reduce((sum, a) => sum + this.#fx.convert(a.balance ?? 0, a.currency, state.user.homeCurrency), 0);
+    }
+    /**
+     * Whether an account counts in totals (Dashboard balance, group totals,
+     * net worth, "You owe"): not archived, and not set to "Leave out of totals".
+     * @param {object} account
+     */
+    static inTotals(account) {
+      return !!account && !account.archived && !account.excludeFromTotals;
+    }
+    /** The default icon for an account type (Bank → landmark, Card → credit-card…). */
+    static typeIcon(type) {
+      return ACCOUNT_TYPES.find((t) => t.id === type)?.icon || "wallet";
+    }
+    /**
+     * Accounts below the low-balance floor their owner set: [{ account, balance, floor }].
+     * Archived accounts and cards (which use a limit instead) are left out.
+     */
+    lowAccounts() {
+      return this.#store.getState().accounts.filter((a) => !a.archived && a.type !== "card" && Number(a.lowBalance) > 0).map((a) => ({ account: a, balance: Math.round(a.balance ?? 0), floor: Math.round(a.lowBalance) })).filter((x) => x.balance < x.floor);
+    }
+    /**
+     * Put `ids` in this order, inside the slots they already hold in the list:
+     * accounts not named keep their places. So reordering one group never
+     * shuffles another. Pure.
+     * @param {object[]} accounts
+     * @param {string[]} ids
+     * @returns {object[]} a new list
+     */
+    static reorderWithin(accounts, ids) {
+      const wanted = ids.filter((id) => accounts.some((a) => a.id === id));
+      const set = new Set(wanted);
+      const byId = new Map(accounts.map((a) => [a.id, a]));
+      const queue = wanted.map((id) => byId.get(id));
+      return accounts.map((a) => set.has(a.id) ? queue.shift() : a);
+    }
+    /**
+     * Reorder accounts (see reorderWithin) and save. Each account's place is
+     * stamped as `sortOrder` so the change syncs: the server keeps the order of
+     * the items it is sent, and an unchanged item isn't sent.
+     * @param {string[]} ids
+     * @returns {boolean} whether anything moved
+     */
+    reorder(ids) {
+      const state = this.#store.getState();
+      const next = _AccountService.reorderWithin(state.accounts, ids);
+      if (next.every((a, i) => a === state.accounts[i])) return false;
+      state.accounts.splice(0, state.accounts.length, ...next);
+      next.forEach((a, i) => {
+        a.sortOrder = i + 1;
+      });
+      this.#store.flush();
+      return true;
     }
     // ── Derived balance ──────────────────────────────────────────────────
     /**
@@ -2243,7 +2298,7 @@ var _PocketApp = (() => {
         openingBalance: Number(data.openingBalance ?? 0) || 0,
         balance: Number(data.openingBalance ?? 0) || 0,
         color: data.color || "#0ea5e9",
-        icon: data.icon || "landmark",
+        icon: data.icon || _AccountService.typeIcon(data.type || "bank"),
         archived: false,
         groupId: data.groupId || null
       };
@@ -6350,6 +6405,20 @@ RULES:
         if (data.paidTo) item.paidTo = data.paidTo;
         this.#bus.emit("state:changed", this.#store.getState());
       }
+      return data;
+    }
+    /**
+     * Send feedback or a feature idea (pocket_feedback_send, migration 0035).
+     * Read by the admins in the dashboard; nothing from the book is attached.
+     * @param {'feedback'|'feature'} kind
+     * @param {string} message
+     * @param {string} [page]  the screen it was sent from
+     * @returns {Promise<{id:number}>}
+     */
+    async sendFeedback(kind, message, page = "") {
+      if (!this.#sb || !this.#user) throw new Error("Sign in to send feedback");
+      const { data, error } = await this.#sb.rpc("pocket_feedback_send", { p_kind: kind, p_message: message, p_page: page || null, p_version: "web" });
+      if (error) throw new Error(error.message);
       return data;
     }
     async submitContribution(ownerId, txData) {
@@ -10907,6 +10976,8 @@ This replaces your current grouping.`
           "Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.",
           "Balance doesn\u2019t match? Edit the account and type the current balance \u2014 Pocket adds a \u201CBalance adjustment\u201D entry. If <b>Reconcile</b> shows on an account, tap it.",
           "<b>Groups</b> keep things tidy, like Personal and Business. Closed an account? Mark it <b>Archived</b>: its history stays, it\u2019s out of the way.",
+          "Set <b>Warn me when the balance drops below</b> to see a Low balance note on the Dashboard. Tick <b>Leave out of totals</b> for a business or investment account you don\u2019t want in your total balance.",
+          "Tap <b>Reorder</b> to drag accounts into the order you like; lists and pickers follow it.",
           "You can share an account with family so they can add entries to it."
         ]
       },
@@ -11341,7 +11412,7 @@ This replaces your current grouping.`
     netWorthSeries() {
       const state = this.#store.getState();
       const home = state.user.homeCurrency;
-      const accounts = state.accounts;
+      const accounts = state.accounts.filter((a) => !a.excludeFromTotals);
       const openingTotal = accounts.reduce(
         (s, a) => s + this.#fx.convert(Number(a.openingBalance ?? 0) || 0, a.currency, home),
         0
@@ -11661,7 +11732,8 @@ This replaces your current grouping.`
       const monthTx = state.transactions.filter((t) => /* @__PURE__ */ new Date(t.date + "T12:00:00") >= monthStart);
       const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
-      const total = state.accounts.filter((a) => !a.archived).reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+      const counted = state.accounts.filter((a) => AccountService.inTotals(a));
+      const total = counted.reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
       const recent = [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
       const todayIso = DateService.todayIso();
       const todayH = this.#hijri.toHijri(todayIso);
@@ -11679,6 +11751,7 @@ This replaces your current grouping.`
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ""}
+      ${this.#lowBalanceCard()}
       ${this.#billsCard(todayIso)}
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -11686,7 +11759,7 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 mb-1">Total balance</div>
           <div class="text-3xl font-semibold tracking-tight">${this.formatMoney(total, home)}</div>
           <div class="text-xs text-zinc-500 mt-2">
-            ${state.accounts.filter((a) => !a.archived).length} accounts \xB7 ${home}
+            ${counted.length} accounts \xB7 ${home}
           </div>
         </div>
         <div class="card p-5">
@@ -11792,6 +11865,22 @@ This replaces your current grouping.`
      * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
      * to vendors for pay-later items — only when there is something.
      */
+    /** Accounts that have dropped below the floor their owner set. */
+    #lowBalanceCard() {
+      if (this.inGuestSpace) return "";
+      const low = window.__app?.accountService?.lowAccounts?.() ?? [];
+      if (!low.length) return "";
+      return `
+      <div class="card p-4 mb-4 low-balance-card" style="border-color:#fcd34d">
+        <h3 class="font-semibold flex items-center gap-2 mb-1 text-amber-600"><i data-lucide="alert-triangle" style="width:16px;height:16px"></i> Low balance</h3>
+        ${low.map(({ account: a, balance, floor }) => `
+          <button class="w-full flex items-center justify-between py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0 text-left"
+                  onclick="window.__app.openAccountDetail('${this.escapeHtml(a.id)}')">
+            <span class="text-sm">${this.escapeHtml(a.name)} <span class="text-xs text-zinc-500">\xB7 below ${this.formatMoney(floor, a.currency)}</span></span>
+            <span class="text-sm font-semibold ${balance < 0 ? "text-rose-500" : "text-amber-600"}">${this.formatMoney(balance, a.currency)}</span>
+          </button>`).join("")}
+      </div>`;
+    }
     #billsCard(today) {
       if (this.inGuestSpace) return "";
       const bills = window.__app?.bills?.due(today) ?? [];
@@ -12243,8 +12332,24 @@ This replaces your current grouping.`
 
   // src/ui/views/AccountsView.js
   var AccountsView = class extends BaseView {
+    /** Reorder mode: compact rows with a drag handle and arrows. */
+    #reordering = false;
     constructor() {
       super();
+    }
+    get reordering() {
+      return this.#reordering;
+    }
+    toggleReorder() {
+      this.#reordering = !this.#reordering;
+    }
+    stopReorder() {
+      this.#reordering = false;
+    }
+    /** The ids in one section (a group, or '__none__'), in list order. */
+    sectionIds(key) {
+      const valid = new Set((this.state.accountGroups || []).map((g) => g.id));
+      return this.state.accounts.filter((a) => (a.groupId && valid.has(a.groupId) ? a.groupId : "__none__") === key).map((a) => a.id);
     }
     render() {
       const { state, homeCurrency: home } = this;
@@ -12278,6 +12383,10 @@ This replaces your current grouping.`
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllAccountGroups()" title="Expand all groups"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ""}
           ` : ""}
+          ${!this.inGuestSpace && state.accounts.length > 1 ? `
+          <button class="btn ${this.#reordering ? "btn-primary" : "btn-outline"} text-sm acc-reorder-toggle" onclick="window.__app.toggleAccountReorder()" title="Change the order of accounts">
+            <i data-lucide="${this.#reordering ? "check" : "arrow-up-down"}" style="width:14px;height:14px"></i><span class="${this.#reordering ? "" : "hidden md:inline"} ml-1">${this.#reordering ? "Done" : "Reorder"}</span>
+          </button>` : ""}
           <button class="btn btn-outline text-sm" onclick="window.__app.openAccountGroups()"
                   title="Create, rename and fill account groups">
             <i data-lucide="folder-tree" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Groups</span>
@@ -12289,7 +12398,7 @@ This replaces your current grouping.`
         </div>
       </div>
 
-      ${state.accounts.length === 0 ? `<div class="card p-10 text-center">${this.emptyState("No accounts", "Add your first account to start tracking.")}</div>` : sections.map((sec) => `
+      ${this.#reordering ? this.#reorderList(sections, home) : state.accounts.length === 0 ? `<div class="card p-10 text-center">${this.emptyState("No accounts", "Add your first account to start tracking.")}</div>` : sections.map((sec) => `
             <div class="mb-6">
               ${this.#sectionHeader(sec, collapsed, home)}
               ${collapsed.has(sec.id) ? "" : `
@@ -12298,7 +12407,7 @@ This replaces your current grouping.`
                 </div>`}
             </div>`).join("")}
 
-      ${this.#sharedCards(state, home)}
+      ${this.#reordering ? "" : this.#sharedCards(state, home)}
     `;
     }
     // ── Private ──────────────────────────────────────────────────────────
@@ -12320,6 +12429,7 @@ This replaces your current grouping.`
             <div class="flex items-center gap-2">
               <div class="font-semibold">${this.escapeHtml(a.name)}</div>
               ${a.archived ? '<span class="chip">Archived</span>' : ""}
+              ${!a.archived && a.excludeFromTotals ? '<span class="chip not-in-totals" title="Left out of totals">Not in totals</span>' : ""}
               ${isSharedOut ? `<span title="Shared with family" style="display:inline-flex;align-items:center;gap:2px;font-size:.6rem;background:#818cf822;color:#818cf8;border-radius:6px;padding:1px 5px"><i data-lucide="users" style="width:10px;height:10px"></i> Shared</span>` : ""}
             </div>
             <div class="text-xs text-zinc-500 capitalize">${this.escapeHtml(a.type)} \xB7 ${this.escapeHtml(a.currency)} \xB7 ${txCount} transaction${txCount === 1 ? "" : "s"}</div>
@@ -12345,9 +12455,34 @@ This replaces your current grouping.`
         </div>
       </div>`;
     }
+    /** Reorder mode: each section as a short list of rows to drag or nudge. */
+    #reorderList(sections, home) {
+      return `
+      <div class="text-sm text-zinc-500 mb-4 px-1">Drag <i data-lucide="grip-vertical" style="width:13px;height:13px;display:inline"></i> or use the arrows. This order is used in lists and pickers.</div>
+      ${sections.map((sec) => `
+        <div class="mb-5">
+          <div class="flex items-center gap-2 mb-2 px-1">
+            <span class="inline-block rounded-full" style="background:${sec.color};width:8px;height:8px"></span>
+            <span class="text-xs uppercase tracking-wider text-zinc-500">${this.escapeHtml(sec.name)}</span>
+          </div>
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 acc-sort-list" data-sort-list="${this.escapeHtml(sec.id)}">
+            ${sec.accs.map((a, i) => `
+              <div class="flex items-center gap-2 px-2 py-2 bg-white dark:bg-zinc-900" data-sort-id="${this.escapeHtml(a.id)}">
+                <button type="button" data-sort-handle class="p-2 text-zinc-400 cursor-grab" style="touch-action:none" aria-label="Drag to move ${this.escapeHtml(a.name)}">
+                  <i data-lucide="grip-vertical"></i>
+                </button>
+                <span class="icon-pill" style="background:${this.safeColor(a.color, "#818cf8")};color:white;width:28px;height:28px"><i data-lucide="${this.safeIcon(a.icon, "wallet")}" style="width:14px;height:14px"></i></span>
+                <span class="flex-1 min-w-0 truncate text-sm font-medium">${this.escapeHtml(a.name)}</span>
+                <span class="text-xs text-zinc-500 hidden sm:inline">${this.formatMoney(a.balance, a.currency)}</span>
+                <button type="button" class="btn btn-ghost px-2" ${i === 0 ? "disabled" : ""} onclick="window.__app.moveAccount('${this.jsArg(a.id)}',-1)" aria-label="Move up"><i data-lucide="chevron-up"></i></button>
+                <button type="button" class="btn btn-ghost px-2" ${i === sec.accs.length - 1 ? "disabled" : ""} onclick="window.__app.moveAccount('${this.jsArg(a.id)}',1)" aria-label="Move down"><i data-lucide="chevron-down"></i></button>
+              </div>`).join("")}
+          </div>
+        </div>`).join("")}`;
+    }
     #sectionHeader(sec, collapsed, home) {
       const isCollapsed = collapsed.has(sec.id);
-      const totalHome = sec.accs.reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+      const totalHome = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
       return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"
@@ -15794,6 +15929,7 @@ This replaces your current grouping.`
   };
 
   // src/ui/modals/AccountModal.js
+  var ACCOUNT_ICONS = ["wallet", "landmark", "credit-card", "vault", "trending-up", "briefcase", "smartphone", "home", "car", "gift"];
   var AccountModal = class {
     /** @type {Store} */
     #store;
@@ -15817,6 +15953,7 @@ This replaces your current grouping.`
         archived: false
       };
       const balanceDisplay = editing ? this.#fx.fromMinor(a.balance, a.currency) : 0;
+      const icon = editing && a.icon ? a.icon : AccountService.typeIcon(a.type);
       const groups = state.accountGroups || [];
       return `
       <form onsubmit="window.__app.submitAccount(event,'${editing?.id || ""}')" class="p-5">
@@ -15833,7 +15970,7 @@ This replaces your current grouping.`
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Type</label>
-            <select class="select" name="type" onchange="document.getElementById('accCardFields').style.display = this.value === 'card' ? '' : 'none'">
+            <select class="select" name="type" onchange="window.__app.onAccountTypeChange(this)">
               ${ACCOUNT_TYPES.map((t) => `<option value="${t.id}" ${a.type === t.id ? "selected" : ""}>${t.label}</option>`).join("")}
             </select>
           </div>
@@ -15860,6 +15997,19 @@ This replaces your current grouping.`
           ${editing ? "Changing the balance writes a <b>Balance adjustment</b> transaction. Delete that entry to restore the previous balance." : "A non-zero starting balance is recorded as an <b>Opening balance</b> transaction in the ledger."}
         </div>
 
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">Icon</label>
+          <div class="grid grid-cols-10 gap-1.5 mt-1 acc-icons">
+            ${ACCOUNT_ICONS.map((ic) => `
+              <label class="cursor-pointer">
+                <input type="radio" name="icon" value="${ic}" ${icon === ic ? "checked" : ""} class="peer sr-only">
+                <span class="icon-pill bg-zinc-100 dark:bg-zinc-800 peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900" style="width:30px;height:30px">
+                  <i data-lucide="${ic}" style="width:15px;height:15px"></i>
+                </span>
+              </label>`).join("")}
+          </div>
+        </div>
+
         <div id="accCardFields" class="card-muted p-3 mb-3" ${a.type === "card" ? "" : 'style="display:none"'}>
           <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="credit-card" style="width:14px;height:14px"></i> Credit card</div>
           <div class="grid grid-cols-3 gap-2">
@@ -15879,6 +16029,11 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 mt-2">The statement day is when the bank closes each bill; the due day is when it must be paid. Pocket works out each bill from your entries. For the balance, enter what you owe as a minus amount (e.g. \u221212000).</div>
         </div>
 
+        <div id="accLowField" class="mb-3" ${a.type === "card" ? 'style="display:none"' : ""}>
+          <label class="text-xs text-zinc-500">Warn me when the balance drops below</label>
+          <input class="input" name="lowBalance" type="number" min="0" step="${CurrencyService.stepFor(a.currency)}" value="${a.lowBalance ? this.#fx.fromMinor(a.lowBalance, a.currency) : ""}" placeholder="optional, e.g. 5000">
+        </div>
+
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Group</label>
           <select class="select" name="groupId" id="accGroupSelect"
@@ -15891,9 +16046,15 @@ This replaces your current grouping.`
                  placeholder="New group name (e.g. Personal, Family, Business)">
         </div>
 
-        <div class="flex items-center gap-2 mb-4">
-          <input type="checkbox" name="archived" id="archChk" ${a.archived ? "checked" : ""}>
-          <label for="archChk" class="text-sm">Archived</label>
+        <div class="mb-4 space-y-2">
+          <label class="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="excludeFromTotals" class="mt-0.5" ${a.excludeFromTotals ? "checked" : ""}>
+            <span>Leave out of totals<span class="block text-xs text-zinc-500">For a business or investment account: kept out of your total balance, net worth and \u201CYou owe\u201D. Its entries still show in reports.</span></span>
+          </label>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="archived" id="archChk" ${a.archived ? "checked" : ""}>
+            <span>Archived</span>
+          </label>
         </div>
 
         <div class="flex items-center gap-2">
@@ -16216,6 +16377,132 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/modals/FeedbackModal.js
+  var FeedbackModal = class _FeedbackModal {
+    /** @type {() => boolean} */
+    #signedIn;
+    /** @param {{signedIn: () => boolean}} deps */
+    constructor({ signedIn }) {
+      this.#signedIn = signedIn;
+    }
+    /** The textarea's hint for each kind. */
+    static placeholder(kind) {
+      return kind === "feature" ? "What would you like Pocket to do? What would it help you with?" : "What\u2019s working, what isn\u2019t, or anything that confused you\u2026";
+    }
+    render(opts = {}) {
+      const kind = opts.kind === "feature" ? "feature" : "feedback";
+      const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
+      if (!this.#signedIn()) {
+        return `
+        <div class="p-5">
+          <div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">Feedback &amp; ideas</h3>${close}</div>
+          <p class="text-sm text-zinc-500 mb-4">Sign in to send feedback, so we know who to reply to.</p>
+          <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal(); window.__app.openModal('auth',{})"><i data-lucide="log-in"></i> Sign in</button>
+        </div>`;
+      }
+      const kindBtn = (k, icon, label) => `
+      <button type="button" data-feedback-kind="${k}" class="btn ${k === kind ? "btn-primary" : "btn-outline"} justify-center"
+              onclick="window.__app.setFeedbackKind('${k}')"><i data-lucide="${icon}"></i> ${label}</button>`;
+      return `
+      <form onsubmit="window.__app.sendFeedback(event)" class="p-5 feedback-form">
+        <div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">Feedback &amp; ideas</h3>${close}</div>
+        <input type="hidden" name="kind" value="${kind}">
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          ${kindBtn("feedback", "message-circle", "Feedback")}
+          ${kindBtn("feature", "lightbulb", "Feature idea")}
+        </div>
+        <textarea class="textarea" name="message" rows="6" maxlength="2000" required autofocus
+                  placeholder="${_FeedbackModal.placeholder(kind)}"></textarea>
+        <div class="text-xs text-zinc-500 mt-1 mb-4">Only your message and your email are sent \u2014 nothing from your book.</div>
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="send"></i> Send</button>
+        </div>
+      </form>`;
+    }
+  };
+
+  // src/ui/components/SortableList.js
+  var SortableList = class _SortableList {
+    /** @type {(listKey: string, ids: string[]) => void} */
+    #onDrop;
+    /** @type {Document} */
+    #doc;
+    /** @type {null|{row:HTMLElement, list:HTMLElement, handle:HTMLElement, startY:number, id:number}} */
+    #drag = null;
+    /**
+     * @param {{onDrop: (listKey: string, ids: string[]) => void, doc?: Document}} opts
+     */
+    constructor({ onDrop, doc = document }) {
+      this.#onDrop = onDrop;
+      this.#doc = doc;
+      this.#doc.addEventListener("pointerdown", (e) => this.#start(e));
+    }
+    /** The ids of a list's rows, top to bottom. */
+    static order(list) {
+      return [...list.children].filter((el) => el.dataset?.sortId).map((el) => el.dataset.sortId);
+    }
+    // ── Private ──────────────────────────────────────────────────────────
+    #start(e) {
+      const handle = e.target?.closest?.("[data-sort-handle]");
+      const row = handle?.closest("[data-sort-id]");
+      const list = row?.parentElement;
+      if (!row || !list?.dataset?.sortList) return;
+      e.preventDefault();
+      this.#drag = { row, list, handle, startY: e.clientY, id: e.pointerId };
+      row.classList.add("sorting");
+      row.style.position = "relative";
+      row.style.zIndex = "10";
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+      }
+      const move = (ev) => this.#move(ev);
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        this.#end();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    }
+    #move(e) {
+      const d = this.#drag;
+      if (!d) return;
+      const y = e.clientY;
+      const next = this.#sibling(d.row, "next");
+      const prev = this.#sibling(d.row, "prev");
+      if (next && y > _SortableList.#middle(next)) {
+        d.list.insertBefore(next, d.row);
+        d.startY += next.offsetHeight || 0;
+      } else if (prev && y < _SortableList.#middle(prev)) {
+        d.list.insertBefore(d.row, prev);
+        d.startY -= prev.offsetHeight || 0;
+      }
+      d.row.style.transform = `translateY(${y - d.startY}px)`;
+    }
+    #end() {
+      const d = this.#drag;
+      this.#drag = null;
+      if (!d) return;
+      d.row.classList.remove("sorting");
+      d.row.style.transform = d.row.style.position = d.row.style.zIndex = "";
+      this.#onDrop(d.list.dataset.sortList, _SortableList.order(d.list));
+    }
+    #sibling(row, dir) {
+      let el = dir === "next" ? row.nextElementSibling : row.previousElementSibling;
+      while (el && !el.dataset?.sortId) el = dir === "next" ? el.nextElementSibling : el.previousElementSibling;
+      return el;
+    }
+    static #middle(el) {
+      const r = el.getBoundingClientRect();
+      return r.top + r.height / 2;
+    }
+  };
+
   // src/domain/services/OwedService.js
   var OwedService = class {
     /** @type {object} */
@@ -16252,7 +16539,7 @@ This replaces your current grouping.`
         const paid = this.paidOn(debt);
         return { debt, paid, remaining: Math.max(0, (debt.principal || 0) - paid), instalments: LoanInstalments.of(debt, paid, today) };
       });
-      const cards = (state.accounts || []).filter((a) => CardCycle.isCard(a) && !a.archived).map((account) => ({ account, cycle: this.cardCycle(account, today) })).filter((c) => c.cycle.owed > 0 || c.cycle.billLeft > 0);
+      const cards = (state.accounts || []).filter((a) => CardCycle.isCard(a) && !a.archived && !a.excludeFromTotals).map((account) => ({ account, cycle: this.cardCycle(account, today) })).filter((c) => c.cycle.owed > 0 || c.cycle.billLeft > 0);
       const bills = (this.#bills()?.due(today) ?? []).map((b) => ({ ...b, counted: b.overdue || b.today }));
       const vendors = (this.#vendorDues()?.byVendor(today) ?? []).filter((g) => g.amount > 0).map((g) => ({ vendor: g.vendor, currency: g.currency, amount: g.amount }));
       const totals = {
@@ -16402,7 +16689,7 @@ This replaces your current grouping.`
   };
 
   // src/ui/modals/SettingsModal.js
-  var SettingsModal = class {
+  var SettingsModal = class _SettingsModal {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -16411,6 +16698,15 @@ This replaces your current grouping.`
     #hijri;
     /** @type {PlanCard} */
     #planCard;
+    /** @type {string} */
+    #tab = "general";
+    /** [key, label, icon] */
+    static #TABS = [
+      ["general", "General", "sliders-horizontal"],
+      ["account", "Account", "user-round"],
+      ["data", "Data", "database"],
+      ["help", "Help", "life-buoy"]
+    ];
     constructor() {
       this.#store = Store.getInstance();
       this.#fx = new CurrencyService();
@@ -16422,159 +16718,99 @@ This replaces your current grouping.`
       const u = state.user;
       const isSaaS = window.__app?.isManagedMode?.() ?? true;
       const sbUser = window.__app?.getSbUser?.() ?? null;
+      const tab = _SettingsModal.#TABS.some(([k]) => k === this.#tab) ? this.#tab : "general";
+      const panel = (key, html) => `<div data-settings-tab="${key}" ${key === tab ? "" : 'style="display:none"'}>${html}</div>`;
       return `
       <div class="p-5">
-        <!-- Pinned while the long panel scrolls, so Close is always in reach on a phone. -->
-        <div class="sheet-header flex items-center justify-between">
-          <h3 class="text-lg font-semibold">Settings</h3>
-          <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close settings" title="Close">
-            <i data-lucide="x"></i>
+        <!-- Pinned while the panel scrolls, so Close and the tabs are always in reach on a phone. -->
+        <div class="sheet-header">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-semibold">Settings</h3>
+            <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close settings" title="Close">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+          <div class="grid grid-cols-4 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
+            ${_SettingsModal.#TABS.map(([k, label, icon]) => `
+              <button type="button" role="tab" data-settings-tab-btn="${k}" aria-selected="${k === tab}"
+                      class="flex flex-col sm:flex-row items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-medium ${k === tab ? "bg-white dark:bg-zinc-900 shadow-sm" : "text-zinc-500"}"
+                      onclick="window.__app.setSettingsTab('${k}')">
+                <i data-lucide="${icon}" style="width:15px;height:15px"></i>${label}
+              </button>`).join("")}
+          </div>
+        </div>
+        <div class="mt-3">
+          ${panel("general", this.#general(u, state))}
+          ${panel("account", this.#account(u, state, isSaaS, sbUser))}
+          ${panel("data", this.#data(state))}
+          ${panel("help", this.#help(sbUser))}
+        </div>
+
+        <!-- Phones: a Done button that stays at the bottom of the sheet. -->
+        <div class="form-footer phone-only mt-4">
+          <button class="btn btn-primary w-full justify-center py-3" onclick="window.__app.closeModal()">
+            <i data-lucide="check"></i> Done
           </button>
         </div>
-
-        <!-- Home currency -->
+      </div>`;
+    }
+    /** The tab to show; kept across re-renders (every setting re-draws the sheet). */
+    get tab() {
+      return this.#tab;
+    }
+    set tab(key) {
+      this.#tab = key;
+    }
+    /** General: currencies, defaults, date format, theme, Hijri calendar. */
+    #general(u, state) {
+      const ccy = (cur) => CURRENCIES.map((c) => `<option value="${c}" ${cur === c ? "selected" : ""}>${this.#fx.label(c)}</option>`).join("");
+      return `
         <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Home currency</label>
-          <div class="text-xs text-zinc-500 mb-1">All balances and totals are converted to this currency.</div>
-          <select class="select" onchange="window.__app.setHomeCurrency(this.value)">
-            ${CURRENCIES.map((c) => `<option value="${c}" ${u.homeCurrency === c ? "selected" : ""}>${this.#fx.label(c)}</option>`).join("")}
-          </select>
-        </div>
-
-        <!-- Default currency -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default currency for new entries</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, account, budget, or regular item.</div>
-          <select class="select" onchange="window.__app.setDefaultCurrency(this.value)">
-            ${CURRENCIES.map((c) => `<option value="${c}" ${u.defaultCurrency === c ? "selected" : ""}>${this.#fx.label(c)}</option>`).join("")}
-          </select>
-        </div>
-
-        <!-- Default account -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default account</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected when adding a transaction, debt, or regular item.</div>
-          <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
-            <option value="" ${!u.defaultAccountId ? "selected" : ""}>First account in the list</option>
-            ${state.accounts.filter((a) => !a.archived).map((a) => `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)} \xB7 ${this.#esc(a.currency)}</option>`).join("")}
-          </select>
-        </div>
-
-        <!-- Default payment method -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Default payment method</label>
-          <div class="text-xs text-zinc-500 mb-1">Pre-selected on the payment chips when adding a transaction.</div>
-          <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
-            ${this.#paymentTypes().map((p) => `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? "selected" : ""}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join("")}
-          </select>
-        </div>
-
-        <!-- Date format -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500">Date format</label>
-          <div class="text-xs text-zinc-500 mb-1">Used everywhere dates are displayed.</div>
-          <select class="select" onchange="window.__app.setDateFormat(this.value)">
-            <option value="auto"       ${u.dateFormat === "auto" ? "selected" : ""}>Auto (system locale)</option>
-            <option value="YYYY-MM-DD" ${u.dateFormat === "YYYY-MM-DD" ? "selected" : ""}>YYYY-MM-DD (2026-05-20)</option>
-            <option value="MM/DD/YYYY" ${u.dateFormat === "MM/DD/YYYY" ? "selected" : ""}>MM/DD/YYYY (05/20/2026)</option>
-            <option value="DD/MM/YYYY" ${u.dateFormat === "DD/MM/YYYY" ? "selected" : ""}>DD/MM/YYYY (20/05/2026)</option>
-          </select>
-        </div>
-
-        <!-- Theme -->
-        <div class="card-muted p-3 mb-3">
-          <label class="text-xs text-zinc-500 mb-1 block">Theme</label>
-          <div class="grid grid-cols-3 gap-2">
-            ${["light", "dark", "system"].map((t) => `
-              <button class="btn ${u.theme === t ? "btn-primary" : "btn-outline"} justify-center"
-                      onclick="window.__app.setTheme('${t}')">${t}</button>
-            `).join("")}
-          </div>
-        </div>
-
-        ${this.#renderHijriSection(u)}
-
-        <!-- Migrate from CSV -->
-        <div class="card-muted p-3 mb-3">
-          <div class="flex items-start gap-3 mb-3">
-            <div class="icon-pill" style="background:#10b98122;color:#10b981"><i data-lucide="file-down"></i></div>
-            <div class="flex-1">
-              <div class="font-medium text-sm">Migrate from another app</div>
-              <div class="text-xs text-zinc-500">
-                Download the CSV template, paste your transactions, then re-upload.
-                Accounts, categories and subcategories are auto-created.
-                Transfers, currencies, notes, payees and tags are preserved.
-                <span class="text-zinc-700 dark:text-zinc-300">Dates:</span>
-                <code>YYYY-MM-DD</code> is preferred (e.g. <code>2026-05-22</code>), but
-                <code>DD/MM/YYYY</code>, <code>MM/DD/YYYY</code>, and <code>YYYY/MM/DD</code>
-                also work \u2014 ambiguous slash dates follow your Settings \u2192 Date format preference.
-                <span class="text-zinc-700 dark:text-zinc-300">Splits:</span> rows that share
-                the same <code>SplitOf</code> value are merged into one transaction.
-                <span class="text-zinc-700 dark:text-zinc-300">Debts:</span> use
-                <code>borrowed</code> or <code>lent</code> as the Type.
-              </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-zinc-500" title="All balances and totals are converted to this currency">Home currency</label>
+              <select class="select" onchange="window.__app.setHomeCurrency(this.value)">${ccy(u.homeCurrency)}</select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on new entries, accounts, budgets and regulars">New entries in</label>
+              <select class="select" onchange="window.__app.setDefaultCurrency(this.value)">${ccy(u.defaultCurrency)}</select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on new entries, debts and regulars">Default account</label>
+              <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
+                <option value="" ${!u.defaultAccountId ? "selected" : ""}>First in the list</option>
+                ${state.accounts.filter((a) => !a.archived).map((a) => `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500" title="Pre-selected on the payment chips">Default payment</label>
+              <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
+                ${this.#paymentTypes().map((p) => `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? "selected" : ""}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Date format</label>
+              <select class="select" onchange="window.__app.setDateFormat(this.value)">
+                <option value="auto"       ${u.dateFormat === "auto" ? "selected" : ""}>Auto</option>
+                <option value="YYYY-MM-DD" ${u.dateFormat === "YYYY-MM-DD" ? "selected" : ""}>2026-05-20</option>
+                <option value="MM/DD/YYYY" ${u.dateFormat === "MM/DD/YYYY" ? "selected" : ""}>05/20/2026</option>
+                <option value="DD/MM/YYYY" ${u.dateFormat === "DD/MM/YYYY" ? "selected" : ""}>20/05/2026</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Theme</label>
+              <select class="select" onchange="window.__app.setTheme(this.value)">
+                ${[["light", "Light"], ["dark", "Dark"], ["system", "System"]].map(([t, l]) => `<option value="${t}" ${u.theme === t ? "selected" : ""}>${l}</option>`).join("")}
+              </select>
             </div>
           </div>
-          <div class="grid grid-cols-2 gap-2">
-            <button class="btn btn-outline justify-center"
-                    onclick="window.__app.downloadImportTemplate()">
-              <i data-lucide="download"></i> Download template
-            </button>
-            <label class="btn btn-primary justify-center cursor-pointer">
-              <i data-lucide="upload"></i> Import CSV
-              <input type="file" accept=".csv,text/csv" class="hidden"
-                     onchange="window.__app.startImport(this)">
-            </label>
-          </div>
         </div>
 
-        <!-- Data -->
-        <div class="card-muted p-3 mb-3">
-          <div class="text-sm font-medium mb-2">Data</div>
-          <div class="grid grid-cols-2 gap-2">
-            <button class="btn btn-outline justify-center" onclick="window.__app.exportJson()">
-              <i data-lucide="download"></i> Export JSON
-            </button>
-            <label class="btn btn-outline justify-center cursor-pointer">
-              <i data-lucide="upload"></i> Import JSON
-              <input type="file" accept="application/json" class="hidden"
-                     onchange="window.__app.importJson(this)">
-            </label>
-            <button class="btn btn-outline justify-center"
-                    onclick="window.__app.openModal('csv',{})">
-              <i data-lucide="file-text"></i> Export CSV
-            </button>
-            <button class="btn btn-outline justify-center text-rose-500"
-                    onclick="window.__app.resetData()"
-                    title="Delete every transaction, account, budget and debt">
-              <i data-lucide="rotate-ccw"></i> Reset data
-            </button>
-            ${BookCleaner.hasSample(state) ? `
-            <button class="btn btn-outline justify-center col-span-2"
-                    onclick="window.__app.removeSampleData()">
-              <i data-lucide="eraser"></i> Remove sample data
-            </button>` : ""}
-          </div>
-        </div>
-
-        ${(() => {
-        const backups = window.__app?.conflictBackups?.() ?? [];
-        if (!backups.length) return "";
-        return `
-        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
-          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
-            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
-          </div>
-          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
-          ${backups.map((b) => `
-            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
-              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
-              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
-              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
-            </div>`).join("")}
-        </div>`;
-      })()}
-
+        ${this.#renderHijriSection(u)}`;
+    }
+    /** Account: sign-in and sync, plan, AI. */
+    #account(u, state, isSaaS, sbUser) {
+      return `
         ${sbUser && isSaaS ? this.#planCard.html(window.__app.getPlan(), window.__app.planCatalogue, window.__app.paymentOffers, window.__app.buying, window.__app.coupon, window.__app.planUi) : ""}
 
         <!-- Cloud sync -->
@@ -16650,15 +16886,109 @@ This replaces your current grouping.`
           </div>
         </div>
 
-        <div class="text-xs text-zinc-500 text-center mt-4">Pocket \xB7 v2.0</div>
-
-        <!-- Phones: a Done button that stays at the bottom of the sheet. -->
-        <div class="form-footer phone-only mt-4">
-          <button class="btn btn-primary w-full justify-center py-3" onclick="window.__app.closeModal()">
-            <i data-lucide="check"></i> Done
-          </button>
+`;
+    }
+    /** Data: move in, export / import, reset, saved copies. */
+    #data(state) {
+      return `
+        <!-- Migrate from another app (CSV) -->
+        <div class="card-muted p-3 mb-3">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="file-down" style="width:16px;height:16px" class="text-emerald-600"></i>
+            <div class="font-medium text-sm flex-1">Move in from another app</div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center"
+                    onclick="window.__app.downloadImportTemplate()">
+              <i data-lucide="download"></i> Template
+            </button>
+            <label class="btn btn-primary justify-center cursor-pointer">
+              <i data-lucide="upload"></i> Import CSV
+              <input type="file" accept=".csv,text/csv" class="hidden"
+                     onchange="window.__app.startImport(this)">
+            </label>
+          </div>
+          <details class="mt-2 text-xs text-zinc-500">
+            <summary class="cursor-pointer">How it works</summary>
+            <div class="mt-1 leading-relaxed">
+              Download the template, paste your transactions, then import it. Accounts, categories and
+              subcategories are made for you; transfers, currencies, notes, payees and tags are kept.
+              Dates: <code>YYYY-MM-DD</code> is best; <code>DD/MM/YYYY</code>, <code>MM/DD/YYYY</code> and
+              <code>YYYY/MM/DD</code> also work (slash dates follow your date format). Rows sharing a
+              <code>SplitOf</code> value become one split entry. For debts, use <code>borrowed</code> or
+              <code>lent</code> as the Type.
+            </div>
+          </details>
         </div>
-      </div>`;
+        <!-- Data -->
+        <div class="card-muted p-3 mb-3">
+          <div class="text-sm font-medium mb-2">Data</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center" onclick="window.__app.exportJson()">
+              <i data-lucide="download"></i> Export JSON
+            </button>
+            <label class="btn btn-outline justify-center cursor-pointer">
+              <i data-lucide="upload"></i> Import JSON
+              <input type="file" accept="application/json" class="hidden"
+                     onchange="window.__app.importJson(this)">
+            </label>
+            <button class="btn btn-outline justify-center"
+                    onclick="window.__app.openModal('csv',{})">
+              <i data-lucide="file-text"></i> Export CSV
+            </button>
+            <button class="btn btn-outline justify-center text-rose-500"
+                    onclick="window.__app.resetData()"
+                    title="Delete every transaction, account, budget and debt">
+              <i data-lucide="rotate-ccw"></i> Reset data
+            </button>
+            ${BookCleaner.hasSample(state) ? `
+            <button class="btn btn-outline justify-center col-span-2"
+                    onclick="window.__app.removeSampleData()">
+              <i data-lucide="eraser"></i> Remove sample data
+            </button>` : ""}
+          </div>
+        </div>
+
+        ${(() => {
+        const backups = window.__app?.conflictBackups?.() ?? [];
+        if (!backups.length) return "";
+        return `
+        <div class="card-muted p-3 mb-3" style="border-color:#fcd34d">
+          <div class="text-sm font-medium mb-1 flex items-center gap-1.5 text-amber-600">
+            <i data-lucide="history" style="width:14px;height:14px"></i> Recover a saved copy
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Kept when another device saved at the same moment. Restoring replaces this device's current data.</div>
+          ${backups.map((b) => `
+            <div class="flex items-center gap-2 py-1.5 border-t border-zinc-100 dark:border-zinc-800">
+              <span class="flex-1 text-xs">${this.#esc(new Date(b.savedAt).toLocaleString())}</span>
+              <button class="btn btn-outline text-xs" onclick="window.__app.restoreConflictBackup('${this.#esc(b.key)}')">Restore</button>
+              <button class="btn btn-ghost text-xs text-rose-500" onclick="window.__app.discardConflictBackup('${this.#esc(b.key)}')">Discard</button>
+            </div>`).join("")}
+        </div>`;
+      })()}
+
+`;
+    }
+    /** Help: feedback and feature requests, version. */
+    #help(sbUser) {
+      return `
+        <div class="card-muted p-3 mb-3">
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="message-square-heart" style="width:16px;height:16px" class="text-indigo-500"></i>
+            <div class="font-medium text-sm">Feedback &amp; ideas</div>
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">Tell us what\u2019s working, what isn\u2019t, or what you\u2019d like Pocket to do. Every message is read.</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-outline justify-center settings-feedback" onclick="window.__app.openModal('feedback',{kind:'feedback'})">
+              <i data-lucide="message-circle"></i> Send feedback
+            </button>
+            <button class="btn btn-outline justify-center settings-feature" onclick="window.__app.openModal('feedback',{kind:'feature'})">
+              <i data-lucide="lightbulb"></i> Suggest a feature
+            </button>
+          </div>
+          ${sbUser ? "" : '<div class="text-xs text-zinc-500 mt-2">Sign in to send.</div>'}
+        </div>
+        <div class="text-xs text-zinc-500 text-center mt-4">Pocket \xB7 v2.0</div>`;
     }
     /**
      * Renders the Hijri calendar settings section.
@@ -20177,6 +20507,8 @@ This replaces your current grouping.`
     #categoryMergeModal;
     /** @type {OwedService}          */
     #owed;
+    /** @type {SettingsModal}        */
+    #settingsModal;
     /** @type {HabitService}         */
     #habits;
     /** @type {SyncService}          */
@@ -20393,9 +20725,11 @@ This replaces your current grouping.`
       this.#modal.register("account", new AccountModal());
       this.#modal.register("category", new CategoryModal());
       this.#modal.register("help", new HelpModal());
+      this.#modal.register("feedback", new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
+      new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
       this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
       this.#modal.register("budget", new BudgetModal());
-      this.#modal.register("settings", new SettingsModal());
+      this.#modal.register("settings", this.#settingsModal = new SettingsModal());
       this.#modal.register("csv", new CsvModal());
       this.#exportModal = new ExportModal({ store: this.#store });
       this.#modal.register("export", this.#exportModal);
@@ -20466,6 +20800,7 @@ This replaces your current grouping.`
       if (id === "__add") return this.openModal("transaction", {});
       if (id === "__more") return this.#openMoreMenu();
       if (id !== "categories") this.#views.get("categories")?.clearPicking?.();
+      if (id !== "accounts") this.#views.get("accounts")?.stopReorder?.();
       if (id === "calendar" && this.#router.current !== "calendar") this.#views.get("calendar")?.setTab?.("grid");
       this.#router.navigate(id);
       this.#render();
@@ -20502,10 +20837,16 @@ This replaces your current grouping.`
             ${items}
           </div>
           <div class="pt-3 border-t border-zinc-200 dark:border-zinc-800 mt-2">
-            <button class="btn btn-outline w-full gap-2"
-              onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('settings',{}),50)">
-              <i data-lucide="settings"></i> Settings
-            </button>
+            <div class="grid grid-cols-2 gap-2">
+              <button class="btn btn-outline w-full gap-2"
+                onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('settings',{}),50)">
+                <i data-lucide="settings"></i> Settings
+              </button>
+              <button class="btn btn-outline w-full gap-2 more-feedback"
+                onclick="window.__app.closeModal(); setTimeout(()=>window.__app.openModal('feedback',{}),50)">
+                <i data-lucide="message-circle"></i> Feedback
+              </button>
+            </div>
           </div>
         </div>`
       });
@@ -20943,15 +21284,15 @@ This replaces your current grouping.`
     setHomeCurrency(v) {
       this.#store.getState().user.homeCurrency = v;
       this.#store.persist();
-      this.closeModal();
       this.#render();
+      this.#keepSettingsOpen();
       this.#toast.show("Home currency: " + v);
     }
     setDefaultCurrency(v) {
       this.#store.getState().user.defaultCurrency = v;
       this.#store.persist();
-      this.closeModal();
       this.#render();
+      this.#keepSettingsOpen();
       this.#toast.show("Default currency: " + v);
     }
     /**
@@ -20977,8 +21318,8 @@ This replaces your current grouping.`
     setDateFormat(v) {
       this.#store.getState().user.dateFormat = v;
       this.#store.persist();
-      this.closeModal();
       this.#render();
+      this.#keepSettingsOpen();
       this.#toast.show("Date format: " + v);
     }
     toggleTheme() {
@@ -20988,8 +21329,8 @@ This replaces your current grouping.`
     }
     setTheme(v) {
       this.#themeService.set(v);
-      this.closeModal();
       this.#render();
+      this.#keepSettingsOpen();
       this.#toast.show(`Theme: ${v}`);
     }
     get paymentTypeService() {
@@ -21186,8 +21527,8 @@ Leave empty to use your own name.`,
       const u = this.#store.getState().user;
       u.showHijri = !u.showHijri;
       this.#store.persist();
-      this.closeModal();
       this.#render();
+      this.#keepSettingsOpen();
     }
     /**
      * Adjust the Hijri date offset by delta days (−1 or +1 from the stepper).
@@ -21838,6 +22179,10 @@ Leave empty to use your own name.`,
      *   captured and then adjusted the draft — re-capturing would read the stale
      *   DOM back over the adjustment.
      */
+    /** A setting changed: re-draw the page behind and keep Settings open on its tab. */
+    #keepSettingsOpen() {
+      if (this.#modal.active === "settings") this.#refreshModal({ capture: false });
+    }
     #refreshModal({ capture = true } = {}) {
       if (capture && this.#modal.active === "transaction") this.#txModal?.captureForm?.();
       this.#modal.refresh();
@@ -22313,7 +22658,7 @@ Leave empty to use your own name.`,
         if (!a2) return;
         const currencyChanged = a2.currency !== data.currency;
         const wasMinor = currencyChanged ? this.#fx.convert(a2.balance, a2.currency, data.currency) : a2.balance;
-        this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data) });
+        this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data), ...this.#accountExtras(data) });
         if (!currencyChanged && newMinor !== wasMinor) {
           const wasMajor = wasMinor;
           const delta = newMinor - wasMinor;
@@ -22349,8 +22694,8 @@ Leave empty to use your own name.`,
         this.#sync.schedulePush?.();
         return;
       }
-      const a = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: "wallet", groupId });
-      Object.assign(a, this.#cardFields(data));
+      const a = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: data.icon || AccountService.typeIcon(data.type), groupId });
+      Object.assign(a, this.#cardFields(data), this.#accountExtras(data));
       const newId = a.id;
       if (newMinor !== 0) {
         const positive = newMinor > 0;
@@ -22398,6 +22743,67 @@ Leave empty to use your own name.`,
         statementDay: day(data.statementDay),
         dueDay: day(data.dueDay)
       };
+    }
+    /** Accounts → Reorder / Done. */
+    toggleAccountReorder() {
+      this.#views.get("accounts")?.toggleReorder?.();
+      this.#render();
+    }
+    /**
+     * Nudge an account one place up (-1) or down (+1) within its group.
+     * @param {string} id
+     * @param {-1|1} dir
+     */
+    moveAccount(id, dir) {
+      const view = this.#views.get("accounts");
+      const a = this.#store.getState().accounts.find((x) => x.id === id);
+      if (!view || !a) return;
+      const valid = new Set((this.#store.getState().accountGroups || []).map((g) => g.id));
+      const ids = view.sectionIds(a.groupId && valid.has(a.groupId) ? a.groupId : "__none__");
+      const i = ids.indexOf(id), j = i + Number(dir);
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      this.#saveAccountOrder(ids);
+    }
+    /** A drag ended on a sortable list. */
+    #onSortDrop(key, ids) {
+      if (this.#router.current !== "accounts" || !this.#views.get("accounts")?.reordering) return;
+      this.#saveAccountOrder(ids);
+    }
+    #saveAccountOrder(ids) {
+      if (this.#accounts.reorder(ids)) this.#sync.schedulePush?.();
+      this.#render();
+    }
+    /** Icon, low-balance floor and "Leave out of totals" from the account form. */
+    #accountExtras(data) {
+      const floor = Number(data.lowBalance);
+      return {
+        icon: data.icon || AccountService.typeIcon(data.type),
+        lowBalance: data.type !== "card" && floor > 0 ? this.#fx.toMinor(floor, data.currency) : null,
+        excludeFromTotals: !!data.excludeFromTotals
+      };
+    }
+    /**
+     * Account form: the type changed. Show card fields for a card (and hide the
+     * low-balance floor), and move the icon to the new type's — unless the icon
+     * was picked by hand (anything other than the old type's default).
+     */
+    onAccountTypeChange(select) {
+      const form = select.form;
+      const isCard = select.value === "card";
+      const show = (id, on) => {
+        const el = form?.querySelector("#" + id);
+        if (el) el.style.display = on ? "" : "none";
+      };
+      show("accCardFields", isCard);
+      show("accLowField", !isCard);
+      const prev = select.dataset.prevType || select.querySelector("option[selected]")?.value || "";
+      const picked = form?.querySelector('input[name="icon"]:checked');
+      if (!picked || picked.value === AccountService.typeIcon(prev)) {
+        const next = form?.querySelector(`input[name="icon"][value="${AccountService.typeIcon(select.value)}"]`);
+        if (next) next.checked = true;
+      }
+      select.dataset.prevType = select.value;
     }
     deleteAccount(id) {
       const state = this.#store.getState();
@@ -22600,6 +23006,49 @@ Leave empty to use your own name.`,
       this.#store.getState().user.collapsedAccountGroups = [];
       this.#store.persist();
       this.#render();
+    }
+    /** Settings → General / Account / Data / Help, without a re-render. */
+    setSettingsTab(key) {
+      if (this.#settingsModal) this.#settingsModal.tab = key;
+      for (const el of document.querySelectorAll("[data-settings-tab]")) el.style.display = el.dataset.settingsTab === key ? "" : "none";
+      for (const b of document.querySelectorAll("[data-settings-tab-btn]")) {
+        const on = b.dataset.settingsTabBtn === key;
+        b.setAttribute("aria-selected", String(on));
+        b.classList.toggle("bg-white", on);
+        b.classList.toggle("dark:bg-zinc-900", on);
+        b.classList.toggle("shadow-sm", on);
+        b.classList.toggle("text-zinc-500", !on);
+      }
+    }
+    /** Feedback window: switch between "Feedback" and "Feature idea" without losing the text. */
+    setFeedbackKind(kind) {
+      const form = document.querySelector("form.feedback-form");
+      if (!form) return;
+      form.querySelector('input[name="kind"]').value = kind;
+      for (const b of form.querySelectorAll("[data-feedback-kind]")) {
+        const on = b.dataset.feedbackKind === kind;
+        b.classList.toggle("btn-primary", on);
+        b.classList.toggle("btn-outline", !on);
+      }
+      const area = form.querySelector('textarea[name="message"]');
+      if (area) area.placeholder = FeedbackModal.placeholder(kind);
+    }
+    async sendFeedback(event) {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const kind = String(fd.get("kind") || "feedback");
+      const message = String(fd.get("message") || "").trim();
+      if (!message) return this.#toast.show("Write a message first");
+      const btn = event.target.querySelector('button[type="submit"]');
+      if (btn) btn.disabled = true;
+      try {
+        await this.#sync.sendFeedback(kind, message, this.#router.current || "");
+        this.closeModal();
+        this.#toast.show(kind === "feature" ? "Thanks \u2014 your idea was sent" : "Thanks \u2014 your feedback was sent");
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        this.#toast.show(`Not sent: ${err.message || err}`);
+      }
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Page help (the ? by a page title)

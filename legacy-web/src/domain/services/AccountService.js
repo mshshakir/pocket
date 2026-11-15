@@ -11,6 +11,7 @@
  * All balance math lives in LedgerMath (the single source of truth).
  * No DOM access.
  */
+import { ACCOUNT_TYPES } from '../../data/constants.js';
 import { Store }           from '../../core/Store.js';
 import { IdGenerator }     from './IdGenerator.js';
 import { CurrencyService } from './CurrencyService.js';
@@ -68,8 +69,66 @@ export class AccountService {
   totalBalanceInHome() {
     const state = this.#store.getState();
     return state.accounts
-      .filter((a) => !a.archived)
+      .filter((a) => AccountService.inTotals(a))
       .reduce((sum, a) => sum + this.#fx.convert(a.balance ?? 0, a.currency, state.user.homeCurrency), 0);
+  }
+
+  /**
+   * Whether an account counts in totals (Dashboard balance, group totals,
+   * net worth, "You owe"): not archived, and not set to "Leave out of totals".
+   * @param {object} account
+   */
+  static inTotals(account) {
+    return !!account && !account.archived && !account.excludeFromTotals;
+  }
+
+  /** The default icon for an account type (Bank → landmark, Card → credit-card…). */
+  static typeIcon(type) {
+    return ACCOUNT_TYPES.find((t) => t.id === type)?.icon || 'wallet';
+  }
+
+  /**
+   * Accounts below the low-balance floor their owner set: [{ account, balance, floor }].
+   * Archived accounts and cards (which use a limit instead) are left out.
+   */
+  lowAccounts() {
+    return this.#store.getState().accounts
+      .filter((a) => !a.archived && a.type !== 'card' && Number(a.lowBalance) > 0)
+      .map((a) => ({ account: a, balance: Math.round(a.balance ?? 0), floor: Math.round(a.lowBalance) }))
+      .filter((x) => x.balance < x.floor);
+  }
+
+  /**
+   * Put `ids` in this order, inside the slots they already hold in the list:
+   * accounts not named keep their places. So reordering one group never
+   * shuffles another. Pure.
+   * @param {object[]} accounts
+   * @param {string[]} ids
+   * @returns {object[]} a new list
+   */
+  static reorderWithin(accounts, ids) {
+    const wanted = ids.filter((id) => accounts.some((a) => a.id === id));
+    const set    = new Set(wanted);
+    const byId   = new Map(accounts.map((a) => [a.id, a]));
+    const queue  = wanted.map((id) => byId.get(id));
+    return accounts.map((a) => (set.has(a.id) ? queue.shift() : a));
+  }
+
+  /**
+   * Reorder accounts (see reorderWithin) and save. Each account's place is
+   * stamped as `sortOrder` so the change syncs: the server keeps the order of
+   * the items it is sent, and an unchanged item isn't sent.
+   * @param {string[]} ids
+   * @returns {boolean} whether anything moved
+   */
+  reorder(ids) {
+    const state = this.#store.getState();
+    const next  = AccountService.reorderWithin(state.accounts, ids);
+    if (next.every((a, i) => a === state.accounts[i])) return false;
+    state.accounts.splice(0, state.accounts.length, ...next); // same array: others may hold it
+    next.forEach((a, i) => { a.sortOrder = i + 1; });
+    this.#store.flush();
+    return true;
   }
 
   // ── Derived balance ──────────────────────────────────────────────────
@@ -127,7 +186,7 @@ export class AccountService {
       openingBalance: Number(data.openingBalance ?? 0) || 0,
       balance:        Number(data.openingBalance ?? 0) || 0,
       color:          data.color    || '#0ea5e9',
-      icon:           data.icon     || 'landmark',
+      icon:           data.icon     || AccountService.typeIcon(data.type || 'bank'),
       archived:       false,
       groupId:        data.groupId  || null,
     };

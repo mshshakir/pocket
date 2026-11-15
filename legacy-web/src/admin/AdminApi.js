@@ -36,4 +36,6 @@ export class AdminApi {
   }
   saveCall(call)             { return this.#session.rpc('pocket_adm_save_call', { p: call }); }
   audit(limit = 300)         { return this.#session.rpc('pocket_adm_audit', { p_limit: limit }); }
+  feedback(status = null, limit = 300) { return this.#session.rpc('pocket_adm_feedback', { p_status: status, p_limit: limit }); }
+  setFeedback(id, status, note = null) { return this.#session.rpc('pocket_adm_feedback_set', { p_id: Number(id), p_status: status, p_note: note }); }
 }
