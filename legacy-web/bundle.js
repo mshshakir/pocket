@@ -10984,13 +10984,14 @@ This replaces your current grouping.`
       },
       investments: {
         title: "Investments",
-        intro: "The gold and silver you own: grams, what you paid, and what it\u2019s worth today.",
+        intro: "The gold, silver and shares you own: how much, what you paid, and what it\u2019s worth today.",
         points: [
-          "<b>Add</b> it: pick gold or silver and the purity. Choose <b>I already own it</b> (grams and what you paid) or <b>Buying now</b> (grams, price per gram, and the account you paid from).",
-          "<b>Buy</b> and <b>Sell</b> move money between that account and your Investments account, with the grams on the same entry. Spending and budgets aren\u2019t affected.",
-          "Tap <b>Price</b> to enter today\u2019s price per gram. Worth = grams \xD7 price, and your total balance and net worth use it.",
-          "Set an alert, like <b>20%</b> gain or a price per gram. When the price reaches it you\u2019ll see it here and on the Dashboard.",
-          "Each card shows your <b>average cost</b> per gram and the gain. Open <b>History</b> to see or delete a buy or sale."
+          "<b>Add</b> it: pick gold, silver or shares. For gold and silver choose the purity; for shares type the company and its code (optional). Then choose <b>I already own it</b> or <b>Buying now</b>.",
+          "<b>Buy</b> and <b>Sell</b> move money between your account and your Investments account, with the grams or shares on the same entry. Add <b>Charges</b> (brokerage, making charges) and they count in what it cost you. Spending and budgets aren\u2019t affected.",
+          "Tap <b>Price</b> to enter today\u2019s price per gram or per share. Worth = how much you hold \xD7 price, and your total balance and net worth use it.",
+          "For shares, tap <b>Dividend</b> when one is paid: it\u2019s saved as income and shown on the card.",
+          "Set an alert, like <b>20%</b> gain or a target price. When the price reaches it you\u2019ll see it here and on the Dashboard.",
+          "Each card shows your <b>average cost</b> and the gain. Open <b>History</b> to see or delete a buy, sale or dividend."
         ]
       },
       calendar: {
@@ -14236,9 +14237,19 @@ This replaces your current grouping.`
   var HoldingService = class _HoldingService {
     /** Metals and their purities, in the order offered. */
     static KINDS = Object.freeze({
-      gold: { label: "Gold", icon: "gem", purities: ["24k", "22k", "18k"] },
-      silver: { label: "Silver", icon: "circle", purities: ["999", "925"] }
+      gold: { label: "Gold", icon: "gem", unit: "g", per: "g", qtyLabel: "Grams", purities: ["24k", "22k", "18k"] },
+      silver: { label: "Silver", icon: "circle", unit: "g", per: "g", qtyLabel: "Grams", purities: ["999", "925"] },
+      shares: { label: "Shares", icon: "briefcase", unit: "shares", per: "share", qtyLabel: "Shares", purities: [] }
     });
+    /** @param {object} h  @returns {object} its kind's settings */
+    static kindOf(h) {
+      return _HoldingService.KINDS[h?.kind] || _HoldingService.KINDS.gold;
+    }
+    /** "12.5 g" · "40 shares" */
+    static qtyText(h, q) {
+      const n = Number(q).toLocaleString("en-IN", { maximumFractionDigits: 3 });
+      return _HoldingService.kindOf(h).unit === "g" ? `${n} g` : `${n} ${Number(q) === 1 ? "share" : "shares"}`;
+    }
     /** Most prices kept per holding (oldest dropped). */
     static MAX_PRICES = 400;
     /** @type {() => object} */
@@ -14261,11 +14272,19 @@ This replaces your current grouping.`
     find(id) {
       return (this.#state().holdings || []).find((h) => h.id === id);
     }
-    /** The entries (transfer legs) that bought or sold a holding, oldest first. */
+    /** The entries (transfer legs with a quantity) that bought or sold a holding, oldest first. */
     entries(id) {
-      return (this.#state().transactions || []).filter((t) => t.holdingId === id && Number.isFinite(Number(t.qty))).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+      return (this.#state().transactions || []).filter((t) => t.holdingId === id && t.type === "transfer" && t.qty != null && Number.isFinite(Number(t.qty)) && Number(t.qty) !== 0).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
     }
-    /** The latest price per gram, or null: { date, price }. */
+    /** Dividends received on a holding (income entries carrying its id), its currency. */
+    dividends(id) {
+      return Math.round((this.#state().transactions || []).filter((t) => t.holdingId === id && t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0));
+    }
+    /** Dividend entries of a holding, oldest first. */
+    dividendEntries(id) {
+      return (this.#state().transactions || []).filter((t) => t.holdingId === id && t.type === "income").sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    }
+    /** The latest price per unit, or null: { date, price }. */
     static latestPrice(h) {
       const p = Array.isArray(h?.prices) ? h.prices : [];
       return p.length ? p[p.length - 1] : null;
@@ -14319,6 +14338,7 @@ This replaces your current grouping.`
         priceDate: last?.date ?? null,
         worth,
         gain,
+        dividends: this.dividends(h.id),
         gainPct: cost > 0 ? Math.round(1e3 * gain / cost) / 10 : null,
         realised: Math.round(realised),
         ledgerNet: Math.round(ledgerNet),
@@ -14382,13 +14402,16 @@ This replaces your current grouping.`
       const state = this.#state();
       if (!Array.isArray(state.holdings)) state.holdings = [];
       const kind = _HoldingService.KINDS[d.kind] ? d.kind : "gold";
+      const k = _HoldingService.KINDS[kind];
+      const code = kind === "shares" ? String(d.code || "").trim().toUpperCase() : "";
       const h = {
         id,
         accountId: d.accountId,
         kind,
-        purity: d.purity || _HoldingService.KINDS[kind].purities[0],
-        name: (d.name || "").trim() || _HoldingService.defaultName(kind, d.purity),
-        unit: "g",
+        ...k.purities.length ? { purity: d.purity || k.purities[0] } : {},
+        ...code ? { code } : {},
+        name: (d.name || "").trim() || _HoldingService.defaultName(kind, d.purity, code),
+        unit: k.unit,
         currency: d.currency,
         openingQty: Number(d.openingQty) > 0 ? _HoldingService.#grams(d.openingQty) : 0,
         openingCost: Number(d.openingCost) > 0 ? Math.round(d.openingCost) : 0,
@@ -14418,8 +14441,9 @@ This replaces your current grouping.`
       const st = this.stats(h);
       h.alert = { ...h.alert || {}, ackTarget: st.target };
     }
-    /** e.g. "24k gold", "999 silver". */
-    static defaultName(kind, purity) {
+    /** e.g. "24k gold", "999 silver", "TCS shares". */
+    static defaultName(kind, purity, code = "") {
+      if (kind === "shares") return code ? `${code} shares` : "Shares";
       return `${purity || _HoldingService.KINDS[kind]?.purities[0] || ""} ${kind === "silver" ? "silver" : "gold"}`.trim();
     }
     /** Grams to 3 places (milligrams), so 0.1 + 0.2 stays 0.3. */
@@ -14440,13 +14464,13 @@ This replaces your current grouping.`
       <div class="flex items-center justify-between mb-6 gap-2">
         <div>
           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Investments${this.helpButton("investments")}</h1>${this.helpHint("investments")}
-          <div class="text-xs text-zinc-500 mt-0.5">Gold and silver, valued at the latest price</div>
+          <div class="text-xs text-zinc-500 mt-0.5">Gold, silver and shares, valued at the latest price</div>
         </div>
         ${guest ? "" : `<button class="btn btn-primary inv-add" onclick="window.__app.openModal('investment')"><i data-lucide="plus"></i> Add</button>`}
       </div>`;
       if (guest) return head + `<div class="card p-10 text-center">${this.emptyState("Not shared", "Investments are kept in your own space.")}</div>`;
       if (!list.length) {
-        return head + `<div class="card p-10 text-center">${this.emptyState("No investments yet", "Add the gold or silver you own, or buy some. Pocket keeps the grams, what you paid, and what it\u2019s worth today.")}</div>`;
+        return head + `<div class="card p-10 text-center">${this.emptyState("No investments yet", "Add the gold, silver or shares you own, or buy some. Pocket keeps how much you hold, what you paid, and what it\u2019s worth today.")}</div>`;
       }
       const t = svc.totals();
       const alerts = svc.alerts();
@@ -14483,21 +14507,25 @@ This replaces your current grouping.`
     #card(h, svc) {
       const st = svc.stats(h);
       const cur = h.currency;
+      const k = HoldingService.kindOf(h);
       const acc = this.state.accounts.find((a) => a.id === h.accountId);
       const today = DateService.todayIso();
       const age = st.priceDate ? Math.round((Date.parse(today) - Date.parse(st.priceDate)) / 864e5) : null;
       const stale = age === null || age > _InvestmentsView.STALE_DAYS;
-      const grams = (g) => `${Number(g).toLocaleString("en-IN", { maximumFractionDigits: 3 })} g`;
+      const qty = (q) => HoldingService.qtyText(h, q);
       const tone = st.gain >= 0 ? "text-emerald-600" : "text-rose-500";
       const id = this.jsArg(h.id);
-      const history2 = svc.entries(h.id);
+      const history2 = [...svc.entries(h.id), ...svc.dividendEntries(h.id)].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const isShares = h.kind === "shares";
+      const colour = { gold: ["#f59e0b22", "#d97706"], silver: ["#94a3b822", "#64748b"], shares: ["#6366f122", "#4f46e5"] }[h.kind] || ["#f59e0b22", "#d97706"];
+      const detail = isShares ? h.code ? this.escapeHtml(h.code) : "" : this.escapeHtml(h.purity || "");
       return `
       <div class="card p-4 inv-card" data-holding="${this.escapeHtml(h.id)}">
         <div class="flex items-start gap-3">
-          <div class="icon-pill" style="background:${h.kind === "silver" ? "#94a3b822" : "#f59e0b22"};color:${h.kind === "silver" ? "#64748b" : "#d97706"}"><i data-lucide="${HoldingService.KINDS[h.kind]?.icon || "gem"}"></i></div>
+          <div class="icon-pill" style="background:${colour[0]};color:${colour[1]}"><i data-lucide="${k.icon}"></i></div>
           <div class="flex-1 min-w-0">
             <div class="font-semibold truncate">${this.escapeHtml(h.name)}</div>
-            <div class="text-xs text-zinc-500">${grams(st.qty)} \xB7 ${this.escapeHtml(h.purity)}${acc ? ` \xB7 in ${this.escapeHtml(acc.name)}` : ""}</div>
+            <div class="text-xs text-zinc-500 inv-qty">${qty(st.qty)}${detail ? ` \xB7 ${detail}` : ""}${acc ? ` \xB7 in ${this.escapeHtml(acc.name)}` : ""}</div>
           </div>
           <div class="text-right">
             <div class="font-semibold">${this.formatMoney(st.worth, cur)}</div>
@@ -14506,23 +14534,25 @@ This replaces your current grouping.`
         </div>
         <div class="flex items-center gap-2 mt-3 text-xs">
           <span class="flex-1 ${stale ? "text-amber-600" : "text-zinc-500"} inv-price">
-            ${st.price !== null ? `${this.formatMoney(st.price, cur)} / g \xB7 ${DeliveryPlan.shortDate(st.priceDate)}${stale ? " \xB7 price may be old" : ""}` : "No price yet"}
+            ${st.price !== null ? `${this.formatMoney(st.price, cur)} / ${k.per} \xB7 ${DeliveryPlan.shortDate(st.priceDate)}${stale ? " \xB7 price may be old" : ""}` : "No price yet"}
           </span>
-          <span class="text-zinc-500">Avg cost ${this.formatMoney(st.avgCost, cur)} / g</span>
+          <span class="text-zinc-500">Avg cost ${this.formatMoney(st.avgCost, cur)} / ${k.per}</span>
         </div>
-        ${st.target !== null ? `<div class="text-xs text-zinc-500 mt-1 inv-target"><i data-lucide="bell" style="width:11px;height:11px;display:inline"></i> Alert at ${this.formatMoney(st.target, cur)} / g${h.alert?.gainPct ? ` (+${h.alert.gainPct}%)` : ""}${st.reached ? ' \xB7 <span class="text-emerald-600">reached</span>' : ""}</div>` : ""}
-        <div class="grid grid-cols-3 gap-2 mt-3">
+        ${st.dividends ? `<div class="text-xs text-emerald-600 mt-1 inv-dividends">Dividends received ${this.formatMoney(st.dividends, cur)}</div>` : ""}
+        ${st.target !== null ? `<div class="text-xs text-zinc-500 mt-1 inv-target"><i data-lucide="bell" style="width:11px;height:11px;display:inline"></i> Alert at ${this.formatMoney(st.target, cur)} / ${k.per}${h.alert?.gainPct ? ` (+${h.alert.gainPct}%)` : ""}${st.reached ? ' \xB7 <span class="text-emerald-600">reached</span>' : ""}</div>` : ""}
+        <div class="grid ${isShares ? "grid-cols-4" : "grid-cols-3"} gap-2 mt-3">
           <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})"><i data-lucide="plus"></i> Buy</button>
           <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? "" : "disabled"} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})"><i data-lucide="minus"></i> Sell</button>
           <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('holdingPrice',{id:'${id}'})"><i data-lucide="tag"></i> Price</button>
+          ${isShares ? `<button class="btn btn-outline btn-sm justify-center inv-dividend-btn" onclick="window.__app.openModal('trade',{id:'${id}',mode:'dividend'})"><i data-lucide="banknote"></i> Dividend</button>` : ""}
         </div>
         <details class="mt-3 text-xs">
           <summary class="cursor-pointer text-zinc-500">History${history2.length ? ` \xB7 ${history2.length}` : ""}</summary>
           <div class="mt-2 divide-y divide-zinc-100 dark:divide-zinc-800">
-            ${Number(h.openingQty) > 0 ? `<div class="py-1.5 flex justify-between"><span>Already owned \xB7 ${grams(h.openingQty)}</span><span>${this.formatMoney(h.openingCost || 0, cur)}</span></div>` : ""}
+            ${Number(h.openingQty) > 0 ? `<div class="py-1.5 flex justify-between"><span>Already owned \xB7 ${qty(h.openingQty)}</span><span>${this.formatMoney(h.openingCost || 0, cur)}</span></div>` : ""}
             ${history2.map((t) => `
               <div class="py-1.5 flex items-center gap-2">
-                <span class="flex-1">${DeliveryPlan.shortDate(t.date)} \xB7 ${Number(t.qty) > 0 ? "Bought" : "Sold"} ${grams(Math.abs(t.qty))} @ ${this.formatMoney(t.unitPrice || 0, cur)}</span>
+                <span class="flex-1">${DeliveryPlan.shortDate(t.date)} \xB7 ${t.type === "income" ? "Dividend" : `${Number(t.qty) > 0 ? "Bought" : "Sold"} ${qty(Math.abs(t.qty))} @ ${this.formatMoney(t.unitPrice || 0, cur)}`}</span>
                 <span>${this.formatMoney(t.amount, t.currency || cur)}</span>
                 <button class="text-zinc-400 hover:text-rose-500" title="Delete" onclick="window.__app.deleteTx('${this.jsArg(t.id)}')"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button>
               </div>`).join("")}
@@ -14563,10 +14593,10 @@ This replaces your current grouping.`
       const home = state.user.homeCurrency || "INR";
       const step = CurrencyService.stepFor(invest[0]?.currency || home);
       const today = DateService.todayIso();
-      const metal = (k, label) => `
+      const kindCard = (k) => `
       <label class="cursor-pointer">
         <input type="radio" name="kind" value="${k}" ${k === "gold" ? "checked" : ""} class="peer sr-only" onchange="window.__app.onHoldingKindChange(this)">
-        <span class="btn btn-outline w-full justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900"><i data-lucide="${HoldingService.KINDS[k].icon}"></i> ${label}</span>
+        <span class="btn btn-outline w-full justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900"><i data-lucide="${HoldingService.KINDS[k].icon}"></i> ${HoldingService.KINDS[k].label}</span>
       </label>`;
       const how = (k, label) => `
       <label class="cursor-pointer">
@@ -14575,9 +14605,9 @@ This replaces your current grouping.`
       </label>`;
       return `
       <form onsubmit="window.__app.submitInvestment(event,'')" class="p-5 investment-form">
-        ${this.#head("Add gold or silver")}
-        <div class="grid grid-cols-2 gap-2 mb-3">${metal("gold", "Gold")}${metal("silver", "Silver")}</div>
-        <div class="grid grid-cols-2 gap-3 mb-3">
+        ${this.#head("Add an investment")}
+        <div class="grid grid-cols-3 gap-2 mb-3">${kindCard("gold")}${kindCard("silver")}${kindCard("shares")}</div>
+        <div class="grid grid-cols-2 gap-3 mb-3" data-kind-only="metal">
           <div>
             <label class="text-xs text-zinc-500">Purity</label>
             <select class="select" name="purity">${_InvestmentModal.purityOptions("gold")}</select>
@@ -14585,6 +14615,16 @@ This replaces your current grouping.`
           <div>
             <label class="text-xs text-zinc-500">Name (optional)</label>
             <input class="input" name="name" placeholder="e.g. Wedding set">
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-3" data-kind-only="shares" style="display:none">
+          <div class="col-span-2">
+            <label class="text-xs text-zinc-500">Company</label>
+            <input class="input" name="company" placeholder="e.g. Tata Consultancy Services">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Code (optional)</label>
+            <input class="input" name="code" placeholder="e.g. TCS" style="text-transform:uppercase">
           </div>
         </div>
         <div class="mb-3">
@@ -14599,12 +14639,12 @@ This replaces your current grouping.`
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Grams</label>
+            <label class="text-xs text-zinc-500" data-qty-label>Grams</label>
             <input class="input" name="grams" type="number" min="0" step="0.001" required inputmode="decimal">
           </div>
           <div>
-            <label class="text-xs text-zinc-500" data-how-label="own">Today's price / g</label>
-            <label class="text-xs text-zinc-500" data-how-label="buy" style="display:none">Price paid / g</label>
+            <label class="text-xs text-zinc-500" data-how-label="own">Today's price / <span data-per>g</span></label>
+            <label class="text-xs text-zinc-500" data-how-label="buy" style="display:none">Price paid / <span data-per>g</span></label>
             <input class="input" name="price" type="number" min="0" step="${step}" inputmode="decimal">
           </div>
         </div>
@@ -14612,17 +14652,24 @@ This replaces your current grouping.`
           <label class="text-xs text-zinc-500">What you paid in all (optional)</label>
           <input class="input" name="paid" type="number" min="0" step="${step}" inputmode="decimal" placeholder="Leave empty to use today's price">
         </div>
-        <div data-how="buy" class="grid grid-cols-2 gap-3 mb-3" style="display:none">
-          <div>
-            <label class="text-xs text-zinc-500">Pay from</label>
-            <select class="select" name="payFrom">
-              ${payFrom.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("")}
-            </select>
+        <div data-how="buy" class="mb-3" style="display:none">
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="text-xs text-zinc-500">Charges</label>
+              <input class="input" name="charges" type="number" min="0" step="${step}" inputmode="decimal" placeholder="optional">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Pay from</label>
+              <select class="select" name="payFrom">
+                ${payFrom.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Date</label>
+              <input class="input" type="date" name="date" value="${today}">
+            </div>
           </div>
-          <div>
-            <label class="text-xs text-zinc-500">Date</label>
-            <input class="input" type="date" name="date" value="${today}">
-          </div>
+          <div class="text-xs text-zinc-500 mt-1">Charges: brokerage, making charges or fees \u2014 added to what it cost you.</div>
         </div>
 
         <div class="mb-4">
@@ -14639,31 +14686,32 @@ This replaces your current grouping.`
     }
     #edit(h) {
       const step = CurrencyService.stepFor(h.currency);
+      const k = HoldingService.kindOf(h);
+      const shares = h.kind === "shares";
       return `
       <form onsubmit="window.__app.submitInvestment(event,'${Html.escape(h.id)}')" class="p-5 investment-form">
         ${this.#head(`Edit ${Html.escape(h.name)}`)}
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Name</label>
+            <label class="text-xs text-zinc-500">${shares ? "Company" : "Name"}</label>
             <input class="input" name="name" value="${Html.escape(h.name)}" required>
           </div>
           <div>
-            <label class="text-xs text-zinc-500">Purity</label>
-            <select class="select" name="purity">${_InvestmentModal.purityOptions(h.kind, h.purity)}</select>
+            ${shares ? `<label class="text-xs text-zinc-500">Code (optional)</label><input class="input" name="code" value="${Html.escape(h.code || "")}" style="text-transform:uppercase">` : `<label class="text-xs text-zinc-500">Purity</label><select class="select" name="purity">${_InvestmentModal.purityOptions(h.kind, h.purity)}</select>`}
           </div>
         </div>
         <div class="text-xs text-zinc-500 mb-1">Owned before you started using Pocket</div>
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Grams</label>
-            <input class="input" name="openingQty" type="number" min="0" step="0.001" value="${Number(h.openingQty) || ""}">
+            <label class="text-xs text-zinc-500">${k.qtyLabel}</label>
+            <input class="input" name="openingQty" type="number" min="0" step="${shares ? "1" : "0.001"}" value="${Number(h.openingQty) || ""}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">What you paid in all</label>
             <input class="input" name="openingCost" type="number" min="0" step="${step}" value="${h.openingCost ? this.#fx.fromMinor(h.openingCost, h.currency) : ""}">
           </div>
         </div>
-        <div class="text-xs text-zinc-500 mb-3">Buying and selling are in History on the card; delete an entry there to undo it.</div>
+        <div class="text-xs text-zinc-500 mb-3">Buying, selling${shares ? " and dividends" : ""} are in History on the card; delete an entry there to undo it.</div>
         <div class="flex items-center gap-2">
           <button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.removeInvestment('${Html.escape(h.id)}')"><i data-lucide="trash-2"></i> Remove</button>
           <div class="flex-1"></div>
@@ -14693,37 +14741,71 @@ This replaces your current grouping.`
       const svc = this.#holdings();
       const h = svc?.find(opts.id);
       if (!h) return `<div class="p-5">Not found</div>`;
+      const others = state.accounts.filter((a) => a.id !== h.accountId && a.type !== "invest" && !a.archived);
+      const accountOptions = others.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("");
+      const step = CurrencyService.stepFor(h.currency);
+      const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
+      const footer = (label) => `
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> ${label}</button>
+        </div>`;
+      if (opts.mode === "dividend") {
+        return `
+      <form onsubmit="window.__app.submitTrade(event,'${Html.escape(h.id)}','dividend')" class="p-5 trade-form">
+        <div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">Dividend \xB7 ${Html.escape(h.name)}</h3>${close}</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Amount received</label>
+            <input class="input" name="amount" type="number" min="0" step="${step}" required inputmode="decimal" autofocus>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Date</label>
+            <input class="input" type="date" name="date" value="${DateService.todayIso()}">
+          </div>
+        </div>
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500">Money goes to</label>
+          <select class="select" name="other">${accountOptions}</select>
+        </div>
+        <div class="text-xs text-zinc-500 mb-4">Saved as income (category Dividends) and shown on the card.</div>
+        ${footer("Save")}
+      </form>`;
+      }
       const sell = opts.mode === "sell";
       const st = svc.stats(h);
-      const others = state.accounts.filter((a) => a.id !== h.accountId && a.type !== "invest" && !a.archived);
+      const k = HoldingService.kindOf(h);
+      const shares = h.kind === "shares";
       const price = st.price !== null ? this.#fx.fromMinor(st.price, h.currency) : "";
-      const step = CurrencyService.stepFor(h.currency);
       return `
       <form onsubmit="window.__app.submitTrade(event,'${Html.escape(h.id)}','${sell ? "sell" : "buy"}')" class="p-5 trade-form">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-lg font-semibold">${sell ? "Sell" : "Buy"} ${Html.escape(h.name)}</h3>
-          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+          <h3 class="text-lg font-semibold">${sell ? "Sell" : "Buy"} ${Html.escape(h.name)}</h3>${close}
         </div>
-        <div class="text-xs text-zinc-500 mb-3">You hold ${Number(st.qty).toLocaleString("en-IN", { maximumFractionDigits: 3 })} g \xB7 average cost ${this.#fx.formatMoney(st.avgCost, h.currency)} / g</div>
-        <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="text-xs text-zinc-500 mb-3">You hold ${HoldingService.qtyText(h, st.qty)} \xB7 average cost ${this.#fx.formatMoney(st.avgCost, h.currency)} / ${k.per}</div>
+        <div class="grid grid-cols-3 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Grams</label>
-            <input class="input" name="grams" type="number" min="0.001" step="0.001" ${sell ? `max="${st.qty}"` : ""} required inputmode="decimal" autofocus
+            <label class="text-xs text-zinc-500">${k.qtyLabel}</label>
+            <input class="input" name="grams" type="number" min="${shares ? "1" : "0.001"}" step="${shares ? "1" : "0.001"}" ${sell ? `max="${st.qty}"` : ""} required inputmode="decimal" autofocus
                    oninput="window.__app.updateTradeTotal(this.form)">
           </div>
           <div>
-            <label class="text-xs text-zinc-500">Price / g</label>
+            <label class="text-xs text-zinc-500">Price / ${k.per}</label>
             <input class="input" name="price" type="number" min="0" step="${step}" required inputmode="decimal" value="${price}"
                    oninput="window.__app.updateTradeTotal(this.form)">
           </div>
+          <div>
+            <label class="text-xs text-zinc-500">Charges</label>
+            <input class="input" name="charges" type="number" min="0" step="${step}" inputmode="decimal" placeholder="optional"
+                   oninput="window.__app.updateTradeTotal(this.form)">
+          </div>
         </div>
-        <div class="text-sm mb-3 trade-total" data-currency="${Html.escape(h.currency)}"></div>
+        <div class="text-sm mb-3 trade-total" data-currency="${Html.escape(h.currency)}" data-unit="${k.unit}" data-sell="${sell ? "1" : ""}"></div>
         <div class="grid grid-cols-2 gap-3 mb-4">
           <div>
             <label class="text-xs text-zinc-500">${sell ? "Money goes to" : "Pay from"}</label>
-            <select class="select" name="other">
-              ${others.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("")}
-            </select>
+            <select class="select" name="other">${accountOptions}</select>
           </div>
           <div>
             <label class="text-xs text-zinc-500">Date</label>
@@ -14731,11 +14813,7 @@ This replaces your current grouping.`
           </div>
         </div>
         <label class="flex items-center gap-2 text-sm mb-4"><input type="checkbox" name="setPrice" checked> Also use this as today\u2019s price</label>
-        <div class="flex items-center gap-2">
-          <div class="flex-1"></div>
-          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> ${sell ? "Sell" : "Buy"}</button>
-        </div>
+        ${footer(sell ? "Sell" : "Buy")}
       </form>`;
     }
   };
@@ -14759,6 +14837,7 @@ This replaces your current grouping.`
       const step = CurrencyService.stepFor(h.currency);
       const recent = (h.prices || []).slice(-5).reverse();
       const usePct = !(Number(h.alert?.targetPrice) > 0);
+      const per = HoldingService.kindOf(h).per;
       return `
       <form onsubmit="window.__app.submitHoldingPrice(event,'${Html.escape(h.id)}')" class="p-5 price-form">
         <div class="flex items-center justify-between mb-3">
@@ -14767,7 +14846,7 @@ This replaces your current grouping.`
         </div>
         <div class="grid grid-cols-2 gap-3 mb-2">
           <div>
-            <label class="text-xs text-zinc-500">Price / g</label>
+            <label class="text-xs text-zinc-500">Price / ${per}</label>
             <input class="input" name="price" type="number" min="0" step="${step}" inputmode="decimal" autofocus
                    value="${st.price !== null ? this.#fx.fromMinor(st.price, h.currency) : ""}">
           </div>
@@ -14782,13 +14861,13 @@ This replaces your current grouping.`
           <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="bell" style="width:14px;height:14px"></i> Gain alert</div>
           <div class="grid grid-cols-2 gap-2 mb-2">
             <label class="flex items-center gap-2 text-sm"><input type="radio" name="alertBy" value="pct" ${usePct ? "checked" : ""}> Gain %</label>
-            <label class="flex items-center gap-2 text-sm"><input type="radio" name="alertBy" value="price" ${usePct ? "" : "checked"}> Price / g</label>
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="alertBy" value="price" ${usePct ? "" : "checked"}> Price / ${per}</label>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <input class="input" name="gainPct" type="number" min="0" step="1" placeholder="e.g. 20" value="${Number(h.alert?.gainPct) || ""}">
-            <input class="input" name="targetPrice" type="number" min="0" step="${step}" placeholder="e.g. 8500" value="${h.alert?.targetPrice ? this.#fx.fromMinor(h.alert.targetPrice, h.currency) : ""}">
+            <input class="input" name="targetPrice" type="number" min="0" step="${step}" placeholder="target price" value="${h.alert?.targetPrice ? this.#fx.fromMinor(h.alert.targetPrice, h.currency) : ""}">
           </div>
-          <div class="text-xs text-zinc-500 mt-2">${st.avgCost ? `Your average cost is ${this.#fx.formatMoney(st.avgCost, h.currency)} / g. ` : ""}Leave both empty for no alert. It shows once when reached.</div>
+          <div class="text-xs text-zinc-500 mt-2">${st.avgCost ? `Your average cost is ${this.#fx.formatMoney(st.avgCost, h.currency)} / ${per}. ` : ""}Leave both empty for no alert. It shows once when reached.</div>
         </div>
 
         <div class="flex items-center gap-2">
@@ -23371,7 +23450,7 @@ Leave empty to use your own name.`,
       };
     }
     // ──────────────────────────────────────────────────────────────────────────
-    // Investments (gold and silver) — see HoldingService
+    // Investments (gold, silver and shares) — see HoldingService
     // ──────────────────────────────────────────────────────────────────────────
     /**
      * What an account is worth today: its balance, plus — for an investment
@@ -23392,10 +23471,18 @@ Leave empty to use your own name.`,
       const home = state.user.homeCurrency;
       return state.accounts.filter((a) => a.type === "invest" && AccountService.inTotals(a)).reduce((s, a) => s + this.#fx.convert(this.#holdings.adjustmentFor(a.id), a.currency, home), 0);
     }
-    /** Add-investment form: the metal changed → offer its purities. */
+    /** Add-investment form: gold / silver / shares changed → purities, or company and code. */
     onHoldingKindChange(radio) {
-      const sel = radio.form?.querySelector('select[name="purity"]');
-      if (sel) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+      const form = radio.form;
+      const k = HoldingService.KINDS[radio.value] || HoldingService.KINDS.gold;
+      const shares = radio.value === "shares";
+      const sel = form?.querySelector('select[name="purity"]');
+      if (sel && !shares) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+      for (const el of form.querySelectorAll("[data-kind-only]")) el.style.display = el.dataset.kindOnly === "shares" === shares ? "" : "none";
+      for (const el of form.querySelectorAll("[data-qty-label]")) el.textContent = k.qtyLabel;
+      for (const el of form.querySelectorAll("[data-per]")) el.textContent = k.per;
+      const qty = form.querySelector('[name="grams"]');
+      if (qty) qty.step = shares ? "1" : "0.001";
     }
     /** Add-investment form: "I already own it" / "Buying now". */
     onHoldingHowChange(radio) {
@@ -23403,13 +23490,16 @@ Leave empty to use your own name.`,
       for (const el of form.querySelectorAll("[data-how]")) el.style.display = el.dataset.how === radio.value ? "" : "none";
       for (const el of form.querySelectorAll("[data-how-label]")) el.style.display = el.dataset.howLabel === radio.value ? "" : "none";
     }
-    /** Buy/Sell form: "10 g × ₹7,200 = ₹72,000". */
+    /** Buy/Sell form: "10 g × ₹7,200 + ₹500 charges = ₹72,500". */
     updateTradeTotal(form) {
       const out = form?.querySelector(".trade-total");
       if (!out) return;
       const g = Number(form.querySelector('[name="grams"]').value), p = Number(form.querySelector('[name="price"]').value);
-      const cur = out.dataset.currency;
-      out.textContent = g > 0 && p > 0 ? `${g} g \xD7 ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)} = ${this.#fx.formatMoney(this.#fx.toMinor(g * p, cur), cur)}` : "";
+      const c = Number(form.querySelector('[name="charges"]')?.value) || 0;
+      const cur = out.dataset.currency, sell = !!out.dataset.sell;
+      const unit = out.dataset.unit === "g" ? " g" : g === 1 ? " share" : " shares";
+      const total = g * p + (sell ? -c : c);
+      out.textContent = g > 0 && p > 0 ? `${g}${unit} \xD7 ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)}${c ? ` ${sell ? "\u2212" : "+"} ${this.#fx.formatMoney(this.#fx.toMinor(c, cur), cur)} charges` : ""} = ${this.#fx.formatMoney(this.#fx.toMinor(total, cur), cur)}` : "";
     }
     /** The investment account a new holding goes in, made if needed. */
     #investAccount(chosen) {
@@ -23428,7 +23518,12 @@ Leave empty to use your own name.`,
         const h2 = this.#holdings.find(id);
         if (!h2) return;
         h2.name = String(fd.name || "").trim() || h2.name;
-        if (fd.purity) h2.purity = fd.purity;
+        if (fd.purity && h2.kind !== "shares") h2.purity = fd.purity;
+        if (h2.kind === "shares") {
+          const code = String(fd.code || "").trim().toUpperCase();
+          if (code) h2.code = code;
+          else delete h2.code;
+        }
         const q = Number(fd.openingQty), c = Number(fd.openingCost);
         h2.openingQty = q > 0 ? Math.round(q * 1e3) / 1e3 : 0;
         h2.openingCost = c > 0 ? this.#fx.toMinor(c, h2.currency) : 0;
@@ -23438,10 +23533,12 @@ Leave empty to use your own name.`,
         this.#toast.show("Saved");
         return this.#sync.schedulePush?.();
       }
+      const shares = fd.kind === "shares";
       const grams = Number(fd.grams);
-      if (!(grams > 0)) return this.#toast.show("Enter the grams");
+      if (shares && !String(fd.company || "").trim()) return this.#toast.show("Enter the company name");
+      if (!(grams > 0)) return this.#toast.show(shares ? "Enter how many shares" : "Enter the grams");
       const how = fd.how === "buy" ? "buy" : "own";
-      if (how === "buy" && !(Number(fd.price) > 0)) return this.#toast.show("Enter the price per gram");
+      if (how === "buy" && !(Number(fd.price) > 0)) return this.#toast.show(shares ? "Enter the price per share" : "Enter the price per gram");
       if (how === "buy" && !state.accounts.some((a) => a.id === fd.payFrom)) return this.#toast.show("Pick the account you paid from");
       const acc = this.#investAccount(fd.accountId);
       const cur = acc.currency;
@@ -23452,7 +23549,8 @@ Leave empty to use your own name.`,
         accountId: acc.id,
         kind: fd.kind,
         purity: fd.purity,
-        name: fd.name,
+        code: fd.code,
+        name: shares ? fd.company : fd.name,
         currency: cur,
         openingQty: how === "own" ? grams : 0,
         openingCost: how === "own" ? paid : 0,
@@ -23460,7 +23558,7 @@ Leave empty to use your own name.`,
         date,
         gainPct: Number(fd.gainPct) || 0
       }, IdGenerator.generate("hld"));
-      if (how === "buy") this.#recordTrade(h, "buy", { grams, price, other: fd.payFrom, date });
+      if (how === "buy") this.#recordTrade(h, "buy", { grams, price, other: fd.payFrom, date, charges: Number(fd.charges) > 0 ? this.#fx.toMinor(Number(fd.charges), cur) : 0 });
       this.#store.persist();
       this.closeModal();
       this.#render();
@@ -23472,34 +23570,75 @@ Leave empty to use your own name.`,
       const fd = Object.fromEntries(new FormData(event.target).entries());
       const h = this.#holdings.find(id);
       if (!h) return;
-      const grams = Number(fd.grams), priceMajor = Number(fd.price);
-      if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show("Enter grams and price per gram");
-      if (mode === "sell" && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show("That\u2019s more than you hold");
       if (!this.#store.getState().accounts.some((a) => a.id === fd.other)) return this.#toast.show("Pick an account");
+      if (mode === "dividend") {
+        if (!(Number(fd.amount) > 0)) return this.#toast.show("Enter the amount received");
+        this.#recordDividend(h, { amount: this.#fx.toMinor(Number(fd.amount), h.currency), other: fd.other, date: fd.date || DateService.todayIso() });
+        this.#store.persist();
+        this.closeModal();
+        this.#render();
+        this.#toast.show(`Dividend from ${h.name} saved`);
+        return this.#sync.schedulePush?.();
+      }
+      const grams = Number(fd.grams), priceMajor = Number(fd.price);
+      const per = HoldingService.kindOf(h).per;
+      if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show(`Enter how much and the price per ${per}`);
+      if (mode === "sell" && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show("That\u2019s more than you hold");
       const price = this.#fx.toMinor(priceMajor, h.currency);
+      const charges = Number(fd.charges) > 0 ? this.#fx.toMinor(Number(fd.charges), h.currency) : 0;
+      if (mode === "sell" && charges >= Math.round(grams * price)) return this.#toast.show("Charges are more than the sale");
       const date = fd.date || DateService.todayIso();
-      this.#recordTrade(h, mode === "sell" ? "sell" : "buy", { grams, price, other: fd.other, date });
+      this.#recordTrade(h, mode === "sell" ? "sell" : "buy", { grams, price, other: fd.other, date, charges });
       if (fd.setPrice) this.#holdings.setPrice(h, date, price);
       this.#store.persist();
       this.closeModal();
       this.#render();
-      this.#toast.show(`${mode === "sell" ? "Sold" : "Bought"} ${grams} g of ${h.name}`);
+      this.#toast.show(`${mode === "sell" ? "Sold" : "Bought"} ${HoldingService.qtyText(h, grams)} of ${h.name}`);
       this.#sync.schedulePush?.();
+    }
+    /** A dividend: income into `other`, tagged with the holding, category Dividends. */
+    #recordDividend(h, { amount, other, date }) {
+      const state = this.#store.getState();
+      const home = state.user.homeCurrency;
+      let cat = state.categories.find((c) => c.type === "income" && c.name.trim().toLowerCase() === "dividends");
+      if (!cat) cat = this.#categories.create({ name: "Dividends", type: "income", icon: "banknote", color: "#22c55e" });
+      state.transactions.push({
+        id: IdGenerator.generate("tx"),
+        accountId: other,
+        categoryId: cat.id,
+        amount,
+        currency: h.currency,
+        exchangeRate: (RATES[h.currency] || 1) / (RATES[home] || 1),
+        refAmount: this.#fx.convert(amount, h.currency, home),
+        payee: `${h.name} dividend`,
+        note: "",
+        date,
+        hijriDate: this.#hijri.toHijri(date),
+        paymentType: "transfer",
+        recordState: "cleared",
+        type: "income",
+        transferPairId: null,
+        splits: null,
+        tags: ["dividend"],
+        holdingId: h.id,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        addedBy: this.#sync.currentUser?.email || null
+      });
     }
     /**
      * A buy or sale as a transfer between `other` and the holding's account; the
      * investment-account leg carries holdingId · qty · unitPrice.
      */
-    #recordTrade(h, mode, { grams, price, other, date }) {
+    #recordTrade(h, mode, { grams, price, other, date, charges = 0 }) {
       const state = this.#store.getState();
-      const minor = Math.round(grams * price);
+      const minor = Math.round(grams * price) + (mode === "sell" ? -charges : charges);
       const home = state.user.homeCurrency;
       const sell = mode === "sell";
       const data = {
         accountId: sell ? h.accountId : other,
         transferToAccountId: sell ? other : h.accountId,
         payee: `${sell ? "Sell" : "Buy"} ${h.name}`,
-        note: `${grams} g @ ${this.#fx.formatMoney(price, h.currency)}/g`,
+        note: `${HoldingService.qtyText(h, grams)} @ ${this.#fx.formatMoney(price, h.currency)}/${HoldingService.kindOf(h).per}${charges ? ` \xB7 charges ${this.#fx.formatMoney(charges, h.currency)}` : ""}`,
         date
       };
       const legs = this.#buildTransferPair(data, {

@@ -2570,7 +2570,7 @@ export class Application {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Investments (gold and silver) — see HoldingService
+  // Investments (gold, silver and shares) — see HoldingService
   // ──────────────────────────────────────────────────────────────────────────
 
   /**
@@ -2595,10 +2595,18 @@ export class Application {
       .reduce((s, a) => s + this.#fx.convert(this.#holdings.adjustmentFor(a.id), a.currency, home), 0);
   }
 
-  /** Add-investment form: the metal changed → offer its purities. */
+  /** Add-investment form: gold / silver / shares changed → purities, or company and code. */
   onHoldingKindChange(radio) {
-    const sel = radio.form?.querySelector('select[name="purity"]');
-    if (sel) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+    const form = radio.form;
+    const k = HoldingService.KINDS[radio.value] || HoldingService.KINDS.gold;
+    const shares = radio.value === 'shares';
+    const sel = form?.querySelector('select[name="purity"]');
+    if (sel && !shares) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+    for (const el of form.querySelectorAll('[data-kind-only]')) el.style.display = (el.dataset.kindOnly === 'shares') === shares ? '' : 'none';
+    for (const el of form.querySelectorAll('[data-qty-label]')) el.textContent = k.qtyLabel;
+    for (const el of form.querySelectorAll('[data-per]')) el.textContent = k.per;
+    const qty = form.querySelector('[name="grams"]');
+    if (qty) qty.step = shares ? '1' : '0.001';
   }
 
   /** Add-investment form: "I already own it" / "Buying now". */
@@ -2608,13 +2616,18 @@ export class Application {
     for (const el of form.querySelectorAll('[data-how-label]')) el.style.display = el.dataset.howLabel === radio.value ? '' : 'none';
   }
 
-  /** Buy/Sell form: "10 g × ₹7,200 = ₹72,000". */
+  /** Buy/Sell form: "10 g × ₹7,200 + ₹500 charges = ₹72,500". */
   updateTradeTotal(form) {
     const out = form?.querySelector('.trade-total');
     if (!out) return;
     const g = Number(form.querySelector('[name="grams"]').value), p = Number(form.querySelector('[name="price"]').value);
-    const cur = out.dataset.currency;
-    out.textContent = g > 0 && p > 0 ? `${g} g × ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)} = ${this.#fx.formatMoney(this.#fx.toMinor(g * p, cur), cur)}` : '';
+    const c = Number(form.querySelector('[name="charges"]')?.value) || 0;
+    const cur = out.dataset.currency, sell = !!out.dataset.sell;
+    const unit = out.dataset.unit === 'g' ? ' g' : (g === 1 ? ' share' : ' shares');
+    const total = g * p + (sell ? -c : c);
+    out.textContent = g > 0 && p > 0
+      ? `${g}${unit} × ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)}${c ? ` ${sell ? '−' : '+'} ${this.#fx.formatMoney(this.#fx.toMinor(c, cur), cur)} charges` : ''} = ${this.#fx.formatMoney(this.#fx.toMinor(total, cur), cur)}`
+      : '';
   }
 
   /** The investment account a new holding goes in, made if needed. */
@@ -2635,7 +2648,8 @@ export class Application {
       const h = this.#holdings.find(id);
       if (!h) return;
       h.name = String(fd.name || '').trim() || h.name;
-      if (fd.purity) h.purity = fd.purity;
+      if (fd.purity && h.kind !== 'shares') h.purity = fd.purity;
+      if (h.kind === 'shares') { const code = String(fd.code || '').trim().toUpperCase(); if (code) h.code = code; else delete h.code; }
       const q = Number(fd.openingQty), c = Number(fd.openingCost);
       h.openingQty = q > 0 ? Math.round(q * 1000) / 1000 : 0;
       h.openingCost = c > 0 ? this.#fx.toMinor(c, h.currency) : 0;
@@ -2643,10 +2657,12 @@ export class Application {
       this.#toast.show('Saved');
       return this.#sync.schedulePush?.();
     }
+    const shares = fd.kind === 'shares';
     const grams = Number(fd.grams);
-    if (!(grams > 0)) return this.#toast.show('Enter the grams');
+    if (shares && !String(fd.company || '').trim()) return this.#toast.show('Enter the company name');
+    if (!(grams > 0)) return this.#toast.show(shares ? 'Enter how many shares' : 'Enter the grams');
     const how = fd.how === 'buy' ? 'buy' : 'own';
-    if (how === 'buy' && !(Number(fd.price) > 0)) return this.#toast.show('Enter the price per gram');
+    if (how === 'buy' && !(Number(fd.price) > 0)) return this.#toast.show(shares ? 'Enter the price per share' : 'Enter the price per gram');
     if (how === 'buy' && !state.accounts.some((a) => a.id === fd.payFrom)) return this.#toast.show('Pick the account you paid from');
     const acc = this.#investAccount(fd.accountId);
     const cur = acc.currency;
@@ -2654,11 +2670,11 @@ export class Application {
     const paid  = Number(fd.paid) > 0 ? this.#fx.toMinor(Number(fd.paid), cur) : Math.round(grams * price);
     const date  = how === 'buy' ? (fd.date || DateService.todayIso()) : DateService.todayIso();
     const h = this.#holdings.create({
-      accountId: acc.id, kind: fd.kind, purity: fd.purity, name: fd.name, currency: cur,
+      accountId: acc.id, kind: fd.kind, purity: fd.purity, code: fd.code, name: shares ? fd.company : fd.name, currency: cur,
       openingQty: how === 'own' ? grams : 0, openingCost: how === 'own' ? paid : 0,
       price: price || (how === 'own' && paid ? Math.round(paid / grams) : 0), date, gainPct: Number(fd.gainPct) || 0,
     }, IdGenerator.generate('hld'));
-    if (how === 'buy') this.#recordTrade(h, 'buy', { grams, price, other: fd.payFrom, date });
+    if (how === 'buy') this.#recordTrade(h, 'buy', { grams, price, other: fd.payFrom, date, charges: Number(fd.charges) > 0 ? this.#fx.toMinor(Number(fd.charges), cur) : 0 });
     this.#store.persist(); this.closeModal(); this.#render();
     this.#toast.show(`${h.name} added`);
     this.#sync.schedulePush?.();
@@ -2669,31 +2685,59 @@ export class Application {
     const fd = Object.fromEntries(new FormData(event.target).entries());
     const h = this.#holdings.find(id);
     if (!h) return;
-    const grams = Number(fd.grams), priceMajor = Number(fd.price);
-    if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show('Enter grams and price per gram');
-    if (mode === 'sell' && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show('That’s more than you hold');
     if (!this.#store.getState().accounts.some((a) => a.id === fd.other)) return this.#toast.show('Pick an account');
+    if (mode === 'dividend') {
+      if (!(Number(fd.amount) > 0)) return this.#toast.show('Enter the amount received');
+      this.#recordDividend(h, { amount: this.#fx.toMinor(Number(fd.amount), h.currency), other: fd.other, date: fd.date || DateService.todayIso() });
+      this.#store.persist(); this.closeModal(); this.#render();
+      this.#toast.show(`Dividend from ${h.name} saved`);
+      return this.#sync.schedulePush?.();
+    }
+    const grams = Number(fd.grams), priceMajor = Number(fd.price);
+    const per = HoldingService.kindOf(h).per;
+    if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show(`Enter how much and the price per ${per}`);
+    if (mode === 'sell' && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show('That’s more than you hold');
     const price = this.#fx.toMinor(priceMajor, h.currency);
+    const charges = Number(fd.charges) > 0 ? this.#fx.toMinor(Number(fd.charges), h.currency) : 0;
+    if (mode === 'sell' && charges >= Math.round(grams * price)) return this.#toast.show('Charges are more than the sale');
     const date = fd.date || DateService.todayIso();
-    this.#recordTrade(h, mode === 'sell' ? 'sell' : 'buy', { grams, price, other: fd.other, date });
+    this.#recordTrade(h, mode === 'sell' ? 'sell' : 'buy', { grams, price, other: fd.other, date, charges });
     if (fd.setPrice) this.#holdings.setPrice(h, date, price);
     this.#store.persist(); this.closeModal(); this.#render();
-    this.#toast.show(`${mode === 'sell' ? 'Sold' : 'Bought'} ${grams} g of ${h.name}`);
+    this.#toast.show(`${mode === 'sell' ? 'Sold' : 'Bought'} ${HoldingService.qtyText(h, grams)} of ${h.name}`);
     this.#sync.schedulePush?.();
+  }
+
+  /** A dividend: income into `other`, tagged with the holding, category Dividends. */
+  #recordDividend(h, { amount, other, date }) {
+    const state = this.#store.getState();
+    const home = state.user.homeCurrency;
+    let cat = state.categories.find((c) => c.type === 'income' && c.name.trim().toLowerCase() === 'dividends');
+    if (!cat) cat = this.#categories.create({ name: 'Dividends', type: 'income', icon: 'banknote', color: '#22c55e' });
+    state.transactions.push({
+      id: IdGenerator.generate('tx'), accountId: other, categoryId: cat.id,
+      amount, currency: h.currency, exchangeRate: (RATES[h.currency] || 1) / (RATES[home] || 1),
+      refAmount: this.#fx.convert(amount, h.currency, home),
+      payee: `${h.name} dividend`, note: '', date, hijriDate: this.#hijri.toHijri(date),
+      paymentType: 'transfer', recordState: 'cleared', type: 'income',
+      transferPairId: null, splits: null, tags: ['dividend'], holdingId: h.id,
+      createdAt: new Date().toISOString(), addedBy: this.#sync.currentUser?.email || null,
+    });
   }
 
   /**
    * A buy or sale as a transfer between `other` and the holding's account; the
    * investment-account leg carries holdingId · qty · unitPrice.
    */
-  #recordTrade(h, mode, { grams, price, other, date }) {
+  #recordTrade(h, mode, { grams, price, other, date, charges = 0 }) {
     const state = this.#store.getState();
-    const minor = Math.round(grams * price);
+    const minor = Math.round(grams * price) + (mode === 'sell' ? -charges : charges);
     const home = state.user.homeCurrency;
     const sell = mode === 'sell';
     const data = {
       accountId: sell ? h.accountId : other, transferToAccountId: sell ? other : h.accountId,
-      payee: `${sell ? 'Sell' : 'Buy'} ${h.name}`, note: `${grams} g @ ${this.#fx.formatMoney(price, h.currency)}/g`, date,
+      payee: `${sell ? 'Sell' : 'Buy'} ${h.name}`,
+      note: `${HoldingService.qtyText(h, grams)} @ ${this.#fx.formatMoney(price, h.currency)}/${HoldingService.kindOf(h).per}${charges ? ` · charges ${this.#fx.formatMoney(charges, h.currency)}` : ''}`, date,
     };
     const legs = this.#buildTransferPair(data, {
       minor, currency: h.currency, exchRate: (RATES[h.currency] || 1) / (RATES[home] || 1),

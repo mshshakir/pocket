@@ -1,20 +1,23 @@
 /**
- * HoldingService — investments you own inside an Investment account, starting
- * with gold and silver, counted in grams.
+ * HoldingService — investments you own inside an Investment account: gold and
+ * silver (counted in grams) and shares (counted in shares).
  *
  *   state.holdings = [{
- *     id, accountId, name, kind: 'gold'|'silver', purity: '24k'|'22k'|'18k'|'999'|'925',
- *     unit: 'g', currency,
+ *     id, accountId, name, kind: 'gold'|'silver'|'shares',
+ *     purity?: '24k'|'22k'|'18k'|'999'|'925'   (metals),  code?: 'TCS'   (shares),
+ *     unit: 'g'|'shares', currency,
  *     openingQty, openingCost,          // "I already own this": no money moved
- *     prices: [{ date, price }],        // per gram, oldest first
+ *     prices: [{ date, price }],        // per gram / per share, oldest first
  *     alert: { gainPct?, targetPrice?, ackTarget? },
  *     note?, archived?
  *   }]
  * Synced with the book as top-level data (bookExtra), no migration.
  *
  * Buying and selling are ordinary transfers. The leg on the investment
- * account carries   holdingId · qty (grams; + buy, − sell) · unitPrice.
- * So deleting that transfer undoes the buy, and the ledger is untouched.
+ * account carries   holdingId · qty (+ buy, − sell) · unitPrice. Charges
+ * (brokerage, making) are in the amount: a buy costs qty × price + charges,
+ * a sale brings in qty × price − charges. Deleting the transfer undoes it.
+ * Dividends are income entries carrying holdingId (and no qty).
  *
  * Worth and gain (average-cost method):
  *   qty        opening grams + Σ qty on tagged entries
@@ -33,9 +36,19 @@ import { LedgerMath } from './LedgerMath.js';
 export class HoldingService {
   /** Metals and their purities, in the order offered. */
   static KINDS = Object.freeze({
-    gold:   { label: 'Gold',   icon: 'gem',    purities: ['24k', '22k', '18k'] },
-    silver: { label: 'Silver', icon: 'circle', purities: ['999', '925'] },
+    gold:   { label: 'Gold',   icon: 'gem',        unit: 'g',      per: 'g',     qtyLabel: 'Grams',  purities: ['24k', '22k', '18k'] },
+    silver: { label: 'Silver', icon: 'circle',     unit: 'g',      per: 'g',     qtyLabel: 'Grams',  purities: ['999', '925'] },
+    shares: { label: 'Shares', icon: 'briefcase',  unit: 'shares', per: 'share', qtyLabel: 'Shares', purities: [] },
   });
+
+  /** @param {object} h  @returns {object} its kind's settings */
+  static kindOf(h) { return HoldingService.KINDS[h?.kind] || HoldingService.KINDS.gold; }
+
+  /** "12.5 g" · "40 shares" */
+  static qtyText(h, q) {
+    const n = Number(q).toLocaleString('en-IN', { maximumFractionDigits: 3 });
+    return HoldingService.kindOf(h).unit === 'g' ? `${n} g` : `${n} ${Number(q) === 1 ? 'share' : 'shares'}`;
+  }
 
   /** Most prices kept per holding (oldest dropped). */
   static MAX_PRICES = 400;
@@ -59,14 +72,28 @@ export class HoldingService {
   /** @param {string} id */
   find(id) { return (this.#state().holdings || []).find((h) => h.id === id); }
 
-  /** The entries (transfer legs) that bought or sold a holding, oldest first. */
+  /** The entries (transfer legs with a quantity) that bought or sold a holding, oldest first. */
   entries(id) {
     return (this.#state().transactions || [])
-      .filter((t) => t.holdingId === id && Number.isFinite(Number(t.qty)))
+      .filter((t) => t.holdingId === id && t.type === 'transfer' && t.qty != null && Number.isFinite(Number(t.qty)) && Number(t.qty) !== 0)
       .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   }
 
-  /** The latest price per gram, or null: { date, price }. */
+  /** Dividends received on a holding (income entries carrying its id), its currency. */
+  dividends(id) {
+    return Math.round((this.#state().transactions || [])
+      .filter((t) => t.holdingId === id && t.type === 'income')
+      .reduce((s, t) => s + (Number(t.amount) || 0), 0));
+  }
+
+  /** Dividend entries of a holding, oldest first. */
+  dividendEntries(id) {
+    return (this.#state().transactions || [])
+      .filter((t) => t.holdingId === id && t.type === 'income')
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  }
+
+  /** The latest price per unit, or null: { date, price }. */
   static latestPrice(h) {
     const p = Array.isArray(h?.prices) ? h.prices : [];
     return p.length ? p[p.length - 1] : null;
@@ -108,7 +135,7 @@ export class HoldingService {
     const target = HoldingService.targetPrice(h, avgCost);
     const reached = target !== null && price !== null && qty > 0 && price >= target;
     return {
-      qty, cost, avgCost, price, priceDate: last?.date ?? null, worth, gain,
+      qty, cost, avgCost, price, priceDate: last?.date ?? null, worth, gain, dividends: this.dividends(h.id),
       gainPct: cost > 0 ? Math.round((1000 * gain) / cost) / 10 : null,
       realised: Math.round(realised), ledgerNet: Math.round(ledgerNet),
       target, reached, alertNew: reached && h.alert?.ackTarget !== target,
@@ -167,9 +194,13 @@ export class HoldingService {
     const state = this.#state();
     if (!Array.isArray(state.holdings)) state.holdings = [];
     const kind = HoldingService.KINDS[d.kind] ? d.kind : 'gold';
+    const k = HoldingService.KINDS[kind];
+    const code = kind === 'shares' ? String(d.code || '').trim().toUpperCase() : '';
     const h = {
-      id, accountId: d.accountId, kind, purity: d.purity || HoldingService.KINDS[kind].purities[0],
-      name: (d.name || '').trim() || HoldingService.defaultName(kind, d.purity), unit: 'g', currency: d.currency,
+      id, accountId: d.accountId, kind,
+      ...(k.purities.length ? { purity: d.purity || k.purities[0] } : {}),
+      ...(code ? { code } : {}),
+      name: (d.name || '').trim() || HoldingService.defaultName(kind, d.purity, code), unit: k.unit, currency: d.currency,
       openingQty: Number(d.openingQty) > 0 ? HoldingService.#grams(d.openingQty) : 0,
       openingCost: Number(d.openingCost) > 0 ? Math.round(d.openingCost) : 0,
       prices: Number(d.price) > 0 ? [{ date: d.date, price: Math.round(d.price) }] : [],
@@ -202,8 +233,9 @@ export class HoldingService {
     h.alert = { ...(h.alert || {}), ackTarget: st.target };
   }
 
-  /** e.g. "24k gold", "999 silver". */
-  static defaultName(kind, purity) {
+  /** e.g. "24k gold", "999 silver", "TCS shares". */
+  static defaultName(kind, purity, code = '') {
+    if (kind === 'shares') return code ? `${code} shares` : 'Shares';
     return `${purity || HoldingService.KINDS[kind]?.purities[0] || ''} ${kind === 'silver' ? 'silver' : 'gold'}`.trim();
   }
 

@@ -12,6 +12,9 @@
  *   A5  alert reached shows on the tab and the Dashboard; Got it hides it
  *   A6  the tab is in the menu; deleting a buy from History undoes it; help explains it
  *   A7  silver works the same, with 999/925
+ *   S1  shares: charges count in cost and come off a sale; dividends tracked apart from trades
+ *   S2  in the app: add shares (company, code), buy with charges, dividend → income in Dividends
+ *   S3  shares wording only: per share, no other investment words on the tab
  *
  * Run: node src/__smoke__/investments.smoke.mjs
  */
@@ -190,6 +193,78 @@ const fill = (f, values) => { for (const [k, v] of Object.entries(values)) { con
   await wait(10);
   ok('A7 the tab groups Gold and Silver', !!view().querySelector('.inv-group[data-kind="gold"]') && !!view().querySelector('.inv-group[data-kind="silver"]'));
   ok('A7 no piggy-bank icon anywhere', !/piggy/.test(bundleSrc));
+}
+
+{
+  // S1 — shares maths
+  const state = {
+    user: { homeCurrency: 'INR' },
+    accounts: [{ id: 'inv', type: 'invest', currency: 'INR' }],
+    holdings: [{ id: 'tcs', accountId: 'inv', kind: 'shares', code: 'TCS', name: 'Tata Consultancy Services', unit: 'shares', currency: 'INR', prices: [{ date: '2026-11-10', price: 420000 }] }],
+    transactions: [
+      { id: 'b', type: 'transfer', transferDir: 'in', accountId: 'inv', amount: 2000000 + 2000, currency: 'INR', date: '2026-11-01', holdingId: 'tcs', qty: 5, unitPrice: 400000 },
+      { id: 's', type: 'transfer', transferDir: 'out', accountId: 'inv', amount: 860000 - 1000, currency: 'INR', date: '2026-11-08', holdingId: 'tcs', qty: -2, unitPrice: 430000 },
+      { id: 'd', type: 'income', accountId: 'bank', amount: 15000, currency: 'INR', date: '2026-11-09', holdingId: 'tcs', qty: null },
+    ],
+  };
+  const svc = new HoldingService({ state: () => state, fx });
+  const st = svc.stats(state.holdings[0]);
+  // cost 20,020 for 5 → avg 4,004; sell 2 → cost out 8,008; proceeds 8,590 → realised 582
+  ok('S1 3 shares left; average cost ₹4,004 (charges included)', st.qty === 3 && st.avgCost === 400400, `${st.qty} ${st.avgCost}`);
+  ok('S1 realised ₹582 after ₹10 charges on the sale', st.realised === 58200, String(st.realised));
+  ok('S1 the dividend (qty null after sync) isn\'t a trade; ₹150 received', svc.entries('tcs').length === 2 && st.dividends === 15000);
+  ok('S1 worth 3 × ₹4,200 = ₹12,600; "3 shares" / "1 share"', st.worth === 1260000 && HoldingService.qtyText(state.holdings[0], 3) === '3 shares' && HoldingService.qtyText(state.holdings[0], 1) === '1 share');
+}
+{
+  // S2 — shares in the app
+  app.openModal('investment');
+  await wait(10);
+  let f = form();
+  const sh = f.querySelector('[name="kind"][value="shares"]');
+  sh.checked = true; app.onHoldingKindChange(sh);
+  ok('S2 Shares shows Company and Code, hides purity; labels say Shares and / share',
+    f.querySelector('[data-kind-only="shares"]').style.display === '' && f.querySelector('[data-kind-only="metal"]').style.display === 'none'
+    && f.querySelector('[data-qty-label]').textContent === 'Shares' && [...f.querySelectorAll('[data-per]')].every((e) => e.textContent === 'share'));
+  const how = f.querySelector('[name="how"][value="buy"]');
+  how.checked = true; app.onHoldingHowChange(how);
+  fill(f, { company: '', grams: '10', price: '4000', payFrom: 'bank' });
+  const n0 = st().holdings.length;
+  app.submitInvestment({ preventDefault() {}, target: f }, '');
+  await wait(10);
+  ok('S2 a company name is needed', st().holdings.length === n0);
+  fill(f, { company: 'Tata Consultancy Services', code: 'tcs', grams: '10', price: '4000', charges: '20', payFrom: 'bank' });
+  app.submitInvestment({ preventDefault() {}, target: f }, '');
+  await wait(10);
+  const h = st().holdings.find((x) => x.kind === 'shares');
+  const leg = st().transactions.find((t) => t.holdingId === h?.id && t.type === 'transfer' && t.qty > 0);
+  ok('S2 TCS shares added; bought 10 for ₹40,020 (₹20 charges)', h && h.code === 'TCS' && h.name === 'Tata Consultancy Services' && h.unit === 'shares' && leg?.amount === 4002000 && leg.qty === 10);
+  ok('S2 average cost ₹4,002 / share', app.holdings.stats(h).avgCost === 400200);
+  app.openModal('trade', { id: h.id, mode: 'dividend' });
+  await wait(10);
+  f = form();
+  fill(f, { amount: '250', other: 'bank' });
+  app.submitTrade({ preventDefault() {}, target: f }, h.id, 'dividend');
+  await wait(10);
+  const div = st().transactions.find((t) => t.holdingId === h.id && t.type === 'income');
+  const cat = st().categories.find((c) => c.id === div?.categoryId);
+  ok('S2 dividend: ₹250 income into HDFC, category Dividends', div && div.amount === 25000 && div.accountId === 'bank' && cat?.name === 'Dividends' && cat.type === 'income');
+  app.openModal('trade', { id: h.id, mode: 'sell' });
+  await wait(10);
+  f = form();
+  fill(f, { grams: '4', price: '4500', charges: '10', other: 'bank', setPrice: true });
+  app.updateTradeTotal(f);
+  ok('S2 sell total: 4 shares × ₹4,500 − ₹10 charges = ₹17,990', /4 shares × .*4,500.* − .*10.* charges = .*17,990/.test(f.querySelector('.trade-total').textContent), f.querySelector('.trade-total').textContent);
+  app.submitTrade({ preventDefault() {}, target: f }, h.id, 'sell');
+  await wait(10);
+  const hs = app.holdings.stats(h);
+  ok('S2 6 shares left; realised ₹1,982; dividends ₹250', hs.qty === 6 && hs.realised === 198200 && hs.dividends === 25000, JSON.stringify({ q: hs.qty, r: hs.realised, d: hs.dividends }));
+  app.navigate('investments');
+  await wait(10);
+  const card = view().querySelector(`[data-holding="${h.id}"]`);
+  ok('S2 card: "6 shares · TCS", price / share, dividends received, a Dividend button', /6 shares · TCS/.test(card.querySelector('.inv-qty').textContent) && /\/ share/.test(card.querySelector('.inv-price').textContent) && /Dividends received/.test(card.textContent) && !!card.querySelector('.inv-dividend-btn'));
+  ok('S2 History lists the dividend', /Dividend/.test(card.querySelector('details').textContent));
+  const text = view().textContent;
+  ok('S3 the tab says shares only — no other investment words', /Shares/.test(text) && !/stock|mutual|equity|\bindex\b|market|exchange|nifty|sensex/i.test(text));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

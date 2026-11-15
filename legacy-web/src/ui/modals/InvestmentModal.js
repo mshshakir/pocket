@@ -1,10 +1,11 @@
 /**
- * InvestmentModal — add gold or silver you own (or are buying now), or edit one.
+ * InvestmentModal — add gold, silver or shares you own (or are buying now), or edit one.
  *
- * New: metal, purity, name, where it's kept, then either
- *   "I already own it" — grams, what you paid (optional), today's price, or
- *   "Buying now"       — grams, price per gram, pay from (a transfer).
- * Edit: name, what you already owned before using Pocket, gain alert, remove.
+ * New: what it is (gold / silver / shares), purity or company and code,
+ * where it's kept, then either
+ *   "I already own it" — how much, what you paid (optional), today's price, or
+ *   "Buying now"       — how much, price each, charges, pay from (a transfer).
+ * Edit: name, what you already owned before using Pocket, remove.
  *
  * opts: { id?: string }
  */
@@ -47,10 +48,10 @@ export class InvestmentModal {
     const home = state.user.homeCurrency || 'INR';
     const step = CurrencyService.stepFor(invest[0]?.currency || home);
     const today = DateService.todayIso();
-    const metal = (k, label) => `
+    const kindCard = (k) => `
       <label class="cursor-pointer">
         <input type="radio" name="kind" value="${k}" ${k === 'gold' ? 'checked' : ''} class="peer sr-only" onchange="window.__app.onHoldingKindChange(this)">
-        <span class="btn btn-outline w-full justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900"><i data-lucide="${HoldingService.KINDS[k].icon}"></i> ${label}</span>
+        <span class="btn btn-outline w-full justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900"><i data-lucide="${HoldingService.KINDS[k].icon}"></i> ${HoldingService.KINDS[k].label}</span>
       </label>`;
     const how = (k, label) => `
       <label class="cursor-pointer">
@@ -59,9 +60,9 @@ export class InvestmentModal {
       </label>`;
     return `
       <form onsubmit="window.__app.submitInvestment(event,'')" class="p-5 investment-form">
-        ${this.#head('Add gold or silver')}
-        <div class="grid grid-cols-2 gap-2 mb-3">${metal('gold', 'Gold')}${metal('silver', 'Silver')}</div>
-        <div class="grid grid-cols-2 gap-3 mb-3">
+        ${this.#head('Add an investment')}
+        <div class="grid grid-cols-3 gap-2 mb-3">${kindCard('gold')}${kindCard('silver')}${kindCard('shares')}</div>
+        <div class="grid grid-cols-2 gap-3 mb-3" data-kind-only="metal">
           <div>
             <label class="text-xs text-zinc-500">Purity</label>
             <select class="select" name="purity">${InvestmentModal.purityOptions('gold')}</select>
@@ -69,6 +70,16 @@ export class InvestmentModal {
           <div>
             <label class="text-xs text-zinc-500">Name (optional)</label>
             <input class="input" name="name" placeholder="e.g. Wedding set">
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-3 mb-3" data-kind-only="shares" style="display:none">
+          <div class="col-span-2">
+            <label class="text-xs text-zinc-500">Company</label>
+            <input class="input" name="company" placeholder="e.g. Tata Consultancy Services">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Code (optional)</label>
+            <input class="input" name="code" placeholder="e.g. TCS" style="text-transform:uppercase">
           </div>
         </div>
         <div class="mb-3">
@@ -83,12 +94,12 @@ export class InvestmentModal {
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Grams</label>
+            <label class="text-xs text-zinc-500" data-qty-label>Grams</label>
             <input class="input" name="grams" type="number" min="0" step="0.001" required inputmode="decimal">
           </div>
           <div>
-            <label class="text-xs text-zinc-500" data-how-label="own">Today's price / g</label>
-            <label class="text-xs text-zinc-500" data-how-label="buy" style="display:none">Price paid / g</label>
+            <label class="text-xs text-zinc-500" data-how-label="own">Today's price / <span data-per>g</span></label>
+            <label class="text-xs text-zinc-500" data-how-label="buy" style="display:none">Price paid / <span data-per>g</span></label>
             <input class="input" name="price" type="number" min="0" step="${step}" inputmode="decimal">
           </div>
         </div>
@@ -96,17 +107,24 @@ export class InvestmentModal {
           <label class="text-xs text-zinc-500">What you paid in all (optional)</label>
           <input class="input" name="paid" type="number" min="0" step="${step}" inputmode="decimal" placeholder="Leave empty to use today's price">
         </div>
-        <div data-how="buy" class="grid grid-cols-2 gap-3 mb-3" style="display:none">
-          <div>
-            <label class="text-xs text-zinc-500">Pay from</label>
-            <select class="select" name="payFrom">
-              ${payFrom.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? 'selected' : ''}>${Html.escape(a.name)}</option>`).join('')}
-            </select>
+        <div data-how="buy" class="mb-3" style="display:none">
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="text-xs text-zinc-500">Charges</label>
+              <input class="input" name="charges" type="number" min="0" step="${step}" inputmode="decimal" placeholder="optional">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Pay from</label>
+              <select class="select" name="payFrom">
+                ${payFrom.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? 'selected' : ''}>${Html.escape(a.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Date</label>
+              <input class="input" type="date" name="date" value="${today}">
+            </div>
           </div>
-          <div>
-            <label class="text-xs text-zinc-500">Date</label>
-            <input class="input" type="date" name="date" value="${today}">
-          </div>
+          <div class="text-xs text-zinc-500 mt-1">Charges: brokerage, making charges or fees — added to what it cost you.</div>
         </div>
 
         <div class="mb-4">
@@ -124,31 +142,34 @@ export class InvestmentModal {
 
   #edit(h) {
     const step = CurrencyService.stepFor(h.currency);
+    const k = HoldingService.kindOf(h);
+    const shares = h.kind === 'shares';
     return `
       <form onsubmit="window.__app.submitInvestment(event,'${Html.escape(h.id)}')" class="p-5 investment-form">
         ${this.#head(`Edit ${Html.escape(h.name)}`)}
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Name</label>
+            <label class="text-xs text-zinc-500">${shares ? 'Company' : 'Name'}</label>
             <input class="input" name="name" value="${Html.escape(h.name)}" required>
           </div>
           <div>
-            <label class="text-xs text-zinc-500">Purity</label>
-            <select class="select" name="purity">${InvestmentModal.purityOptions(h.kind, h.purity)}</select>
+            ${shares
+              ? `<label class="text-xs text-zinc-500">Code (optional)</label><input class="input" name="code" value="${Html.escape(h.code || '')}" style="text-transform:uppercase">`
+              : `<label class="text-xs text-zinc-500">Purity</label><select class="select" name="purity">${InvestmentModal.purityOptions(h.kind, h.purity)}</select>`}
           </div>
         </div>
         <div class="text-xs text-zinc-500 mb-1">Owned before you started using Pocket</div>
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Grams</label>
-            <input class="input" name="openingQty" type="number" min="0" step="0.001" value="${Number(h.openingQty) || ''}">
+            <label class="text-xs text-zinc-500">${k.qtyLabel}</label>
+            <input class="input" name="openingQty" type="number" min="0" step="${shares ? '1' : '0.001'}" value="${Number(h.openingQty) || ''}">
           </div>
           <div>
             <label class="text-xs text-zinc-500">What you paid in all</label>
             <input class="input" name="openingCost" type="number" min="0" step="${step}" value="${h.openingCost ? this.#fx.fromMinor(h.openingCost, h.currency) : ''}">
           </div>
         </div>
-        <div class="text-xs text-zinc-500 mb-3">Buying and selling are in History on the card; delete an entry there to undo it.</div>
+        <div class="text-xs text-zinc-500 mb-3">Buying, selling${shares ? ' and dividends' : ''} are in History on the card; delete an entry there to undo it.</div>
         <div class="flex items-center gap-2">
           <button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.removeInvestment('${Html.escape(h.id)}')"><i data-lucide="trash-2"></i> Remove</button>
           <div class="flex-1"></div>
