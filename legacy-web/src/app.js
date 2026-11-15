@@ -89,6 +89,8 @@ import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
 import { HelpModal }        from './ui/modals/HelpModal.js';
 import { FeedbackModal }    from './ui/modals/FeedbackModal.js';
 import { ReimbursementModal } from './ui/modals/ReimbursementModal.js';
+import { PauseRepeatModal } from './ui/modals/PauseRepeatModal.js';
+import { RepeatPause } from './domain/services/RepeatPause.js';
 import { ReimbursementService } from './domain/services/ReimbursementService.js';
 import { HelpGuide }        from './ui/components/HelpGuide.js';
 import { SortableList }     from './ui/components/SortableList.js';
@@ -399,6 +401,7 @@ export class Application {
     this.#modal.register('trade',        new TradeModal({ holdings: () => this.#holdings }));
     this.#modal.register('holdingPrice', new HoldingPriceModal({ holdings: () => this.#holdings }));
     this.#modal.register('reimbursement', new ReimbursementModal());
+    this.#modal.register('pauseRepeat', new PauseRepeatModal());
     this.#modal.register('feedback',     new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
     // Drag-to-reorder lists (Accounts → Reorder); one listener for every render.
     new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
@@ -587,7 +590,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'categoryMerge', 'investment', 'trade', 'holdingPrice', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
+    'account', 'budget', 'category', 'categoryMerge', 'investment', 'trade', 'holdingPrice', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'pauseRepeat', 'reimbursement', 'payBill', 'addRegular', 'habit',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -2058,6 +2061,13 @@ export class Application {
     // drop a category that doesn't belong to the new type.
     this.#txModal?.captureForm?.();
     this.#txModal?.setType?.(type);
+    this.#refreshModal({ capture: false });
+  }
+
+  /** New-entry form: "Make this a bill" (repeats monthly) or "Not a bill". Keeps what's typed. */
+  makeTxBill(on = true) {
+    this.#txModal?.captureForm?.();
+    this.#txModal?.setBill?.(on !== false);
     this.#refreshModal({ capture: false });
   }
 
@@ -4470,6 +4480,44 @@ export class Application {
    * Stops a repeat after today: its To date becomes today, so no more copies
    * are made (nor bills asked for). Copies already made stay. Undo restores it.
    */
+  // ── Pause a repeating entry or bill ───────────────────────────────────
+
+  submitRepeatPause(event, id) {
+    event.preventDefault();
+    const t = this.#store.getState().transactions.find((x) => x.id === id && x.recurring);
+    if (!t) return;
+    const fd = new FormData(event.target);
+    const from = String(fd.get('from') || DateService.todayIso());
+    const len = String(fd.get('length') || '1');
+    let to = null;
+    if (len === 'date') {
+      to = String(fd.get('to') || '');
+      if (!to || to < from) return this.#toast.show('Pick the last paused day (on or after the start)');
+    } else if (len !== 'open') {
+      to = PauseRepeatModal.monthsFrom(from, Number(len) || 1);
+    }
+    t.pauses = RepeatPause.withPause(t, from, to);
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    const name = BillService.nameOf(t, this.#store.getState());
+    this.#toast.show(to ? `${name} paused until ${DeliveryPlan.shortDate(to)}` : `${name} paused until you resume`);
+  }
+
+  /** End the pause now (a pause not started yet is removed). */
+  resumeRepeat(id) {
+    const t = this.#store.getState().transactions.find((x) => x.id === id && x.recurring);
+    if (!t) return;
+    t.pauses = RepeatPause.resumed(t, DateService.todayIso());
+    this.#recurring.process();
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} repeats again`);
+  }
+
   stopRepeating(templateId) {
     const t = this.#store.getState().transactions.find((x) => x.id === templateId);
     if (!t?.recurring) return;

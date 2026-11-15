@@ -48,7 +48,7 @@ export class HelpGuide {
       intro: 'Everything that repeats, in one place.',
       points: [
         '<b>Calendar</b> — each day at a glance: bills due, deliveries, and what you logged. Tap a day for details.',
-        '<b>Bills</b> — repeating payments like rent or subscriptions. A bill that asks first (like electricity) waits for you to enter the amount. Pay, Edit or Stop from here.',
+        '<b>Bills</b> — repeating payments like rent or subscriptions. A bill that asks first (like electricity) waits for you to enter the amount. Pay, Edit, Pause or Stop from here. <b>Pause</b> skips the dates in between — for a month or more, until a date, or until you resume — with no entries or reminders.',
         '<b>Deliveries</b> — things you pay for later, like milk or the newspaper. Mark the days, pause when you’re away, and pay the vendor what’s owed.',
         '<b>Shortcuts</b> — one-tap entries for things you buy often. They show as chips when you add an expense.',
         'Tap <b>Add</b> to make any of these.',

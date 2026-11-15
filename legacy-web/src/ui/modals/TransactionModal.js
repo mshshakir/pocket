@@ -118,7 +118,7 @@ export class TransactionModal {
       }
     }
 
-    this.#draft.recurring = form.elements?.recurringEnabled?.checked
+    this.#draft.recurring = fd.get('recurringEnabled')
       ? {
           rule:     form.elements.recurringRule?.value            || 'monthly',
           interval: Number(form.elements.recurringInterval?.value) || 1,
@@ -135,6 +135,12 @@ export class TransactionModal {
       this.#draft.claimName = str('claimName');
       this.#draft.claimRef = str('claimRef');
     }
+  }
+
+  /** Turn the entry being added into a bill (repeats monthly), or back. */
+  setBill(on) {
+    this.#draft.recurring = on ? { rule: 'monthly', interval: 1, until: null } : null;
+    if (!on) this.#draft.askFirst = false;
   }
 
   /** Discard the captured draft (used when the modal opens fresh). */
@@ -473,7 +479,7 @@ export class TransactionModal {
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
             <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
             More options
-            <span class="text-xs font-normal text-zinc-400">${isTransfer ? 'payee' : isBill ? 'repeat' : 'repeat, payee'}</span>
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? 'payee' : isBill ? 'repeat' : 'payee, bill'}</span>
           </summary>
           <div class="pt-2">
             ${!isTransfer ? this.#recurringSection(data) : ''}
@@ -827,6 +833,7 @@ export class TransactionModal {
           <div class="font-medium">Repeats ${Html.escape(TransactionModal.everyLabel(src.recurring))}</div>
           <div class="text-xs text-zinc-500">From ${Html.escape(TransactionModal.day(src.date))}${until ? ` to ${Html.escape(TransactionModal.day(until))}` : ' · no end date'}</div>
         </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.closeModal();window.__app.openModal('pauseRepeat',{id:'${Html.js(src.id)}'})">Pause</button>
         <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.stopRepeating('${Html.escape(src.id)}')">Stop repeating</button>
       </div>`;
       }
@@ -835,15 +842,23 @@ export class TransactionModal {
     const rule = data.recurring?.rule || 'monthly';
     const units = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' };
     return `
+      ${hasRecurring ? '' : `
+      <div class="text-xs text-zinc-500 mb-3 tx-regular-links">
+        Rent, a subscription, school fees? <button type="button" class="underline text-zinc-700 dark:text-zinc-200" onclick="window.__app.makeTxBill()">Make this a bill</button>
+        · Milk or paper every day? <button type="button" class="underline text-zinc-700 dark:text-zinc-200" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button>
+      </div>`}
+      ${!hasRecurring ? '' : `
       <div class="card-muted p-3 mb-3">
-        <label class="flex items-center gap-2 text-sm cursor-pointer ${hasRecurring ? 'mb-2' : ''}">
-          <input type="checkbox" name="recurringEnabled" ${hasRecurring ? 'checked' : ''}
-                 onchange="window.__app.toggleRecurringFields(this.checked)">
+        <input type="hidden" name="recurringEnabled" value="on">
+        <div class="flex items-center gap-2 text-sm mb-2">
           <i data-lucide="repeat" style="width:13px;height:13px"></i>
-          <span class="font-medium">Repeats on a schedule</span>
-        </label>
-        ${hasRecurring ? '' : `<div class="text-xs text-zinc-500 -mt-1">Rent, subscriptions, bills — listed under Regulars → Bills. Milk or paper every day? <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button> instead.</div>`}
-        <div id="recurringFields" class="${hasRecurring ? '' : 'hidden'}">
+          <span class="font-medium flex-1">Repeats</span>
+          ${data.id && !data.recurringSourceId && (Store.getInstance().getState().transactions || []).some((t) => t.id === data.id && t.recurring) ? `
+          <button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.closeModal();window.__app.openModal('pauseRepeat',{id:'${Html.js(data.id)}'})">Pause</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.stopRepeating('${Html.js(data.id)}')">Stop</button>`
+          : `<button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.makeTxBill(false)">Not a bill</button>`}
+        </div>
+        <div id="recurringFields">
           <div class="flex items-center gap-2 mb-2 text-sm">
             <span class="text-zinc-500">Every</span>
             <input class="input" style="width:4.5rem" type="number" name="recurringInterval" min="1" step="1"
@@ -866,7 +881,7 @@ export class TransactionModal {
           <div class="text-xs text-zinc-500 mb-2">From is this entry's date. Leave To empty to keep going; set it to stop.</div>
           ${this.#billFields(data)}
         </div>
-      </div>`;
+      </div>`}`;
   }
 
   /**

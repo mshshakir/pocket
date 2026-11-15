@@ -9,6 +9,8 @@
  * So nothing counts as spent until it really is, and the bot (which reminds
  * from the server) and every device agree on what's paid.
  */
+import { RepeatPause } from './RepeatPause.js';
+
 export class BillService {
   /** Days ahead that count as "coming up". */
   static AHEAD = 7;
@@ -45,7 +47,7 @@ export class BillService {
       const skipped = new Set(t.recurring.skipped || []);
       let next = this.#recurring.stepDate(t.date, rule, interval, anchor);
       for (let i = 0; next <= until && (!t.recurring.until || next <= t.recurring.until) && i < 400; i++) {
-        if (!ids.has(`${t.id}__${next}`) && !skipped.has(next)) {
+        if (!ids.has(`${t.id}__${next}`) && !skipped.has(next) && !RepeatPause.on(t, next)) {
           out.push({ template: t, date: next, overdue: next < today, today: next === today, lastAmount: this.lastAmount(t), currency: t.currency });
         }
         next = this.#recurring.stepDate(next, rule, interval, anchor);
@@ -71,7 +73,9 @@ export class BillService {
     const skipped = new Set(template.recurring.skipped || []);
     let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
     for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
-    for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+    const open = (d) => !ids.has(`${template.id}__${d}`) && !skipped.has(d) && !RepeatPause.on(template, d);
+    for (let i = 0; i < 800 && !open(next) && !(until && next > until); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+    if (!open(next)) return null; // paused until you resume
     return until && next > until ? null : next;
   }
 
@@ -80,6 +84,7 @@ export class BillService {
    * for the calendar: [{ template, date, status, amount, currency }].
    *   paid      the first date (the entry itself) or a copy made for that date
    *   skipped   skipped on purpose
+   *   paused    inside a pause (RepeatPause)
    *   overdue   a bill ("ask me") whose date has passed without a payment
    *   due       a bill due today
    *   upcoming  still ahead
@@ -101,7 +106,7 @@ export class BillService {
       for (let i = 0; i < 2000 && d <= to && (!until || d <= until); i++) {
         if (d >= from) {
           const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
-          const status = copy ? 'paid' : skipped.has(d) ? 'skipped'
+          const status = copy ? 'paid' : skipped.has(d) ? 'skipped' : RepeatPause.on(t, d) ? 'paused'
             : d > today ? 'upcoming' : t.askFirst === true ? (d === today ? 'due' : 'overdue')
             : d === today ? 'due' : 'skipped'; // an ordinary repeat whose copy was deleted
           out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
@@ -142,7 +147,7 @@ export class BillService {
     const state = this.#store.getState();
     const id = `${template.id}__${occurrence}`;
     if (state.transactions.some((t) => t.id === id)) throw new Error('Already paid');
-    const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, ...rest } = template;
+    const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, pauses, ...rest } = template;
     const copy = {
       ...rest,
       id,

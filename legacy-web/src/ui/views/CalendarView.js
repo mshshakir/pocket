@@ -10,6 +10,7 @@
  *
  * Supports Gregorian, Hijri, and "both" display modes.
  */
+import { RepeatPause } from '../../domain/services/RepeatPause.js';
 import { BillService } from '../../domain/services/BillService.js';
 import { BaseView }          from './BaseView.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
@@ -32,7 +33,7 @@ export class CalendarView extends BaseView {
 
   /** Old tab names still work: dues/items → deliveries, summary → calendar. */
   static #DELIVERY_WORD = Object.freeze({ paid: 'delivered and paid', owed: 'delivered, not paid yet', unconfirmed: 'not confirmed yet', skipped: 'not delivered' });
-  static #BILL_WORD = Object.freeze({ paid: 'paid', overdue: 'not paid yet', due: 'due today', upcoming: 'coming up', skipped: 'skipped' });
+  static #BILL_WORD = Object.freeze({ paid: 'paid', overdue: 'not paid yet', due: 'due today', upcoming: 'coming up', skipped: 'skipped', paused: 'paused' });
 
   setTab(tab)   { this.#tab = ({ dues: 'deliveries', items: 'deliveries', summary: 'grid' })[tab] ?? tab; }
   shiftMonth(delta) {
@@ -152,7 +153,7 @@ export class CalendarView extends BaseView {
     const billDays = new Map();
     if (billSvc && days.length) {
       for (const o of billSvc.occurrences(days[0].iso, days[days.length - 1].iso, todayStr, state)) {
-        if (o.status === 'skipped') continue;
+        if (o.status === 'skipped' || o.status === 'paused') continue;
         if (!billDays.has(o.date)) billDays.set(o.date, []);
         billDays.get(o.date).push(o);
       }
@@ -332,19 +333,23 @@ export class CalendarView extends BaseView {
       const next = bills.nextDate(t, today, state);
       const ask = t.askFirst === true;
       const open = due.filter((d) => d.template.id === t.id);
-      return { t, next, ask, open, sort: open.length ? '0' + open[0].date : next ? '1' + next : '2' };
+      const paused = RepeatPause.label(t, today, (d) => this.#short(d));
+      return { t, next, ask, open, paused, sort: open.length ? '0' + open[0].date : next ? '1' + next : paused ? '15' : '2' };
     }).sort((a, b) => a.sort.localeCompare(b.sort));
     const id = (t) => this.escapeHtml(t.id);
     return `
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
-        ${rows.map(({ t, next, ask, open }) => {
+        ${rows.map(({ t, next, ask, open, paused }) => {
           const name = this.escapeHtml(BillService.nameOf(t, state));
           const every = this.#every(t.recurring);
           const amount = ask ? `asks each time · last ${this.formatMoney(bills.lastAmount(t), t.currency)}` : this.formatMoney(t.amount, t.currency);
-          const ended = !next;
+          const pausedNow = RepeatPause.active(t, today);
+          const ended = !next && !pausedNow; // paused until you resume has no next date
+          const pauseTag = paused ? `<span class="bill-tag bill-paused" style="background:#e0e7ff;color:#4338ca">${this.escapeHtml(paused)}</span>` : '';
           const status = open.length
             ? `<span class="bill-tag ${open[0].overdue ? 'bill-late' : 'bill-today'}">${open[0].overdue ? 'overdue' : open[0].today ? 'due today' : `due ${this.#short(open[0].date)}`}</span>`
             : ended ? `<span class="bill-tag" style="background:#f4f4f5;color:#71717a">ended ${t.recurring.until ? this.#short(t.recurring.until) : ''}</span>`
+            : pausedNow ? ''
             : `<span class="text-xs text-zinc-500">next ${this.#short(next)}</span>`;
           return `
             <div class="flex items-center gap-3 p-3">
@@ -353,9 +358,12 @@ export class CalendarView extends BaseView {
                 <div class="text-sm font-medium truncate">${name}</div>
                 <div class="text-xs text-zinc-500">${every} · ${amount}</div>
                 <div class="mt-1 flex items-center gap-3 flex-wrap text-xs">
-                  ${status}
+                  ${status}${pauseTag}
                   ${this.inGuestSpace ? '' : `
                   <button class="underline text-zinc-500" onclick="window.__app.openModal('transaction',{id:'${id(t)}'})">Edit</button>
+                  ${ended ? '' : pausedNow
+                    ? `<button class="underline text-indigo-600 repeat-resume" onclick="window.__app.resumeRepeat('${id(t)}')">Resume</button>`
+                    : `<button class="underline text-zinc-500 repeat-pause" onclick="window.__app.openModal('pauseRepeat',{id:'${id(t)}'})">Pause</button>`}
                   ${ended ? '' : `<button class="underline text-zinc-500" onclick="window.__app.stopRepeating('${id(t)}')">Stop</button>`}`}
                 </div>
               </div>
@@ -363,7 +371,7 @@ export class CalendarView extends BaseView {
             </div>`;
         }).join('')}
       </div>
-      <p class="text-xs text-zinc-500 mt-3">Same amount each time: added on its date. "Asks each time": waits until you enter what you paid. Editing a bill changes it from then on.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Same amount each time: added on its date. "Asks each time": waits until you enter what you paid. Editing a bill changes it from then on. Pause skips the dates in between — nothing is added or reminded, and paused dates aren't filled in later.</p>`;
   }
 
   /** Pay-later items: what's owed to each vendor, then the items themselves. */

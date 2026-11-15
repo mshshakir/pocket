@@ -281,8 +281,18 @@ function boot(extraTx = []) {
   app.openModal('transaction');
   await wait(30);
   const tf = w.document.querySelector('#txForm') || w.document.querySelector('form');
-  ok('B3 the Repeat section offers "Amount changes — ask me each time" and who gets reminded',
-     !!tf.querySelector('[name=recurringAsk]') && !!tf.querySelector('[name=remindTo]') && !!tf.querySelector('[name=remindDays]'));
+  ok('B3 a new entry has no repeat checkbox, only "Make this a bill" and "Add a delivery" links',
+     !tf.querySelector('[name=recurringEnabled]') && /Make this a bill/.test(tf.textContent) && /Add a delivery/.test(tf.textContent));
+  tf.querySelector('[name=amount]').value = '450';
+  app.makeTxBill();
+  await wait(20);
+  const bf = w.document.querySelector('#txForm');
+  ok('B3 "Make this a bill" keeps the amount and shows the bill name, repeat, "Amount changes — ask me each time" and who gets reminded',
+     bf.querySelector('[name=amount]').value === '450' && /Bill name/.test(bf.textContent) && !!bf.querySelector('[name=recurringRule]') && !!bf.querySelector('[name=recurringAsk]') && !!bf.querySelector('[name=remindTo]') && !!bf.querySelector('[name=remindDays]'));
+  app.makeTxBill(false);
+  await wait(20);
+  ok('B3 "Not a bill" turns it back', !w.document.querySelector('#txForm [name=recurringRule]') && w.document.querySelector('#txForm [name=amount]').value === '450');
+  app.closeModal();
 
   // B6 Regulars → Bills, and Add → "What do you want to track?"
   app.navigate('calendar'); app.setCalTab('bills');
@@ -296,7 +306,7 @@ function boot(extraTx = []) {
   app.startRegular('billAsk');
   await wait(30);
   const nf2 = w.document.querySelector('[name=recurringEnabled]')?.form;
-  ok('B6 "amount changes" opens a new entry set to repeat monthly and ask', nf2 && nf2.querySelector('[name=recurringEnabled]').checked && nf2.querySelector('[name=recurringAsk]').checked && nf2.querySelector('[name=recurringRule]').value === 'monthly');
+  ok('B6 "amount changes" opens a new entry set to repeat monthly and ask', nf2 && nf2.querySelector('[name=recurringEnabled]').value === 'on' && nf2.querySelector('[name=recurringAsk]').checked && nf2.querySelector('[name=recurringRule]').value === 'monthly');
   app.closeModal(); app.startRegular('delivery');
   await wait(20);
   const df = w.document.getElementById('regularItemForm');

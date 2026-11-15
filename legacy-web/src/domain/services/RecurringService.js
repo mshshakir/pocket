@@ -9,6 +9,7 @@ import { Store }           from '../../core/Store.js';
 import { IdGenerator }     from './IdGenerator.js';
 import { AccountService }  from './AccountService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
+import { RepeatPause }     from './RepeatPause.js';
 
 export class RecurringService {
   /** @type {Store} */                 #store;
@@ -113,8 +114,8 @@ export class RecurringService {
         safety++ < 500
       ) {
         const cloneId = `${template.id}__${next}`;
-        // Already generated, or explicitly deleted by the user — never re-create.
-        if (existingIds.has(cloneId) || skipped.has(next)) {
+        // Already generated, deleted by the user, or paused — never create.
+        if (existingIds.has(cloneId) || skipped.has(next) || RepeatPause.on(template, next)) {
           next = this.stepDate(next, rule, interval, anchorDay);
           continue;
         }
@@ -135,6 +136,7 @@ export class RecurringService {
           remindTo:          undefined,
           remindEmail:       undefined,
           remindDays:        undefined,
+          pauses:            undefined,
           tags:              (template.tags || []).slice(),
           splits:            template.splits ? template.splits.map((s) => ({ ...s })) : null,
         };

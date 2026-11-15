@@ -3042,6 +3042,74 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/RepeatPause.js
+  var RepeatPause = class _RepeatPause {
+    /** Open-ended pauses are read as lasting until this date. */
+    static FOREVER = "9999-12-31";
+    /** @returns {{from:string, to:string|null}[]} */
+    static list(t) {
+      return (Array.isArray(t?.pauses) ? t.pauses : []).filter((p) => p && _RepeatPause.isIso(p.from) && (p.to == null || _RepeatPause.isIso(p.to)));
+    }
+    static isIso(s) {
+      return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    }
+    /** Is `iso` inside one of the template's pauses? */
+    static on(t, iso) {
+      return _RepeatPause.list(t).some((p) => iso >= p.from && iso <= (p.to || _RepeatPause.FOREVER));
+    }
+    /** The pause covering `today`, or the next one to start, or null. */
+    static current(t, today) {
+      const live = _RepeatPause.list(t).filter((p) => (p.to || _RepeatPause.FOREVER) >= today).sort((a, b) => a.from.localeCompare(b.from));
+      return live.find((p) => p.from <= today) || live[0] || null;
+    }
+    /** Paused today? */
+    static active(t, today) {
+      const p = _RepeatPause.current(t, today);
+      return !!p && p.from <= today;
+    }
+    /** New pauses with [from, to] added; overlapping or touching ones merge. */
+    static withPause(t, from, to = null) {
+      if (!_RepeatPause.isIso(from) || to != null && (!_RepeatPause.isIso(to) || to < from)) return _RepeatPause.list(t);
+      const end = (p) => p.to || _RepeatPause.FOREVER;
+      const all = [..._RepeatPause.list(t), { from, to: to || null }].sort((a, b) => a.from.localeCompare(b.from));
+      const out = [];
+      for (const p of all) {
+        const last = out[out.length - 1];
+        if (last && p.from <= _RepeatPause.addDays(end(last), 1)) {
+          if (end(p) > end(last)) last.to = p.to;
+        } else {
+          out.push({ ...p });
+        }
+      }
+      return out;
+    }
+    /**
+     * New pauses after resuming today. A pause running today ends yesterday
+     * (kept, so those dates stay paused; removed if it only started today).
+     * With none running, the next one to start is removed. Others stay.
+     */
+    static resumed(t, today) {
+      const list = _RepeatPause.list(t);
+      const running = list.find((p) => p.from <= today && (p.to || _RepeatPause.FOREVER) >= today);
+      if (running) {
+        return list.flatMap((p) => p !== running ? [p] : p.from < today ? [{ from: p.from, to: _RepeatPause.addDays(today, -1) }] : []);
+      }
+      const next = _RepeatPause.current(t, today);
+      return list.filter((p) => p !== next);
+    }
+    /** "Paused until 15 Jan" / "Paused until you resume" / "Pauses 1 Dec – 31 Jan". */
+    static label(t, today, short) {
+      const p = _RepeatPause.current(t, today);
+      if (!p) return "";
+      if (p.from <= today) return p.to ? `Paused until ${short(p.to)}` : "Paused until you resume";
+      return p.to ? `Pauses ${short(p.from)} \u2013 ${short(p.to)}` : `Pauses from ${short(p.from)}`;
+    }
+    static addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+  };
+
   // src/domain/services/RecurringService.js
   var RecurringService = class {
     /** @type {Store} */
@@ -3120,7 +3188,7 @@ var _PocketApp = (() => {
         let safety = 0;
         while (next <= today && (!template.recurring.until || next <= template.recurring.until) && safety++ < 500) {
           const cloneId = `${template.id}__${next}`;
-          if (existingIds.has(cloneId) || skipped.has(next)) {
+          if (existingIds.has(cloneId) || skipped.has(next) || RepeatPause.on(template, next)) {
             next = this.stepDate(next, rule, interval, anchorDay);
             continue;
           }
@@ -3140,6 +3208,7 @@ var _PocketApp = (() => {
             remindTo: void 0,
             remindEmail: void 0,
             remindDays: void 0,
+            pauses: void 0,
             tags: (template.tags || []).slice(),
             splits: template.splits ? template.splits.map((s) => ({ ...s })) : null
           };
@@ -11159,7 +11228,7 @@ This replaces your current grouping.`
         const skipped = new Set(t.recurring.skipped || []);
         let next = this.#recurring.stepDate(t.date, rule, interval, anchor);
         for (let i = 0; next <= until && (!t.recurring.until || next <= t.recurring.until) && i < 400; i++) {
-          if (!ids.has(`${t.id}__${next}`) && !skipped.has(next)) {
+          if (!ids.has(`${t.id}__${next}`) && !skipped.has(next) && !RepeatPause.on(t, next)) {
             out.push({ template: t, date: next, overdue: next < today, today: next === today, lastAmount: this.lastAmount(t), currency: t.currency });
           }
           next = this.#recurring.stepDate(next, rule, interval, anchor);
@@ -11183,7 +11252,9 @@ This replaces your current grouping.`
       const skipped = new Set(template.recurring.skipped || []);
       let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
       for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
-      for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      const open = (d) => !ids.has(`${template.id}__${d}`) && !skipped.has(d) && !RepeatPause.on(template, d);
+      for (let i = 0; i < 800 && !open(next) && !(until && next > until); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      if (!open(next)) return null;
       return until && next > until ? null : next;
     }
     /**
@@ -11191,6 +11262,7 @@ This replaces your current grouping.`
      * for the calendar: [{ template, date, status, amount, currency }].
      *   paid      the first date (the entry itself) or a copy made for that date
      *   skipped   skipped on purpose
+     *   paused    inside a pause (RepeatPause)
      *   overdue   a bill ("ask me") whose date has passed without a payment
      *   due       a bill due today
      *   upcoming  still ahead
@@ -11212,7 +11284,7 @@ This replaces your current grouping.`
         for (let i = 0; i < 2e3 && d <= to && (!until || d <= until); i++) {
           if (d >= from) {
             const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
-            const status = copy ? "paid" : skipped.has(d) ? "skipped" : d > today ? "upcoming" : t.askFirst === true ? d === today ? "due" : "overdue" : d === today ? "due" : "skipped";
+            const status = copy ? "paid" : skipped.has(d) ? "skipped" : RepeatPause.on(t, d) ? "paused" : d > today ? "upcoming" : t.askFirst === true ? d === today ? "due" : "overdue" : d === today ? "due" : "skipped";
             out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
           }
           const next = this.#recurring.stepDate(d, rule, interval, anchor);
@@ -11246,7 +11318,7 @@ This replaces your current grouping.`
       const state = this.#store.getState();
       const id = `${template.id}__${occurrence}`;
       if (state.transactions.some((t) => t.id === id)) throw new Error("Already paid");
-      const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, ...rest } = template;
+      const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, pauses, ...rest } = template;
       const copy = {
         ...rest,
         id,
@@ -11316,7 +11388,7 @@ This replaces your current grouping.`
         intro: "Everything that repeats, in one place.",
         points: [
           "<b>Calendar</b> \u2014 each day at a glance: bills due, deliveries, and what you logged. Tap a day for details.",
-          "<b>Bills</b> \u2014 repeating payments like rent or subscriptions. A bill that asks first (like electricity) waits for you to enter the amount. Pay, Edit or Stop from here.",
+          "<b>Bills</b> \u2014 repeating payments like rent or subscriptions. A bill that asks first (like electricity) waits for you to enter the amount. Pay, Edit, Pause or Stop from here. <b>Pause</b> skips the dates in between \u2014 for a month or more, until a date, or until you resume \u2014 with no entries or reminders.",
           "<b>Deliveries</b> \u2014 things you pay for later, like milk or the newspaper. Mark the days, pause when you\u2019re away, and pay the vendor what\u2019s owed.",
           "<b>Shortcuts</b> \u2014 one-tap entries for things you buy often. They show as chips when you add an expense.",
           "Tap <b>Add</b> to make any of these."
@@ -15465,7 +15537,7 @@ This replaces your current grouping.`
     // ── Public API ────────────────────────────────────────────────────────
     /** Old tab names still work: dues/items → deliveries, summary → calendar. */
     static #DELIVERY_WORD = Object.freeze({ paid: "delivered and paid", owed: "delivered, not paid yet", unconfirmed: "not confirmed yet", skipped: "not delivered" });
-    static #BILL_WORD = Object.freeze({ paid: "paid", overdue: "not paid yet", due: "due today", upcoming: "coming up", skipped: "skipped" });
+    static #BILL_WORD = Object.freeze({ paid: "paid", overdue: "not paid yet", due: "due today", upcoming: "coming up", skipped: "skipped", paused: "paused" });
     setTab(tab) {
       this.#tab = { dues: "deliveries", items: "deliveries", summary: "grid" }[tab] ?? tab;
     }
@@ -15582,7 +15654,7 @@ This replaces your current grouping.`
       const billDays = /* @__PURE__ */ new Map();
       if (billSvc && days.length) {
         for (const o of billSvc.occurrences(days[0].iso, days[days.length - 1].iso, todayStr, state)) {
-          if (o.status === "skipped") continue;
+          if (o.status === "skipped" || o.status === "paused") continue;
           if (!billDays.has(o.date)) billDays.set(o.date, []);
           billDays.get(o.date).push(o);
         }
@@ -15748,17 +15820,20 @@ This replaces your current grouping.`
         const next = bills.nextDate(t, today, state);
         const ask = t.askFirst === true;
         const open = due.filter((d) => d.template.id === t.id);
-        return { t, next, ask, open, sort: open.length ? "0" + open[0].date : next ? "1" + next : "2" };
+        const paused = RepeatPause.label(t, today, (d) => this.#short(d));
+        return { t, next, ask, open, paused, sort: open.length ? "0" + open[0].date : next ? "1" + next : paused ? "15" : "2" };
       }).sort((a, b) => a.sort.localeCompare(b.sort));
       const id = (t) => this.escapeHtml(t.id);
       return `
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
-        ${rows.map(({ t, next, ask, open }) => {
+        ${rows.map(({ t, next, ask, open, paused }) => {
         const name = this.escapeHtml(BillService.nameOf(t, state));
         const every = this.#every(t.recurring);
         const amount = ask ? `asks each time \xB7 last ${this.formatMoney(bills.lastAmount(t), t.currency)}` : this.formatMoney(t.amount, t.currency);
-        const ended = !next;
-        const status = open.length ? `<span class="bill-tag ${open[0].overdue ? "bill-late" : "bill-today"}">${open[0].overdue ? "overdue" : open[0].today ? "due today" : `due ${this.#short(open[0].date)}`}</span>` : ended ? `<span class="bill-tag" style="background:#f4f4f5;color:#71717a">ended ${t.recurring.until ? this.#short(t.recurring.until) : ""}</span>` : `<span class="text-xs text-zinc-500">next ${this.#short(next)}</span>`;
+        const pausedNow = RepeatPause.active(t, today);
+        const ended = !next && !pausedNow;
+        const pauseTag = paused ? `<span class="bill-tag bill-paused" style="background:#e0e7ff;color:#4338ca">${this.escapeHtml(paused)}</span>` : "";
+        const status = open.length ? `<span class="bill-tag ${open[0].overdue ? "bill-late" : "bill-today"}">${open[0].overdue ? "overdue" : open[0].today ? "due today" : `due ${this.#short(open[0].date)}`}</span>` : ended ? `<span class="bill-tag" style="background:#f4f4f5;color:#71717a">ended ${t.recurring.until ? this.#short(t.recurring.until) : ""}</span>` : pausedNow ? "" : `<span class="text-xs text-zinc-500">next ${this.#short(next)}</span>`;
         return `
             <div class="flex items-center gap-3 p-3">
               <span class="icon-pill" style="width:34px;height:34px;background:#f4f4f5"><i data-lucide="${ask ? "receipt" : "repeat"}" style="width:16px;height:16px"></i></span>
@@ -15766,9 +15841,10 @@ This replaces your current grouping.`
                 <div class="text-sm font-medium truncate">${name}</div>
                 <div class="text-xs text-zinc-500">${every} \xB7 ${amount}</div>
                 <div class="mt-1 flex items-center gap-3 flex-wrap text-xs">
-                  ${status}
+                  ${status}${pauseTag}
                   ${this.inGuestSpace ? "" : `
                   <button class="underline text-zinc-500" onclick="window.__app.openModal('transaction',{id:'${id(t)}'})">Edit</button>
+                  ${ended ? "" : pausedNow ? `<button class="underline text-indigo-600 repeat-resume" onclick="window.__app.resumeRepeat('${id(t)}')">Resume</button>` : `<button class="underline text-zinc-500 repeat-pause" onclick="window.__app.openModal('pauseRepeat',{id:'${id(t)}'})">Pause</button>`}
                   ${ended ? "" : `<button class="underline text-zinc-500" onclick="window.__app.stopRepeating('${id(t)}')">Stop</button>`}`}
                 </div>
               </div>
@@ -15776,7 +15852,7 @@ This replaces your current grouping.`
             </div>`;
       }).join("")}
       </div>
-      <p class="text-xs text-zinc-500 mt-3">Same amount each time: added on its date. "Asks each time": waits until you enter what you paid. Editing a bill changes it from then on.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Same amount each time: added on its date. "Asks each time": waits until you enter what you paid. Editing a bill changes it from then on. Pause skips the dates in between \u2014 nothing is added or reminded, and paused dates aren't filled in later.</p>`;
     }
     /** Pay-later items: what's owed to each vendor, then the items themselves. */
     #renderDeliveries(state) {
@@ -16425,7 +16501,7 @@ This replaces your current grouping.`
           else delete this.#draft[key];
         }
       }
-      this.#draft.recurring = form.elements?.recurringEnabled?.checked ? {
+      this.#draft.recurring = fd.get("recurringEnabled") ? {
         rule: form.elements.recurringRule?.value || "monthly",
         interval: Number(form.elements.recurringInterval?.value) || 1,
         until: form.elements.recurringUntil?.value || null
@@ -16438,6 +16514,11 @@ This replaces your current grouping.`
         this.#draft.claimName = str("claimName");
         this.#draft.claimRef = str("claimRef");
       }
+    }
+    /** Turn the entry being added into a bill (repeats monthly), or back. */
+    setBill(on) {
+      this.#draft.recurring = on ? { rule: "monthly", interval: 1, until: null } : null;
+      if (!on) this.#draft.askFirst = false;
     }
     /** Discard the captured draft (used when the modal opens fresh). */
     clearDraft() {
@@ -16664,7 +16745,7 @@ This replaces your current grouping.`
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
             <i data-lucide="chevron-right" class="more-chevron transition-transform" style="width:15px;height:15px"></i>
             More options
-            <span class="text-xs font-normal text-zinc-400">${isTransfer ? "payee" : isBill ? "repeat" : "repeat, payee"}</span>
+            <span class="text-xs font-normal text-zinc-400">${isTransfer ? "payee" : isBill ? "repeat" : "payee, bill"}</span>
           </summary>
           <div class="pt-2">
             ${!isTransfer ? this.#recurringSection(data) : ""}
@@ -16960,6 +17041,7 @@ This replaces your current grouping.`
           <div class="font-medium">Repeats ${Html.escape(_TransactionModal.everyLabel(src.recurring))}</div>
           <div class="text-xs text-zinc-500">From ${Html.escape(_TransactionModal.day(src.date))}${until ? ` to ${Html.escape(_TransactionModal.day(until))}` : " \xB7 no end date"}</div>
         </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.closeModal();window.__app.openModal('pauseRepeat',{id:'${Html.js(src.id)}'})">Pause</button>
         <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.stopRepeating('${Html.escape(src.id)}')">Stop repeating</button>
       </div>`;
         }
@@ -16968,15 +17050,22 @@ This replaces your current grouping.`
       const rule = data.recurring?.rule || "monthly";
       const units = { daily: "day", weekly: "week", monthly: "month", yearly: "year" };
       return `
+      ${hasRecurring ? "" : `
+      <div class="text-xs text-zinc-500 mb-3 tx-regular-links">
+        Rent, a subscription, school fees? <button type="button" class="underline text-zinc-700 dark:text-zinc-200" onclick="window.__app.makeTxBill()">Make this a bill</button>
+        \xB7 Milk or paper every day? <button type="button" class="underline text-zinc-700 dark:text-zinc-200" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button>
+      </div>`}
+      ${!hasRecurring ? "" : `
       <div class="card-muted p-3 mb-3">
-        <label class="flex items-center gap-2 text-sm cursor-pointer ${hasRecurring ? "mb-2" : ""}">
-          <input type="checkbox" name="recurringEnabled" ${hasRecurring ? "checked" : ""}
-                 onchange="window.__app.toggleRecurringFields(this.checked)">
+        <input type="hidden" name="recurringEnabled" value="on">
+        <div class="flex items-center gap-2 text-sm mb-2">
           <i data-lucide="repeat" style="width:13px;height:13px"></i>
-          <span class="font-medium">Repeats on a schedule</span>
-        </label>
-        ${hasRecurring ? "" : `<div class="text-xs text-zinc-500 -mt-1">Rent, subscriptions, bills \u2014 listed under Regulars \u2192 Bills. Milk or paper every day? <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button> instead.</div>`}
-        <div id="recurringFields" class="${hasRecurring ? "" : "hidden"}">
+          <span class="font-medium flex-1">Repeats</span>
+          ${data.id && !data.recurringSourceId && (Store.getInstance().getState().transactions || []).some((t) => t.id === data.id && t.recurring) ? `
+          <button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.closeModal();window.__app.openModal('pauseRepeat',{id:'${Html.js(data.id)}'})">Pause</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.stopRepeating('${Html.js(data.id)}')">Stop</button>` : `<button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.makeTxBill(false)">Not a bill</button>`}
+        </div>
+        <div id="recurringFields">
           <div class="flex items-center gap-2 mb-2 text-sm">
             <span class="text-zinc-500">Every</span>
             <input class="input" style="width:4.5rem" type="number" name="recurringInterval" min="1" step="1"
@@ -16999,7 +17088,7 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 mb-2">From is this entry's date. Leave To empty to keep going; set it to stop.</div>
           ${this.#billFields(data)}
         </div>
-      </div>`;
+      </div>`}`;
     }
     /**
      * A repeating bill whose amount changes (electricity, phone): don't copy it
@@ -17757,6 +17846,67 @@ This replaces your current grouping.`
     }
     onOpen() {
       setTimeout(() => window.__app?.updatePaybackPreview?.(document.querySelector(".reimb-form")), 0);
+    }
+  };
+
+  // src/ui/modals/PauseRepeatModal.js
+  var PauseRepeatModal = class {
+    /** @type {Store} */
+    #store;
+    constructor() {
+      this.#store = Store.getInstance();
+    }
+    /** The day `months` months after `iso`, minus one (1 Dec + 1 month → 31 Dec). */
+    static monthsFrom(iso, months) {
+      const [y, m, d] = iso.split("-").map(Number);
+      const end = new Date(Date.UTC(y, m - 1 + months, d - 1));
+      return end.toISOString().slice(0, 10);
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const t = (state.transactions || []).find((x) => x.id === opts.id && x.recurring);
+      if (!t) return '<div class="p-5 text-sm text-zinc-500">Not found.</div>';
+      const today = DateService.todayIso();
+      const id = Html.js(t.id);
+      const name = Html.escape(BillService.nameOf(t, state));
+      const live = RepeatPause.list(t).filter((p) => (p.to || RepeatPause.FOREVER) >= today);
+      const how = (k, label, checked) => `
+      <label class="cursor-pointer">
+        <input type="radio" name="length" value="${k}" ${checked ? "checked" : ""} class="peer sr-only"
+               onchange="this.form.querySelector('[data-until]').style.display = this.value === 'date' ? '' : 'none'">
+        <span class="btn btn-outline w-full justify-center text-sm peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900">${label}</span>
+      </label>`;
+      return `
+      <form class="p-5 pause-repeat-form" onsubmit="window.__app.submitRepeatPause(event,'${id}')">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">Pause ${name}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()" aria-label="Close"><i data-lucide="x"></i></button>
+        </div>
+        <p class="text-xs text-zinc-500 mb-4">Away, or not paying it for a while? Dates in the pause are skipped \u2014 nothing is added, no reminders, and they aren't filled in later.</p>
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">From</label>
+          <input class="input" type="date" name="from" value="${today}" required>
+        </div>
+        <div class="text-xs text-zinc-500 mb-1">For</div>
+        <div class="grid grid-cols-3 gap-2 mb-2">
+          ${how("1", "1 month", true)}${how("2", "2 months")}${how("3", "3 months")}
+        </div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          ${how("date", "Until a date")}${how("open", "Until I resume")}
+        </div>
+        <div data-until style="display:none" class="mb-3">
+          <label class="text-xs text-zinc-500">Last paused day</label>
+          <input class="input" type="date" name="to" min="${today}">
+        </div>
+        <button class="btn btn-primary w-full justify-center" type="submit"><i data-lucide="pause"></i> Pause</button>
+        ${live.length ? `
+        <div class="text-sm font-semibold mt-5 mb-2">Pauses</div>
+        ${live.map((p) => `
+          <div class="flex items-center justify-between card p-2.5 mb-2 text-sm">
+            <span>${p.to ? DeliveryPlan.rangeLabel(p.from, p.to) : `From ${DeliveryPlan.shortDate(p.from)} \xB7 until you resume`}</span>
+            <button type="button" class="btn btn-ghost text-xs" onclick="window.__app.resumeRepeat('${id}')">${p.from <= today ? "Resume now" : "Remove"}</button>
+          </div>`).join("")}` : ""}
+      </form>`;
     }
   };
 
@@ -22120,6 +22270,7 @@ This replaces your current grouping.`
       this.#modal.register("trade", new TradeModal({ holdings: () => this.#holdings }));
       this.#modal.register("holdingPrice", new HoldingPriceModal({ holdings: () => this.#holdings }));
       this.#modal.register("reimbursement", new ReimbursementModal());
+      this.#modal.register("pauseRepeat", new PauseRepeatModal());
       this.#modal.register("feedback", new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
       new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
       this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
@@ -22281,6 +22432,8 @@ This replaces your current grouping.`
       "regularItem",
       "settle",
       "pauseDeliveries",
+      "pauseRepeat",
+      "reimbursement",
       "payBill",
       "addRegular",
       "habit",
@@ -23691,6 +23844,12 @@ Leave empty to use your own name.`,
     setTxType(type) {
       this.#txModal?.captureForm?.();
       this.#txModal?.setType?.(type);
+      this.#refreshModal({ capture: false });
+    }
+    /** New-entry form: "Make this a bill" (repeats monthly) or "Not a bill". Keeps what's typed. */
+    makeTxBill(on = true) {
+      this.#txModal?.captureForm?.();
+      this.#txModal?.setBill?.(on !== false);
       this.#refreshModal({ capture: false });
     }
     toggleRecurringFields() {
@@ -26012,6 +26171,41 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
      * Stops a repeat after today: its To date becomes today, so no more copies
      * are made (nor bills asked for). Copies already made stay. Undo restores it.
      */
+    // ── Pause a repeating entry or bill ───────────────────────────────────
+    submitRepeatPause(event, id) {
+      event.preventDefault();
+      const t = this.#store.getState().transactions.find((x) => x.id === id && x.recurring);
+      if (!t) return;
+      const fd = new FormData(event.target);
+      const from = String(fd.get("from") || DateService.todayIso());
+      const len = String(fd.get("length") || "1");
+      let to = null;
+      if (len === "date") {
+        to = String(fd.get("to") || "");
+        if (!to || to < from) return this.#toast.show("Pick the last paused day (on or after the start)");
+      } else if (len !== "open") {
+        to = PauseRepeatModal.monthsFrom(from, Number(len) || 1);
+      }
+      t.pauses = RepeatPause.withPause(t, from, to);
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.closeModal();
+      this.#render();
+      const name = BillService.nameOf(t, this.#store.getState());
+      this.#toast.show(to ? `${name} paused until ${DeliveryPlan.shortDate(to)}` : `${name} paused until you resume`);
+    }
+    /** End the pause now (a pause not started yet is removed). */
+    resumeRepeat(id) {
+      const t = this.#store.getState().transactions.find((x) => x.id === id && x.recurring);
+      if (!t) return;
+      t.pauses = RepeatPause.resumed(t, DateService.todayIso());
+      this.#recurring.process();
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`${BillService.nameOf(t, this.#store.getState())} repeats again`);
+    }
     stopRepeating(templateId) {
       const t = this.#store.getState().transactions.find((x) => x.id === templateId);
       if (!t?.recurring) return;

@@ -248,7 +248,7 @@ const recent = (d) => addDays(appToday, -d);
   app.acceptSuggestion('bill', 'Airtel');
   await wait(20);
   const f = w.document.querySelector('form');
-  ok('G3 it opens the last payment set to repeat monthly', f.querySelector('[name="recurringEnabled"]').checked && f.querySelector('[name="payee"]').value === 'Airtel');
+  ok('G3 it opens the last payment set to repeat monthly', f.querySelector('[name="recurringEnabled"]')?.value === 'on' && f.querySelector('[name="payee"]').value === 'Airtel');
   await app.submitTx({ preventDefault() {}, target: f }, months[3].id);
   await wait(20);
   const st = app.store.getState();
