@@ -17,6 +17,7 @@ export class HelpMenu {
     { command: 'default', description: 'Show or change your default account' },
     { command: 'deliveries', description: 'Today\'s milk, newspaper… with − / + buttons' },
     { command: 'dues', description: 'What you owe vendors, and record paying them' },
+    { command: 'toget', description: 'Money to get back: claims and loans owed to you' },
     { command: 'cancel', description: 'Drop the entry or edit in progress' },
     { command: 'link', description: 'Connect this chat to your Pocket account' },
     { command: 'unlink', description: 'Disconnect this chat' },
@@ -125,6 +126,7 @@ export class HelpMenu {
         '<code>/categories deeni</code>  just one main category',
         '/default  show the default account',
         '/deliveries  today\'s deliveries with − / + · /dues  what you owe vendors',
+        '/toget  money to get back: claims and loans owed to you',
         '<code>/default mpesa</code>  change it',
         '/cancel  drop an entry waiting for a category, or an edit',
         '<code>/link name@gmail.com</code>  connect a chat (a code is emailed to you)',
@@ -148,6 +150,25 @@ export class HelpMenu {
         '<i>Who gets these — everyone, one person or your family group — and the time are set on the item or bill in the app.</i>',
       ].join('\n'),
     },
+    owed: {
+      button: '🤝 Loans & paybacks',
+      text: [
+        '<b>🤝 Loans</b> (shown in the app under Debts)',
+        '<code>5000 lent Ali</code>  Ali owes you',
+        '<code>+20000 borrowed Hussain</code>  you owe Hussain',
+        '<code>2000 paid back Ali</code>  Ali repaid part (also <code>2000 Ali paid back</code>)',
+        '<code>3000 repaid Hussain</code>  you paid Hussain back',
+        '',
+        '<b>↩️ Expenses someone will pay back</b> (company, insurer, family)',
+        '<code>30000 hospital @medical claim Star Health</code>  they\'ll pay it all',
+        '<code>30000 hospital @medical claim Star Health 27000</code>  they\'ll pay 27,000 of it',
+        'When the money comes: <code>+27000 paid back Star Health</code>',
+        'It\'s shared evenly across their open items; buttons switch to oldest first, close the rest (nothing more coming), or count any extra as income.',
+        '',
+        '/toget  everything waiting to be paid back',
+        '<i>Loans and money paid back move your balance but are never income or spending. #account and dates work as usual.</i>',
+      ].join('\n'),
+    },
     family: {
       button: '👪 Family group summaries',
       text: [
@@ -169,7 +190,7 @@ export class HelpMenu {
   };
 
   /** The order of the topic buttons on the first page, two per row. */
-  static readonly #TOPICS = ['record', 'categories', 'transfers', 'batch', 'extras', 'fix', 'deliveries', 'family', 'commands'];
+  static readonly #TOPICS = ['record', 'categories', 'transfers', 'batch', 'extras', 'fix', 'deliveries', 'owed', 'family', 'commands'];
 
   static readonly #PREFIX = 'help:';
 

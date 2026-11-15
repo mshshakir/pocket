@@ -14,6 +14,7 @@
  * queue and are asked about one at a time; see BatchEntryService.
  */
 import { EntryParser } from './EntryParser.ts';
+import { type BackMark, OwedParser } from './OwedParser.ts';
 import type { Category, PocketBook } from './PocketBook.ts';
 import type { ExchangeRates } from './ExchangeRates.ts';
 import type { PocketStore, QueuedEntry, TelegramLink } from './PocketStore.ts';
@@ -116,7 +117,9 @@ export class EntryService {
     const { link, chatId } = req;
     const ws = req.workspace ?? await Workspace.load(this.#store, link);
 
-    const parsed = new EntryParser(ws.paymentTypes).parse(req.text);
+    // "claim Star Health [27000]": someone will pay this expense back.
+    const claim = new OwedParser(ws.paymentTypes).splitBack(req.text);
+    const parsed = new EntryParser(ws.paymentTypes).parse(claim ? claim.text : req.text);
     if (!parsed.ok) return await this.#reject(req, parsed.reason);
     const { entry } = parsed;
     const when = entry.date ? entry.date.resolve(this.#clock.isoDate()) : { ok: true as const, iso: this.#clock.isoDate(entry.daysAgo) };
@@ -128,6 +131,8 @@ export class EntryService {
     const from = chosen.value;
     const { access } = from;
     const book = access.book;
+    if (claim && parsed.entry.type !== 'expense') return await this.#reject(req, '"claim" is for an expense someone will pay back, e.g. 30000 hospital @medical claim Star Health');
+    if (claim && !access.isOwn) return await this.#reject(req, 'Expenses to be paid back are kept in your own book. Use one of your accounts.');
 
     let to: AccountChoice | null = null;
     if (entry.type === 'transfer') {
@@ -173,6 +178,11 @@ export class EntryService {
       addedBy: link.email, // shown in the app as "Entered … by …"
     });
 
+    if (claim) {
+      const err = EntryService.#markClaim(txs[0], claim, factory);
+      if (err) return await this.#reject(req, err);
+    }
+
     const writer = this.#store.writerFor(access.ownerId, link.email, access.isOwn);
     const ids = await TransactionFactory.allIdsFor(chatId, req.seed);
     if (req.replace && req.oldOwnerId && req.oldOwnerId !== access.ownerId) {
@@ -187,7 +197,8 @@ export class EntryService {
     }
     if (req.promptMessageId || req.replace) await this.#store.clearPending(chatId);
 
-    const text = this.#confirmation(txs, factory, book, ws, from, to, category);
+    const text = this.#confirmation(txs, factory, book, ws, from, to, category)
+      + (claim ? `\n↩ ${claim.payer} will pay back ${factory.money.format(EntryService.#expectedOf(txs[0]), txs[0].currency)} · not counted as spending once paid back` : '');
     const buttons = EntryService.#entryButtons(req.seed, access.ownerId);
     if (req.promptMessageId) {
       await this.#telegram.edit(chatId, req.promptMessageId, text, buttons);
@@ -287,6 +298,22 @@ export class EntryService {
       ];
     const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;
     return `${parts.filter(Boolean).join(' · ')}\n${when}`;
+  }
+
+  /** Marks the expense as one `claim.payer` will pay back (the app's reimbBy / reimbExpected). */
+  static #markClaim(tx: PocketTransaction, claim: BackMark, factory: TransactionFactory): string | null {
+    const expected = claim.expected !== null ? factory.money.toMinor(claim.expected, tx.currency) : null;
+    if (expected !== null && expected > tx.amount) return `They can't pay back more than you spent (${factory.money.format(tx.amount, tx.currency)}).`;
+    const row = tx as PocketTransaction & Record<string, unknown>;
+    row.reimbBy = claim.payer.slice(0, 60);
+    row.reimbExpected = expected !== null && expected > 0 && expected < tx.amount ? expected : null;
+    row.claimId = null;
+    return null;
+  }
+
+  static #expectedOf(tx: PocketTransaction): number {
+    const e = Number((tx as PocketTransaction & Record<string, unknown>).reimbExpected);
+    return e > 0 ? e : tx.amount;
   }
 
   static #entryButtons(seed: number, ownerId: string): Keyboard {

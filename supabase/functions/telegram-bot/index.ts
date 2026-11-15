@@ -22,6 +22,7 @@ import { GroupService } from './lib/GroupService.ts';
 import { GroupSummaries } from './lib/GroupSummaries.ts';
 import { LinkService } from './lib/LinkService.ts';
 import { LocalClock } from './lib/LocalClock.ts';
+import { OwedBot } from './lib/OwedBot.ts';
 import { PocketStore } from './lib/PocketStore.ts';
 import { SummaryReport } from './lib/SummaryReport.ts';
 import { TelegramClient } from './lib/TelegramClient.ts';
@@ -98,6 +99,7 @@ const server = new WebhookServer(
     new BatchEntryService(store, telegram, entries),
     new GroupService(store, telegram, new GroupSummaries(store, new SummaryReport()), clock),
     new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
+    new OwedBot(store, telegram, clock, rates),
   ),
 );
 

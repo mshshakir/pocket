@@ -8,6 +8,7 @@
  */
 import type { BatchEntryService } from './BatchEntryService.ts';
 import { DeliveryBot } from './DeliveryBot.ts';
+import { OwedBot } from './OwedBot.ts';
 import { CategoryDirectory } from './CategoryDirectory.ts';
 import { EntryBatch } from './EntryBatch.ts';
 import { EntryParser } from './EntryParser.ts';
@@ -45,12 +46,14 @@ export class BotController {
   readonly #batches: BatchEntryService;
   readonly #groups: GroupService;
   readonly #deliveries: DeliveryBot | null;
+  readonly #owed: OwedBot | null;
 
   constructor(
     store: PocketStore, telegram: TelegramClient, entries: EntryService,
     links: LinkService, batches: BatchEntryService, groups: GroupService,
-    deliveries: DeliveryBot | null = null,
+    deliveries: DeliveryBot | null = null, owed: OwedBot | null = null,
   ) {
+    this.#owed = owed;
     this.#deliveries = deliveries;
     this.#store = store;
     this.#telegram = telegram;
@@ -120,6 +123,8 @@ export class BotController {
         }
         await this.#dropPending(chatId);
       }
+      // Loans and paybacks ("5000 lent Ali", "+27000 paid back Star Health") come before "paid <bill> <amount>".
+      if (this.#owed && !EntryBatch.isBatch(text) && await this.#owed.tryText(link, chatId, message.message_id, text)) return;
       if (this.#deliveries && !EntryBatch.isBatch(text) && await this.#deliveries.tryText(link, chatId, message.message_id, text)) return;
       if (EntryBatch.isBatch(text)) return void await this.#batches.record(link, chatId, message.message_id, text);
       await this.#entries.record({ link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id });
@@ -152,6 +157,17 @@ export class BotController {
     if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not connected. Send /link.');
 
     // edit/del carry the book's owner id; buttons from before shared books meant your own book.
+    if (this.#owed && OwedBot.isButton(cb.data)) {
+      const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+      if (notice) return void await this.#telegram.answer(cb.id, 'Not available on your plan');
+      try {
+        return void await this.#owed.handleCallback(cb, link);
+      } catch (err) {
+        console.error('[telegram-bot] owed callback', err);
+        await this.#telegram.answer(cb.id, '⚠️ Not done');
+        return void await this.#telegram.send(chatId, `⚠️ ${BotController.#reason(err)}`, { replyTo: msg.message_id });
+      }
+    }
     const [action, value, ownerId = link.user_id] = (cb.data || '').split(':');
     try {
       if (action === 'cat' || action === 'main' || action === 'back' || action === 'edit' || action === 'del') {
@@ -201,6 +217,7 @@ export class BotController {
 
     if (this.#deliveries && command === '/deliveries') return void await this.#deliveries.deliveries(link, chatId);
     if (this.#deliveries && command === '/dues') return void await this.#deliveries.dues(link, chatId);
+    if (this.#owed && command === '/toget') return void await this.#owed.toget(link, chatId);
 
     const ws = await Workspace.load(this.#store, link);
     const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };

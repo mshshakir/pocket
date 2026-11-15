@@ -63,6 +63,22 @@ export interface PendingStep {
 
 export type SaveResult = 'saved' | 'duplicate';
 
+/** An entry in app shape, as the bot reads it back for loans and paybacks. */
+// deno-lint-ignore no-explicit-any
+export type OwedTx = Record<string, any> & { id: string; amount: number; currency: string; date: string };
+
+/** A debt in app shape, with `_paid` = repaid so far (debt currency, minor). */
+// deno-lint-ignore no-explicit-any
+export type OwedDebt = Record<string, any> & { id: string; type: 'lent' | 'borrowed'; counterparty: string; principal: number; currency: string; _paid: number };
+
+/** What pocket_bot_owed returns. Items carry `_paid` (paid back so far, minor). */
+export interface OwedData {
+  debts: OwedDebt[];
+  items: OwedTx[];
+  credits: OwedTx[];
+  claims: { id: string; name: string; ref?: string }[];
+}
+
 /** A Telegram group that gets summaries of one of its owner's shared spaces (migration 0022). */
 export interface GroupLink {
   chat_id: number;
@@ -331,6 +347,43 @@ export class PocketStore {
     const { data, error } = await this.#sb.rpc('pocket_space_summary', { p_owner: ownerId, p_space: spaceId, p_from: from, p_to: to });
     if (error) throw error;
     return (data ?? null) as SpaceSummary | null;
+  }
+
+  // ── loans and reimbursements (the person's own book only; migration 0038) ──
+
+  /** Open debts, open reimbursement items and kept credits, in app shape. */
+  async loadOwed(ownerId: string): Promise<OwedData> {
+    const { data, error } = await this.#sb.rpc('pocket_bot_owed', { owner: ownerId });
+    if (error) throw new Error(error.message);
+    const d = (data ?? {}) as Partial<OwedData>;
+    return { debts: d.debts ?? [], items: d.items ?? [], credits: d.credits ?? [], claims: d.claims ?? [] };
+  }
+
+  /** One loan or payback entry (null when gone). */
+  async loadOwedTx(ownerId: string, id: string): Promise<OwedTx | null> {
+    const { data, error } = await this.#sb.rpc('pocket_bot_tx', { owner: ownerId, tx_id: id });
+    if (error) throw new Error(error.message);
+    return (data ?? null) as OwedTx | null;
+  }
+
+  /** One debt, open or paid (null when gone). */
+  async loadDebt(ownerId: string, id: string): Promise<OwedDebt | null> {
+    const { data, error } = await this.#sb.rpc('pocket_bot_debt', { owner: ownerId, debt_id: id });
+    if (error) throw new Error(error.message);
+    return (data ?? null) as OwedDebt | null;
+  }
+
+  /** Whether an entry id was ever used in this book (a retried message). */
+  async txIdUsed(ownerId: string, id: string): Promise<boolean> {
+    const { data, error } = await this.#sb.from('transactions').select('id').eq('owner_id', ownerId).eq('id', id);
+    if (error) throw error;
+    return (data ?? []).length > 0;
+  }
+
+  /** Saves rows into the person's own book (pocket_apply_changes, as the app does). */
+  async applyOwn(ownerId: string, changes: Record<string, unknown>): Promise<void> {
+    const { error } = await this.#sb.rpc('pocket_apply_changes', { book: ownerId, changes });
+    if (error) throw new Error(error.message);
   }
 
   /** Writes entries into a book as this person, under the sharing rules. */
