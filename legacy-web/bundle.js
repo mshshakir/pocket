@@ -3410,6 +3410,31 @@ var _PocketApp = (() => {
       list.push({ from, unit: Math.max(0, Math.round(Number(unit) || 0)) });
       return list;
     }
+    /**
+     * New `adjustments` after a paid day changes from `was` to `now`. A day
+     * changed twice before the next bill keeps what was paid for it; changing
+     * it back to that removes the adjustment.
+     */
+    static withAdjustment(item, date, was, now, unit) {
+      const list = (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => ({ ...a }));
+      const open = list.find((a) => a.date === date && !a.settledIn);
+      const paidFor = open ? open.was : was;
+      const rest = list.filter((a) => a !== open);
+      if (now === paidFor) return rest;
+      return [...rest, { date, was: paidFor, now, unit: open ? open.unit : unit, settledIn: null }].sort((a, b) => a.date.localeCompare(b.date));
+    }
+    /** Adjustments still to go on a bill: [{ date, was, now, unit, amount }]. */
+    openAdjustments() {
+      return (Array.isArray(this.#item.adjustments) ? this.#item.adjustments : []).filter((a) => a && !a.settledIn && _DeliveryPlan.isIso(a.date)).map((a) => ({ ...a, amount: Math.round((Number(a.now) - Number(a.was)) * Number(a.unit)) }));
+    }
+    /** `adjustments` with the open ones marked as included in payment `ref` (the entry's id). */
+    static settleAdjustments(item, ref) {
+      return (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => a.settledIn ? a : { ...a, settledIn: ref });
+    }
+    /** `adjustments` open again where their payment is no longer there. */
+    static unsettleAdjustments(item, isGone) {
+      return (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => a.settledIn && isGone(a.settledIn) ? { ...a, settledIn: null } : a);
+    }
     /** `marks` with days before `iso` dropped (they're paid and nobody edits them). */
     static marksFrom(marks, iso) {
       return Object.fromEntries(Object.entries(marks || {}).filter(([d]) => d >= iso));
@@ -3477,14 +3502,57 @@ var _PocketApp = (() => {
       return this.#entries().filter((t) => t.regularItemId === itemId && t.settles && DeliveryPlan.isIso(t.settles.to)).sort((a, b) => b.settles.to.localeCompare(a.settles.to) || String(b.date).localeCompare(String(a.date)));
     }
     /**
-     * The last day already paid for (null when nothing is): the later of the
-     * item's own record (set on paying, also from Telegram) and the payments.
+     * The last day already paid for (null when nothing is). For an item of this
+     * book it's the latest payment entry — so deleting a payment reopens its
+     * days. For an item seen in someone else's space (whose payments this book
+     * doesn't hold) it's the item's own record, which every payment updates.
      */
     paidTo(item) {
+      const id = typeof item === "string" ? item : item?.id;
       const it = typeof item === "string" ? this.items().find((i) => i.id === item) : item;
-      const fromTx = this.payments(typeof item === "string" ? item : item?.id)[0]?.settles.to ?? null;
-      const own = DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
-      return [fromTx, own].filter(Boolean).sort().pop() ?? null;
+      if (this.#isOwn(id)) return this.payments(id)[0]?.settles.to ?? null;
+      return DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
+    }
+    /**
+     * Brings this book's items in line with their payments: "paid up to" (which
+     * Telegram and family members read) and adjustments whose payment was
+     * deleted, which go back on the next bill. Returns true when anything changed.
+     *
+     * An item on a family member's account has its payments in their book,
+     * which may not have loaded yet: its "paid up to" only moves back when the
+     * payment is undone here (`removed` names the entries just deleted).
+     * @param {Set<string>} [removed]
+     */
+    reconcile(removed = /* @__PURE__ */ new Set()) {
+      const ids = new Set(this.#entries().map((t) => t.id).filter((id) => !removed.has(id)));
+      let changed = false;
+      for (const it of this.items()) {
+        const to = this.payments(it.id).filter((t) => !removed.has(t.id))[0]?.settles.to ?? null;
+        const lowering = (it.paidTo ?? "") > (to ?? "");
+        if (lowering && it.sharedOwnerId && !this.payments(it.id).some((t) => removed.has(t.id))) continue;
+        if ((it.paidTo ?? null) !== to) {
+          if (to) it.paidTo = to;
+          else delete it.paidTo;
+          changed = true;
+        }
+        if ((it.adjustments || []).some((a) => a.settledIn && !ids.has(a.settledIn))) {
+          it.adjustments = DeliveryPlan.unsettleAdjustments(it, (ref) => !ids.has(ref));
+          changed = true;
+        }
+      }
+      return changed;
+    }
+    /** The newest payment to a vendor: { date, to, entries } (the entries recorded together), or null. */
+    lastPayment(vendor) {
+      const mine = this.items().filter((i) => this.plan(i).vendor.toLowerCase() === String(vendor).toLowerCase());
+      const all = mine.flatMap((i) => this.payments(i.id));
+      if (!all.length) return null;
+      const newest = all.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.settles.to.localeCompare(a.settles.to))[0];
+      const entries = all.filter((t) => t.date === newest.date && t.settles.to === newest.settles.to);
+      return { date: newest.date, to: newest.settles.to, entries, amount: entries.reduce((s, t) => s + (t.amount || 0), 0), currency: newest.currency };
+    }
+    #isOwn(itemId) {
+      return (this.#store.getState().regularItems || []).some((i) => i.id === itemId);
     }
     /** True when `iso` is covered by a payment, so it shouldn't be edited. */
     isPaid(item, iso) {
@@ -3499,11 +3567,24 @@ var _PocketApp = (() => {
       const start = plan.trackFrom || after || _VendorDues.today();
       return after && after > start ? after : start;
     }
-    /** What's owed for an item up to `upTo` (default today): DeliveryPlan totals, or null when nothing is open. */
+    /**
+     * What's owed for an item up to `upTo` (default today): the open days
+     * (DeliveryPlan totals) plus adjustments for paid days changed since —
+     * { item, plan, from, to, days, qty, amount, lines, adjustments } — or null
+     * when there's neither.
+     */
     due(item, upTo = _VendorDues.today()) {
+      const plan = this.plan(item);
+      const adjustments = plan.openAdjustments();
+      const adjust = adjustments.reduce((t2, a) => t2 + a.amount, 0);
       const from = this.openFrom(item);
-      if (from > upTo) return null;
-      return { item, plan: this.plan(item), ...this.plan(item).totals(from, upTo) };
+      if (from > upTo) {
+        if (!adjustments.length) return null;
+        const to = this.paidTo(item) ?? upTo;
+        return { item, plan, from: to, to, days: 0, qty: 0, amount: adjust, lines: [], adjustments };
+      }
+      const t = plan.totals(from, upTo);
+      return { item, plan, ...t, amount: t.amount + adjust, adjustments };
     }
     /**
      * Everything owed, by vendor:
@@ -3546,13 +3627,16 @@ var _PocketApp = (() => {
       for (const l of group.lines) {
         if (!l.from) continue;
         const plan = l.plan;
-        parts.push("", `${l.item.name} \xB7 ${DeliveryPlan.rangeLabel(l.from, l.to)}`);
+        parts.push("", `${l.item.name}${l.lines.length ? ` \xB7 ${DeliveryPlan.rangeLabel(l.from, l.to)}` : ""}`);
         for (const d of l.lines) {
           if (d.qty === 0 && d.state === "off") continue;
           const note = d.state === "paused" ? " (away)" : d.state === "changed" && d.qty === 0 ? " (none)" : d.state === "changed" ? " *" : "";
           parts.push(`${DeliveryPlan.shortDate(d.date)}  ${d.qty ? plan.qtyLabel(d.qty) : "\u2014"}${d.qty ? `  ${money(d.amount, l.item.currency)}` : ""}${note}`);
         }
-        parts.push(`${l.item.name}: ${plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"} = ${money(l.amount, l.item.currency)}`);
+        for (const a of l.adjustments ?? []) {
+          parts.push(`Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.now ? plan.qtyLabel(a.now) : "none"} instead of ${a.was ? plan.qtyLabel(a.was) : "none"} (paid)  ${a.amount < 0 ? "\u2212" : "+"}${money(Math.abs(a.amount), l.item.currency)}`);
+        }
+        parts.push(`${l.item.name}: ${l.days ? `${plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}` : "adjustments"} = ${money(l.amount, l.item.currency)}`);
       }
       parts.push("", `Total due: ${money(group.amount, group.currency)}`);
       if (group.lines.some((l) => l.lines?.some((d) => d.state === "changed" && d.qty > 0))) parts.push("* different from the usual");
@@ -6694,13 +6778,26 @@ RULES:
     /**
      * Show a toast message.
      * @param {string} message
+     * @param {{action?: {label: string, run: () => void}}} [opts]  a button such as Undo
      */
-    show(message) {
+    show(message, opts = {}) {
       if (!this.#el) return;
       this.#el.textContent = message;
+      this.#el.classList.toggle("has-action", !!opts.action);
+      if (opts.action) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "toast-action";
+        btn.textContent = opts.action.label;
+        btn.addEventListener("click", () => {
+          this.hide();
+          opts.action.run();
+        });
+        this.#el.appendChild(btn);
+      }
       this.#el.classList.add("show");
       clearTimeout(this.#timer);
-      this.#timer = setTimeout(() => this.hide(), this.#duration);
+      this.#timer = setTimeout(() => this.hide(), opts.action ? Math.max(this.#duration, 4500) : this.#duration);
     }
     /** Immediately hide the toast. */
     hide() {
@@ -12951,7 +13048,8 @@ This replaces your current grouping.`
           <span class="icon-pill" style="background:${color}22;color:${color};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:14px;height:14px"></i></span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${Html.escape(it.name)}</div>
-            <div class="text-xs text-zinc-500 truncate">${l.from ? `${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? "" : "s"}` : `Paid up \xB7 ${Html.escape(pattern)}`}</div>
+            <div class="text-xs text-zinc-500 truncate">${l.from && l.lines.length ? `${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? "" : "s"}` : `Paid up \xB7 ${Html.escape(pattern)}`}</div>
+            ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.now ? Html.escape(l.plan.qtyLabel(a.now)) : "none"} instead of ${a.was ? Html.escape(l.plan.qtyLabel(a.was)) : "none"} \xB7 ${a.amount < 0 ? "\u2212" : "+"}${this.formatMoney(Math.abs(a.amount), it.currency || cur)}</div>`).join("")}
           </div>
           <div class="text-right">
             <div class="text-sm font-medium">${this.formatMoney(l.amount, it.currency || cur)}</div>
@@ -12964,9 +13062,13 @@ This replaces your current grouping.`
         <div class="flex items-start justify-between gap-2">
           <div class="min-w-0">
             <div class="font-semibold truncate">${Html.escape(g.vendor)}</div>
-            <div class="text-xs text-zinc-500">${g.lastPaid ? `Last paid ${this.formatMoney(g.lastPaid.amount, g.lastPaid.currency || cur)} on ${DeliveryPlan.shortDate(g.lastPaid.date, true)}` : "Not paid yet"}</div>
+            <div class="text-xs text-zinc-500">${(() => {
+        const last = window.__app?.vendorDues?.lastPayment(g.vendor);
+        if (!last) return "Not paid yet";
+        return `Last paid ${this.formatMoney(last.amount, last.currency || cur)} on ${DeliveryPlan.shortDate(last.date, true)}` + (this.inGuestSpace ? "" : ` \xB7 <button class="underline" onclick="window.__app.undoPayment(${vendorArg})">Undo</button>`);
+      })()}</div>
           </div>
-          <div class="text-right"><div class="text-xs text-zinc-500">Due</div><div class="text-lg font-semibold">${this.formatMoney(g.amount, cur)}</div></div>
+          <div class="text-right"><div class="text-xs text-zinc-500">${g.amount < 0 ? "In your favour" : "Due"}</div><div class="text-lg font-semibold">${this.formatMoney(Math.abs(g.amount), cur)}</div></div>
         </div>
         <div class="divide-y divide-zinc-100 dark:divide-zinc-800 mt-2">${lines}</div>
         ${this.inGuestSpace ? "" : `
@@ -15658,7 +15760,7 @@ This replaces your current grouping.`
       this.#currencyService = currencyService;
       this.#regularLogs = regularLogService || null;
     }
-    render({ date } = {}) {
+    render({ date, flash = null } = {}) {
       if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
       const s = this.#store.getState();
       const all = s.regularItems || [];
@@ -15716,7 +15818,7 @@ This replaces your current grouping.`
           </button>
         </div>
 
-        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx) : ""}
+        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx, flash) : ""}
 
         ${logs.length > 0 ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ""}${logRows}</div>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
@@ -15749,25 +15851,26 @@ This replaces your current grouping.`
       </div>`;
     }
     /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
-    #deliveries(list, date, s, ctx) {
+    #deliveries(list, date, s, ctx, flash) {
       const rows = list.map((item) => {
         const plan = new DeliveryPlan(item);
         const state = plan.stateOn(date);
         const qty = plan.qtyOn(date);
         const paid = this.#dues?.isPaid(item, date) ?? false;
-        const locked = paid || !ctx.canChange(item);
+        const locked = !ctx.canChange(item) || paid && !!ctx.ownerId;
+        const adj = (item.adjustments || []).find((a) => a.date === date && !a.settledIn);
         const id = Html.escape(item.id);
         const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : "";
         const label = state === "before" ? "Not counted yet" : state === "paused" ? "Paused" : state === "changed" ? qty ? `Changed \xB7 usual ${plan.qtyLabel(plan.usualOn(date))}` : "None today" : state === "off" ? "Not a delivery day" : "Usual";
         const color = Html.color(item.color);
         return `
-        <div class="delivery-row ${state === "changed" ? "is-changed" : ""}">
+        <div class="delivery-row ${state === "changed" ? "is-changed" : ""} ${flash === item.id ? "delivery-flash" : ""}">
           <span class="icon-pill" style="background:${color}22;color:${color};width:30px;height:30px">
             <i data-lucide="${Html.icon(item.icon)}" style="width:15px;height:15px"></i>
           </span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
-            <div class="text-xs text-zinc-500">${label}${cost ? ` \xB7 ${cost}` : ""}${paid ? " \xB7 paid" : ""}</div>
+            <div class="text-xs text-zinc-500">${label}${cost ? ` \xB7 ${cost}` : ""}${paid ? " \xB7 paid" : ""}${adj ? ` \xB7 ${adj.now > adj.was ? "+" : "\u2212"}${this.#currencyService.formatMoney(Math.abs(Math.round((adj.now - adj.was) * adj.unit)), item.currency || s.user.homeCurrency)} next bill` : ""}</div>
           </div>
           ${locked || state === "before" ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "\u2014"}</span>` : `
           <div class="delivery-step">
@@ -15812,7 +15915,7 @@ This replaces your current grouping.`
       const group = this.#dues().byVendor(upTo).find((g) => g.vendor.toLowerCase() === String(opts.vendor || "").toLowerCase());
       const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
       if (!group) return `<div class="p-5"><div class="flex justify-between items-center"><b>Nothing to pay</b>${close}</div></div>`;
-      const open = group.lines.filter((l) => l.from && l.amount > 0);
+      const open = group.lines.filter((l) => l.from && (l.lines.length || l.adjustments?.length) && l.amount > 0);
       const first = open[0]?.item || group.lines[0].item;
       const vendorArg = Html.escape(JSON.stringify(group.vendor));
       const rows = open.map((l) => {
@@ -15821,7 +15924,8 @@ This replaces your current grouping.`
         <div class="settle-row">
           <div class="min-w-0">
             <div class="font-medium text-sm">${Html.escape(l.item.name)}</div>
-            <div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}</div>
+            ${l.lines.length ? `<div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}</div>` : ""}
+            ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.amount < 0 ? "\u2212" : "+"}${this.#fx.formatMoney(Math.abs(a.amount), cur)}</div>`).join("")}
           </div>
           <div class="settle-amount">
             <span class="text-xs text-zinc-500">${Html.escape(cur)}</span>
@@ -20701,7 +20805,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
      * @param {object} item
      * @param {{date: string, qty: number, unitMinor: number, amountMinor: number, ref: AccountRef,
      *          description?: string, payee?: string, note?: string, extra?: object}} e
-     * @returns {Promise<boolean>} false when it couldn't be recorded (a toast says why)
+     * @returns {Promise<string|null>} the entry's id, or null when it couldn't be recorded (a toast says why)
      */
     async #recordRegularEntry(item, e) {
       const s = this.#store.getState();
@@ -20731,7 +20835,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
         const share = this.#sync.shareByOwner?.(e.ref.ownerId);
         if (!share?._ownerId) {
           this.#toast.show("Shared account not found");
-          return false;
+          return null;
         }
         const ownerHome = share.homeCurrency || s.user.homeCurrency;
         const tx2 = {
@@ -20748,9 +20852,9 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
           this.#sync.scheduleSharesRefresh?.(8e3);
         } catch (err) {
           this.#toast.show("Failed to submit: " + (err.message || err));
-          return false;
+          return null;
         }
-        return true;
+        return tx2.id;
       }
       const tx = {
         ...base,
@@ -20761,7 +20865,7 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       s.transactions.push(tx);
       this.#store.flush();
       this.#sync.schedulePush?.();
-      return true;
+      return tx.id;
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Pay-later items: the usual pattern, exceptions, pauses, paying the vendor
@@ -20793,12 +20897,13 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       if (!ctx.ownerId || !item) return false;
       if (!ctx.canChange(item)) {
         this.#toast.show("You can only view this item");
-        return true;
+        return false;
       }
       try {
         await this.#sync.deliveryChange(ctx.ownerId, itemId, change);
       } catch (err) {
         this.#toast.show(err.message || "Not saved");
+        return false;
       }
       this.#render();
       if (reopen) this.openModal(reopen.name, reopen.opts);
@@ -20812,18 +20917,66 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.#render();
       if (reopen) this.openModal(reopen.name, reopen.opts);
     }
-    /** How many came on a day (0 = none). Paid days can't change. */
-    setDelivery(itemId, date, qty) {
-      const shared = this.deliveryContext().ownerId ? this.deliveryContext().items.find((i) => i.id === itemId) : null;
-      if (shared) {
-        const marks = DeliveryPlan.withMark(shared, date, qty);
-        const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
-        return void this.#sharedDelivery(itemId, change, { name: "dayLogs", opts: { date } });
-      }
-      const item = this.#ownItem(itemId);
+    /**
+     * How many came on a day (0 = none). The change is confirmed with a
+     * message saying what changed (with Undo), a flash on the row and a small
+     * vibration. A day already paid for can still be changed after a
+     * confirmation: the difference goes on the next bill as an adjustment.
+     * @param {{undo?: boolean}} [opts]  undo: putting a change back (no new Undo)
+     */
+    async setDelivery(itemId, date, qty, opts = {}) {
+      const ctx = this.deliveryContext();
+      const item = ctx.items.find((i) => i.id === itemId);
       if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
-      if (this.#vendorDues.isPaid(item, date)) return this.#toast.show("That day is already paid");
-      this.#saveDelivery(item, { marks: DeliveryPlan.withMark(item, date, qty) }, { name: "dayLogs", opts: { date } });
+      const plan = new DeliveryPlan(item);
+      const before = plan.qtyOn(date);
+      const marks = DeliveryPlan.withMark(item, date, qty);
+      const after = new DeliveryPlan({ ...item, marks }).qtyOn(date);
+      const undo = { itemId, date, mark: plan.changedOn(date) ? item.marks[date] : null, adjustments: item.adjustments ?? [] };
+      const reopen = { name: "dayLogs", opts: { date, flash: itemId } };
+      if (ctx.ownerId) {
+        const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
+        if (!await this.#sharedDelivery(itemId, change, reopen)) return;
+      } else {
+        const own = this.#ownItem(itemId);
+        const change = { marks };
+        if (this.#vendorDues.isPaid(own, date) && !opts.undo) {
+          const diff = Math.round((after - before) * plan.priceOn(date));
+          const money = this.#fx.formatMoney(Math.abs(diff), own.currency || this.#store.getState().user.homeCurrency);
+          if (diff !== 0 && !confirm(`${DeliveryPlan.shortDate(date)} is already paid.
+
+Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 0 ? `${money} will be taken off` : `${money} will be added to`} the next bill.`)) return;
+          change.adjustments = DeliveryPlan.withAdjustment(own, date, before, after, plan.priceOn(date));
+        } else if (opts.undo) {
+          change.adjustments = opts.adjustments ?? own.adjustments;
+        }
+        this.#saveDelivery(own, change, reopen);
+      }
+      if (opts.undo) return void this.#toast.show(`Undone \xB7 ${item.name} ${DeliveryPlan.shortDate(date)}: ${after ? plan.qtyLabel(after) : "none"}`);
+      try {
+        navigator.vibrate?.(12);
+      } catch (_) {
+      }
+      this.#toast.show(this.#deliveryNote(item, date, after), { action: { label: "Undo", run: () => this.#undoDelivery(undo) } });
+    }
+    /** "Milk · 12 Nov: 2 L (usual 1 L)", "… back to usual (1 L)", "+₹64 on the next bill". */
+    #deliveryNote(item, date, qty) {
+      const fresh = this.deliveryContext().items.find((i) => i.id === item.id) || item;
+      const plan = new DeliveryPlan(fresh);
+      const usual = plan.pausedOn(date) ? 0 : plan.usualOn(date);
+      const what = qty === usual ? `back to usual (${usual ? plan.qtyLabel(usual) : "none"})` : `${qty ? plan.qtyLabel(qty) : "none"} (usual ${usual ? plan.qtyLabel(usual) : "none"})`;
+      const adj = (fresh.adjustments || []).find((a) => a.date === date && !a.settledIn);
+      const amount = adj ? Math.round((adj.now - adj.was) * adj.unit) : 0;
+      const bill = amount ? ` \xB7 ${amount > 0 ? "+" : "\u2212"}${this.#fx.formatMoney(Math.abs(amount), fresh.currency || "INR")} on the next bill` : "";
+      return `${item.name} \xB7 ${DeliveryPlan.shortDate(date)}: ${what}${bill}`;
+    }
+    /** Puts a day back exactly as it was (its mark, or the usual, and any adjustment). */
+    #undoDelivery(u) {
+      const item = this.deliveryContext().items.find((i) => i.id === u.itemId);
+      if (!item) return;
+      const plan = new DeliveryPlan({ ...item, marks: { ...item.marks || {}, ...u.mark === null ? {} : { [u.date]: u.mark } } });
+      const qty = u.mark === null ? new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, u.date) }).qtyOn(u.date) : plan.qtyOn(u.date);
+      this.setDelivery(u.itemId, u.date, qty, { undo: true, adjustments: u.adjustments });
     }
     stepDelivery(itemId, date, delta) {
       const item = this.deliveryContext().items.find((i) => i.id === itemId);
@@ -20832,10 +20985,10 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
     }
     resetDelivery(itemId, date) {
-      if (this.deliveryContext().ownerId) return void this.#sharedDelivery(itemId, { clear: date }, { name: "dayLogs", opts: { date } });
-      const item = this.#ownItem(itemId);
-      if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
-      this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: "dayLogs", opts: { date } });
+      const item = this.deliveryContext().items.find((i) => i.id === itemId);
+      if (!item) return;
+      const usual = new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, date) }).qtyOn(date);
+      this.setDelivery(itemId, date, usual);
     }
     submitPause(e, itemId) {
       e.preventDefault();
@@ -20871,8 +21024,8 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
         const typed = parseFloat(fd.get(`amount_${l.item.id}`));
         const amount = Number.isFinite(typed) ? this.#fx.toMinor(typed, cur) : l.amount;
         if (amount <= 0) continue;
-        const range = DeliveryPlan.rangeLabel(l.from, l.to);
-        const ok = await this.#recordRegularEntry(l.item, {
+        const range = l.days || l.lines.length ? DeliveryPlan.rangeLabel(l.from, l.to) : "adjustments";
+        const txId = await this.#recordRegularEntry(l.item, {
           date: paidOn,
           qty: l.qty,
           unitMinor: l.qty ? Math.round(amount / l.qty) : amount,
@@ -20880,15 +21033,16 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
           ref,
           description: `${l.item.name} \xB7 ${range}`,
           payee: group.vendor,
-          note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}`,
+          note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}` + (l.adjustments?.length ? ` and ${l.adjustments.length} adjustment${l.adjustments.length === 1 ? "" : "s"}` : ""),
           extra: { settles: { from: l.from, to: l.to, qty: l.qty } }
         });
-        if (!ok) break;
+        if (!txId) break;
         recorded++;
         const item = this.#ownItem(l.item.id);
         if (item) {
           item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
           if (!item.paidTo || l.to > item.paidTo) item.paidTo = l.to;
+          if (l.adjustments?.length) item.adjustments = DeliveryPlan.settleAdjustments(item, txId);
         }
       }
       if (!recorded) return;
@@ -20935,6 +21089,35 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.closeModal();
       this.#render();
       this.#toast.show(`${t.payee || "Bill"} skipped this time`);
+    }
+    /**
+     * Undoes the newest payment to a vendor: its entries are deleted, so the
+     * days they covered (and any adjustments in it) are owed again and can be
+     * changed. Entries sent to a family member's book are removed there.
+     */
+    async undoPayment(vendor) {
+      const last = this.#vendorDues.lastPayment(vendor);
+      if (!last) return this.#toast.show("No payment to undo");
+      const money = this.#fx.formatMoney(last.amount, last.currency || this.#store.getState().user.homeCurrency);
+      if (!confirm(`Undo the payment of ${money} to ${vendor} on ${DeliveryPlan.shortDate(last.date, true)}?
+
+${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entries are`} deleted, and the days up to ${DeliveryPlan.shortDate(last.to)} are owed again \u2014 you can change them and pay again.`)) return;
+      const s = this.#store.getState();
+      const removed = new Set(last.entries.map((t) => t.id));
+      for (const t of last.entries.filter((x) => x._shared)) {
+        try {
+          await this.#sync.deleteContribution(t._ownerId, t.id);
+        } catch (err) {
+          this.#toast.show(`Not undone: ${err.message || err}`);
+          return;
+        }
+      }
+      s.transactions = s.transactions.filter((t) => !removed.has(t.id));
+      this.#vendorDues.reconcile(removed);
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.#render();
+      this.#toast.show(`Payment to ${vendor} undone \xB7 days up to ${DeliveryPlan.shortDate(last.to)} are owed again`);
     }
     /** The vendor's bill as text: the share sheet on phones, else copied. */
     async shareStatement(vendor, upTo) {
@@ -21523,6 +21706,10 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     // Private: render
     // ──────────────────────────────────────────────────────────────────────────
     #render() {
+      if (this.#vendorDues?.reconcile()) {
+        this.#store.persist();
+        this.#sync.schedulePush?.();
+      }
       this.#swipe?.reset();
       this.#renderSpaceBar();
       const state = this.#store.getState();

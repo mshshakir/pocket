@@ -42,14 +42,59 @@ export class VendorDues {
   }
 
   /**
-   * The last day already paid for (null when nothing is): the later of the
-   * item's own record (set on paying, also from Telegram) and the payments.
+   * The last day already paid for (null when nothing is). For an item of this
+   * book it's the latest payment entry — so deleting a payment reopens its
+   * days. For an item seen in someone else's space (whose payments this book
+   * doesn't hold) it's the item's own record, which every payment updates.
    */
   paidTo(item) {
+    const id = typeof item === 'string' ? item : item?.id;
     const it = typeof item === 'string' ? this.items().find((i) => i.id === item) : item;
-    const fromTx = this.payments(typeof item === 'string' ? item : item?.id)[0]?.settles.to ?? null;
-    const own = DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
-    return [fromTx, own].filter(Boolean).sort().pop() ?? null;
+    if (this.#isOwn(id)) return this.payments(id)[0]?.settles.to ?? null;
+    return DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
+  }
+
+  /**
+   * Brings this book's items in line with their payments: "paid up to" (which
+   * Telegram and family members read) and adjustments whose payment was
+   * deleted, which go back on the next bill. Returns true when anything changed.
+   *
+   * An item on a family member's account has its payments in their book,
+   * which may not have loaded yet: its "paid up to" only moves back when the
+   * payment is undone here (`removed` names the entries just deleted).
+   * @param {Set<string>} [removed]
+   */
+  reconcile(removed = new Set()) {
+    const ids = new Set(this.#entries().map((t) => t.id).filter((id) => !removed.has(id)));
+    let changed = false;
+    for (const it of this.items()) {
+      const to = this.payments(it.id).filter((t) => !removed.has(t.id))[0]?.settles.to ?? null;
+      const lowering = (it.paidTo ?? '') > (to ?? '');
+      if (lowering && it.sharedOwnerId && !this.payments(it.id).some((t) => removed.has(t.id))) continue;
+      if ((it.paidTo ?? null) !== to) {
+        if (to) it.paidTo = to; else delete it.paidTo;
+        changed = true;
+      }
+      if ((it.adjustments || []).some((a) => a.settledIn && !ids.has(a.settledIn))) {
+        it.adjustments = DeliveryPlan.unsettleAdjustments(it, (ref) => !ids.has(ref));
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** The newest payment to a vendor: { date, to, entries } (the entries recorded together), or null. */
+  lastPayment(vendor) {
+    const mine = this.items().filter((i) => this.plan(i).vendor.toLowerCase() === String(vendor).toLowerCase());
+    const all = mine.flatMap((i) => this.payments(i.id));
+    if (!all.length) return null;
+    const newest = all.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.settles.to.localeCompare(a.settles.to))[0];
+    const entries = all.filter((t) => t.date === newest.date && t.settles.to === newest.settles.to);
+    return { date: newest.date, to: newest.settles.to, entries, amount: entries.reduce((s, t) => s + (t.amount || 0), 0), currency: newest.currency };
+  }
+
+  #isOwn(itemId) {
+    return (this.#store.getState().regularItems || []).some((i) => i.id === itemId);
   }
 
   /** True when `iso` is covered by a payment, so it shouldn't be edited. */
@@ -67,11 +112,24 @@ export class VendorDues {
     return after && after > start ? after : start;
   }
 
-  /** What's owed for an item up to `upTo` (default today): DeliveryPlan totals, or null when nothing is open. */
+  /**
+   * What's owed for an item up to `upTo` (default today): the open days
+   * (DeliveryPlan totals) plus adjustments for paid days changed since —
+   * { item, plan, from, to, days, qty, amount, lines, adjustments } — or null
+   * when there's neither.
+   */
   due(item, upTo = VendorDues.today()) {
+    const plan = this.plan(item);
+    const adjustments = plan.openAdjustments();
+    const adjust = adjustments.reduce((t, a) => t + a.amount, 0);
     const from = this.openFrom(item);
-    if (from > upTo) return null;
-    return { item, plan: this.plan(item), ...this.plan(item).totals(from, upTo) };
+    if (from > upTo) {
+      if (!adjustments.length) return null;
+      const to = this.paidTo(item) ?? upTo;
+      return { item, plan, from: to, to, days: 0, qty: 0, amount: adjust, lines: [], adjustments };
+    }
+    const t = plan.totals(from, upTo);
+    return { item, plan, ...t, amount: t.amount + adjust, adjustments };
   }
 
   /**
@@ -115,13 +173,16 @@ export class VendorDues {
     for (const l of group.lines) {
       if (!l.from) continue;
       const plan = l.plan;
-      parts.push('', `${l.item.name} · ${DeliveryPlan.rangeLabel(l.from, l.to)}`);
+      parts.push('', `${l.item.name}${l.lines.length ? ` · ${DeliveryPlan.rangeLabel(l.from, l.to)}` : ''}`);
       for (const d of l.lines) {
         if (d.qty === 0 && d.state === 'off') continue;
         const note = d.state === 'paused' ? ' (away)' : d.state === 'changed' && d.qty === 0 ? ' (none)' : d.state === 'changed' ? ' *' : '';
         parts.push(`${DeliveryPlan.shortDate(d.date)}  ${d.qty ? plan.qtyLabel(d.qty) : '—'}${d.qty ? `  ${money(d.amount, l.item.currency)}` : ''}${note}`);
       }
-      parts.push(`${l.item.name}: ${plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'} = ${money(l.amount, l.item.currency)}`);
+      for (const a of l.adjustments ?? []) {
+        parts.push(`Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.now ? plan.qtyLabel(a.now) : 'none'} instead of ${a.was ? plan.qtyLabel(a.was) : 'none'} (paid)  ${a.amount < 0 ? '−' : '+'}${money(Math.abs(a.amount), l.item.currency)}`);
+      }
+      parts.push(`${l.item.name}: ${l.days ? `${plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}` : 'adjustments'} = ${money(l.amount, l.item.currency)}`);
     }
     parts.push('', `Total due: ${money(group.amount, group.currency)}`);
     if (group.lines.some((l) => l.lines?.some((d) => d.state === 'changed' && d.qty > 0))) parts.push('* different from the usual');

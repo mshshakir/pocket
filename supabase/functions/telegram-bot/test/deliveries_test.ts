@@ -61,6 +61,7 @@ class FakeDeliveries {
     if ('set' in change) { if (it.paidTo && change.set.date <= it.paidTo) return Promise.reject(new Error('That day is already paid')); it.marks = { ...it.marks, [change.set.date]: change.set.qty }; }
     if ('clear' in change) { const m = { ...it.marks }; delete m[change.clear]; it.marks = m; }
     if ('paidTo' in change && (!it.paidTo || change.paidTo > it.paidTo)) it.paidTo = change.paidTo;
+    if ('paidTo' in change && change.tx) it.adjustments = (it.adjustments ?? []).map((a) => (a.settledIn ? a : { ...a, settledIn: change.tx! }));
     this.changes.push({ actor, item: itemId, change });
     return Promise.resolve();
   }
@@ -308,6 +309,21 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   const n = st.written.length;
   ok('T6 "paid electricity 1950" pays the next open one (22 Nov) with that amount', await bot.tryText(links.get(ME)!, ME, 1, 'paid electricity 1,950') && st.written.length === n + 1 && st.written.at(-1)!.tx.amount === 195000 && st.written.at(-1)!.tx.id === 'tx_elec__2026-11-22');
   ok('T6 "paid gym 500" for no such bill is an ordinary message', !(await bot.tryText(links.get(ME)!, ME, 1, 'paid gym 500')));
+}
+
+// ── T7 adjustments ─────────────────────────────────────────────────────
+{
+  const dl = new FakeDeliveries(), st = new FakeStore(), tg = new FakeTelegram();
+  dl.items = [{ ...milk(), paidTo: '2026-11-07', adjustments: [{ date: '2026-11-05', was: 1, now: 0, unit: 6400, settledIn: null }] }];
+  const d = new DeliveryDay(dl.items[0]);
+  ok('T7 a paid day changed afterwards: −₹64 on the next bill', d.openAdjustment === -6400 && d.due('2026-11-10')!.amount === 6400 && d.due('2026-11-10')!.adjust === -6400);
+  ok('T7 with nothing else owed, the credit still shows', d.due('2026-11-07')!.amount === -6400 && d.due('2026-11-07')!.days === 0);
+  const bot = new DeliveryBot(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clockAt('2026-11-10', '20:00'), rates as never);
+  await bot.dues(links.get(ME)!, ME);
+  ok('T7 /dues shows it (8–10 Nov: ₹128 − ₹64)', /2 L on 2 days \(8–10 Nov\) − ₹64 for paid days changed = ₹64/.test(tg.sent.at(-1)!.text), tg.sent.at(-1)!.text);
+  const data = (tg.sent.at(-1)!.keyboard as { callback_data: string }[][])[0][0].callback_data;
+  await bot.handleCallback({ id: 'cb', from: { id: ME }, data, message: { message_id: 1, chat: { id: ME }, text: 'x' } });
+  ok('T7 paying includes it once; it\'s marked as in that payment', st.written.at(-1)!.tx.amount === 6400 && dl.items[0].adjustments![0].settledIn === st.written.at(-1)!.tx.id && new DeliveryDay(dl.items[0]).openAdjustment === 0);
 }
 
 ok('T* CheckinMessage buttons fit Telegram\'s 64 bytes', CheckinMessage.render(123456789, [milk(), paper()], '2026-11-16', null).keyboard.flat().every((b) => b.callback_data.length <= 64));

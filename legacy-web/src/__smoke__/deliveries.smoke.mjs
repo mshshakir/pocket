@@ -187,8 +187,18 @@ function boot(extraTx = []) {
   ok('A2 one expense of the amount paid, covering the days, in the category', paid.length === 1 && paid[0].amount === 57000 && paid[0].type === 'expense' && paid[0].categoryId === 'c1'
      && paid[0].settles.from === daysAgo(9) && paid[0].settles.to === today && paid[0].payee === 'Doodhwala' && paid[0].accountId === 'a1', JSON.stringify(paid[0]));
   ok('A2 nothing owed after paying; paid days are locked', app.vendorDues.due(app.vendorDues.items()[0]) === null && app.vendorDues.isPaid(app.vendorDues.items()[0], daysAgo(3)));
+  w.confirm = () => false;
   app.stepDelivery('ri_milk', daysAgo(3), 1);
-  ok('A2 a paid day can\'t be changed', app.vendorDues.items()[0].marks[daysAgo(3)] === 2);
+  await wait(10);
+  ok('A2 changing a paid day asks first; "no" changes nothing', app.vendorDues.items()[0].marks[daysAgo(3)] === 2 && !(app.vendorDues.items()[0].adjustments || []).length);
+  w.confirm = () => true;
+  app.stepDelivery('ri_milk', daysAgo(3), -1);
+  await wait(10);
+  let mi = app.vendorDues.items()[0];
+  ok('A2 "yes": the day changes and −₹64 goes on the next bill', new DeliveryPlan(mi).qtyOn(daysAgo(3)) === 1 && mi.adjustments.length === 1 && mi.adjustments[0].was === 2 && mi.adjustments[0].now === 1
+     && /Milk · .*: back to usual \(1 L\) · −₹64(\.00)? on the next bill/.test(w.document.getElementById('toast').textContent), w.document.getElementById('toast').textContent);
+  const owedAdj = app.vendorDues.due(mi);
+  ok('A2 owed: just the adjustment, −₹64, nothing to pay', owedAdj && owedAdj.amount === -6400 && owedAdj.lines.length === 0 && owedAdj.adjustments.length === 1);
 
   // A3 the item form
   app.openModal('regularItem', { id: 'ri_milk' });
@@ -284,6 +294,83 @@ function boot(extraTx = []) {
   app.submitRegularItem({ preventDefault() {}, target: itf }, 'ri_milk');
   const m = app.vendorDues.items().find((i) => i.id === 'ri_milk');
   ok('B4 saved: one person (Asha), 7:30, Dubai time', m.checkinTo === 'one' && m.checkinEmail === 'asha@x.com' && m.checkinMinute === 450 && m.checkinTz === 'Asia/Dubai', JSON.stringify({ t: m.checkinTo, e: m.checkinEmail, mi: m.checkinMinute, z: m.checkinTz }));
+}
+
+// ── feedback, undo payment, adjustments ─────────────────────────────────────
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  const toast = () => w.document.getElementById('toast');
+  app.openModal('dayLogs', { date: daysAgo(2) });
+  app.stepDelivery('ri_milk', daysAgo(2), 1);
+  await wait(10);
+  ok('F1 the message says what changed, with Undo', /Milk · .*: 2 L \(usual 1 L\)/.test(toast().textContent) && toast().querySelector('.toast-action')?.textContent === 'Undo' && toast().classList.contains('show'), toast().textContent);
+  ok('F1 the changed row flashes', !!w.document.querySelector('.delivery-row.delivery-flash'));
+  toast().querySelector('.toast-action').click();
+  await wait(10);
+  ok('F1 Undo puts the day back to the usual (no mark left)', !(daysAgo(2) in (app.vendorDues.items()[0].marks || {})) && /Undone/.test(toast().textContent));
+  app.stepDelivery('ri_milk', daysAgo(2), 2);  // 3 L
+  app.stepDelivery('ri_milk', daysAgo(2), -3); // none
+  await wait(10);
+  ok('F1 none → "none (usual 1 L)"', /: none \(usual 1 L\)/.test(toast().textContent));
+  toast().querySelector('.toast-action').click();
+  await wait(10);
+  ok('F1 Undo goes back one step (to the 3 L it was)', app.vendorDues.items()[0].marks[daysAgo(2)] === 3);
+
+  // pay, then undo the payment
+  app.openModal('settle', { vendor: 'Doodhwala' });
+  await wait(10);
+  let f = w.document.querySelector('form');
+  await app.submitSettle({ preventDefault() {}, target: f }, 'Doodhwala', today);
+  await wait(10);
+  let m = app.vendorDues.items()[0];
+  ok('U1 paid: nothing owed, paid up to today', app.vendorDues.due(m) === null && m.paidTo === today);
+  app.setCalTab('dues'); app.navigate('calendar');
+  await wait(30);
+  ok('U1 the Dues card offers Undo on the last payment', /undoPayment\(/.test(w.document.getElementById('viewContent').innerHTML));
+  await app.undoPayment('Doodhwala');
+  m = app.vendorDues.items()[0];
+  ok('U1 Undo payment: the entry is gone, the days are owed again', !app.store.getState().transactions.some((t) => t.settles) && app.vendorDues.due(m)?.qty > 0 && !m.paidTo);
+
+  // pay again, then delete the payment entry the ordinary way
+  app.openModal('settle', { vendor: 'Doodhwala' });
+  await wait(10);
+  f = w.document.querySelector('form');
+  await app.submitSettle({ preventDefault() {}, target: f }, 'Doodhwala', today);
+  const pay = app.store.getState().transactions.find((t) => t.settles);
+  app.store.getState().transactions = app.store.getState().transactions.filter((t) => t.id !== pay.id);
+  app.navigate('dashboard');
+  await wait(30);
+  m = app.vendorDues.items()[0];
+  ok('U2 deleting the payment entry reopens the days too', !m.paidTo && app.vendorDues.due(m)?.qty > 0);
+
+  // adjustment on the next bill
+  app.openModal('settle', { vendor: 'Doodhwala' });
+  await wait(10);
+  f = w.document.querySelector('form');
+  f.querySelector('[name=upTo]').value = DeliveryPlan.addDays(today, -1);
+  await app.submitSettle({ preventDefault() {}, target: f }, 'Doodhwala', DeliveryPlan.addDays(today, -1));
+  w.confirm = () => true;
+  app.stepDelivery('ri_milk', daysAgo(4), 1); // a paid day: +1 L
+  await wait(10);
+  m = app.vendorDues.items()[0];
+  const owed = app.vendorDues.due(m);
+  ok('J1 owed: today\'s delivery + the adjustment (₹64 + ₹64)', owed.amount === 12800 && owed.adjustments.length === 1, JSON.stringify({ a: owed.amount }));
+  const group = app.vendorDues.byVendor().find((g) => g.vendor === 'Doodhwala');
+  const text = VendorDues.statement(group, (x) => `₹${x / 100}`);
+  ok('J1 the bill shows the adjustment line', /Adjustment .*: 2 L instead of 1 L \(paid\)  \+₹64/.test(text), text);
+  app.openModal('settle', { vendor: 'Doodhwala' });
+  await wait(10);
+  f = w.document.querySelector('form');
+  ok('J1 the pay window lists it', /Adjustment .*\+₹64/.test(f.textContent));
+  await app.submitSettle({ preventDefault() {}, target: f }, 'Doodhwala', today);
+  m = app.vendorDues.items()[0];
+  const last = app.store.getState().transactions.filter((t) => t.settles).pop();
+  ok('J1 paying includes it once; it\'s marked as in that payment', last.amount === 12800 && m.adjustments[0].settledIn === last.id && app.vendorDues.due(m) === null);
+  await app.undoPayment('Doodhwala');
+  m = app.vendorDues.items()[0];
+  ok('J1 undoing that payment puts the adjustment back on the bill', m.adjustments[0].settledIn === null && app.vendorDues.due(m).amount === 12800);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

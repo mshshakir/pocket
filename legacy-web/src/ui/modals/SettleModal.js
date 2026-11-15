@@ -33,7 +33,7 @@ export class SettleModal {
     const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
     if (!group) return `<div class="p-5"><div class="flex justify-between items-center"><b>Nothing to pay</b>${close}</div></div>`;
 
-    const open  = group.lines.filter((l) => l.from && l.amount > 0);
+    const open  = group.lines.filter((l) => l.from && (l.lines.length || l.adjustments?.length) && l.amount > 0);
     const first = open[0]?.item || group.lines[0].item;
     const vendorArg = Html.escape(JSON.stringify(group.vendor));
     const rows = open.map((l) => {
@@ -42,7 +42,8 @@ export class SettleModal {
         <div class="settle-row">
           <div class="min-w-0">
             <div class="font-medium text-sm">${Html.escape(l.item.name)}</div>
-            <div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} · ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}</div>
+            ${l.lines.length ? `<div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} · ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}</div>` : ''}
+            ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.amount < 0 ? '−' : '+'}${this.#fx.formatMoney(Math.abs(a.amount), cur)}</div>`).join('')}
           </div>
           <div class="settle-amount">
             <span class="text-xs text-zinc-500">${Html.escape(cur)}</span>

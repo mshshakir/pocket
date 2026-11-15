@@ -8,6 +8,7 @@
  *  - Render the toast element into the DOM on mount()
  *  - Show/hide with CSS transition
  *  - Auto-dismiss after a configurable delay
+ *  - Optionally one action button (e.g. Undo), shown a little longer
  */
 import { EventBus } from '../../core/EventBus.js';
 
@@ -47,13 +48,23 @@ export class Toast {
   /**
    * Show a toast message.
    * @param {string} message
+   * @param {{action?: {label: string, run: () => void}}} [opts]  a button such as Undo
    */
-  show(message) {
+  show(message, opts = {}) {
     if (!this.#el) return;
     this.#el.textContent = message;
+    this.#el.classList.toggle('has-action', !!opts.action);
+    if (opts.action) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = opts.action.label;
+      btn.addEventListener('click', () => { this.hide(); opts.action.run(); });
+      this.#el.appendChild(btn);
+    }
     this.#el.classList.add('show');
     clearTimeout(this.#timer);
-    this.#timer = setTimeout(() => this.hide(), this.#duration);
+    this.#timer = setTimeout(() => this.hide(), opts.action ? Math.max(this.#duration, 4500) : this.#duration);
   }
 
   /** Immediately hide the toast. */

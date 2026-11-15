@@ -28,7 +28,7 @@ export class DayLogsModal {
     this.#regularLogs = regularLogService || null;
   }
 
-  render({ date } = {}) {
+  render({ date, flash = null } = {}) {
     if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
     const s = this.#store.getState();
     const all = s.regularItems || [];
@@ -89,7 +89,7 @@ export class DayLogsModal {
           </button>
         </div>
 
-        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx) : ''}
+        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx, flash) : ''}
 
         ${logs.length > 0
           ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ''}${logRows}</div>`
@@ -125,13 +125,15 @@ export class DayLogsModal {
   }
 
   /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
-  #deliveries(list, date, s, ctx) {
+  #deliveries(list, date, s, ctx, flash) {
     const rows = list.map((item) => {
       const plan = new DeliveryPlan(item);
       const state = plan.stateOn(date);
       const qty = plan.qtyOn(date);
       const paid = this.#dues?.isPaid(item, date) ?? false;
-      const locked = paid || !ctx.canChange(item);
+      // A paid day of your own item can still change (after a confirmation, as an adjustment on the next bill).
+      const locked = !ctx.canChange(item) || (paid && !!ctx.ownerId);
+      const adj = (item.adjustments || []).find((a) => a.date === date && !a.settledIn);
       const id = Html.escape(item.id);
       const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : '';
       const label = state === 'before' ? 'Not counted yet'
@@ -140,13 +142,13 @@ export class DayLogsModal {
         : state === 'off' ? 'Not a delivery day' : 'Usual';
       const color = Html.color(item.color);
       return `
-        <div class="delivery-row ${state === 'changed' ? 'is-changed' : ''}">
+        <div class="delivery-row ${state === 'changed' ? 'is-changed' : ''} ${flash === item.id ? 'delivery-flash' : ''}">
           <span class="icon-pill" style="background:${color}22;color:${color};width:30px;height:30px">
             <i data-lucide="${Html.icon(item.icon)}" style="width:15px;height:15px"></i>
           </span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
-            <div class="text-xs text-zinc-500">${label}${cost ? ` · ${cost}` : ''}${paid ? ' · paid' : ''}</div>
+            <div class="text-xs text-zinc-500">${label}${cost ? ` · ${cost}` : ''}${paid ? ' · paid' : ''}${adj ? ` · ${adj.now > adj.was ? '+' : '−'}${this.#currencyService.formatMoney(Math.abs(Math.round((adj.now - adj.was) * adj.unit)), item.currency || s.user.homeCurrency)} next bill` : ''}</div>
           </div>
           ${locked || state === 'before' ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '—'}</span>` : `
           <div class="delivery-step">

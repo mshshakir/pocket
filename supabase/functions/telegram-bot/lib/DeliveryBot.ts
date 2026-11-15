@@ -235,7 +235,8 @@ export class DeliveryBot {
         const cur = it.currency || 'INR';
         if (!vendors.has(key)) vendors.set(key, { name: d.vendor, lines: [], total: 0, currency: cur, first: it });
         const v = vendors.get(key)!;
-        v.lines.push(`  ${it.name}: ${d.qtyLabel(due.qty)} on ${due.days} day${due.days === 1 ? '' : 's'} (${DeliveryDay.rangeLabel(due.from, due.to)}) = ${DeliveryBot.#inr(due.amount, cur, money)}`);
+        v.lines.push(`  ${it.name}: ${due.days ? `${d.qtyLabel(due.qty)} on ${due.days} day${due.days === 1 ? '' : 's'} (${DeliveryDay.rangeLabel(due.from, due.to)})` : 'adjustments'}`
+          + `${due.adjust ? ` ${due.adjust > 0 ? '+' : '−'} ${DeliveryBot.#inr(Math.abs(due.adjust), cur, money)} for paid days changed` : ''} = ${DeliveryBot.#inr(due.amount, cur, money)}`);
         v.total += due.amount;
       }
       for (const v of vendors.values()) {
@@ -286,7 +287,7 @@ export class DeliveryBot {
         settles: { from: due.from, to: due.to, qty: due.qty },
       } as unknown as PocketTransaction;
       const saved = await writer.add([tx]);
-      await this.#deliveries.change(actor.link.user_id, owner, it.id, { paidTo: due.to });
+      await this.#deliveries.change(actor.link.user_id, owner, it.id, { paidTo: due.to, tx: (tx as unknown as { id: string }).id });
       if (saved === 'saved') { total += due.amount; count++; }
     }
     if (!count) return void await this.#telegram.answer(cb.id, 'Already paid');

@@ -3268,6 +3268,7 @@ export class Application {
     if (done) this.openModal('dayLogs', { date });
   }
 
+
   /**
    * Records one expense entry for a regular item — a day's purchase, or a
    * payment to the vendor. An account a family member shared sends it to the
@@ -3277,7 +3278,7 @@ export class Application {
    * @param {object} item
    * @param {{date: string, qty: number, unitMinor: number, amountMinor: number, ref: AccountRef,
    *          description?: string, payee?: string, note?: string, extra?: object}} e
-   * @returns {Promise<boolean>} false when it couldn't be recorded (a toast says why)
+   * @returns {Promise<string|null>} the entry's id, or null when it couldn't be recorded (a toast says why)
    */
   async #recordRegularEntry(item, e) {
     const s = this.#store.getState();
@@ -3306,7 +3307,7 @@ export class Application {
 
     if (e.ref.isShared) {
       const share = this.#sync.shareByOwner?.(e.ref.ownerId);
-      if (!share?._ownerId) { this.#toast.show('Shared account not found'); return false; }
+      if (!share?._ownerId) { this.#toast.show('Shared account not found'); return null; }
       const ownerHome = share.homeCurrency || s.user.homeCurrency;
       const tx = {
         ...base,
@@ -3322,9 +3323,9 @@ export class Application {
         this.#sync.scheduleSharesRefresh?.(8000);
       } catch (err) {
         this.#toast.show('Failed to submit: ' + (err.message || err));
-        return false;
+        return null;
       }
-      return true;
+      return tx.id;
     }
 
     const tx = {
@@ -3336,7 +3337,7 @@ export class Application {
     s.transactions.push(tx);
     this.#store.flush();
     this.#sync.schedulePush?.();
-    return true;
+    return tx.id;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3370,11 +3371,12 @@ export class Application {
     const ctx = this.deliveryContext();
     const item = ctx.items.find((i) => i.id === itemId);
     if (!ctx.ownerId || !item) return false;
-    if (!ctx.canChange(item)) { this.#toast.show('You can only view this item'); return true; }
+    if (!ctx.canChange(item)) { this.#toast.show('You can only view this item'); return false; }
     try {
       await this.#sync.deliveryChange(ctx.ownerId, itemId, change);
     } catch (err) {
       this.#toast.show(err.message || 'Not saved');
+      return false;
     }
     this.#render();
     if (reopen) this.openModal(reopen.name, reopen.opts);
@@ -3390,18 +3392,66 @@ export class Application {
     if (reopen) this.openModal(reopen.name, reopen.opts);
   }
 
-  /** How many came on a day (0 = none). Paid days can't change. */
-  setDelivery(itemId, date, qty) {
-    const shared = this.deliveryContext().ownerId ? this.deliveryContext().items.find((i) => i.id === itemId) : null;
-    if (shared) {
-      const marks = DeliveryPlan.withMark(shared, date, qty);
-      const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
-      return void this.#sharedDelivery(itemId, change, { name: 'dayLogs', opts: { date } });
-    }
-    const item = this.#ownItem(itemId);
+  /**
+   * How many came on a day (0 = none). The change is confirmed with a
+   * message saying what changed (with Undo), a flash on the row and a small
+   * vibration. A day already paid for can still be changed after a
+   * confirmation: the difference goes on the next bill as an adjustment.
+   * @param {{undo?: boolean}} [opts]  undo: putting a change back (no new Undo)
+   */
+  async setDelivery(itemId, date, qty, opts = {}) {
+    const ctx = this.deliveryContext();
+    const item = ctx.items.find((i) => i.id === itemId);
     if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
-    if (this.#vendorDues.isPaid(item, date)) return this.#toast.show('That day is already paid');
-    this.#saveDelivery(item, { marks: DeliveryPlan.withMark(item, date, qty) }, { name: 'dayLogs', opts: { date } });
+    const plan = new DeliveryPlan(item);
+    const before = plan.qtyOn(date);
+    const marks = DeliveryPlan.withMark(item, date, qty);
+    const after = new DeliveryPlan({ ...item, marks }).qtyOn(date);
+    const undo = { itemId, date, mark: plan.changedOn(date) ? item.marks[date] : null, adjustments: item.adjustments ?? [] };
+    const reopen = { name: 'dayLogs', opts: { date, flash: itemId } };
+
+    if (ctx.ownerId) {
+      const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
+      if (!(await this.#sharedDelivery(itemId, change, reopen))) return;
+    } else {
+      const own = this.#ownItem(itemId);
+      const change = { marks };
+      if (this.#vendorDues.isPaid(own, date) && !opts.undo) {
+        const diff = Math.round((after - before) * plan.priceOn(date));
+        const money = this.#fx.formatMoney(Math.abs(diff), own.currency || this.#store.getState().user.homeCurrency);
+        if (diff !== 0 && !confirm(`${DeliveryPlan.shortDate(date)} is already paid.\n\nChange ${own.name} to ${after ? plan.qtyLabel(after) : 'none'} anyway? `
+          + `${diff < 0 ? `${money} will be taken off` : `${money} will be added to`} the next bill.`)) return;
+        change.adjustments = DeliveryPlan.withAdjustment(own, date, before, after, plan.priceOn(date));
+      } else if (opts.undo) {
+        change.adjustments = opts.adjustments ?? own.adjustments;
+      }
+      this.#saveDelivery(own, change, reopen);
+    }
+    if (opts.undo) return void this.#toast.show(`Undone · ${item.name} ${DeliveryPlan.shortDate(date)}: ${after ? plan.qtyLabel(after) : 'none'}`);
+    try { navigator.vibrate?.(12); } catch (_) { /* not supported */ }
+    this.#toast.show(this.#deliveryNote(item, date, after), { action: { label: 'Undo', run: () => this.#undoDelivery(undo) } });
+  }
+
+  /** "Milk · 12 Nov: 2 L (usual 1 L)", "… back to usual (1 L)", "+₹64 on the next bill". */
+  #deliveryNote(item, date, qty) {
+    const fresh = this.deliveryContext().items.find((i) => i.id === item.id) || item;
+    const plan = new DeliveryPlan(fresh);
+    const usual = plan.pausedOn(date) ? 0 : plan.usualOn(date);
+    const what = qty === usual ? `back to usual (${usual ? plan.qtyLabel(usual) : 'none'})`
+      : `${qty ? plan.qtyLabel(qty) : 'none'} (usual ${usual ? plan.qtyLabel(usual) : 'none'})`;
+    const adj = (fresh.adjustments || []).find((a) => a.date === date && !a.settledIn);
+    const amount = adj ? Math.round((adj.now - adj.was) * adj.unit) : 0;
+    const bill = amount ? ` · ${amount > 0 ? '+' : '−'}${this.#fx.formatMoney(Math.abs(amount), fresh.currency || 'INR')} on the next bill` : '';
+    return `${item.name} · ${DeliveryPlan.shortDate(date)}: ${what}${bill}`;
+  }
+
+  /** Puts a day back exactly as it was (its mark, or the usual, and any adjustment). */
+  #undoDelivery(u) {
+    const item = this.deliveryContext().items.find((i) => i.id === u.itemId);
+    if (!item) return;
+    const plan = new DeliveryPlan({ ...item, marks: { ...(item.marks || {}), ...(u.mark === null ? {} : { [u.date]: u.mark }) } });
+    const qty = u.mark === null ? new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, u.date) }).qtyOn(u.date) : plan.qtyOn(u.date);
+    this.setDelivery(u.itemId, u.date, qty, { undo: true, adjustments: u.adjustments });
   }
 
   stepDelivery(itemId, date, delta) {
@@ -3412,10 +3462,10 @@ export class Application {
   }
 
   resetDelivery(itemId, date) {
-    if (this.deliveryContext().ownerId) return void this.#sharedDelivery(itemId, { clear: date }, { name: 'dayLogs', opts: { date } });
-    const item = this.#ownItem(itemId);
-    if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
-    this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: 'dayLogs', opts: { date } });
+    const item = this.deliveryContext().items.find((i) => i.id === itemId);
+    if (!item) return;
+    const usual = new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, date) }).qtyOn(date);
+    this.setDelivery(itemId, date, usual);
   }
 
   submitPause(e, itemId) {
@@ -3455,19 +3505,21 @@ export class Application {
       const typed = parseFloat(fd.get(`amount_${l.item.id}`));
       const amount = Number.isFinite(typed) ? this.#fx.toMinor(typed, cur) : l.amount;
       if (amount <= 0) continue;
-      const range = DeliveryPlan.rangeLabel(l.from, l.to);
-      const ok = await this.#recordRegularEntry(l.item, {
+      const range = l.days || l.lines.length ? DeliveryPlan.rangeLabel(l.from, l.to) : 'adjustments';
+      const txId = await this.#recordRegularEntry(l.item, {
         date: paidOn, qty: l.qty, unitMinor: l.qty ? Math.round(amount / l.qty) : amount, amountMinor: amount, ref,
         description: `${l.item.name} · ${range}`, payee: group.vendor,
-        note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}`,
+        note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}`
+          + (l.adjustments?.length ? ` and ${l.adjustments.length} adjustment${l.adjustments.length === 1 ? '' : 's'}` : ''),
         extra: { settles: { from: l.from, to: l.to, qty: l.qty } },
       });
-      if (!ok) break;
+      if (!txId) break;
       recorded++;
       const item = this.#ownItem(l.item.id);
       if (item) {
         item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
         if (!item.paidTo || l.to > item.paidTo) item.paidTo = l.to;
+        if (l.adjustments?.length) item.adjustments = DeliveryPlan.settleAdjustments(item, txId);
       }
     }
     if (!recorded) return;
@@ -3513,6 +3565,31 @@ export class Application {
     this.closeModal();
     this.#render();
     this.#toast.show(`${t.payee || 'Bill'} skipped this time`);
+  }
+
+  /**
+   * Undoes the newest payment to a vendor: its entries are deleted, so the
+   * days they covered (and any adjustments in it) are owed again and can be
+   * changed. Entries sent to a family member's book are removed there.
+   */
+  async undoPayment(vendor) {
+    const last = this.#vendorDues.lastPayment(vendor);
+    if (!last) return this.#toast.show('No payment to undo');
+    const money = this.#fx.formatMoney(last.amount, last.currency || this.#store.getState().user.homeCurrency);
+    if (!confirm(`Undo the payment of ${money} to ${vendor} on ${DeliveryPlan.shortDate(last.date, true)}?\n\n`
+      + `${last.entries.length === 1 ? 'Its entry is' : `Its ${last.entries.length} entries are`} deleted, and the days up to `
+      + `${DeliveryPlan.shortDate(last.to)} are owed again — you can change them and pay again.`)) return;
+    const s = this.#store.getState();
+    const removed = new Set(last.entries.map((t) => t.id));
+    for (const t of last.entries.filter((x) => x._shared)) {
+      try { await this.#sync.deleteContribution(t._ownerId, t.id); } catch (err) { this.#toast.show(`Not undone: ${err.message || err}`); return; }
+    }
+    s.transactions = s.transactions.filter((t) => !removed.has(t.id));
+    this.#vendorDues.reconcile(removed);
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.#render();
+    this.#toast.show(`Payment to ${vendor} undone · days up to ${DeliveryPlan.shortDate(last.to)} are owed again`);
   }
 
   /** The vendor's bill as text: the share sheet on phones, else copied. */
@@ -4111,6 +4188,8 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #render() {
+    // A deleted payment reopens its days; keep "paid up to" in step with the payments.
+    if (this.#vendorDues?.reconcile()) { this.#store.persist(); this.#sync.schedulePush?.(); }
     // Any revealed swipe row is about to have its DOM node replaced, so drop
     // the reference rather than leave the controller holding a detached node.
     this.#swipe?.reset();

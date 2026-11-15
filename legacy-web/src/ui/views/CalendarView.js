@@ -355,7 +355,8 @@ export class CalendarView extends BaseView {
           <span class="icon-pill" style="background:${color}22;color:${color};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:14px;height:14px"></i></span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${Html.escape(it.name)}</div>
-            <div class="text-xs text-zinc-500 truncate">${l.from ? `${DeliveryPlan.rangeLabel(l.from, l.to)} · ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? '' : 's'}` : `Paid up · ${Html.escape(pattern)}`}</div>
+            <div class="text-xs text-zinc-500 truncate">${l.from && l.lines.length ? `${DeliveryPlan.rangeLabel(l.from, l.to)} · ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? '' : 's'}` : `Paid up · ${Html.escape(pattern)}`}</div>
+            ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.now ? Html.escape(l.plan.qtyLabel(a.now)) : 'none'} instead of ${a.was ? Html.escape(l.plan.qtyLabel(a.was)) : 'none'} · ${a.amount < 0 ? '−' : '+'}${this.formatMoney(Math.abs(a.amount), it.currency || cur)}</div>`).join('')}
           </div>
           <div class="text-right">
             <div class="text-sm font-medium">${this.formatMoney(l.amount, it.currency || cur)}</div>
@@ -368,9 +369,14 @@ export class CalendarView extends BaseView {
         <div class="flex items-start justify-between gap-2">
           <div class="min-w-0">
             <div class="font-semibold truncate">${Html.escape(g.vendor)}</div>
-            <div class="text-xs text-zinc-500">${g.lastPaid ? `Last paid ${this.formatMoney(g.lastPaid.amount, g.lastPaid.currency || cur)} on ${DeliveryPlan.shortDate(g.lastPaid.date, true)}` : 'Not paid yet'}</div>
+            <div class="text-xs text-zinc-500">${(() => {
+              const last = window.__app?.vendorDues?.lastPayment(g.vendor);
+              if (!last) return 'Not paid yet';
+              return `Last paid ${this.formatMoney(last.amount, last.currency || cur)} on ${DeliveryPlan.shortDate(last.date, true)}`
+                + (this.inGuestSpace ? '' : ` · <button class="underline" onclick="window.__app.undoPayment(${vendorArg})">Undo</button>`);
+            })()}</div>
           </div>
-          <div class="text-right"><div class="text-xs text-zinc-500">Due</div><div class="text-lg font-semibold">${this.formatMoney(g.amount, cur)}</div></div>
+          <div class="text-right"><div class="text-xs text-zinc-500">${g.amount < 0 ? 'In your favour' : 'Due'}</div><div class="text-lg font-semibold">${this.formatMoney(Math.abs(g.amount), cur)}</div></div>
         </div>
         <div class="divide-y divide-zinc-100 dark:divide-zinc-800 mt-2">${lines}</div>
         ${this.inGuestSpace ? '' : `

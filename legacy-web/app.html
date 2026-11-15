@@ -93,6 +93,13 @@
   .toast { position:fixed; bottom:5.5rem; left:50%; transform:translateX(-50%); background:#09090b; color:#fafafa; padding:.6rem 1rem; border-radius:12px; font-size:.85rem; box-shadow:0 10px 30px rgba(0,0,0,.2); z-index:60; opacity:0; transition:opacity .2s, transform .2s; pointer-events:none; }
   html.dark .toast { background:#fafafa; color:#09090b; }
   .toast.show { opacity:1; transform:translate(-50%,-8px); }
+  .toast.has-action { pointer-events:auto; display:flex; align-items:center; gap:.9rem; width:max-content; max-width:min(92vw, 30rem); }
+  .toast-action { font-weight:600; color:#fbbf24; text-transform:uppercase; font-size:.75rem; letter-spacing:.04em; }
+  html.dark .toast-action { color:#b45309; }
+  @keyframes delivery-flash { 0% { box-shadow:0 0 0 0 rgba(245,158,11,.55); transform:scale(1.02); } 100% { box-shadow:0 0 0 12px rgba(245,158,11,0); transform:scale(1); } }
+  .delivery-flash { animation:delivery-flash .7s ease-out; }
+  @keyframes qty-pop { 0% { transform:scale(1.5); } 100% { transform:scale(1); } }
+  .delivery-flash .delivery-qty { display:inline-block; animation:qty-pop .35s ease-out; }
   @media (min-width:768px) { .toast { bottom:1.5rem; } }
 
   /* ── Progress bar ── */

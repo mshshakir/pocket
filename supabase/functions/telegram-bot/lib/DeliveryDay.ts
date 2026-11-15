@@ -23,6 +23,7 @@ export interface DeliveryItem {
   pauses?: { from: string; to: string }[];
   prices?: { from: string; unit: number }[];
   paidTo?: string | null;
+  adjustments?: { date: string; was: number; now: number; unit: number; settledIn: string | null }[];
   checkinTo?: 'all' | 'one' | 'group' | 'off';
   checkinEmail?: string | null;
   checkinMinute?: number;
@@ -34,7 +35,8 @@ export interface DueTotals {
   to: string;
   qty: number;
   days: number;
-  amount: number; // minor units
+  amount: number; // minor units, adjustments included
+  adjust: number; // of which: changes to days already paid
 }
 
 export class DeliveryDay {
@@ -103,12 +105,22 @@ export class DeliveryDay {
     return q === plain ? null : q;
   }
 
-  /** What's owed from the first unpaid day to `upTo`; null when nothing is open. */
+  /** Changes to paid days still to go on a bill (minor units, + or −). */
+  get openAdjustment(): number {
+    return (this.#item.adjustments ?? []).filter((a) => a && !a.settledIn)
+      .reduce((t, a) => t + Math.round((Number(a.now) - Number(a.was)) * Number(a.unit)), 0);
+  }
+
+  /** What's owed from the first unpaid day to `upTo`, with adjustments; null when there's nothing. */
   due(upTo: string): DueTotals | null {
     const after = this.paidTo ? DeliveryDay.addDays(this.paidTo, 1) : null;
     const start = this.trackFrom || after || upTo;
     const from = after && after > start ? after : start;
-    if (from > upTo) return null;
+    const adjust = this.openAdjustment;
+    if (from > upTo) {
+      const hasAdj = (this.#item.adjustments ?? []).some((a) => a && !a.settledIn);
+      return hasAdj ? { from: this.paidTo ?? upTo, to: this.paidTo ?? upTo, qty: 0, days: 0, amount: adjust, adjust } : null;
+    }
     let qty = 0, days = 0, amount = 0;
     for (let iso = from, i = 0; iso <= upTo && i < 1500; iso = DeliveryDay.addDays(iso, 1), i++) {
       const q = this.qtyOn(iso);
@@ -116,7 +128,7 @@ export class DeliveryDay {
       qty += q;
       amount += Math.round(q * this.priceOn(iso));
     }
-    return { from, to: upTo, qty: Math.round(qty * 100) / 100, days, amount };
+    return { from, to: upTo, qty: Math.round(qty * 100) / 100, days, amount: amount + adjust, adjust };
   }
 
   static isIso(s: unknown): boolean { return typeof s === 'string' && DeliveryDay.#ISO.test(s); }

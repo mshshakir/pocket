@@ -12,6 +12,9 @@
  *   prices     [{ from, unit }]        price per unit from a date (minor units); else defaultAmount
  *   unit       label for one unit ("L", "packet"), optional
  *   vendor     who is paid ("Doodhwala"), the item's name when empty
+ *   adjustments [{ date, was, now, unit, settledIn }]  a day changed after it was
+ *              paid: (now − was) × unit goes on the next bill; settledIn is the
+ *              payment entry that included it (null until then)
  *
  * Dates are plain 'YYYY-MM-DD' strings handled in UTC, so no time zone can
  * move a delivery to the next day. Every method is a pure read; the static
@@ -183,6 +186,38 @@ export class DeliveryPlan {
     if (!list.length) list = [{ from: '2000-01-01', unit: old }].filter((p) => p.from < from);
     list.push({ from, unit: Math.max(0, Math.round(Number(unit) || 0)) });
     return list;
+  }
+
+  /**
+   * New `adjustments` after a paid day changes from `was` to `now`. A day
+   * changed twice before the next bill keeps what was paid for it; changing
+   * it back to that removes the adjustment.
+   */
+  static withAdjustment(item, date, was, now, unit) {
+    const list = (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => ({ ...a }));
+    const open = list.find((a) => a.date === date && !a.settledIn);
+    const paidFor = open ? open.was : was;
+    const rest = list.filter((a) => a !== open);
+    if (now === paidFor) return rest;
+    return [...rest, { date, was: paidFor, now, unit: open ? open.unit : unit, settledIn: null }]
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  /** Adjustments still to go on a bill: [{ date, was, now, unit, amount }]. */
+  openAdjustments() {
+    return (Array.isArray(this.#item.adjustments) ? this.#item.adjustments : [])
+      .filter((a) => a && !a.settledIn && DeliveryPlan.isIso(a.date))
+      .map((a) => ({ ...a, amount: Math.round((Number(a.now) - Number(a.was)) * Number(a.unit)) }));
+  }
+
+  /** `adjustments` with the open ones marked as included in payment `ref` (the entry's id). */
+  static settleAdjustments(item, ref) {
+    return (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => (a.settledIn ? a : { ...a, settledIn: ref }));
+  }
+
+  /** `adjustments` open again where their payment is no longer there. */
+  static unsettleAdjustments(item, isGone) {
+    return (Array.isArray(item?.adjustments) ? item.adjustments : []).map((a) => (a.settledIn && isGone(a.settledIn) ? { ...a, settledIn: null } : a));
   }
 
   /** `marks` with days before `iso` dropped (they're paid and nobody edits them). */
