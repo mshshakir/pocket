@@ -105,6 +105,47 @@ export class DeliveryPlan {
     return this.usualOn(iso) > 0 ? 'usual' : 'off';
   }
 
+  /** Recorded as delivered (Telegram's "That's right" or Delivered in the app). */
+  confirmedOn(iso) {
+    const c = this.#item.confirmed;
+    return !!c && typeof c === 'object' && c[iso] === true;
+  }
+
+  /**
+   * How a day shows on the calendar, given how far the vendor is paid:
+   *   null         nothing to show (before tracking, a day off, or ahead)
+   *   'skipped'    marked as not delivered
+   *   'paid'       delivered and paid (green)
+   *   'owed'       confirmed delivered, not paid yet (red)
+   *   'unconfirmed' expected but not confirmed yet (grey outline; still counted)
+   * @param {string} iso
+   * @param {string} today
+   * @param {string|null} paidTo
+   */
+  statusOn(iso, today, paidTo) {
+    if (iso > today || (this.trackFrom && iso < this.trackFrom)) return null;
+    if (this.qtyOn(iso) <= 0) return this.changedOn(iso) ? 'skipped' : null;
+    if (paidTo && iso <= paidTo) return 'paid';
+    return this.confirmedOn(iso) ? 'owed' : 'unconfirmed';
+  }
+
+  /** Days from `from` to `to` (inclusive) expected but not confirmed. */
+  unconfirmedDays(from, to) {
+    const out = [];
+    if (this.trackFrom && from < this.trackFrom) from = this.trackFrom;
+    for (let d = from, i = 0; d <= to && i < 400; d = DeliveryPlan.addDays(d, 1), i++) {
+      if (this.qtyOn(d) > 0 && !this.confirmedOn(d)) out.push(d);
+    }
+    return out;
+  }
+
+  /** The item's confirmed days with `iso` turned on or off (a new object). */
+  static withConfirmed(item, iso, on) {
+    const c = { ...(item.confirmed && typeof item.confirmed === 'object' ? item.confirmed : {}) };
+    if (on) c[iso] = true; else delete c[iso];
+    return c;
+  }
+
   // ── a period ────────────────────────────────────────────────────────
 
   /**

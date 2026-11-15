@@ -30,6 +30,7 @@ export class CalendarView extends BaseView {
   // ── Public API ────────────────────────────────────────────────────────
 
   /** Old tab names still work: dues/items → deliveries, summary → calendar. */
+  static #DELIVERY_WORD = Object.freeze({ paid: 'delivered and paid', owed: 'delivered, not paid yet', unconfirmed: 'not confirmed yet', skipped: 'not delivered' });
   static #BILL_WORD = Object.freeze({ paid: 'paid', overdue: 'not paid yet', due: 'due today', upcoming: 'coming up', skipped: 'skipped' });
 
   setTab(tab)   { this.#tab = ({ dues: 'deliveries', items: 'deliveries', summary: 'grid' })[tab] ?? tab; }
@@ -155,6 +156,8 @@ export class CalendarView extends BaseView {
         billDays.get(o.date).push(o);
       }
     }
+    const dues = window.__app?.vendorDues;
+    const tracked = this.#tracked(state);
     const unpaid = [...billDays.values()].flat().filter((o) => o.status === 'overdue' || o.status === 'due').length;
     const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
     const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr)
@@ -183,7 +186,8 @@ export class CalendarView extends BaseView {
         <div class="grid grid-cols-7 gap-0.5 md:gap-1">
           ${cells.map((c) => {
             if (!c) return `<div></div>`;
-            const logs      = this.#logsForDate(c.iso, state);
+            // a vendor payment is shown by its days turning green, not as an entry icon
+            const logs      = this.#logsForDate(c.iso, state).filter((t) => !t.settles);
             const total     = logs.reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
             const isToday   = c.iso === todayStr;
             const firstItem = logs[0] ? (state.regularItems || []).find((i) => i.id === logs[0].regularItemId) : null;
@@ -198,6 +202,10 @@ export class CalendarView extends BaseView {
             }).join('');
             const primaryColor = firstItem ? firstItem.color : '';
             const bills = billDays.get(c.iso) || [];
+            // Deliveries: grey outline until confirmed, red once delivered, green once paid.
+            const delivered = dues ? tracked.map((it) => ({ it, status: dues.statusOn(it, c.iso, todayStr) })).filter((x) => x.status) : [];
+            const deliveryTags = delivered.slice(0, 3).map(({ it, status }) =>
+              `<span class="cal-bill ${status}" title="${this.escapeHtml(it.name)} · ${CalendarView.#DELIVERY_WORD[status]}"><i data-lucide="${Html.icon(it.icon)}"></i></span>`).join('');
             // Desktop: the bill's category icon, green when paid, red when not; phones: a dot.
             const billTags = bills.slice(0, 3).map((o) => {
               const title = `${this.escapeHtml(o.template.payee || 'Bill')} · ${CalendarView.#BILL_WORD[o.status]}`;
@@ -220,18 +228,18 @@ export class CalendarView extends BaseView {
                     <div class="hidden md:flex gap-1 flex-wrap justify-center items-center">${icons}${logs.length > 3 ? `<span class="text-[10px] text-zinc-500">+${logs.length - 3}</span>` : ''}</div>
                   </div>
                 ` : '<div class="flex-1"></div>'}
-                ${bills.length ? `<div class="cal-bills">${billTags}</div>` : ''}
+                ${bills.length || delivered.length ? `<div class="cal-bills">${deliveryTags}${billTags}</div>` : ''}
                 ${total > 0 ? `<div class="text-[9px] text-zinc-500 truncate text-center">${this.formatMoney(total, home)}</div>` : ''}
               </button>`;
           }).join('')}
         </div>
       </div>
 
-      ${billDays.size ? `
+      ${billDays.size || tracked.length ? `
       <div class="flex flex-wrap gap-3 mt-2 text-[11px] text-zinc-500">
         <span><span class="cal-key paid"></span>Paid</span>
         <span><span class="cal-key overdue"></span>Not paid yet</span>
-        <span><span class="cal-key upcoming"></span>Coming up</span>
+        <span><span class="cal-key upcoming"></span>${tracked.length ? 'Not confirmed / coming up' : 'Coming up'}</span>
       </div>` : ''}
 
       ${(state.regularItems || []).length === 0 && !billDays.size ? `
@@ -368,11 +376,29 @@ export class CalendarView extends BaseView {
           ${this.inGuestSpace ? '' : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('regularItem',{payLater:true})"><i data-lucide="plus"></i> Add your first delivery</button>`}
         </div>`;
     }
+    const today = DateService.todayIso();
+    const dues = window.__app?.vendorDues;
+    const ctx = window.__app?.deliveryContext?.();
     const list = items.map((it) => {
       const p = new DeliveryPlan(it);
       const color = Html.color(it.color);
+      const can = !ctx || ctx.canChange(it);
+      // the last 7 days: tap a day to mark it delivered, or take that back
+      const week = Array.from({ length: 7 }, (_, i) => DeliveryPlan.addDays(today, i - 6)).map((d) => {
+        const st = dues ? dues.statusOn(it, d, today) : null;
+        const word = st ? CalendarView.#DELIVERY_WORD[st] : (p.trackFrom && d < p.trackFrom ? 'not counted yet' : 'no delivery');
+        const click = can && (st || (!p.trackFrom || d >= p.trackFrom))
+          ? (st === 'paid' || st === 'owed' || st === 'unconfirmed' ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})`)
+          : '';
+        return `<button type="button" ${click ? `onclick="${click}"` : 'disabled'} title="${DeliveryPlan.shortDate(d)} · ${word}">
+            <span class="cal-bill ${st || 'none'}">${st ? `<i data-lucide="${Html.icon(it.icon)}"></i>` : ''}</span>
+            ${d === today ? '<b>Today</b>' : DeliveryPlan.DAY_NAMES[DeliveryPlan.weekday(d)]}
+          </button>`;
+      }).join('');
+      const waiting = p.unconfirmedDays(dues ? dues.openFrom(it) : today, DeliveryPlan.addDays(today, -1)).length;
       return `
-        <div class="flex items-center gap-3 p-3">
+        <div class="p-3">
+        <div class="flex items-center gap-3">
           <span class="icon-pill" style="background:${color}22;color:${color};width:32px;height:32px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${this.escapeHtml(it.name)}</div>
@@ -381,13 +407,16 @@ export class CalendarView extends BaseView {
           ${this.inGuestSpace ? '' : `
           <button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('pauseDeliveries',{itemId:'${this.escapeHtml(it.id)}'})">Pause</button>
           <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('regularItem',{id:'${this.escapeHtml(it.id)}'})">Edit</button>`}
+        </div>
+        <div class="week-strip">${week}</div>
+        ${waiting ? `<div class="text-[11px] text-rose-600 mt-1">${waiting} day${waiting === 1 ? '' : 's'} before today not confirmed — tap a day to mark it delivered.</div>` : ''}
         </div>`;
     }).join('');
     return `
       ${this.inGuestSpace ? '' : this.#renderDues(state)}
       <h3 class="font-semibold mt-5 mb-2 text-sm">Items</h3>
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${list}</div>
-      <p class="text-xs text-zinc-500 mt-3">Each day is filled in from the usual — change only what was different on the Calendar tab.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Tap a day to mark it delivered (red until you pay, then green) or to take that back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
   }
 
   /** "every month", "every 2 weeks". */

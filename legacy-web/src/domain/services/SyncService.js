@@ -904,7 +904,7 @@ export class SyncService {
     if (error) throw new Error(error.message);
     const item = (this.#shareOf(ownerId)?.regularItems || []).find((i) => i.id === itemId);
     if (item && data) {
-      Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [] });
+      Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [], confirmed: data.confirmed || {} });
       if (data.paidTo) item.paidTo = data.paidTo;
       this.#bus.emit('state:changed', this.#store.getState());
     }

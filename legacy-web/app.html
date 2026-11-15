@@ -286,10 +286,28 @@
   .cal-bill svg { width:15px; height:15px; }
   .cal-bill.paid { background:#d1fae5; color:#047857; border-color:#10b981; }
   .cal-bill.overdue, .cal-bill.due { background:#ffe4e6; color:#be123c; border-color:#e11d48; }
-  .cal-bill.upcoming { background:transparent; color:#71717a; border-color:#a1a1aa; border-style:dashed; }
+  .cal-bill.upcoming, .cal-bill.unconfirmed { background:transparent; color:#71717a; border-color:#a1a1aa; border-style:dashed; }
+  .cal-bill.owed { background:#ffe4e6; color:#be123c; border-color:#e11d48; }
+  .cal-bill.skipped { background:transparent; color:#a1a1aa; border-color:#e4e4e7; position:relative; }
+  .cal-bill.skipped::after { content:''; position:absolute; left:3px; right:3px; top:50%; height:1.5px; background:#a1a1aa; transform:rotate(-45deg); }
+  html.dark .cal-bill.owed { background:#4c0519; color:#fecdd3; }
+  .delivery-confirm { display:flex; align-items:center; justify-content:space-between; gap:.5rem; font-size:.75rem; margin:-.2rem 0 .5rem; padding:.3rem .6rem; border-radius:.5rem; }
+  .delivery-confirm.unconfirmed { background:#f4f4f5; color:#52525b; }
+  .delivery-confirm.owed { background:#ffe4e6; color:#9f1239; }
+  .delivery-confirm.paid { background:#d1fae5; color:#065f46; }
+  html.dark .delivery-confirm.unconfirmed { background:#18181b; color:#a1a1aa; }
+  html.dark .delivery-confirm.owed { background:#4c0519; color:#fecdd3; } html.dark .delivery-confirm.paid { background:#064e3b; color:#a7f3d0; }
+  .delivery-confirm button { font-weight:600; text-decoration:underline; }
+  .unconfirmed-alert { display:flex; align-items:center; gap:.5rem; width:100%; font-size:.8rem; padding:.5rem .65rem; margin-bottom:.4rem; border-radius:.6rem; background:#fff1f2; color:#9f1239; }
+  .unconfirmed-alert svg { width:15px; height:15px; flex-shrink:0; }
+  html.dark .unconfirmed-alert { background:#4c0519; color:#fecdd3; }
+  .week-strip { display:flex; gap:6px; margin-top:.5rem; }
+  .week-strip button { display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:#71717a; min-width:32px; }
+  .week-strip .cal-bill { width:26px; height:26px; }
+  .week-strip .cal-bill.none { border:1px solid #f4f4f5; }
   html.dark .cal-bill.paid { background:#064e3b; color:#a7f3d0; }
   html.dark .cal-bill.overdue, html.dark .cal-bill.due { background:#4c0519; color:#fecdd3; }
-  @media (max-width: 767px) { .cal-bill { width:8px; height:8px; border-width:0; } .cal-bill svg { display:none; } .cal-bill.upcoming { border-width:1.5px; } .cal-bill.paid { background:#10b981; } .cal-bill.overdue, .cal-bill.due { background:#e11d48; } .cal-bills { gap:2px; } }
+  @media (max-width: 767px) { .cal-bill { width:8px; height:8px; border-width:0; } .cal-bill svg { display:none; } .cal-bill.upcoming { border-width:1.5px; } .cal-bill.paid { background:#10b981; } .cal-bill.overdue, .cal-bill.due, .cal-bill.owed { background:#e11d48; } .cal-bill.unconfirmed { border-width:1.5px; } .cal-bills .cal-bill.skipped { display:none; } .week-strip .cal-bill.skipped { display:inline-flex; } .cal-bills { gap:2px; } .week-strip .cal-bill { width:26px; height:26px; border-width:1.5px; } .week-strip .cal-bill svg { display:block; width:13px; height:13px; } .week-strip .cal-bill.paid, .week-strip .cal-bill.owed { color:#fff; } }
   .bill-state { font-size:11px; line-height:18px; padding:0 8px; border-radius:999px; white-space:nowrap; }
   .bill-state.paid { background:#d1fae5; color:#065f46; } .bill-state.overdue, .bill-state.due { background:#ffe4e6; color:#9f1239; font-weight:600; } .bill-state.upcoming { color:#71717a; border:1px dashed #a1a1aa; }
   .cal-key { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:4px; vertical-align:-1px; }

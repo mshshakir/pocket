@@ -101,6 +101,12 @@ export class DeliveryBot {
     if (tap.index < 0) {
       if (!(await this.#mayAny(actor, checkin.owner_id, items))) return void await this.#telegram.answer(cb.id, 'You can only view these deliveries');
       if (!(await this.#deliveries.answer(checkin.id, name))) return void await this.#telegram.answer(cb.id, 'Someone already confirmed');
+      // "That's right": each item that came that day is recorded as delivered (red in the app until paid).
+      for (const it of items) {
+        if (new DeliveryDay(it).qtyOn(checkin.day) <= 0) continue;
+        if ((await this.#deliveries.access(actor.link.user_id, checkin.owner_id, it.accountId)) < 1) continue;
+        await this.#deliveries.change(actor.link.user_id, checkin.owner_id, it.id, { confirm: checkin.day });
+      }
       await this.#telegram.answer(cb.id, 'Thanks — saved');
       return void await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day, name);
     }

@@ -155,6 +155,21 @@ export class DayLogsModal {
       </div>`;
   }
 
+  /** "Delivered ✓" (tap to take back) or "Mark as delivered"; nothing on a day with none or ahead. */
+  #confirmLine(item, plan, date, qty, paid, ctx) {
+    if (qty <= 0 || date > DateService.todayIso() || plan.stateOn(date) === 'before') return '';
+    const on = plan.confirmedOn(date);
+    const can = ctx.canChange(item);
+    const id = Html.escape(item.id);
+    const tone = paid ? 'paid' : on ? 'owed' : 'unconfirmed';
+    const word = paid ? (on ? 'Delivered · paid' : 'Paid') : on ? 'Delivered · not paid yet' : 'Not confirmed yet';
+    return `
+      <div class="delivery-confirm ${tone}">
+        <span>${word}</span>
+        ${can ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',${on ? 'false' : 'true'},{reopen:{name:'dayLogs',opts:{date:'${date}'}}})">${on ? 'Undo' : '✓ Mark as delivered'}</button>` : ''}
+      </div>`;
+  }
+
   #deliveries(list, date, s, ctx, flash) {
     const rows = list.map((item) => {
       const plan = new DeliveryPlan(item);
@@ -187,6 +202,7 @@ export class DayLogsModal {
             <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
           </div>`}
         </div>
+        ${this.#confirmLine(item, plan, date, qty, paid, ctx)}
         ${!locked && state === 'changed' ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ''}`;
     }).join('');
     return `

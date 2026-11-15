@@ -3469,6 +3469,40 @@ export class Application {
     this.setDelivery(u.itemId, u.date, qty, { undo: true, adjustments: u.adjustments });
   }
 
+  /**
+   * Records a day as delivered (on) or takes that back (off). A confirmed day
+   * shows red on the calendar until the vendor is paid, then green.
+   * @param {{reopen?: {name: string, opts: object}|null, quiet?: boolean}} [opts]
+   */
+  async confirmDelivery(itemId, date, on, opts = {}) {
+    const ctx = this.deliveryContext();
+    const item = ctx.items.find((i) => i.id === itemId);
+    if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
+    if (date > DateService.todayIso()) return void this.#toast.show('You can confirm a delivery on the day or after');
+    const want = !!on;
+    const reopen = opts.reopen === undefined ? null : opts.reopen;
+    if (ctx.ownerId) {
+      if (!(await this.#sharedDelivery(itemId, want ? { confirm: date } : { unconfirm: date }, reopen))) return;
+    } else {
+      const own = this.#ownItem(itemId);
+      if (!own) return;
+      this.#saveDelivery(own, { confirmed: DeliveryPlan.withConfirmed(own, date, want) }, reopen);
+    }
+    if (opts.quiet) return;
+    try { navigator.vibrate?.(10); } catch (_) { /* not supported */ }
+    this.#toast.show(`${item.name} · ${DeliveryPlan.shortDate(date)}: ${want ? 'delivered' : 'not confirmed'}`,
+      { action: { label: 'Undo', run: () => this.confirmDelivery(itemId, date, !want, { reopen, quiet: true }) } });
+  }
+
+  /** Delivered / not confirmed, from the Deliveries tab's week strip. */
+  toggleDeliveryDay(itemId, date) {
+    const item = this.deliveryContext().items.find((i) => i.id === itemId);
+    if (!item) return;
+    const plan = new DeliveryPlan(item);
+    if (plan.qtyOn(date) <= 0) return void this.openModal('dayLogs', { date });
+    this.confirmDelivery(itemId, date, !plan.confirmedOn(date));
+  }
+
   stepDelivery(itemId, date, delta) {
     const item = this.deliveryContext().items.find((i) => i.id === itemId);
     if (!item) return;

@@ -19,6 +19,9 @@
  *   B3  the entry form saves "ask me" and who gets the Telegram reminder
  *   B4  the item form saves the check-in: who, 9:00 by default, the time zone
  *
+ *   K1  confirming a day: red until paid, green after; unconfirmed days still count but are flagged
+ *   K2  in the app: the week strip and day window confirm / unconfirm; Home says to check Regulars; the calendar shows it
+ *
  * Run: node src/__smoke__/deliveries.smoke.mjs
  */
 import { DeliveryPlan } from '../domain/services/DeliveryPlan.js';
@@ -411,6 +414,56 @@ function boot(extraTx = []) {
   await app.undoPayment('Doodhwala');
   m = app.vendorDues.items()[0];
   ok('J1 undoing that payment puts the adjustment back on the bill', m.adjustments[0].settledIn === null && app.vendorDues.due(m).amount === 12800);
+}
+
+{
+  let item = { ...milk, trackFrom: '2026-11-02' };
+  const p0 = new DeliveryPlan(item);
+  ok('K1 a delivery day not confirmed is grey; a Sunday off shows nothing; ahead shows nothing',
+     p0.statusOn('2026-11-03', '2026-11-05', null) === 'unconfirmed' && p0.statusOn('2026-11-08', '2026-11-10', null) === null && p0.statusOn('2026-11-06', '2026-11-05', null) === null);
+  item.confirmed = DeliveryPlan.withConfirmed(item, '2026-11-03', true);
+  const p1 = new DeliveryPlan(item);
+  ok('K1 confirmed: red (owed); after paying up to it: green', p1.statusOn('2026-11-03', '2026-11-05', null) === 'owed' && p1.statusOn('2026-11-03', '2026-11-05', '2026-11-04') === 'paid');
+  item.marks = DeliveryPlan.withMark(item, '2026-11-04', 0);
+  ok('K1 a day marked none shows as not delivered', new DeliveryPlan(item).statusOn('2026-11-04', '2026-11-05', null) === 'skipped');
+  ok('K1 unconfirmed days listed (3rd confirmed, 4th none)', new DeliveryPlan(item).unconfirmedDays('2026-11-02', '2026-11-05').join() === '2026-11-02,2026-11-05');
+  item.confirmed = DeliveryPlan.withConfirmed(item, '2026-11-03', false);
+  ok('K1 unconfirm takes it back', !new DeliveryPlan(item).confirmedOn('2026-11-03'));
+}
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  const y = daysAgo(1);
+  ok('K2 Home says how many days aren\'t confirmed, pointing to Regulars', /Milk: \d+ days not confirmed — check Regulars/.test(w.document.getElementById('viewContent').textContent));
+  app.navigate('calendar');
+  app.setCalTab('deliveries');
+  await wait(20);
+  const view = w.document.getElementById('viewContent');
+  ok('K2 the Deliveries tab shows a 7-day strip', view.querySelectorAll('.week-strip button').length === 7 && view.querySelector('.week-strip .cal-bill.unconfirmed'));
+  app.toggleDeliveryDay('ri_milk', y);
+  await wait(20);
+  let m = app.vendorDues.items()[0];
+  ok('K2 tapping yesterday marks it delivered (red)', m.confirmed[y] === true && app.vendorDues.statusOn(m, y) === 'owed');
+  app.openModal('dayLogs', { date: y });
+  await wait(20);
+  ok('K2 the day window says delivered, not paid yet, with Undo', /Delivered · not paid yet/.test(w.document.body.textContent));
+  await app.confirmDelivery('ri_milk', y, false, { reopen: { name: 'dayLogs', opts: { date: y } } });
+  await wait(20);
+  m = app.vendorDues.items()[0];
+  ok('K2 Undo there takes it back', !m.confirmed[y] && /Mark as delivered/.test(w.document.body.textContent));
+  await app.confirmDelivery('ri_milk', y, true);
+  app.closeModal();
+  app.setCalTab('grid');
+  await wait(20);
+  ok('K2 the calendar shows milk red on that day', !!view.querySelector('.cal-bill.owed'));
+  app.openModal('settle', { vendor: 'Doodhwala' });
+  await wait(10);
+  ok('K2 the pay window says how many days aren\'t confirmed', /not confirmed — check with the vendor/.test(w.document.querySelector('form').textContent));
+  await app.submitSettle({ preventDefault() {}, target: w.document.querySelector('form') }, 'Doodhwala', today);
+  await wait(20);
+  m = app.vendorDues.items()[0];
+  ok('K2 once paid the day is green', app.vendorDues.statusOn(m, y) === 'paid');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

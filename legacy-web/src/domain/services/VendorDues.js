@@ -129,7 +129,26 @@ export class VendorDues {
       return { item, plan, from: to, to, days: 0, qty: 0, amount: adjust, lines: [], adjustments };
     }
     const t = plan.totals(from, upTo);
-    return { item, plan, ...t, amount: t.amount + adjust, adjustments };
+    return { item, plan, ...t, amount: t.amount + adjust, adjustments, unconfirmed: plan.unconfirmedDays(from, upTo).length };
+  }
+
+  /**
+   * Days not paid yet and not confirmed before today, per item, for the
+   * "check Regulars" alert: [{ item, days: [iso…] }].
+   */
+  unconfirmed(today = VendorDues.today()) {
+    const yesterday = DeliveryPlan.addDays(today, -1);
+    const out = [];
+    for (const item of this.items()) {
+      const days = this.plan(item).unconfirmedDays(this.openFrom(item), yesterday);
+      if (days.length) out.push({ item, days });
+    }
+    return out;
+  }
+
+  /** How a day of an item shows on the calendar (see DeliveryPlan.statusOn). */
+  statusOn(item, iso, today = VendorDues.today()) {
+    return this.plan(item).statusOn(iso, today, this.paidTo(item));
   }
 
   /**

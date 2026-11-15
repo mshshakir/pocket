@@ -214,10 +214,12 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   const before = tg.edits.length;
   await tap(HER, 'dv:1:ok');
   ok('T3 ✓ by Asha: every copy says so and loses its buttons', tg.edits.length === before + 2 && tg.edits.slice(-2).every((e) => /Confirmed by Asha/.test(e.text) && Array.isArray(e.keyboard) && (e.keyboard as unknown[]).length === 0));
+  ok('T3 ✓ records milk and paper as delivered that day, as her', dl.changes.filter((c) => 'confirm' in c.change).length === 2
+     && dl.changes.filter((c) => 'confirm' in c.change).every((c) => c.actor === WIFE && (c.change as { confirm: string }).confirm === '2026-11-16'));
   await tap(ME, 'dv:1:ok');
   ok('T3 a second ✓ is told who answered', /Already confirmed by Asha/.test(tg.answers.at(-1) ?? ''));
   await tap(ME, 'dv:1:0:=');
-  ok('T3 the label button does nothing', dl.changes.length === 2);
+  ok('T3 the label button does nothing', dl.changes.length === 4);
 }
 
 {

@@ -65,7 +65,9 @@ export interface BillReminder {
 export type DeliveryChange =
   | { set: { date: string; qty: number } }
   | { clear: string }
-  | { paidTo: string; tx?: string };
+  | { paidTo: string; tx?: string }
+  | { confirm: string }
+  | { unconfirm: string };
 
 export class DeliveryStore {
   readonly #sb: SupabaseClient;

@@ -3337,6 +3337,44 @@ var _PocketApp = (() => {
       if (this.pausedOn(iso)) return "paused";
       return this.usualOn(iso) > 0 ? "usual" : "off";
     }
+    /** Recorded as delivered (Telegram's "That's right" or Delivered in the app). */
+    confirmedOn(iso) {
+      const c = this.#item.confirmed;
+      return !!c && typeof c === "object" && c[iso] === true;
+    }
+    /**
+     * How a day shows on the calendar, given how far the vendor is paid:
+     *   null         nothing to show (before tracking, a day off, or ahead)
+     *   'skipped'    marked as not delivered
+     *   'paid'       delivered and paid (green)
+     *   'owed'       confirmed delivered, not paid yet (red)
+     *   'unconfirmed' expected but not confirmed yet (grey outline; still counted)
+     * @param {string} iso
+     * @param {string} today
+     * @param {string|null} paidTo
+     */
+    statusOn(iso, today, paidTo) {
+      if (iso > today || this.trackFrom && iso < this.trackFrom) return null;
+      if (this.qtyOn(iso) <= 0) return this.changedOn(iso) ? "skipped" : null;
+      if (paidTo && iso <= paidTo) return "paid";
+      return this.confirmedOn(iso) ? "owed" : "unconfirmed";
+    }
+    /** Days from `from` to `to` (inclusive) expected but not confirmed. */
+    unconfirmedDays(from, to) {
+      const out = [];
+      if (this.trackFrom && from < this.trackFrom) from = this.trackFrom;
+      for (let d = from, i = 0; d <= to && i < 400; d = _DeliveryPlan.addDays(d, 1), i++) {
+        if (this.qtyOn(d) > 0 && !this.confirmedOn(d)) out.push(d);
+      }
+      return out;
+    }
+    /** The item's confirmed days with `iso` turned on or off (a new object). */
+    static withConfirmed(item, iso, on) {
+      const c = { ...item.confirmed && typeof item.confirmed === "object" ? item.confirmed : {} };
+      if (on) c[iso] = true;
+      else delete c[iso];
+      return c;
+    }
     // ── a period ────────────────────────────────────────────────────────
     /**
      * Every day from `from` to `to` (inclusive) with what came and its cost.
@@ -3587,7 +3625,24 @@ var _PocketApp = (() => {
         return { item, plan, from: to, to, days: 0, qty: 0, amount: adjust, lines: [], adjustments };
       }
       const t = plan.totals(from, upTo);
-      return { item, plan, ...t, amount: t.amount + adjust, adjustments };
+      return { item, plan, ...t, amount: t.amount + adjust, adjustments, unconfirmed: plan.unconfirmedDays(from, upTo).length };
+    }
+    /**
+     * Days not paid yet and not confirmed before today, per item, for the
+     * "check Regulars" alert: [{ item, days: [iso…] }].
+     */
+    unconfirmed(today = _VendorDues.today()) {
+      const yesterday = DeliveryPlan.addDays(today, -1);
+      const out = [];
+      for (const item of this.items()) {
+        const days = this.plan(item).unconfirmedDays(this.openFrom(item), yesterday);
+        if (days.length) out.push({ item, days });
+      }
+      return out;
+    }
+    /** How a day of an item shows on the calendar (see DeliveryPlan.statusOn). */
+    statusOn(item, iso, today = _VendorDues.today()) {
+      return this.plan(item).statusOn(iso, today, this.paidTo(item));
     }
     /**
      * Everything owed, by vendor:
@@ -5858,7 +5913,7 @@ RULES:
       if (error) throw new Error(error.message);
       const item = (this.#shareOf(ownerId)?.regularItems || []).find((i) => i.id === itemId);
       if (item && data) {
-        Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [] });
+        Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [], confirmed: data.confirmed || {} });
         if (data.paidTo) item.paidTo = data.paidTo;
         this.#bus.emit("state:changed", this.#store.getState());
       }
@@ -11030,13 +11085,20 @@ This replaces your current grouping.`
       const bills = window.__app?.bills?.due(today) ?? [];
       const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
       const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
-      if (!bills.length && !owedRows.length) return "";
+      const unconfirmed = window.__app?.vendorDues?.unconfirmed?.(today) ?? [];
+      if (!bills.length && !owedRows.length && !unconfirmed.length) return "";
       const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>' : b.today ? '<span class="bill-tag bill-today">today</span>' : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
       return `
       <div class="card p-4 mb-4">
         <div class="flex items-center justify-between mb-2">
           <h3 class="font-semibold flex items-center gap-2"><i data-lucide="receipt" style="width:16px;height:16px"></i> Bills &amp; dues</h3>
         </div>
+        ${unconfirmed.length ? `
+          <button class="unconfirmed-alert" onclick="window.__app.navigate('calendar');window.__app.setCalTab('deliveries')">
+            <i data-lucide="alert-circle"></i>
+            <span class="flex-1 text-left">${unconfirmed.map((u) => `${this.escapeHtml(u.item.name)}: ${u.days.length} day${u.days.length === 1 ? "" : "s"}`).join(" \xB7 ")} not confirmed \u2014 check Regulars</span>
+            <i data-lucide="chevron-right"></i>
+          </button>` : ""}
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">
@@ -13093,6 +13155,7 @@ This replaces your current grouping.`
     }
     // ── Public API ────────────────────────────────────────────────────────
     /** Old tab names still work: dues/items → deliveries, summary → calendar. */
+    static #DELIVERY_WORD = Object.freeze({ paid: "delivered and paid", owed: "delivered, not paid yet", unconfirmed: "not confirmed yet", skipped: "not delivered" });
     static #BILL_WORD = Object.freeze({ paid: "paid", overdue: "not paid yet", due: "due today", upcoming: "coming up", skipped: "skipped" });
     setTab(tab) {
       this.#tab = { dues: "deliveries", items: "deliveries", summary: "grid" }[tab] ?? tab;
@@ -13215,6 +13278,8 @@ This replaces your current grouping.`
           billDays.get(o.date).push(o);
         }
       }
+      const dues = window.__app?.vendorDues;
+      const tracked = this.#tracked(state);
       const unpaid = [...billDays.values()].flat().filter((o) => o.status === "overdue" || o.status === "due").length;
       const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
       const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr).reduce((sum, c) => sum + plans.reduce((t, p) => t + this.convert(Math.round(p.qtyOn(c.iso) * p.priceOn(c.iso)), p.item.currency || home, home), 0), 0) : 0;
@@ -13241,7 +13306,7 @@ This replaces your current grouping.`
         <div class="grid grid-cols-7 gap-0.5 md:gap-1">
           ${cells.map((c) => {
         if (!c) return `<div></div>`;
-        const logs = this.#logsForDate(c.iso, state);
+        const logs = this.#logsForDate(c.iso, state).filter((t) => !t.settles);
         const total = logs.reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
         const isToday = c.iso === todayStr;
         const firstItem = logs[0] ? (state.regularItems || []).find((i) => i.id === logs[0].regularItemId) : null;
@@ -13255,6 +13320,8 @@ This replaces your current grouping.`
         }).join("");
         const primaryColor = firstItem ? firstItem.color : "";
         const bills = billDays.get(c.iso) || [];
+        const delivered = dues ? tracked.map((it) => ({ it, status: dues.statusOn(it, c.iso, todayStr) })).filter((x) => x.status) : [];
+        const deliveryTags = delivered.slice(0, 3).map(({ it, status }) => `<span class="cal-bill ${status}" title="${this.escapeHtml(it.name)} \xB7 ${_CalendarView.#DELIVERY_WORD[status]}"><i data-lucide="${Html.icon(it.icon)}"></i></span>`).join("");
         const billTags = bills.slice(0, 3).map((o) => {
           const title = `${this.escapeHtml(o.template.payee || "Bill")} \xB7 ${_CalendarView.#BILL_WORD[o.status]}`;
           const cat = (state.categories || []).find((c2) => c2.id === o.template.categoryId);
@@ -13276,18 +13343,18 @@ This replaces your current grouping.`
                     <div class="hidden md:flex gap-1 flex-wrap justify-center items-center">${icons}${logs.length > 3 ? `<span class="text-[10px] text-zinc-500">+${logs.length - 3}</span>` : ""}</div>
                   </div>
                 ` : '<div class="flex-1"></div>'}
-                ${bills.length ? `<div class="cal-bills">${billTags}</div>` : ""}
+                ${bills.length || delivered.length ? `<div class="cal-bills">${deliveryTags}${billTags}</div>` : ""}
                 ${total > 0 ? `<div class="text-[9px] text-zinc-500 truncate text-center">${this.formatMoney(total, home)}</div>` : ""}
               </button>`;
       }).join("")}
         </div>
       </div>
 
-      ${billDays.size ? `
+      ${billDays.size || tracked.length ? `
       <div class="flex flex-wrap gap-3 mt-2 text-[11px] text-zinc-500">
         <span><span class="cal-key paid"></span>Paid</span>
         <span><span class="cal-key overdue"></span>Not paid yet</span>
-        <span><span class="cal-key upcoming"></span>Coming up</span>
+        <span><span class="cal-key upcoming"></span>${tracked.length ? "Not confirmed / coming up" : "Coming up"}</span>
       </div>` : ""}
 
       ${(state.regularItems || []).length === 0 && !billDays.size ? `
@@ -13413,11 +13480,26 @@ This replaces your current grouping.`
           ${this.inGuestSpace ? "" : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('regularItem',{payLater:true})"><i data-lucide="plus"></i> Add your first delivery</button>`}
         </div>`;
       }
+      const today = DateService.todayIso();
+      const dues = window.__app?.vendorDues;
+      const ctx = window.__app?.deliveryContext?.();
       const list = items.map((it) => {
         const p = new DeliveryPlan(it);
         const color = Html.color(it.color);
+        const can = !ctx || ctx.canChange(it);
+        const week = Array.from({ length: 7 }, (_, i) => DeliveryPlan.addDays(today, i - 6)).map((d) => {
+          const st = dues ? dues.statusOn(it, d, today) : null;
+          const word = st ? _CalendarView.#DELIVERY_WORD[st] : p.trackFrom && d < p.trackFrom ? "not counted yet" : "no delivery";
+          const click = can && (st || (!p.trackFrom || d >= p.trackFrom)) ? st === "paid" || st === "owed" || st === "unconfirmed" ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})` : "";
+          return `<button type="button" ${click ? `onclick="${click}"` : "disabled"} title="${DeliveryPlan.shortDate(d)} \xB7 ${word}">
+            <span class="cal-bill ${st || "none"}">${st ? `<i data-lucide="${Html.icon(it.icon)}"></i>` : ""}</span>
+            ${d === today ? "<b>Today</b>" : DeliveryPlan.DAY_NAMES[DeliveryPlan.weekday(d)]}
+          </button>`;
+        }).join("");
+        const waiting = p.unconfirmedDays(dues ? dues.openFrom(it) : today, DeliveryPlan.addDays(today, -1)).length;
         return `
-        <div class="flex items-center gap-3 p-3">
+        <div class="p-3">
+        <div class="flex items-center gap-3">
           <span class="icon-pill" style="background:${color}22;color:${color};width:32px;height:32px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium truncate">${this.escapeHtml(it.name)}</div>
@@ -13426,13 +13508,16 @@ This replaces your current grouping.`
           ${this.inGuestSpace ? "" : `
           <button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('pauseDeliveries',{itemId:'${this.escapeHtml(it.id)}'})">Pause</button>
           <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('regularItem',{id:'${this.escapeHtml(it.id)}'})">Edit</button>`}
+        </div>
+        <div class="week-strip">${week}</div>
+        ${waiting ? `<div class="text-[11px] text-rose-600 mt-1">${waiting} day${waiting === 1 ? "" : "s"} before today not confirmed \u2014 tap a day to mark it delivered.</div>` : ""}
         </div>`;
       }).join("");
       return `
       ${this.inGuestSpace ? "" : this.#renderDues(state)}
       <h3 class="font-semibold mt-5 mb-2 text-sm">Items</h3>
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${list}</div>
-      <p class="text-xs text-zinc-500 mt-3">Each day is filled in from the usual \u2014 change only what was different on the Calendar tab.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Tap a day to mark it delivered (red until you pay, then green) or to take that back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
     }
     /** "every month", "every 2 weeks". */
     #every(r) {
@@ -16445,6 +16530,20 @@ This replaces your current grouping.`
         ${rows}
       </div>`;
     }
+    /** "Delivered ✓" (tap to take back) or "Mark as delivered"; nothing on a day with none or ahead. */
+    #confirmLine(item, plan, date, qty, paid, ctx) {
+      if (qty <= 0 || date > DateService.todayIso() || plan.stateOn(date) === "before") return "";
+      const on = plan.confirmedOn(date);
+      const can = ctx.canChange(item);
+      const id = Html.escape(item.id);
+      const tone = paid ? "paid" : on ? "owed" : "unconfirmed";
+      const word = paid ? on ? "Delivered \xB7 paid" : "Paid" : on ? "Delivered \xB7 not paid yet" : "Not confirmed yet";
+      return `
+      <div class="delivery-confirm ${tone}">
+        <span>${word}</span>
+        ${can ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',${on ? "false" : "true"},{reopen:{name:'dayLogs',opts:{date:'${date}'}}})">${on ? "Undo" : "\u2713 Mark as delivered"}</button>` : ""}
+      </div>`;
+    }
     #deliveries(list, date, s, ctx, flash) {
       const rows = list.map((item) => {
         const plan = new DeliveryPlan(item);
@@ -16473,6 +16572,7 @@ This replaces your current grouping.`
             <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
           </div>`}
         </div>
+        ${this.#confirmLine(item, plan, date, qty, paid, ctx)}
         ${!locked && state === "changed" ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ""}`;
       }).join("");
       return `
@@ -16519,6 +16619,7 @@ This replaces your current grouping.`
           <div class="min-w-0">
             <div class="font-medium text-sm">${Html.escape(l.item.name)}</div>
             ${l.lines.length ? `<div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}</div>` : ""}
+            ${l.unconfirmed ? `<div class="text-[11px] text-rose-600">${l.days - l.unconfirmed} confirmed, ${l.unconfirmed} not confirmed \u2014 check with the vendor</div>` : ""}
             ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.amount < 0 ? "\u2212" : "+"}${this.#fx.formatMoney(Math.abs(a.amount), cur)}</div>`).join("")}
           </div>
           <div class="settle-amount">
@@ -21743,6 +21844,43 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       const plan = new DeliveryPlan({ ...item, marks: { ...item.marks || {}, ...u.mark === null ? {} : { [u.date]: u.mark } } });
       const qty = u.mark === null ? new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, u.date) }).qtyOn(u.date) : plan.qtyOn(u.date);
       this.setDelivery(u.itemId, u.date, qty, { undo: true, adjustments: u.adjustments });
+    }
+    /**
+     * Records a day as delivered (on) or takes that back (off). A confirmed day
+     * shows red on the calendar until the vendor is paid, then green.
+     * @param {{reopen?: {name: string, opts: object}|null, quiet?: boolean}} [opts]
+     */
+    async confirmDelivery(itemId, date, on, opts = {}) {
+      const ctx = this.deliveryContext();
+      const item = ctx.items.find((i) => i.id === itemId);
+      if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
+      if (date > DateService.todayIso()) return void this.#toast.show("You can confirm a delivery on the day or after");
+      const want = !!on;
+      const reopen = opts.reopen === void 0 ? null : opts.reopen;
+      if (ctx.ownerId) {
+        if (!await this.#sharedDelivery(itemId, want ? { confirm: date } : { unconfirm: date }, reopen)) return;
+      } else {
+        const own = this.#ownItem(itemId);
+        if (!own) return;
+        this.#saveDelivery(own, { confirmed: DeliveryPlan.withConfirmed(own, date, want) }, reopen);
+      }
+      if (opts.quiet) return;
+      try {
+        navigator.vibrate?.(10);
+      } catch (_) {
+      }
+      this.#toast.show(
+        `${item.name} \xB7 ${DeliveryPlan.shortDate(date)}: ${want ? "delivered" : "not confirmed"}`,
+        { action: { label: "Undo", run: () => this.confirmDelivery(itemId, date, !want, { reopen, quiet: true }) } }
+      );
+    }
+    /** Delivered / not confirmed, from the Deliveries tab's week strip. */
+    toggleDeliveryDay(itemId, date) {
+      const item = this.deliveryContext().items.find((i) => i.id === itemId);
+      if (!item) return;
+      const plan = new DeliveryPlan(item);
+      if (plan.qtyOn(date) <= 0) return void this.openModal("dayLogs", { date });
+      this.confirmDelivery(itemId, date, !plan.confirmedOn(date));
     }
     stepDelivery(itemId, date, delta) {
       const item = this.deliveryContext().items.find((i) => i.id === itemId);

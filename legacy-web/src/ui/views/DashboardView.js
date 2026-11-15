@@ -187,7 +187,8 @@ export class DashboardView extends BaseView {
     const bills = window.__app?.bills?.due(today) ?? [];
     const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
     const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
-    if (!bills.length && !owedRows.length) return '';
+    const unconfirmed = window.__app?.vendorDues?.unconfirmed?.(today) ?? [];
+    if (!bills.length && !owedRows.length && !unconfirmed.length) return '';
     const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>'
       : b.today ? '<span class="bill-tag bill-today">today</span>'
       : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
@@ -196,6 +197,12 @@ export class DashboardView extends BaseView {
         <div class="flex items-center justify-between mb-2">
           <h3 class="font-semibold flex items-center gap-2"><i data-lucide="receipt" style="width:16px;height:16px"></i> Bills &amp; dues</h3>
         </div>
+        ${unconfirmed.length ? `
+          <button class="unconfirmed-alert" onclick="window.__app.navigate('calendar');window.__app.setCalTab('deliveries')">
+            <i data-lucide="alert-circle"></i>
+            <span class="flex-1 text-left">${unconfirmed.map((u) => `${this.escapeHtml(u.item.name)}: ${u.days.length} day${u.days.length === 1 ? '' : 's'}`).join(' · ')} not confirmed — check Regulars</span>
+            <i data-lucide="chevron-right"></i>
+          </button>` : ''}
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">

@@ -20,6 +20,7 @@ export interface DeliveryItem {
   vendor?: string;
   trackFrom?: string;
   marks?: Record<string, number>;
+  confirmed?: Record<string, boolean>;
   pauses?: { from: string; to: string }[];
   prices?: { from: string; unit: number }[];
   paidTo?: string | null;

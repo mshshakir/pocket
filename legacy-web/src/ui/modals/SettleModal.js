@@ -43,6 +43,7 @@ export class SettleModal {
           <div class="min-w-0">
             <div class="font-medium text-sm">${Html.escape(l.item.name)}</div>
             ${l.lines.length ? `<div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} · ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}</div>` : ''}
+            ${l.unconfirmed ? `<div class="text-[11px] text-rose-600">${l.days - l.unconfirmed} confirmed, ${l.unconfirmed} not confirmed — check with the vendor</div>` : ''}
             ${(l.adjustments || []).map((a) => `<div class="text-[11px] text-amber-700 dark:text-amber-400">Adjustment ${DeliveryPlan.shortDate(a.date)}: ${a.amount < 0 ? '−' : '+'}${this.#fx.formatMoney(Math.abs(a.amount), cur)}</div>`).join('')}
           </div>
           <div class="settle-amount">
