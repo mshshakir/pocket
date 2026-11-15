@@ -87,6 +87,9 @@ export class RecurringService {
       // which would orphan a leg with a duplicated transferPairId. The UI blocks
       // recurring transfers, so skip defensively rather than corrupt data (B5).
       if (template.type === 'transfer') continue;
+      // A bill whose amount changes ("ask me") waits to be paid or skipped
+      // instead of being copied with last time's amount (see BillService).
+      if (template.askFirst === true) continue;
 
       const { rule, interval } = template.recurring;
       // Anchor monthly/yearly stepping to the template's original day-of-month so
@@ -128,6 +131,10 @@ export class RecurringService {
           hijriDate:         this.#hijri.toHijri(next),
           recurringSourceId: template.id,
           recurring:         null,
+          askFirst:          undefined,
+          remindTo:          undefined,
+          remindEmail:       undefined,
+          remindDays:        undefined,
           tags:              (template.tags || []).slice(),
           splits:            template.splits ? template.splits.map((s) => ({ ...s })) : null,
         };

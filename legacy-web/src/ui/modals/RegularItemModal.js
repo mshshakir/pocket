@@ -25,6 +25,7 @@ import { CategoryField }   from '../components/CategoryField.js';
 import { AccountRef }      from '../../domain/services/AccountRef.js';
 import { DeliveryPlan }    from '../../domain/services/DeliveryPlan.js';
 import { DateService }     from '../../domain/services/DateService.js';
+import { NotifyField }     from '../components/NotifyField.js';
 
 const ITEM_ICONS = [
   'coffee','shopping-basket','bus','dumbbell','utensils','heart-pulse',
@@ -265,12 +266,51 @@ export class RegularItemModal {
             <label class="text-xs text-zinc-500">If you changed the price, it applies from</label>
             <input class="input" name="priceFrom" type="date" value="${today}">
           </div>` : ''}
+          <div class="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+            <div class="text-xs font-medium mb-2">Morning check-in on Telegram</div>
+            ${NotifyField.render({ prefix: 'checkin', value: data.checkinTo || 'all', email: data.checkinEmail,
+              me: window.__app?.currentUserEmail?.() || null, family: this.#store.getState().family || [], label: 'Sent to' })}
+            <div class="grid grid-cols-2 gap-3 mt-2">
+              <div>
+                <label class="text-xs text-zinc-500">At</label>
+                <input class="input" type="time" name="checkinTime" value="${RegularItemModal.time(data.checkinMinute ?? 540)}">
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">Time zone</label>
+                <select class="select" name="checkinTz">${RegularItemModal.zones(data.checkinTz)}</select>
+              </div>
+            </div>
+            <div class="text-[11px] text-zinc-500 mt-1">Asks what came, with buttons; the first answer counts for everyone. "Everyone" is you and family members who can add to this account; "Family group" is the Telegram group of a shared space with this account. People need Telegram linked (/link in the bot).</div>
+          </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             Each day is filled in from this pattern; on the calendar, mark only the days that were different.
             Nothing is spent until you pay the vendor from <b>Dues</b>.
             Items with the same "Paid to" are settled together.
           </div>
         </div>`;
+  }
+
+  /** 540 → "09:00". */
+  static time(minute) {
+    const m = Math.max(0, Math.min(1439, Number(minute) || 0));
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  }
+
+  /** "09:30" → 570 (9 am when unreadable). */
+  static minute(hhmm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+    return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : 540;
+  }
+
+  /** Common zones plus this device's, the item's chosen one selected (this device's by default). */
+  static zones(chosen) {
+    let here = 'Asia/Kolkata';
+    try { here = Intl.DateTimeFormat().resolvedOptions().timeZone || here; } catch (_) { /* old browser */ }
+    const pick = (chosen || here).replace(/^Asia\/Calcutta$/, 'Asia/Kolkata'); // the old name some devices report
+    const list = [['Asia/Kolkata', 'India'], ['Africa/Nairobi', 'Kenya'], ['Africa/Dar_es_Salaam', 'Tanzania'], ['Asia/Dubai', 'UAE'],
+      ['Asia/Riyadh', 'Saudi Arabia'], ['Asia/Karachi', 'Pakistan'], ['Europe/London', 'UK'], ['America/New_York', 'US East']];
+    if (!list.some(([z]) => z === pick)) list.unshift([pick, pick.replace(/_/g, ' ')]);
+    return list.map(([z, l]) => `<option value="${z}" ${z === pick ? 'selected' : ''}>${l}</option>`).join('');
   }
 
   #esc(s) {

@@ -891,6 +891,26 @@ export class SyncService {
    * @param {string} ownerId  Supabase user ID of the account owner
    * @param {object} txData   Transaction object to add
    */
+  /**
+   * Changes a pay-later item in someone's book — a day's quantity, pauses, or
+   * how far it is paid (pocket_delivery_change, migration 0031). The server
+   * checks this person may add to the item's account. The share's copy is
+   * updated at once from the reply.
+   * @returns {Promise<{marks: object, pauses: object[], paidTo: string|null}>}
+   */
+  async deliveryChange(ownerId, itemId, change) {
+    if (!this.#sb || !this.#user) throw new Error('Not signed in');
+    const { data, error } = await this.#sb.rpc('pocket_delivery_change', { p_owner: ownerId, p_item: itemId, p_change: change });
+    if (error) throw new Error(error.message);
+    const item = (this.#shareOf(ownerId)?.regularItems || []).find((i) => i.id === itemId);
+    if (item && data) {
+      Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [] });
+      if (data.paidTo) item.paidTo = data.paidTo;
+      this.#bus.emit('state:changed', this.#store.getState());
+    }
+    return data;
+  }
+
   async submitContribution(ownerId, txData) {
     if (!this.#sb || !this.#user) throw new Error('Not signed in');
     const email = this.#user.email.toLowerCase();

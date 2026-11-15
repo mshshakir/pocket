@@ -143,6 +143,10 @@ export class TransactionService {
       // absent, AccountService.recompute() freezes it at the live rate.
       acctMinor:      Number.isFinite(data.acctMinor) ? data.acctMinor : undefined,
       recurring:      data.recurring      || null,
+      // A recurring bill whose amount changes waits to be paid (BillService), and who is reminded on Telegram.
+      ...(data.recurring && data.askFirst ? {
+        askFirst: true, remindTo: data.remindTo || 'all', remindEmail: data.remindEmail || null, remindDays: data.remindDays ?? 2,
+      } : {}),
       recurringSourceId: data.recurringSourceId || null,
       createdAt:      data.createdAt      || new Date().toISOString(),
       addedBy:        data.addedBy        || null,

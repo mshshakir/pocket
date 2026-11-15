@@ -14,6 +14,8 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { BatchEntryService } from './lib/BatchEntryService.ts';
 import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
+import { DeliveryBot } from './lib/DeliveryBot.ts';
+import { DeliveryStore } from './lib/DeliveryStore.ts';
 import { EntryService } from './lib/EntryService.ts';
 import { ExchangeRates } from './lib/ExchangeRates.ts';
 import { GroupService } from './lib/GroupService.ts';
@@ -85,7 +87,8 @@ const auth = createClient(
 const store = new PocketStore(supabase);
 const telegram = new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN'));
 const clock = new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata');
-const entries = new EntryService(store, telegram, clock, new ExchangeRates());
+const rates = new ExchangeRates();
+const entries = new EntryService(store, telegram, clock, rates);
 
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
@@ -94,6 +97,7 @@ const server = new WebhookServer(
     new LinkService(store, telegram, auth),
     new BatchEntryService(store, telegram, entries),
     new GroupService(store, telegram, new GroupSummaries(store, new SummaryReport()), clock),
+    new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
   ),
 );
 

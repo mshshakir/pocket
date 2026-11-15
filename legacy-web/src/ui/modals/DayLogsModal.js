@@ -32,7 +32,8 @@ export class DayLogsModal {
     if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
     const s = this.#store.getState();
     const all = s.regularItems || [];
-    const deliveries = all.filter((i) => i.payLater === true);
+    const ctx = window.__app?.deliveryContext?.() ?? { items: all.filter((i) => i.payLater === true), canChange: () => true };
+    const deliveries = ctx.items;
     const items = all.filter((i) => i.payLater !== true);
     const logs = this.#regularLogs
       ? this.#regularLogs.onDate(date)
@@ -88,7 +89,7 @@ export class DayLogsModal {
           </button>
         </div>
 
-        ${deliveries.length ? this.#deliveries(deliveries, date, s) : ''}
+        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx) : ''}
 
         ${logs.length > 0
           ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ''}${logRows}</div>`
@@ -124,12 +125,13 @@ export class DayLogsModal {
   }
 
   /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
-  #deliveries(list, date, s) {
+  #deliveries(list, date, s, ctx) {
     const rows = list.map((item) => {
       const plan = new DeliveryPlan(item);
       const state = plan.stateOn(date);
       const qty = plan.qtyOn(date);
       const paid = this.#dues?.isPaid(item, date) ?? false;
+      const locked = paid || !ctx.canChange(item);
       const id = Html.escape(item.id);
       const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : '';
       const label = state === 'before' ? 'Not counted yet'
@@ -146,20 +148,20 @@ export class DayLogsModal {
             <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
             <div class="text-xs text-zinc-500">${label}${cost ? ` · ${cost}` : ''}${paid ? ' · paid' : ''}</div>
           </div>
-          ${paid || state === 'before' ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '—'}</span>` : `
+          ${locked || state === 'before' ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '—'}</span>` : `
           <div class="delivery-step">
             <button type="button" aria-label="Less" onclick="window.__app.stepDelivery('${id}','${date}',-1)" ${qty <= 0 ? 'disabled' : ''}><i data-lucide="minus"></i></button>
             <span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '0'}</span>
             <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
           </div>`}
         </div>
-        ${!paid && state === 'changed' ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ''}`;
+        ${!locked && state === 'changed' ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ''}`;
     }).join('');
     return `
       <div class="mb-4">
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-semibold">Deliveries</div>
-          <button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>
+          ${ctx.ownerId ? '' : `<button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>`}
         </div>
         ${rows}
         <div class="text-[11px] text-zinc-500 mt-1">Filled in from the usual — change only what was different.</div>

@@ -90,6 +90,9 @@ import { RegularItemModal }     from './ui/modals/RegularItemModal.js';
 import { DayLogsModal }         from './ui/modals/DayLogsModal.js';
 import { SettleModal }          from './ui/modals/SettleModal.js';
 import { PauseDeliveriesModal } from './ui/modals/PauseDeliveriesModal.js';
+import { NotifyField }          from './ui/components/NotifyField.js';
+import { PayBillModal }         from './ui/modals/PayBillModal.js';
+import { BillService }          from './domain/services/BillService.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
 import { PlanBanner }           from './ui/components/PlanBanner.js';
@@ -131,6 +134,7 @@ export class Application {
   /** @type {RecurringService}     */ #recurring;
   /** @type {RegularLogService}    */ #regularLogs;
   /** @type {VendorDues}           */ #vendorDues;
+  /** @type {BillService}          */ #bills;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
@@ -212,6 +216,7 @@ export class Application {
     this.#transactions= new TransactionService();
     this.#budgets     = new BudgetService();
     this.#recurring   = new RecurringService();
+    this.#bills       = new BillService({ store: this.#store, recurring: this.#recurring });
     this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
     this.#sync        = new SyncService();
@@ -371,6 +376,7 @@ export class Application {
     this.#modal.register('dayLogs',      this.#dayLogsModal);
     this.#modal.register('settle',       new SettleModal({ dues: () => this.#vendorDues }));
     this.#modal.register('pauseDeliveries', new PauseDeliveriesModal());
+    this.#modal.register('payBill',      new PayBillModal({ bills: () => this.#bills }));
     this.#modal.register('currencySetup',this.#currencySetupModal);
 
     // 7. Subscribe to events
@@ -518,7 +524,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries',
+    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -584,6 +590,10 @@ export class Application {
   get regularLogs() { return this.#regularLogs; }
   /** What's owed to vendors for pay-later regular items. */
   get vendorDues() { return this.#vendorDues; }
+  /** Recurring bills that wait to be paid (amount changes). */
+  get bills() { return this.#bills; }
+  /** The signed-in email, for "who gets the Telegram message". */
+  currentUserEmail() { return this.#sync.currentUser?.email || null; }
 
   /**
    * The category list a field should browse.
@@ -1347,6 +1357,11 @@ export class Application {
         until:    fd.get('recurringUntil') || null,
       };
     }
+    // A repeating bill whose amount changes waits to be paid (BillService).
+    const remind = NotifyField.read(fd, 'remind');
+    const bill = recurring && fd.get('recurringAsk')
+      ? { askFirst: true, remindTo: remind.to, remindEmail: remind.email, remindDays: Math.max(0, Number(fd.get('remindDays')) || 0) }
+      : { askFirst: undefined, remindTo: undefined, remindEmail: undefined, remindDays: undefined };
 
     // Foreign-currency single-account tx: freeze the amount actually booked to
     // the account using the FX-panel rate (manual or auto). For same-currency or
@@ -1404,7 +1419,7 @@ export class Application {
           payee: data.payee, note: data.note, date: data.date,
           hijriDate: this.#hijri.toHijri(data.date),
           paymentType: data.paymentType, type: data.type,
-          splits, recurring,
+          splits, recurring, ...bill,
           // Clear every transfer-only field so no dangling pair reference remains.
           transferPairId: null, transferDir: null, transferRate: null,
           ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
@@ -1449,7 +1464,7 @@ export class Application {
           payee: data.payee, note: data.note, date: data.date,
           hijriDate: this.#hijri.toHijri(data.date), // refresh snapshot when date changes
           paymentType: data.paymentType, type: data.type,
-          splits, recurring,
+          splits, recurring, ...bill,
           ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
         });
       }
@@ -1470,7 +1485,7 @@ export class Application {
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
           payee: data.payee, note: data.note, date: data.date,
           paymentType: data.paymentType, type: data.type,
-          splits, recurring,
+          splits, recurring, ...bill,
           acctMinor: txAcctMinor,
           addedBy: this.#sync.currentUser?.email || null,
         });
@@ -3191,6 +3206,10 @@ export class Application {
       unit:      String(fd.get('unit') || '').trim().slice(0, 12),
       vendor:    String(fd.get('vendor') || '').trim().slice(0, 40),
       trackFrom,
+      checkinTo:     NotifyField.read(fd, 'checkin').to,
+      checkinEmail:  NotifyField.read(fd, 'checkin').email,
+      checkinMinute: RegularItemModal.minute(fd.get('checkinTime')),
+      checkinTz:     String(fd.get('checkinTz') || 'Asia/Kolkata'),
     };
     if (existing?.payLater && existing.defaultAmount !== payload.defaultAmount) {
       const from = DeliveryPlan.isIso(fd.get('priceFrom')) ? fd.get('priceFrom') : today;
@@ -3329,6 +3348,39 @@ export class Application {
     return (this.#store.getState().regularItems || []).find((i) => i.id === itemId) || null;
   }
 
+  /**
+   * The pay-later items on screen: your own, or — in a family member's space —
+   * theirs, which you may change when you can add to the item's account.
+   * @returns {{ownerId: string|null, items: object[], canChange: (item: object) => boolean}}
+   */
+  deliveryContext() {
+    const space = this.#spaces?.active?.();
+    if (!space || space.isHome) {
+      return { ownerId: null, items: (this.#store.getState().regularItems || []).filter((i) => i.payLater === true), canChange: () => true };
+    }
+    return {
+      ownerId: space.ownerId,
+      items: (space.regularItems || []).filter((i) => i.payLater === true),
+      canChange: (item) => !!item.accountId && space.canAdd(item.accountId),
+    };
+  }
+
+  /** A day/pause change to someone else's item goes through the server. */
+  async #sharedDelivery(itemId, change, reopen) {
+    const ctx = this.deliveryContext();
+    const item = ctx.items.find((i) => i.id === itemId);
+    if (!ctx.ownerId || !item) return false;
+    if (!ctx.canChange(item)) { this.#toast.show('You can only view this item'); return true; }
+    try {
+      await this.#sync.deliveryChange(ctx.ownerId, itemId, change);
+    } catch (err) {
+      this.#toast.show(err.message || 'Not saved');
+    }
+    this.#render();
+    if (reopen) this.openModal(reopen.name, reopen.opts);
+    return true;
+  }
+
   /** Saves a change to an item's delivery data and redraws. */
   #saveDelivery(item, change, reopen) {
     Object.assign(item, change);
@@ -3340,6 +3392,12 @@ export class Application {
 
   /** How many came on a day (0 = none). Paid days can't change. */
   setDelivery(itemId, date, qty) {
+    const shared = this.deliveryContext().ownerId ? this.deliveryContext().items.find((i) => i.id === itemId) : null;
+    if (shared) {
+      const marks = DeliveryPlan.withMark(shared, date, qty);
+      const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
+      return void this.#sharedDelivery(itemId, change, { name: 'dayLogs', opts: { date } });
+    }
     const item = this.#ownItem(itemId);
     if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
     if (this.#vendorDues.isPaid(item, date)) return this.#toast.show('That day is already paid');
@@ -3347,13 +3405,14 @@ export class Application {
   }
 
   stepDelivery(itemId, date, delta) {
-    const item = this.#ownItem(itemId);
+    const item = this.deliveryContext().items.find((i) => i.id === itemId);
     if (!item) return;
     const now = new DeliveryPlan(item).qtyOn(date);
     this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
   }
 
   resetDelivery(itemId, date) {
+    if (this.deliveryContext().ownerId) return void this.#sharedDelivery(itemId, { clear: date }, { name: 'dayLogs', opts: { date } });
     const item = this.#ownItem(itemId);
     if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
     this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: 'dayLogs', opts: { date } });
@@ -3406,7 +3465,10 @@ export class Application {
       if (!ok) break;
       recorded++;
       const item = this.#ownItem(l.item.id);
-      if (item) item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+      if (item) {
+        item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+        if (!item.paidTo || l.to > item.paidTo) item.paidTo = l.to;
+      }
     }
     if (!recorded) return;
     this.#store.persist();
@@ -3414,6 +3476,43 @@ export class Application {
     this.closeModal();
     this.#render();
     this.#toast.show(`Paid ${group.vendor} · up to ${DeliveryPlan.shortDate(to)}`);
+  }
+
+  /** A due bill paid: a copy with the amount actually paid (BillService). */
+  submitBill(e, templateId, occurrence) {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const state = this.#store.getState();
+    const t = state.transactions.find((x) => x.id === templateId);
+    if (!t) return;
+    const amount = this.#fx.toMinor(parseFloat(fd.get('amount')) || 0, t.currency);
+    if (amount <= 0) return this.#toast.show('Enter the amount paid');
+    const paidOn = DeliveryPlan.isIso(fd.get('paidOn')) ? fd.get('paidOn') : DateService.todayIso();
+    try {
+      this.#bills.pay(t, occurrence, {
+        amount, paidOn, accountId: fd.get('accountId') || t.accountId, hijriDate: this.#hijri.toHijri(paidOn),
+        refAmount: this.#fx.convert(amount, t.currency, state.user.homeCurrency),
+        exchangeRate: (RATES[t.currency] || 1) / (RATES[state.user.homeCurrency] || 1),
+      });
+    } catch (err) {
+      return this.#toast.show(err.message || 'Not saved');
+    }
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`${t.payee || 'Bill'} paid · ${this.#fx.formatMoney(amount, t.currency)}`);
+  }
+
+  skipBill(templateId, occurrence) {
+    const t = this.#store.getState().transactions.find((x) => x.id === templateId);
+    if (!t?.recurring) return;
+    this.#bills.skip(t, occurrence);
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`${t.payee || 'Bill'} skipped this time`);
   }
 
   /** The vendor's bill as text: the share sheet on phones, else copied. */

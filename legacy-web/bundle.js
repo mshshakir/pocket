@@ -2621,6 +2621,7 @@ var _PocketApp = (() => {
       let generated = 0;
       for (const template of templates) {
         if (template.type === "transfer") continue;
+        if (template.askFirst === true) continue;
         const { rule, interval } = template.recurring;
         const anchorDay = Number(template.date.slice(8, 10)) || 1;
         const existingIds = new Set(txs.map((t) => t.id));
@@ -2645,6 +2646,10 @@ var _PocketApp = (() => {
             hijriDate: this.#hijri.toHijri(next),
             recurringSourceId: template.id,
             recurring: null,
+            askFirst: void 0,
+            remindTo: void 0,
+            remindEmail: void 0,
+            remindDays: void 0,
             tags: (template.tags || []).slice(),
             splits: template.splits ? template.splits.map((s) => ({ ...s })) : null
           };
@@ -2809,6 +2814,13 @@ var _PocketApp = (() => {
         // absent, AccountService.recompute() freezes it at the live rate.
         acctMinor: Number.isFinite(data.acctMinor) ? data.acctMinor : void 0,
         recurring: data.recurring || null,
+        // A recurring bill whose amount changes waits to be paid (BillService), and who is reminded on Telegram.
+        ...data.recurring && data.askFirst ? {
+          askFirst: true,
+          remindTo: data.remindTo || "all",
+          remindEmail: data.remindEmail || null,
+          remindDays: data.remindDays ?? 2
+        } : {},
         recurringSourceId: data.recurringSourceId || null,
         createdAt: data.createdAt || (/* @__PURE__ */ new Date()).toISOString(),
         addedBy: data.addedBy || null
@@ -3464,19 +3476,25 @@ var _PocketApp = (() => {
     payments(itemId) {
       return this.#entries().filter((t) => t.regularItemId === itemId && t.settles && DeliveryPlan.isIso(t.settles.to)).sort((a, b) => b.settles.to.localeCompare(a.settles.to) || String(b.date).localeCompare(String(a.date)));
     }
-    /** The last day already paid for (null when nothing is). */
-    paidTo(itemId) {
-      return this.payments(itemId)[0]?.settles.to ?? null;
+    /**
+     * The last day already paid for (null when nothing is): the later of the
+     * item's own record (set on paying, also from Telegram) and the payments.
+     */
+    paidTo(item) {
+      const it = typeof item === "string" ? this.items().find((i) => i.id === item) : item;
+      const fromTx = this.payments(typeof item === "string" ? item : item?.id)[0]?.settles.to ?? null;
+      const own = DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
+      return [fromTx, own].filter(Boolean).sort().pop() ?? null;
     }
     /** True when `iso` is covered by a payment, so it shouldn't be edited. */
     isPaid(item, iso) {
-      const to = this.paidTo(item.id);
+      const to = this.paidTo(item);
       return !!to && iso <= to;
     }
     /** First day not yet paid. */
     openFrom(item) {
       const plan = this.plan(item);
-      const to = this.paidTo(item.id);
+      const to = this.paidTo(item);
       const after = to ? DeliveryPlan.addDays(to, 1) : null;
       const start = plan.trackFrom || after || _VendorDues.today();
       return after && after > start ? after : start;
@@ -5740,6 +5758,25 @@ RULES:
      * @param {string} ownerId  Supabase user ID of the account owner
      * @param {object} txData   Transaction object to add
      */
+    /**
+     * Changes a pay-later item in someone's book — a day's quantity, pauses, or
+     * how far it is paid (pocket_delivery_change, migration 0031). The server
+     * checks this person may add to the item's account. The share's copy is
+     * updated at once from the reply.
+     * @returns {Promise<{marks: object, pauses: object[], paidTo: string|null}>}
+     */
+    async deliveryChange(ownerId, itemId, change) {
+      if (!this.#sb || !this.#user) throw new Error("Not signed in");
+      const { data, error } = await this.#sb.rpc("pocket_delivery_change", { p_owner: ownerId, p_item: itemId, p_change: change });
+      if (error) throw new Error(error.message);
+      const item = (this.#shareOf(ownerId)?.regularItems || []).find((i) => i.id === itemId);
+      if (item && data) {
+        Object.assign(item, { marks: data.marks || {}, pauses: data.pauses || [] });
+        if (data.paidTo) item.paidTo = data.paidTo;
+        this.#bus.emit("state:changed", this.#store.getState());
+      }
+      return data;
+    }
     async submitContribution(ownerId, txData) {
       if (!this.#sb || !this.#user) throw new Error("Not signed in");
       const email = this.#user.email.toLowerCase();
@@ -10775,6 +10812,7 @@ This replaces your current grouping.`
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ""}
+      ${this.#billsCard(todayIso)}
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div class="card p-5 md:col-span-1">
@@ -10882,6 +10920,42 @@ This replaces your current grouping.`
         </div>
         <div class="text-zinc-500">${Math.round(100 * i.amount / total)}%</div>
       </div>`).join("");
+    }
+    /**
+     * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
+     * to vendors for pay-later items — only when there is something.
+     */
+    #billsCard(today) {
+      if (this.inGuestSpace) return "";
+      const bills = window.__app?.bills?.due(today) ?? [];
+      const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
+      const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
+      if (!bills.length && !owedRows.length) return "";
+      const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>' : b.today ? '<span class="bill-tag bill-today">today</span>' : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
+      return `
+      <div class="card p-4 mb-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold flex items-center gap-2"><i data-lucide="receipt" style="width:16px;height:16px"></i> Bills &amp; dues</h3>
+        </div>
+        ${bills.slice(0, 6).map((b) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">${this.escapeHtml(b.template.payee || b.template.description || "Bill")}</div>
+              <div class="flex items-center gap-2">${when(b)}<span class="text-xs text-zinc-500">last ${this.formatMoney(b.lastAmount, b.currency)}</span></div>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${this.escapeHtml(b.template.id)}',date:'${b.date}'})">Pay</button>
+          </div>`).join("")}
+        ${owedRows.length ? `
+          <button class="w-full flex items-center justify-between py-2 border-t border-zinc-100 dark:border-zinc-800 text-left"
+                  onclick="window.__app.navigate('calendar');window.__app.setCalTab('dues')">
+            <span class="text-sm">Owed to vendors</span>
+            <span class="text-sm font-semibold">${owedRows.map(([c, v]) => this.formatMoney(v, c)).join(" + ")} <i data-lucide="chevron-right" style="width:14px;height:14px;display:inline"></i></span>
+          </button>` : ""}
+      </div>`;
+    }
+    #short(iso) {
+      const [, m, d] = iso.split("-").map(Number);
+      return `${d} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]}`;
     }
   };
 
@@ -13212,6 +13286,49 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/NotifyField.js
+  var NotifyField = class _NotifyField {
+    static CHOICES = Object.freeze([
+      ["all", "Everyone"],
+      ["one", "One person"],
+      ["group", "Family group"],
+      ["off", "Nobody"]
+    ]);
+    /**
+     * @param {{prefix: string, value?: string, email?: string|null, me?: string|null, family?: object[], label?: string}} o
+     */
+    static render({ prefix, value = "all", email = null, me = null, family = [], label = "Telegram message goes to" }) {
+      const v = _NotifyField.CHOICES.some(([k]) => k === value) ? value : "all";
+      const people = [
+        ...me ? [{ email: me, name: "Me" }] : [],
+        ...family.filter((f) => f?.email).map((f) => ({ email: String(f.email).toLowerCase(), name: f.name || f.email }))
+      ].filter((p, i, all) => all.findIndex((q) => q.email === p.email) === i);
+      const toggle = `this.form.querySelector('[data-notify-one=${prefix}]').hidden = this.value !== 'one'`;
+      return `
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-zinc-500">${Html.escape(label)}</label>
+          <select class="select" name="${prefix}To" onchange="${toggle}">
+            ${_NotifyField.CHOICES.map(([k, l]) => `<option value="${k}" ${v === k ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+        </div>
+        <div data-notify-one="${prefix}" ${v === "one" ? "" : "hidden"}>
+          <label class="text-xs text-zinc-500">Person</label>
+          <select class="select" name="${prefix}Email">
+            ${people.length ? people.map((p) => `<option value="${Html.escape(p.email)}" ${String(email || "").toLowerCase() === p.email ? "selected" : ""}>${Html.escape(p.name)}</option>`).join("") : '<option value="">Add family members first</option>'}
+          </select>
+        </div>
+      </div>`;
+    }
+    /** The two values from a form, tidy: { to, email }. */
+    static read(fd, prefix) {
+      const to = String(fd.get(`${prefix}To`) || "all");
+      const valid = _NotifyField.CHOICES.some(([k]) => k === to) ? to : "all";
+      const email = valid === "one" ? String(fd.get(`${prefix}Email`) || "").trim().toLowerCase() || null : null;
+      return { to: valid === "one" && !email ? "all" : valid, email };
+    }
+  };
+
   // src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class {
@@ -13306,6 +13423,7 @@ This replaces your current grouping.`
         interval: Number(form.elements.recurringInterval?.value) || 1,
         until: form.elements.recurringUntil?.value || null
       } : null;
+      this.#draft.askFirst = !!form.elements?.recurringAsk?.checked;
     }
     /** Discard the captured draft (used when the modal opens fresh). */
     clearDraft() {
@@ -13821,8 +13939,38 @@ This replaces your current grouping.`
             <input class="input" type="date" name="recurringUntil"
                    value="${data.recurring?.until || ""}" title="Until (optional)">
           </div>
-          <div class="text-xs text-zinc-500">Interval + optional end date. Instances are generated on each app load.</div>
+          <div class="text-xs text-zinc-500 mb-2">Interval + optional end date.</div>
+          ${this.#billFields(data)}
         </div>
+      </div>`;
+    }
+    /**
+     * A repeating bill whose amount changes (electricity, phone): don't copy it
+     * with last time's amount — show it as due, and ask (BillService).
+     */
+    #billFields(data) {
+      const ask = data.askFirst === true;
+      const state = Store.getInstance().getState();
+      return `
+      <label class="flex items-start gap-2 text-sm cursor-pointer">
+        <input type="checkbox" name="recurringAsk" ${ask ? "checked" : ""} class="mt-0.5"
+               onchange="this.form.querySelector('[data-bill-remind]').hidden = !this.checked">
+        <span><span class="font-medium">Amount changes \u2014 ask me each time</span>
+          <span class="block text-xs text-zinc-500">Shows as due on the date instead of being added; you enter what you paid, or skip it.</span></span>
+      </label>
+      <div data-bill-remind ${ask ? "" : "hidden"} class="mt-2">
+        ${NotifyField.render({
+        prefix: "remind",
+        value: data.remindTo || "all",
+        email: data.remindEmail,
+        me: window.__app?.currentUserEmail?.() || null,
+        family: state.family || [],
+        label: "Remind on Telegram"
+      })}
+        <label class="text-xs text-zinc-500 block mt-2">Remind
+          <select class="select inline-block w-auto ml-1" name="remindDays">
+            ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? "selected" : ""}>${d === 0 ? "on the day" : `${d} day${d === 1 ? "" : "s"} before`}</option>`).join("")}
+          </select> and on the day</label>
       </div>`;
     }
     // Category selection is handled by CategoryField + CategoryPickerSheet:
@@ -15206,7 +15354,7 @@ This replaces your current grouping.`
     "#84cc16",
     "#6366f1"
   ];
-  var RegularItemModal = class {
+  var RegularItemModal = class _RegularItemModal {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -15411,12 +15559,65 @@ This replaces your current grouping.`
             <label class="text-xs text-zinc-500">If you changed the price, it applies from</label>
             <input class="input" name="priceFrom" type="date" value="${today}">
           </div>` : ""}
+          <div class="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+            <div class="text-xs font-medium mb-2">Morning check-in on Telegram</div>
+            ${NotifyField.render({
+        prefix: "checkin",
+        value: data.checkinTo || "all",
+        email: data.checkinEmail,
+        me: window.__app?.currentUserEmail?.() || null,
+        family: this.#store.getState().family || [],
+        label: "Sent to"
+      })}
+            <div class="grid grid-cols-2 gap-3 mt-2">
+              <div>
+                <label class="text-xs text-zinc-500">At</label>
+                <input class="input" type="time" name="checkinTime" value="${_RegularItemModal.time(data.checkinMinute ?? 540)}">
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">Time zone</label>
+                <select class="select" name="checkinTz">${_RegularItemModal.zones(data.checkinTz)}</select>
+              </div>
+            </div>
+            <div class="text-[11px] text-zinc-500 mt-1">Asks what came, with buttons; the first answer counts for everyone. "Everyone" is you and family members who can add to this account; "Family group" is the Telegram group of a shared space with this account. People need Telegram linked (/link in the bot).</div>
+          </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             Each day is filled in from this pattern; on the calendar, mark only the days that were different.
             Nothing is spent until you pay the vendor from <b>Dues</b>.
             Items with the same "Paid to" are settled together.
           </div>
         </div>`;
+    }
+    /** 540 → "09:00". */
+    static time(minute) {
+      const m = Math.max(0, Math.min(1439, Number(minute) || 0));
+      return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    }
+    /** "09:30" → 570 (9 am when unreadable). */
+    static minute(hhmm) {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
+      return m ? Math.min(1439, Number(m[1]) * 60 + Number(m[2])) : 540;
+    }
+    /** Common zones plus this device's, the item's chosen one selected (this device's by default). */
+    static zones(chosen) {
+      let here = "Asia/Kolkata";
+      try {
+        here = Intl.DateTimeFormat().resolvedOptions().timeZone || here;
+      } catch (_) {
+      }
+      const pick = (chosen || here).replace(/^Asia\/Calcutta$/, "Asia/Kolkata");
+      const list = [
+        ["Asia/Kolkata", "India"],
+        ["Africa/Nairobi", "Kenya"],
+        ["Africa/Dar_es_Salaam", "Tanzania"],
+        ["Asia/Dubai", "UAE"],
+        ["Asia/Riyadh", "Saudi Arabia"],
+        ["Asia/Karachi", "Pakistan"],
+        ["Europe/London", "UK"],
+        ["America/New_York", "US East"]
+      ];
+      if (!list.some(([z]) => z === pick)) list.unshift([pick, pick.replace(/_/g, " ")]);
+      return list.map(([z, l]) => `<option value="${z}" ${z === pick ? "selected" : ""}>${l}</option>`).join("");
     }
     #esc(s) {
       return (s || "").toString().replace(
@@ -15444,7 +15645,8 @@ This replaces your current grouping.`
       if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
       const s = this.#store.getState();
       const all = s.regularItems || [];
-      const deliveries = all.filter((i) => i.payLater === true);
+      const ctx = window.__app?.deliveryContext?.() ?? { items: all.filter((i) => i.payLater === true), canChange: () => true };
+      const deliveries = ctx.items;
       const items = all.filter((i) => i.payLater !== true);
       const logs = this.#regularLogs ? this.#regularLogs.onDate(date) : (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
       const hijriStr = (() => {
@@ -15497,7 +15699,7 @@ This replaces your current grouping.`
           </button>
         </div>
 
-        ${deliveries.length ? this.#deliveries(deliveries, date, s) : ""}
+        ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx) : ""}
 
         ${logs.length > 0 ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ""}${logRows}</div>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
@@ -15530,12 +15732,13 @@ This replaces your current grouping.`
       </div>`;
     }
     /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
-    #deliveries(list, date, s) {
+    #deliveries(list, date, s, ctx) {
       const rows = list.map((item) => {
         const plan = new DeliveryPlan(item);
         const state = plan.stateOn(date);
         const qty = plan.qtyOn(date);
         const paid = this.#dues?.isPaid(item, date) ?? false;
+        const locked = paid || !ctx.canChange(item);
         const id = Html.escape(item.id);
         const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : "";
         const label = state === "before" ? "Not counted yet" : state === "paused" ? "Paused" : state === "changed" ? qty ? `Changed \xB7 usual ${plan.qtyLabel(plan.usualOn(date))}` : "None today" : state === "off" ? "Not a delivery day" : "Usual";
@@ -15549,20 +15752,20 @@ This replaces your current grouping.`
             <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
             <div class="text-xs text-zinc-500">${label}${cost ? ` \xB7 ${cost}` : ""}${paid ? " \xB7 paid" : ""}</div>
           </div>
-          ${paid || state === "before" ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "\u2014"}</span>` : `
+          ${locked || state === "before" ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "\u2014"}</span>` : `
           <div class="delivery-step">
             <button type="button" aria-label="Less" onclick="window.__app.stepDelivery('${id}','${date}',-1)" ${qty <= 0 ? "disabled" : ""}><i data-lucide="minus"></i></button>
             <span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "0"}</span>
             <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
           </div>`}
         </div>
-        ${!paid && state === "changed" ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ""}`;
+        ${!locked && state === "changed" ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ""}`;
       }).join("");
       return `
       <div class="mb-4">
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-semibold">Deliveries</div>
-          <button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>
+          ${ctx.ownerId ? "" : `<button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>`}
         </div>
         ${rows}
         <div class="text-[11px] text-zinc-500 mt-1">Filled in from the usual \u2014 change only what was different.</div>
@@ -15697,6 +15900,151 @@ This replaces your current grouping.`
             <button type="button" class="btn btn-ghost text-xs" onclick="window.__app.liftPause('${id}','${p.from}')">Remove</button>
           </div>`).join("")}` : ""}
       </form>`;
+    }
+  };
+
+  // src/ui/modals/PayBillModal.js
+  var PayBillModal = class _PayBillModal {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    /** @type {() => import('../../domain/services/BillService.js').BillService} */
+    #bills;
+    constructor({ bills }) {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+      this.#bills = bills;
+    }
+    /** "3 Nov 2026". */
+    static shortDate(iso) {
+      const [y, m, d] = String(iso).split("-").map(Number);
+      return `${d} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1] || ""} ${y}`;
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const t = (state.transactions || []).find((x) => x.id === opts.templateId);
+      if (!t) return '<div class="p-5 text-sm text-zinc-500">Bill not found.</div>';
+      const last = this.#bills().lastAmount(t);
+      const id = Html.escape(t.id), date = Html.escape(opts.date);
+      const name = t.payee || t.description || "Bill";
+      const accounts = (state.accounts || []).filter((a) => !a.archived).map((a) => `<option value="${Html.escape(a.id)}" ${a.id === t.accountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("");
+      return `
+      <form class="p-5" style="min-width:300px;max-width:420px" onsubmit="window.__app.submitBill(event,'${id}','${date}')">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">${Html.escape(name)}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <div class="text-xs text-zinc-500 mb-4">Due ${Html.escape(_PayBillModal.shortDate(opts.date))} \xB7 last time ${this.#fx.formatMoney(last, t.currency)}</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Amount paid (${Html.escape(t.currency)})</label>
+            <input class="input" type="number" name="amount" min="0" step="${CurrencyService.stepFor(t.currency)}" value="${this.#fx.fromMinor(last, t.currency)}" required autofocus>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Paid on</label>
+            <input class="input" type="date" name="paidOn" value="${DateService.todayIso()}">
+          </div>
+        </div>
+        <label class="text-xs text-zinc-500">From</label>
+        <select class="select mb-4" name="accountId">${accounts}</select>
+        <div class="flex gap-2">
+          <button type="button" class="btn btn-outline" onclick="window.__app.skipBill('${id}','${date}')">Skip this time</button>
+          <div class="flex-1"></div>
+          <button class="btn btn-primary" type="submit"><i data-lucide="check"></i> Paid</button>
+        </div>
+      </form>`;
+    }
+  };
+
+  // src/domain/services/BillService.js
+  var BillService = class _BillService {
+    /** Days ahead that count as "coming up". */
+    static AHEAD = 7;
+    /** @type {{getState: () => object}} */
+    #store;
+    /** @type {{stepDate: Function}} */
+    #recurring;
+    /**
+     * @param {{store: object, recurring: {stepDate: (iso: string, rule: string, interval: number, anchorDay: number) => string}}} deps
+     */
+    constructor({ store, recurring }) {
+      this.#store = store;
+      this.#recurring = recurring;
+    }
+    /** Templates of bills (askFirst, not a copy, not a transfer). */
+    templates() {
+      return (this.#store.getState().transactions || []).filter((t) => t.recurring && t.askFirst === true && !t.recurringSourceId && t.type !== "transfer");
+    }
+    /**
+     * Occurrences not yet paid or skipped, up to `today + AHEAD` days, oldest first:
+     * [{ template, date, overdue, today, lastAmount, currency }]
+     * @param {string} today YYYY-MM-DD
+     */
+    due(today) {
+      const until = _BillService.#addDays(today, _BillService.AHEAD);
+      const ids = new Set((this.#store.getState().transactions || []).map((t) => t.id));
+      const out = [];
+      for (const t of this.templates()) {
+        const { rule, interval = 1 } = t.recurring;
+        const anchor = Number(t.date.slice(8, 10)) || 1;
+        const skipped = new Set(t.recurring.skipped || []);
+        let next = this.#recurring.stepDate(t.date, rule, interval, anchor);
+        for (let i = 0; next <= until && (!t.recurring.until || next <= t.recurring.until) && i < 400; i++) {
+          if (!ids.has(`${t.id}__${next}`) && !skipped.has(next)) {
+            out.push({ template: t, date: next, overdue: next < today, today: next === today, lastAmount: this.lastAmount(t), currency: t.currency });
+          }
+          next = this.#recurring.stepDate(next, rule, interval, anchor);
+        }
+      }
+      return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+    /** What was paid last time (the template's amount before any payment). */
+    lastAmount(template) {
+      const paid = (this.#store.getState().transactions || []).filter((t) => t.recurringSourceId === template.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      return paid[0]?.amount ?? template.amount;
+    }
+    /**
+     * Records an occurrence as paid. The copy carries the template's account,
+     * category and payee unless given; its id ties it to the occurrence.
+     * @param {object} template
+     * @param {string} occurrence   the due date being paid (YYYY-MM-DD)
+     * @param {{amount: number, accountId?: string, paidOn: string, hijriDate?: object, refAmount?: number, exchangeRate?: number}} p
+     * @returns {object} the new entry
+     */
+    pay(template, occurrence, p) {
+      const state = this.#store.getState();
+      const id = `${template.id}__${occurrence}`;
+      if (state.transactions.some((t) => t.id === id)) throw new Error("Already paid");
+      const { recurring, askFirst, remindTo, remindEmail, remindDays, acctMinor, ...rest } = template;
+      const copy = {
+        ...rest,
+        id,
+        date: p.paidOn,
+        hijriDate: p.hijriDate ?? template.hijriDate,
+        amount: p.amount,
+        refAmount: p.refAmount ?? p.amount,
+        exchangeRate: p.exchangeRate ?? template.exchangeRate,
+        accountId: p.accountId || template.accountId,
+        recurringSourceId: template.id,
+        recurring: null,
+        splits: null,
+        tags: (template.tags || []).slice(),
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        note: template.note || ""
+      };
+      state.transactions.push(copy);
+      return copy;
+    }
+    /** Marks an occurrence as skipped (nothing to pay this time). */
+    skip(template, occurrence) {
+      const skipped = new Set(template.recurring.skipped || []);
+      skipped.add(occurrence);
+      template.recurring = { ...template.recurring, skipped: [...skipped].sort() };
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
     }
   };
 
@@ -17429,6 +17777,8 @@ This replaces your current grouping.`
     #regularLogs;
     /** @type {VendorDues}           */
     #vendorDues;
+    /** @type {BillService}          */
+    #bills;
     /** @type {SyncService}          */
     #sync;
     /** @type {ThemeService}         */
@@ -17531,6 +17881,7 @@ This replaces your current grouping.`
       this.#transactions = new TransactionService();
       this.#budgets = new BudgetService();
       this.#recurring = new RecurringService();
+      this.#bills = new BillService({ store: this.#store, recurring: this.#recurring });
       this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
       this.#sync = new SyncService();
@@ -17653,6 +18004,7 @@ This replaces your current grouping.`
       this.#modal.register("dayLogs", this.#dayLogsModal);
       this.#modal.register("settle", new SettleModal({ dues: () => this.#vendorDues }));
       this.#modal.register("pauseDeliveries", new PauseDeliveriesModal());
+      this.#modal.register("payBill", new PayBillModal({ bills: () => this.#bills }));
       this.#modal.register("currencySetup", this.#currencySetupModal);
       this.#bus.on("route:changed", ({ route }) => this.#renderView(route));
       this.#bus.on("toast", ({ message }) => this.#toast.show(message));
@@ -17772,6 +18124,7 @@ This replaces your current grouping.`
       "regularItem",
       "settle",
       "pauseDeliveries",
+      "payBill",
       "csv",
       "reconcile",
       "family",
@@ -17834,6 +18187,14 @@ This replaces your current grouping.`
     /** What's owed to vendors for pay-later regular items. */
     get vendorDues() {
       return this.#vendorDues;
+    }
+    /** Recurring bills that wait to be paid (amount changes). */
+    get bills() {
+      return this.#bills;
+    }
+    /** The signed-in email, for "who gets the Telegram message". */
+    currentUserEmail() {
+      return this.#sync.currentUser?.email || null;
     }
     /**
      * The category list a field should browse.
@@ -18558,6 +18919,8 @@ Leave empty to use your own name.`,
           until: fd.get("recurringUntil") || null
         };
       }
+      const remind = NotifyField.read(fd, "remind");
+      const bill = recurring && fd.get("recurringAsk") ? { askFirst: true, remindTo: remind.to, remindEmail: remind.email, remindDays: Math.max(0, Number(fd.get("remindDays")) || 0) } : { askFirst: void 0, remindTo: void 0, remindEmail: void 0, remindDays: void 0 };
       let txAcctMinor;
       if (data.type !== "transfer" && !splits) {
         const accForFx = state.accounts.find((a) => a.id === data.accountId);
@@ -18604,6 +18967,7 @@ Leave empty to use your own name.`,
             type: data.type,
             splits,
             recurring,
+            ...bill,
             // Clear every transfer-only field so no dangling pair reference remains.
             transferPairId: null,
             transferDir: null,
@@ -18670,6 +19034,7 @@ Leave empty to use your own name.`,
             type: data.type,
             splits,
             recurring,
+            ...bill,
             ...txAcctMinor !== void 0 ? { acctMinor: txAcctMinor } : {}
           });
         }
@@ -18693,6 +19058,7 @@ Leave empty to use your own name.`,
             type: data.type,
             splits,
             recurring,
+            ...bill,
             acctMinor: txAcctMinor,
             addedBy: this.#sync.currentUser?.email || null
           });
@@ -20255,7 +20621,11 @@ They stay in your ledger as ordinary transactions and your balances do not chang
         usualDays: days.length ? days : [...DeliveryPlan.ALL_DAYS],
         unit: String(fd.get("unit") || "").trim().slice(0, 12),
         vendor: String(fd.get("vendor") || "").trim().slice(0, 40),
-        trackFrom
+        trackFrom,
+        checkinTo: NotifyField.read(fd, "checkin").to,
+        checkinEmail: NotifyField.read(fd, "checkin").email,
+        checkinMinute: RegularItemModal.minute(fd.get("checkinTime")),
+        checkinTz: String(fd.get("checkinTz") || "Asia/Kolkata")
       };
       if (existing?.payLater && existing.defaultAmount !== payload.defaultAmount) {
         const from = DeliveryPlan.isIso(fd.get("priceFrom")) ? fd.get("priceFrom") : today;
@@ -20383,6 +20753,40 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     #ownItem(itemId) {
       return (this.#store.getState().regularItems || []).find((i) => i.id === itemId) || null;
     }
+    /**
+     * The pay-later items on screen: your own, or — in a family member's space —
+     * theirs, which you may change when you can add to the item's account.
+     * @returns {{ownerId: string|null, items: object[], canChange: (item: object) => boolean}}
+     */
+    deliveryContext() {
+      const space = this.#spaces?.active?.();
+      if (!space || space.isHome) {
+        return { ownerId: null, items: (this.#store.getState().regularItems || []).filter((i) => i.payLater === true), canChange: () => true };
+      }
+      return {
+        ownerId: space.ownerId,
+        items: (space.regularItems || []).filter((i) => i.payLater === true),
+        canChange: (item) => !!item.accountId && space.canAdd(item.accountId)
+      };
+    }
+    /** A day/pause change to someone else's item goes through the server. */
+    async #sharedDelivery(itemId, change, reopen) {
+      const ctx = this.deliveryContext();
+      const item = ctx.items.find((i) => i.id === itemId);
+      if (!ctx.ownerId || !item) return false;
+      if (!ctx.canChange(item)) {
+        this.#toast.show("You can only view this item");
+        return true;
+      }
+      try {
+        await this.#sync.deliveryChange(ctx.ownerId, itemId, change);
+      } catch (err) {
+        this.#toast.show(err.message || "Not saved");
+      }
+      this.#render();
+      if (reopen) this.openModal(reopen.name, reopen.opts);
+      return true;
+    }
     /** Saves a change to an item's delivery data and redraws. */
     #saveDelivery(item, change, reopen) {
       Object.assign(item, change);
@@ -20393,18 +20797,25 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
     }
     /** How many came on a day (0 = none). Paid days can't change. */
     setDelivery(itemId, date, qty) {
+      const shared = this.deliveryContext().ownerId ? this.deliveryContext().items.find((i) => i.id === itemId) : null;
+      if (shared) {
+        const marks = DeliveryPlan.withMark(shared, date, qty);
+        const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
+        return void this.#sharedDelivery(itemId, change, { name: "dayLogs", opts: { date } });
+      }
       const item = this.#ownItem(itemId);
       if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
       if (this.#vendorDues.isPaid(item, date)) return this.#toast.show("That day is already paid");
       this.#saveDelivery(item, { marks: DeliveryPlan.withMark(item, date, qty) }, { name: "dayLogs", opts: { date } });
     }
     stepDelivery(itemId, date, delta) {
-      const item = this.#ownItem(itemId);
+      const item = this.deliveryContext().items.find((i) => i.id === itemId);
       if (!item) return;
       const now = new DeliveryPlan(item).qtyOn(date);
       this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
     }
     resetDelivery(itemId, date) {
+      if (this.deliveryContext().ownerId) return void this.#sharedDelivery(itemId, { clear: date }, { name: "dayLogs", opts: { date } });
       const item = this.#ownItem(itemId);
       if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
       this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: "dayLogs", opts: { date } });
@@ -20458,7 +20869,10 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
         if (!ok) break;
         recorded++;
         const item = this.#ownItem(l.item.id);
-        if (item) item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+        if (item) {
+          item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+          if (!item.paidTo || l.to > item.paidTo) item.paidTo = l.to;
+        }
       }
       if (!recorded) return;
       this.#store.persist();
@@ -20466,6 +20880,44 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       this.closeModal();
       this.#render();
       this.#toast.show(`Paid ${group.vendor} \xB7 up to ${DeliveryPlan.shortDate(to)}`);
+    }
+    /** A due bill paid: a copy with the amount actually paid (BillService). */
+    submitBill(e, templateId, occurrence) {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const state = this.#store.getState();
+      const t = state.transactions.find((x) => x.id === templateId);
+      if (!t) return;
+      const amount = this.#fx.toMinor(parseFloat(fd.get("amount")) || 0, t.currency);
+      if (amount <= 0) return this.#toast.show("Enter the amount paid");
+      const paidOn = DeliveryPlan.isIso(fd.get("paidOn")) ? fd.get("paidOn") : DateService.todayIso();
+      try {
+        this.#bills.pay(t, occurrence, {
+          amount,
+          paidOn,
+          accountId: fd.get("accountId") || t.accountId,
+          hijriDate: this.#hijri.toHijri(paidOn),
+          refAmount: this.#fx.convert(amount, t.currency, state.user.homeCurrency),
+          exchangeRate: (RATES[t.currency] || 1) / (RATES[state.user.homeCurrency] || 1)
+        });
+      } catch (err) {
+        return this.#toast.show(err.message || "Not saved");
+      }
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`${t.payee || "Bill"} paid \xB7 ${this.#fx.formatMoney(amount, t.currency)}`);
+    }
+    skipBill(templateId, occurrence) {
+      const t = this.#store.getState().transactions.find((x) => x.id === templateId);
+      if (!t?.recurring) return;
+      this.#bills.skip(t, occurrence);
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`${t.payee || "Bill"} skipped this time`);
     }
     /** The vendor's bill as text: the share sheet on phones, else copied. */
     async shareStatement(vendor, upTo) {

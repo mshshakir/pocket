@@ -15,6 +15,8 @@ export class HelpMenu {
     { command: 'accounts', description: 'List the accounts you can add to' },
     { command: 'categories', description: 'List expense categories and subcategories' },
     { command: 'default', description: 'Show or change your default account' },
+    { command: 'deliveries', description: 'Today\'s milk, newspaper… with − / + buttons' },
+    { command: 'dues', description: 'What you owe vendors, and record paying them' },
     { command: 'cancel', description: 'Drop the entry or edit in progress' },
     { command: 'link', description: 'Connect this chat to your Pocket account' },
     { command: 'unlink', description: 'Disconnect this chat' },
@@ -122,11 +124,28 @@ export class HelpMenu {
         '/categories  list expense categories and subcategories',
         '<code>/categories deeni</code>  just one main category',
         '/default  show the default account',
+        '/deliveries  today\'s deliveries with − / + · /dues  what you owe vendors',
         '<code>/default mpesa</code>  change it',
         '/cancel  drop an entry waiting for a category, or an edit',
         '<code>/link name@gmail.com</code>  connect a chat (a code is emailed to you)',
         '/unlink  disconnect this chat',
         '/help  this guide',
+      ].join('\n'),
+    },
+    deliveries: {
+      button: '🥛 Milk, bills & dues',
+      text: [
+        '<b>🥛 Deliveries</b> (items set to "Pay the vendor later" in the app)',
+        'Each morning (9 am unless set) I ask what came, with − / + buttons. Tap ✓ if it was the usual; the first answer counts for everyone who got it.',
+        'Or type a change: <code>no milk</code> · <code>milk none yesterday</code> · <code>milk x2</code> · <code>milk 2 L</code>',
+        '<i>"milk 2" alone is still an expense of 2.</i>',
+        '/deliveries  today\'s list again · /dues  what you owe each vendor, with ✓ Paid',
+        '',
+        '<b>🧾 Bills</b> (repeating entries marked "Amount changes — ask me")',
+        'I remind you before and on the day, with ✓ Paid (last time\'s amount) or Skip.',
+        'Different amount: <code>paid electricity 1950</code>',
+        '',
+        '<i>Who gets these — everyone, one person or your family group — and the time are set on the item or bill in the app.</i>',
       ].join('\n'),
     },
     family: {
@@ -150,7 +169,7 @@ export class HelpMenu {
   };
 
   /** The order of the topic buttons on the first page, two per row. */
-  static readonly #TOPICS = ['record', 'categories', 'transfers', 'batch', 'extras', 'fix', 'commands', 'family'];
+  static readonly #TOPICS = ['record', 'categories', 'transfers', 'batch', 'extras', 'fix', 'deliveries', 'family', 'commands'];
 
   static readonly #PREFIX = 'help:';
 

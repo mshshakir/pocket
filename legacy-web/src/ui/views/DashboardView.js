@@ -51,6 +51,7 @@ export class DashboardView extends BaseView {
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ''}
+      ${this.#billsCard(todayIso)}
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div class="card p-5 md:col-span-1">
@@ -175,5 +176,45 @@ export class DashboardView extends BaseView {
         </div>
         <div class="text-zinc-500">${Math.round((100 * i.amount) / total)}%</div>
       </div>`).join('');
+  }
+
+  /**
+   * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
+   * to vendors for pay-later items — only when there is something.
+   */
+  #billsCard(today) {
+    if (this.inGuestSpace) return '';
+    const bills = window.__app?.bills?.due(today) ?? [];
+    const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
+    const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
+    if (!bills.length && !owedRows.length) return '';
+    const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>'
+      : b.today ? '<span class="bill-tag bill-today">today</span>'
+      : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
+    return `
+      <div class="card p-4 mb-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold flex items-center gap-2"><i data-lucide="receipt" style="width:16px;height:16px"></i> Bills &amp; dues</h3>
+        </div>
+        ${bills.slice(0, 6).map((b) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">${this.escapeHtml(b.template.payee || b.template.description || 'Bill')}</div>
+              <div class="flex items-center gap-2">${when(b)}<span class="text-xs text-zinc-500">last ${this.formatMoney(b.lastAmount, b.currency)}</span></div>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${this.escapeHtml(b.template.id)}',date:'${b.date}'})">Pay</button>
+          </div>`).join('')}
+        ${owedRows.length ? `
+          <button class="w-full flex items-center justify-between py-2 border-t border-zinc-100 dark:border-zinc-800 text-left"
+                  onclick="window.__app.navigate('calendar');window.__app.setCalTab('dues')">
+            <span class="text-sm">Owed to vendors</span>
+            <span class="text-sm font-semibold">${owedRows.map(([c, v]) => this.formatMoney(v, c)).join(' + ')} <i data-lucide="chevron-right" style="width:14px;height:14px;display:inline"></i></span>
+          </button>` : ''}
+      </div>`;
+  }
+
+  #short(iso) {
+    const [, m, d] = iso.split('-').map(Number);
+    return `${d} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]}`;
   }
 }

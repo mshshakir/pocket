@@ -41,19 +41,27 @@ export class VendorDues {
       .sort((a, b) => b.settles.to.localeCompare(a.settles.to) || String(b.date).localeCompare(String(a.date)));
   }
 
-  /** The last day already paid for (null when nothing is). */
-  paidTo(itemId) { return this.payments(itemId)[0]?.settles.to ?? null; }
+  /**
+   * The last day already paid for (null when nothing is): the later of the
+   * item's own record (set on paying, also from Telegram) and the payments.
+   */
+  paidTo(item) {
+    const it = typeof item === 'string' ? this.items().find((i) => i.id === item) : item;
+    const fromTx = this.payments(typeof item === 'string' ? item : item?.id)[0]?.settles.to ?? null;
+    const own = DeliveryPlan.isIso(it?.paidTo) ? it.paidTo : null;
+    return [fromTx, own].filter(Boolean).sort().pop() ?? null;
+  }
 
   /** True when `iso` is covered by a payment, so it shouldn't be edited. */
   isPaid(item, iso) {
-    const to = this.paidTo(item.id);
+    const to = this.paidTo(item);
     return !!to && iso <= to;
   }
 
   /** First day not yet paid. */
   openFrom(item) {
     const plan = this.plan(item);
-    const to = this.paidTo(item.id);
+    const to = this.paidTo(item);
     const after = to ? DeliveryPlan.addDays(to, 1) : null;
     const start = plan.trackFrom || after || VendorDues.today();
     return after && after > start ? after : start;

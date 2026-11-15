@@ -7,6 +7,7 @@
  * handles summary commands (GroupService) and never records entries.
  */
 import type { BatchEntryService } from './BatchEntryService.ts';
+import { DeliveryBot } from './DeliveryBot.ts';
 import { CategoryDirectory } from './CategoryDirectory.ts';
 import { EntryBatch } from './EntryBatch.ts';
 import { EntryParser } from './EntryParser.ts';
@@ -43,11 +44,14 @@ export class BotController {
   readonly #links: LinkService;
   readonly #batches: BatchEntryService;
   readonly #groups: GroupService;
+  readonly #deliveries: DeliveryBot | null;
 
   constructor(
     store: PocketStore, telegram: TelegramClient, entries: EntryService,
     links: LinkService, batches: BatchEntryService, groups: GroupService,
+    deliveries: DeliveryBot | null = null,
   ) {
+    this.#deliveries = deliveries;
     this.#store = store;
     this.#telegram = telegram;
     this.#entries = entries;
@@ -116,6 +120,7 @@ export class BotController {
         }
         await this.#dropPending(chatId);
       }
+      if (this.#deliveries && !EntryBatch.isBatch(text) && await this.#deliveries.tryText(link, chatId, message.message_id, text)) return;
       if (EntryBatch.isBatch(text)) return void await this.#batches.record(link, chatId, message.message_id, text);
       await this.#entries.record({ link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id });
     } catch (err) {
@@ -132,6 +137,8 @@ export class BotController {
       await this.#telegram.answer(cb.id);
       return void await this.#telegram.edit(msg.chat.id, msg.message_id, page.text, page.keyboard, true);
     }
+    // Check-ins, /dues and bill reminders: in private chats and family groups alike.
+    if (this.#deliveries && DeliveryBot.isButton(cb.data)) return void await this.#deliveries.handleCallback(cb);
     if (msg.chat.type && msg.chat.type !== 'private') {
       try {
         return void await this.#groups.handleCallback(cb);
@@ -191,6 +198,9 @@ export class BotController {
       const had = await this.#dropPending(chatId);
       return void await this.#telegram.reply(chatId, had ? 'Cancelled. Nothing was changed.' : 'Nothing to cancel.', messageId);
     }
+
+    if (this.#deliveries && command === '/deliveries') return void await this.#deliveries.deliveries(link, chatId);
+    if (this.#deliveries && command === '/dues') return void await this.#deliveries.dues(link, chatId);
 
     const ws = await Workspace.load(this.#store, link);
     const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };

@@ -14,6 +14,10 @@
  *   A2  pausing; paying the vendor records one expense per item and closes the days
  *   A3  the item form saves the pattern, and a price change keeps the old price for past days
  *   A4  the calendar: Dues tab with Pay / Bill, a mark on a changed day
+ *   B1  a bill (repeating, "amount changes — ask me") isn't copied; it shows as due on Home
+ *   B2  paying records the amount paid as that occurrence; skipping marks it skipped
+ *   B3  the entry form saves "ask me" and who gets the Telegram reminder
+ *   B4  the item form saves the check-in: who, 9:00 by default, the time zone
  *
  * Run: node src/__smoke__/deliveries.smoke.mjs
  */
@@ -117,7 +121,7 @@ const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const today = VendorDues.today();
 const daysAgo = (n) => DeliveryPlan.addDays(today, -n);
-function boot() {
+function boot(extraTx = []) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
       <div id="viewContent"></div><div id="sidebarNav"></div><div id="bottomNav"></div><div id="authPill"></div><div id="app"></div>
     </body></html>`, { url: 'https://local.test/app.html', pretendToBeVisual: true, runScripts: 'outside-only' });
@@ -126,7 +130,7 @@ function boot() {
     user: { homeCurrency: 'INR', defaultCurrency: 'INR', theme: 'light', showHijri: false, hijriOffset: 0, customPaymentTypes: [], hiddenPaymentTypes: [] },
     accounts: [{ id: 'a1', name: 'Wallet', currency: 'INR', type: 'cash', color: '#3b82f6', icon: 'wallet', openingBalance: 0, balance: 0 }],
     categories: [{ id: 'c1', name: 'Groceries', type: 'expense', parentId: null, color: '#10b981', icon: 'tag' }],
-    transactions: [], budgets: [], debts: [], family: [], merchantCategories: {}, accountGroups: [],
+    transactions: extraTx, budgets: [], debts: [], family: [], merchantCategories: {}, accountGroups: [],
     regularItems: [
       { id: 'ri_milk', name: 'Milk', vendor: 'Doodhwala', unit: 'L', payLater: true, currency: 'INR', accountId: 'a1', categoryId: 'c1',
         usualQty: 1, usualDays: [0, 1, 2, 3, 4, 5, 6], trackFrom: daysAgo(9), defaultAmount: 6400, icon: 'coffee', color: '#3b82f6' },
@@ -222,6 +226,63 @@ function boot() {
   app.setCalTab('grid');
   await wait(30);
   ok('A4 the grid marks a changed day', /cal-mark/.test(w.document.getElementById('viewContent').innerHTML));
+}
+
+// ── bills ─────────────────────────────────────────────────────────────────
+{
+  const start = DeliveryPlan.addDays(today, -40);
+  const base = { accountId: 'a1', categoryId: 'c1', type: 'expense', currency: 'INR', exchangeRate: 1, note: '', date: start,
+    paymentType: 'online', recordState: 'cleared', tags: [], splits: null, recurring: { rule: 'monthly', interval: 1, until: null } };
+  const w = boot([
+    { ...base, id: 'tx_elec', amount: 184000, refAmount: 184000, payee: 'Electricity', askFirst: true, remindTo: 'all', remindDays: 2 },
+    { ...base, id: 'tx_rent', amount: 2000000, refAmount: 2000000, payee: 'Rent' },
+  ]);
+  await wait(100);
+  const app = w.__app;
+  const copies = (id) => app.store.getState().transactions.filter((t) => t.recurringSourceId === id);
+  const due = app.bills.due(today);
+  ok('B1 the bill waits as due (not copied); rent is still copied automatically', due.length >= 1 && due[0].template.id === 'tx_elec' && due[0].overdue && copies('tx_elec').length === 0 && copies('tx_rent').length >= 1, JSON.stringify({ due: due.map((d) => d.date), rent: copies('tx_rent').length }));
+  app.navigate('dashboard');
+  await wait(50);
+  const home = w.document.getElementById('viewContent').innerHTML;
+  ok('B1 Home shows "Bills & dues" with Electricity, overdue, and Pay', /Bills &amp; dues/.test(home) && /Electricity/.test(home) && /overdue/.test(home) && /openModal\('payBill'/.test(home));
+
+  const occ = due[0].date;
+  app.openModal('payBill', { templateId: 'tx_elec', date: occ });
+  await wait(20);
+  const f = w.document.querySelector('form');
+  ok('B2 the pay window starts at last time\'s amount', f.querySelector('[name=amount]').value === '1840' && /last time ₹1,840/.test(f.textContent));
+  f.querySelector('[name=amount]').value = '1950';
+  app.submitBill({ preventDefault() {}, target: f }, 'tx_elec', occ);
+  const paid = copies('tx_elec');
+  ok('B2 the amount paid, as that occurrence, dated today, without the bill settings', paid.length === 1 && paid[0].id === `tx_elec__${occ}` && paid[0].amount === 195000 && paid[0].date === today && !paid[0].recurring && paid[0].askFirst === undefined);
+  ok('B2 next time starts from what was paid', app.bills.lastAmount(app.store.getState().transactions.find((t) => t.id === 'tx_elec')) === 195000);
+  const left = app.bills.due(today);
+  if (left.length) {
+    app.skipBill('tx_elec', left[0].date);
+    ok('B2 skipping marks that date skipped; it\'s no longer due', app.store.getState().transactions.find((t) => t.id === 'tx_elec').recurring.skipped.includes(left[0].date) && !app.bills.due(today).some((d) => d.date === left[0].date));
+  } else ok('B2 nothing else due', true);
+
+  // B3 the entry form
+  app.openModal('transaction');
+  await wait(30);
+  const tf = w.document.querySelector('#txForm') || w.document.querySelector('form');
+  ok('B3 the Repeat section offers "Amount changes — ask me each time" and who gets reminded',
+     !!tf.querySelector('[name=recurringAsk]') && !!tf.querySelector('[name=remindTo]') && !!tf.querySelector('[name=remindDays]'));
+
+  // B4 the item form's check-in settings
+  app.openModal('regularItem', { id: 'ri_milk' });
+  await wait(20);
+  const itf = w.document.getElementById('regularItemForm');
+  ok('B4 check-in defaults: everyone, 09:00, a time zone', itf.querySelector('[name=checkinTo]').value === 'all' && itf.querySelector('[name=checkinTime]').value === '09:00' && !!itf.querySelector('[name=checkinTz]').value);
+  itf.querySelector('[name=checkinTo]').value = 'one';
+  const emailSel = itf.querySelector('[name=checkinEmail]');
+  emailSel.innerHTML = '<option value="asha@x.com">Asha</option>'; emailSel.value = 'asha@x.com';
+  itf.querySelector('[name=checkinTime]').value = '07:30';
+  itf.querySelector('[name=checkinTz]').value = 'Asia/Dubai';
+  app.submitRegularItem({ preventDefault() {}, target: itf }, 'ri_milk');
+  const m = app.vendorDues.items().find((i) => i.id === 'ri_milk');
+  ok('B4 saved: one person (Asha), 7:30, Dubai time', m.checkinTo === 'one' && m.checkinEmail === 'asha@x.com' && m.checkinMinute === 450 && m.checkinTz === 'Asia/Dubai', JSON.stringify({ t: m.checkinTo, e: m.checkinEmail, mi: m.checkinMinute, z: m.checkinTz }));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -16,6 +16,7 @@ import { CategoryField }            from '../components/CategoryField.js';
 import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
 import { DateService }              from '../../domain/services/DateService.js';
 import { Html }                     from '../../core/Html.js';
+import { NotifyField }              from '../components/NotifyField.js';
 
 /** Payment methods available by default. */
 const DEFAULT_PAYMENT_TYPES = ['card', 'cash', 'bank-transfer', 'cheque', 'crypto', 'other'];
@@ -122,6 +123,7 @@ export class TransactionModal {
           until:    form.elements.recurringUntil?.value           || null,
         }
       : null;
+    this.#draft.askFirst = !!form.elements?.recurringAsk?.checked;
   }
 
   /** Discard the captured draft (used when the modal opens fresh). */
@@ -805,8 +807,33 @@ export class TransactionModal {
             <input class="input" type="date" name="recurringUntil"
                    value="${data.recurring?.until || ''}" title="Until (optional)">
           </div>
-          <div class="text-xs text-zinc-500">Interval + optional end date. Instances are generated on each app load.</div>
+          <div class="text-xs text-zinc-500 mb-2">Interval + optional end date.</div>
+          ${this.#billFields(data)}
         </div>
+      </div>`;
+  }
+
+  /**
+   * A repeating bill whose amount changes (electricity, phone): don't copy it
+   * with last time's amount — show it as due, and ask (BillService).
+   */
+  #billFields(data) {
+    const ask = data.askFirst === true;
+    const state = Store.getInstance().getState();
+    return `
+      <label class="flex items-start gap-2 text-sm cursor-pointer">
+        <input type="checkbox" name="recurringAsk" ${ask ? 'checked' : ''} class="mt-0.5"
+               onchange="this.form.querySelector('[data-bill-remind]').hidden = !this.checked">
+        <span><span class="font-medium">Amount changes — ask me each time</span>
+          <span class="block text-xs text-zinc-500">Shows as due on the date instead of being added; you enter what you paid, or skip it.</span></span>
+      </label>
+      <div data-bill-remind ${ask ? '' : 'hidden'} class="mt-2">
+        ${NotifyField.render({ prefix: 'remind', value: data.remindTo || 'all', email: data.remindEmail,
+          me: window.__app?.currentUserEmail?.() || null, family: state.family || [], label: 'Remind on Telegram' })}
+        <label class="text-xs text-zinc-500 block mt-2">Remind
+          <select class="select inline-block w-auto ml-1" name="remindDays">
+            ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? 'selected' : ''}>${d === 0 ? 'on the day' : `${d} day${d === 1 ? '' : 's'} before`}</option>`).join('')}
+          </select> and on the day</label>
       </div>`;
   }
 
