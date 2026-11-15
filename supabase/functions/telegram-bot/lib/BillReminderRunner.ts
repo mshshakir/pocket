@@ -12,6 +12,7 @@ import { DeliveryDay } from './DeliveryDay.ts';
 import type { BillTemplate, DeliveryStore } from './DeliveryStore.ts';
 import type { LocalClock } from './LocalClock.ts';
 import { Money } from './Money.ts';
+import { PausedNotice } from './PausedNotice.ts';
 import { PlanAccess } from './PlanAccess.ts';
 import type { PocketStore } from './PocketStore.ts';
 import { Recipients } from './Recipients.ts';
@@ -67,9 +68,13 @@ export class BillReminderRunner {
       try {
         const due = BillReminderRunner.dueReminder(t, today);
         if (!due) continue;
-        if (!(await PlanAccess.load(this.#store, t.ownerId)).ownBook) continue;
         const targets = await this.#recipients.for(t.ownerId, [t.accountId], t.remindTo, t.remindEmail);
         if (!targets.length) continue;
+        const plan = await PlanAccess.load(this.#store, t.ownerId);
+        if (!plan.ownBook) {
+          await PausedNotice.send(this.#deliveries, this.#telegram, t.ownerId, plan, targets);
+          continue;
+        }
         const id = await this.#deliveries.claimReminder(t.ownerId, t.id, due.occurrence, due.kind);
         if (!id) continue;
         const money = new Money({});

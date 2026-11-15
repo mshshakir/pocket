@@ -15,6 +15,7 @@ import { CheckinMessage } from './CheckinMessage.ts';
 import { DeliveryDay, type DeliveryItem } from './DeliveryDay.ts';
 import type { DeliveryStore } from './DeliveryStore.ts';
 import type { LocalClock } from './LocalClock.ts';
+import { PausedNotice } from './PausedNotice.ts';
 import { PlanAccess } from './PlanAccess.ts';
 import type { PocketStore } from './PocketStore.ts';
 import { Recipients } from './Recipients.ts';
@@ -75,10 +76,13 @@ export class CheckinRunner {
       return (d.usualOn(day) > 0 || d.changedOn(day)) && !d.isPaid(day);
     });
     if (!today.length) return false;
-    if (!(await PlanAccess.load(this.#store, ownerId)).ownBook) return false;
-
     const targets = await this.#recipients.for(ownerId, today.map((i) => i.accountId), to, email || null);
     if (!targets.length) return false;
+    const plan = await PlanAccess.load(this.#store, ownerId);
+    if (!plan.ownBook) {
+      await PausedNotice.send(this.#deliveries, this.#telegram, ownerId, plan, targets);
+      return false;
+    }
     const id = await this.#deliveries.claimCheckin(ownerId, day, slot, today.map((i) => i.id));
     if (!id) return false;
     const view = CheckinMessage.render(id, today, day, null);

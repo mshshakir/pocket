@@ -21,6 +21,7 @@ import type { ExchangeRates } from './ExchangeRates.ts';
 import { HijriCalendar } from './HijriCalendar.ts';
 import type { LocalClock } from './LocalClock.ts';
 import { Money } from './Money.ts';
+import { PlanAccess } from './PlanAccess.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import { Recipients } from './Recipients.ts';
 import type { TelegramClient } from './TelegramClient.ts';
@@ -33,9 +34,14 @@ interface Cb {
   message?: { message_id: number; chat: { id: number; type?: string }; text?: string };
 }
 
-/** One person acting: their link and whose books they may touch. */
+/**
+ * One person acting: their link, their plan, and the books they may use here —
+ * their own when their plan includes Telegram, and shared spaces their family
+ * member's plan covers them in.
+ */
 interface Actor {
   link: TelegramLink;
+  plan: PlanAccess;
   owners: string[];
 }
 
@@ -68,6 +74,7 @@ export class DeliveryBot {
     const data = cb.data ?? '';
     const actor = await this.#actor(cb.from?.id);
     if (!actor) return void await this.#telegram.answer(cb.id, 'Link your Telegram to Pocket first: send /link to the bot in a private chat.');
+    if (!actor.owners.length) return void await this.#planNotice(cb, actor);
     try {
       if (CheckinMessage.isButton(data)) return void await this.#checkinTap(cb, actor);
       const [kind, ref, extra] = data.split(':');
@@ -85,6 +92,7 @@ export class DeliveryBot {
     const checkin = tap ? await this.#deliveries.checkin(tap.checkinId) : null;
     if (!tap || !checkin) return void await this.#telegram.answer(cb.id, 'This check-in has expired.');
     if (checkin.answered_by) return void await this.#telegram.answer(cb.id, `Already confirmed by ${checkin.answered_by}`);
+    if (!actor.owners.includes(checkin.owner_id)) return void await this.#planNotice(cb, actor);
     const items = await this.#checkinItems(checkin.owner_id, checkin.items);
     if (tap.index >= 0 && tap.step === 0) return void await this.#telegram.answer(cb.id, 'Use − or + to change it');
 
@@ -187,6 +195,7 @@ export class DeliveryBot {
   /** Today's check-in for every book this person can change, with buttons. */
   async deliveries(link: TelegramLink, chatId: number): Promise<void> {
     const actor = await this.#actorFromLink(link);
+    if (!actor.owners.length) return void await this.#telegram.reply(chatId, actor.plan.notice() ?? 'Not available on your plan.');
     const today = this.#clock.isoDate();
     let sent = 0;
     for (const owner of actor.owners) {
@@ -211,6 +220,7 @@ export class DeliveryBot {
   /** What's owed to each vendor up to today, with a "Paid" button per vendor. */
   async dues(link: TelegramLink, chatId: number): Promise<void> {
     const actor = await this.#actorFromLink(link);
+    if (!actor.owners.length) return void await this.#telegram.reply(chatId, actor.plan.notice() ?? 'Not available on your plan.');
     const today = this.#clock.isoDate();
     const money = new Money({});
     let any = false;
@@ -293,6 +303,7 @@ export class DeliveryBot {
     const r = await this.#deliveries.reminder(reminderId);
     const t = r ? (await this.#deliveries.billTemplates()).find((x) => x.ownerId === r.owner_id && x.id === r.template_id) : null;
     if (!r || !t) return void await this.#telegram.answer(cb.id, 'This bill was changed or removed in the app');
+    if (!actor.owners.includes(t.ownerId)) return void await this.#planNotice(cb, actor);
     if ((t.paid ?? []).includes(r.occurrence) || (t.skipped ?? []).includes(r.occurrence)) {
       return void await this.#telegram.answer(cb.id, 'Already done');
     }
@@ -364,7 +375,15 @@ export class DeliveryBot {
   }
 
   async #actorFromLink(link: TelegramLink): Promise<Actor> {
-    return { link, owners: await this.#deliveries.ownersFor(link.user_id, link.email) };
+    const plan = await PlanAccess.load(this.#store, link.user_id);
+    const owners = (await this.#deliveries.ownersFor(link.user_id, link.email)).filter((o) => plan.mayUseBook(o, link.user_id));
+    return { link, plan, owners };
+  }
+
+  /** A short "not on your plan" on the button, and the full explanation in their private chat. */
+  async #planNotice(cb: Cb, actor: Actor): Promise<void> {
+    await this.#telegram.answer(cb.id, 'Not available on your plan');
+    await this.#telegram.send(actor.link.chat_id, actor.plan.notice() ?? 'Telegram isn\'t part of your plan for that book.');
   }
 
   static async #id(seed: string): Promise<string> {

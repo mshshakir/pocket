@@ -47,6 +47,24 @@ export class NotifyField {
       </div>`;
   }
 
+  /**
+   * Telegram settings for someone whose plan doesn't include Telegram: shown
+   * greyed out (still saved as they are, so nothing chosen is lost) with a
+   * note on how to get it.
+   * @param {string} html  the settings
+   */
+  static gate(html) {
+    const plan = window.__app?.getPlan?.();
+    if (!plan || plan.can?.('telegram')) return html;
+    return `
+      <div class="tg-locked" aria-disabled="true">${html}</div>
+      <div class="text-[11px] text-zinc-500 mt-1">
+        <i data-lucide="lock" style="width:11px;height:11px;display:inline"></i>
+        Telegram messages are part of the Sync and Family plans —
+        <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('settings')">see plans</button>.
+      </div>`;
+  }
+
   /** The two values from a form, tidy: { to, email }. */
   static read(fd, prefix) {
     const to = String(fd.get(`${prefix}To`) || 'all');

@@ -828,12 +828,12 @@ export class TransactionModal {
           <span class="block text-xs text-zinc-500">Shows as due on the date instead of being added; you enter what you paid, or skip it.</span></span>
       </label>
       <div data-bill-remind ${ask ? '' : 'hidden'} class="mt-2">
-        ${NotifyField.render({ prefix: 'remind', value: data.remindTo || 'all', email: data.remindEmail,
+        ${NotifyField.gate(`${NotifyField.render({ prefix: 'remind', value: data.remindTo || 'all', email: data.remindEmail,
           me: window.__app?.currentUserEmail?.() || null, family: state.family || [], label: 'Remind on Telegram' })}
         <label class="text-xs text-zinc-500 block mt-2">Remind
           <select class="select inline-block w-auto ml-1" name="remindDays">
             ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? 'selected' : ''}>${d === 0 ? 'on the day' : `${d} day${d === 1 ? '' : 's'} before`}</option>`).join('')}
-          </select> and on the day</label>
+          </select> and on the day</label>`)}
       </div>`;
   }
 

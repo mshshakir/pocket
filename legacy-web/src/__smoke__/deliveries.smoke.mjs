@@ -274,6 +274,7 @@ function boot(extraTx = []) {
   app.openModal('regularItem', { id: 'ri_milk' });
   await wait(20);
   const itf = w.document.getElementById('regularItemForm');
+  ok('B4 on Free, the Telegram settings are greyed out with how to get them', !!itf.querySelector('.tg-locked [name=checkinTo]') && /part of the Sync and Family plans/.test(itf.textContent));
   ok('B4 check-in defaults: everyone, 09:00, a time zone', itf.querySelector('[name=checkinTo]').value === 'all' && itf.querySelector('[name=checkinTime]').value === '09:00' && !!itf.querySelector('[name=checkinTz]').value);
   itf.querySelector('[name=checkinTo]').value = 'one';
   const emailSel = itf.querySelector('[name=checkinEmail]');

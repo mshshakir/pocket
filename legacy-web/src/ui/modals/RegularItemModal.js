@@ -268,7 +268,7 @@ export class RegularItemModal {
           </div>` : ''}
           <div class="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
             <div class="text-xs font-medium mb-2">Morning check-in on Telegram</div>
-            ${NotifyField.render({ prefix: 'checkin', value: data.checkinTo || 'all', email: data.checkinEmail,
+            ${NotifyField.gate(`${NotifyField.render({ prefix: 'checkin', value: data.checkinTo || 'all', email: data.checkinEmail,
               me: window.__app?.currentUserEmail?.() || null, family: this.#store.getState().family || [], label: 'Sent to' })}
             <div class="grid grid-cols-2 gap-3 mt-2">
               <div>
@@ -279,7 +279,7 @@ export class RegularItemModal {
                 <label class="text-xs text-zinc-500">Time zone</label>
                 <select class="select" name="checkinTz">${RegularItemModal.zones(data.checkinTz)}</select>
               </div>
-            </div>
+            </div>`)}
             <div class="text-[11px] text-zinc-500 mt-1">Asks what came, with buttons; the first answer counts for everyone. "Everyone" is you and family members who can add to this account; "Family group" is the Telegram group of a shared space with this account. People need Telegram linked (/link in the bot).</div>
           </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">

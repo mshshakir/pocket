@@ -67,6 +67,14 @@ export class PlanAccess {
     return this.#sharing === 'write';
   }
 
+  /** When the plan ended (or ends); null when it never had one. */
+  get endsAt(): Date | null { return this.#endsAt; }
+
+  /** May this person use Telegram for `ownerId`'s book (their own, or a shared space they're covered in)? */
+  mayUseBook(ownerId: string, selfId: string): boolean {
+    return ownerId === selfId ? this.ownBook : this.sharedBook(ownerId);
+  }
+
   /** May log into their own book. */
   get ownBook(): boolean {
     return this.#telegram === 'write';

@@ -99,7 +99,10 @@ class FakeDeliveries {
 
 class FakeStore {
   written: { owner: string; email: string; tx: Record<string, unknown> }[] = [];
-  plans = new Map<string, unknown>([[OWNER, { access: { telegram: 'write' } }]]);
+  plans = new Map<string, unknown>([
+    [OWNER, { state: 'active', access: { telegram: 'write' } }],
+    [WIFE, { state: 'free', access: { telegram: 'none' }, coveredBy: [{ ownerId: OWNER, access: 'write' }] }],
+  ]);
   findLink(id: number) { return Promise.resolve(links.get(id) ?? null); }
   entitlements(user: string) { return Promise.resolve(this.plans.get(user) ?? null); }
   loadBook() { return Promise.resolve(new PocketBook({ user: { homeCurrency: 'INR', hijriOffset: 0, defaultPaymentType: 'cash' }, fxRates: { INR: 1 }, accounts: [], categories: [] })); }
@@ -183,10 +186,12 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   const tg4 = new FakeTelegram();
   await new CheckinRunner(st as unknown as PocketStore, sunday as unknown as DeliveryStore, tg4 as unknown as TelegramClient, clockAt('2026-11-15', '09:05')).run();
   ok('T2 nothing on a day off (Sunday)', tg4.sent.length === 0);
-  const noPlan = new FakeStore(); noPlan.plans.clear();
-  const tg5 = new FakeTelegram();
-  await new CheckinRunner(noPlan as unknown as PocketStore, new FakeDeliveries() as unknown as DeliveryStore, tg5 as unknown as TelegramClient, clockAt('2026-11-16', '09:05')).run();
-  ok('T2 an owner without Telegram on their plan gets nothing', tg5.sent.length === 0);
+  const noPlan = new FakeStore(); noPlan.plans.set(OWNER, { state: 'lapsed', endsAt: '2026-11-10T00:00:00Z', access: { telegram: 'none' } });
+  const tg5 = new FakeTelegram(), dl5 = new FakeDeliveries();
+  await new CheckinRunner(noPlan as unknown as PocketStore, dl5 as unknown as DeliveryStore, tg5 as unknown as TelegramClient, clockAt('2026-11-16', '09:05')).run();
+  ok('T2 owner\'s plan without Telegram: no check-in, one "paused" note to each person', tg5.sent.length === 2 && tg5.sent.every((m) => /paused/.test(m.text) && !/Deliveries/.test(m.text)));
+  await new CheckinRunner(noPlan as unknown as PocketStore, dl5 as unknown as DeliveryStore, tg5 as unknown as TelegramClient, clockAt('2026-11-17', '09:05')).run();
+  ok('T2 … only once for that plan end', tg5.sent.length === 2);
 }
 
 // ── T3 ─────────────────────────────────────────────────────────────────
@@ -202,7 +207,7 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   await tap(ME, 'dv:1:0:-');
   ok('T3 my − takes it back to the usual (mark cleared)', !('2026-11-16' in dl.items[0].marks!));
   await tap(OTHER, 'dv:1:1:-');
-  ok('T3 a stranger is refused', /permission|view/i.test(tg.answers.at(-1) ?? '') && dl.items[1].marks!['2026-11-16'] === undefined, String(tg.answers.at(-1)));
+  ok('T3 a stranger is refused', /permission|view|plan/i.test(tg.answers.at(-1) ?? '') && dl.items[1].marks!['2026-11-16'] === undefined, String(tg.answers.at(-1)));
   await tap(999, 'dv:1:ok');
   ok('T3 someone not linked is told to /link', /\/link/.test(tg.answers.at(-1) ?? ''));
   const before = tg.edits.length;
@@ -212,6 +217,21 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   ok('T3 a second ✓ is told who answered', /Already confirmed by Asha/.test(tg.answers.at(-1) ?? ''));
   await tap(ME, 'dv:1:0:=');
   ok('T3 the label button does nothing', dl.changes.length === 2);
+}
+
+{
+  // T3b: the owner's plan ends after the check-in went out
+  const dl = new FakeDeliveries(), st = new FakeStore(), tg = new FakeTelegram();
+  const clock = clockAt('2026-11-16', '09:05');
+  await new CheckinRunner(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clock).run();
+  st.plans.set(OWNER, { state: 'grace', access: { telegram: 'read' } });
+  st.plans.set(WIFE, { state: 'free', access: { telegram: 'none' }, coveredBy: [{ ownerId: OWNER, access: 'read' }] });
+  const bot = new DeliveryBot(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clock, rates as never);
+  await bot.handleCallback({ id: 'cb', from: { id: HER }, data: 'dv:1:0:+', message: { message_id: 1, chat: { id: HER, type: 'private' } } });
+  ok('T3b her tap: "Not available on your plan", the reason in her chat, nothing changed',
+    tg.answers.at(-1) === 'Not available on your plan' && /Family plan you log under has ended/.test(tg.sent.at(-1)!.text) && !dl.changes.length, tg.sent.at(-1)!.text);
+  await bot.dues(links.get(ME)!, ME);
+  ok('T3b /dues on a lapsed plan gives the plan message', /logging here is paused|part of Pocket/.test(tg.sent.at(-1)!.text), tg.sent.at(-1)!.text);
 }
 
 // ── T4 ─────────────────────────────────────────────────────────────────
@@ -255,6 +275,11 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   ok('T6 2 days before: "before"; on the day: "due"; long past: nothing',
     BillReminderRunner.dueReminder(bill(), '2026-11-16')?.kind === 'before' && BillReminderRunner.dueReminder(bill(), '2026-11-18')?.kind === 'due'
     && BillReminderRunner.dueReminder(bill(), '2026-11-14') === null && BillReminderRunner.dueReminder({ ...bill(), paid: ['2026-11-18'] }, '2026-11-18') === null);
+  const lapsed = new FakeStore(); lapsed.plans.set(OWNER, { state: 'lapsed', access: { telegram: 'none' } });
+  const dlp = new FakeDeliveries(), tgp = new FakeTelegram();
+  dlp.bills = [bill()];
+  await new BillReminderRunner(lapsed as unknown as PocketStore, dlp as unknown as DeliveryStore, tgp as unknown as TelegramClient, clockAt('2026-11-16', '09:30')).run();
+  ok('T6 no plan: no reminder, the "paused" note instead', tgp.sent.length === 2 && tgp.sent.every((m) => /paused/.test(m.text)) && !dlp.reminders.length);
   const dl = new FakeDeliveries(), st = new FakeStore(), tg = new FakeTelegram();
   dl.bills = [bill()];
   const run = (day: string, hhmm = '09:30') => new BillReminderRunner(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clockAt(day, hhmm)).run();

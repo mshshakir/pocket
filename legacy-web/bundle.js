@@ -13320,6 +13320,23 @@ This replaces your current grouping.`
         </div>
       </div>`;
     }
+    /**
+     * Telegram settings for someone whose plan doesn't include Telegram: shown
+     * greyed out (still saved as they are, so nothing chosen is lost) with a
+     * note on how to get it.
+     * @param {string} html  the settings
+     */
+    static gate(html) {
+      const plan = window.__app?.getPlan?.();
+      if (!plan || plan.can?.("telegram")) return html;
+      return `
+      <div class="tg-locked" aria-disabled="true">${html}</div>
+      <div class="text-[11px] text-zinc-500 mt-1">
+        <i data-lucide="lock" style="width:11px;height:11px;display:inline"></i>
+        Telegram messages are part of the Sync and Family plans \u2014
+        <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('settings')">see plans</button>.
+      </div>`;
+    }
     /** The two values from a form, tidy: { to, email }. */
     static read(fd, prefix) {
       const to = String(fd.get(`${prefix}To`) || "all");
@@ -13959,7 +13976,7 @@ This replaces your current grouping.`
           <span class="block text-xs text-zinc-500">Shows as due on the date instead of being added; you enter what you paid, or skip it.</span></span>
       </label>
       <div data-bill-remind ${ask ? "" : "hidden"} class="mt-2">
-        ${NotifyField.render({
+        ${NotifyField.gate(`${NotifyField.render({
         prefix: "remind",
         value: data.remindTo || "all",
         email: data.remindEmail,
@@ -13970,7 +13987,7 @@ This replaces your current grouping.`
         <label class="text-xs text-zinc-500 block mt-2">Remind
           <select class="select inline-block w-auto ml-1" name="remindDays">
             ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? "selected" : ""}>${d === 0 ? "on the day" : `${d} day${d === 1 ? "" : "s"} before`}</option>`).join("")}
-          </select> and on the day</label>
+          </select> and on the day</label>`)}
       </div>`;
     }
     // Category selection is handled by CategoryField + CategoryPickerSheet:
@@ -15561,7 +15578,7 @@ This replaces your current grouping.`
           </div>` : ""}
           <div class="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
             <div class="text-xs font-medium mb-2">Morning check-in on Telegram</div>
-            ${NotifyField.render({
+            ${NotifyField.gate(`${NotifyField.render({
         prefix: "checkin",
         value: data.checkinTo || "all",
         email: data.checkinEmail,
@@ -15578,7 +15595,7 @@ This replaces your current grouping.`
                 <label class="text-xs text-zinc-500">Time zone</label>
                 <select class="select" name="checkinTz">${_RegularItemModal.zones(data.checkinTz)}</select>
               </div>
-            </div>
+            </div>`)}
             <div class="text-[11px] text-zinc-500 mt-1">Asks what came, with buttons; the first answer counts for everyone. "Everyone" is you and family members who can add to this account; "Family group" is the Telegram group of a shared space with this account. People need Telegram linked (/link in the bot).</div>
           </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
