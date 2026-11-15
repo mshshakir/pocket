@@ -14,6 +14,26 @@ export interface Product {
   amountPaise: number;  // after any running sale
   listPaise?: number;   // before offers
   sale?: string;        // the sale's name, when one applies
+  switchDays?: number;  // extra days from the time left on another plan
+  switchFrom?: string;  // that plan's name
+}
+
+/** Moving to another plan with the time left: how many days it gives there. */
+export interface SwitchOption {
+  fromPlan: string;
+  fromName: string;
+  creditPaise: number;
+  days: number;
+  lower: boolean;  // a cheaper plan: switching is free
+}
+
+export interface Switched {
+  ok: boolean;
+  applied?: boolean;
+  reason?: 'closed' | 'unknown' | 'no_credit' | 'not_lower';
+  plan?: string;
+  days?: number;
+  endsAt?: string;
 }
 
 export type QuoteRefusal =
@@ -57,6 +77,16 @@ export class PaymentStore {
       application_id: q.applicationId ?? null,
     });
     if (error) throw new Error(`saving the order failed: ${error.message}`);
+  }
+
+  /** Each other plan this person could move to with their time left (keyed by plan code). */
+  async switchOptions(userId: string): Promise<Record<string, SwitchOption>> {
+    return ((await this.#rpc('pocket_switch_options', { p_user: userId })) ?? {}) as Record<string, SwitchOption>;
+  }
+
+  /** Moves to a cheaper plan without paying; the time left becomes days there. */
+  async switchPlan(userId: string, plan: string): Promise<Switched> {
+    return (await this.#rpc('pocket_payment_switch', { p_user: userId, p_plan: plan })) as Switched;
   }
 
   /** Who placed an order, or null when it isn't one of ours. */

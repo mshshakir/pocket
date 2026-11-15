@@ -136,7 +136,7 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
 
   const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
   ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
-     syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /starts the new one today/.test(syncing) && !syncing.includes('try it for'));
+     syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
 
   const life = card.html(Entitlements.from({ plan: 'family', state: 'active', term: 'lifetime', aiUnlimited: true, paymentsOpen: true }), catalogue, offers());
   ok('C6 for life with unlimited AI: nothing to buy', !life.includes('__app.buy('));
@@ -190,6 +190,32 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C13 a refused code: the box stays with the reason under it', err.includes('placeholder="Code"') && /That code has expired\./.test(err) && err.includes('applyCoupon()'));
   const checking = card.html(ent, catalogue, got, null, 'TEN', { term: 'year', couponChecking: true });
   ok('C13 while checking, Apply says so and is disabled', /disabled[^>]*onclick="window.__app.applyCoupon\(\)">Checking…/.test(checking.replace(/\s+/g, ' ')));
+}
+
+{
+  // C14–C16: switching plans with the time left
+  const card = new PlanCard();
+  const catalogue = [
+    { code: 'sync', name: 'Sync', sync: true, telegram: true, seats: 1, monthly_paise: 16900, yearly_paise: 99900 },
+    { code: 'family', name: 'Family', sync: true, telegram: true, sharing: true, seats: 5, monthly_paise: 19900, yearly_paise: 149900 },
+  ];
+  const onSync = Entitlements.from({ plan: 'sync', state: 'active', term: 'year', paymentsOpen: true });
+  const up = { switches: {}, products: [
+    { product: 'sync_year', plan: 'sync', term: 'year', amountPaise: 99900, available: true },
+    { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true, switchDays: 182, switchFrom: 'Sync' } ] };
+  const h = card.html(onSync, catalogue, up, null, '', { term: 'year' });
+  ok('C14 moving up: full price, and the time left shown as extra days', /Switch to Family · ₹1,499</.test(h) && /\+ about 6 months extra from the time left on your Sync/.test(h));
+  const onFamily = Entitlements.from({ plan: 'family', state: 'active', term: 'year', paymentsOpen: true });
+  const down = { switches: { sync: { fromPlan: 'family', fromName: 'Family', creditPaise: 74900, days: 273, lower: true } }, products: [
+    { product: 'sync_year', plan: 'sync', term: 'year', amountPaise: 99900, available: true },
+    { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true } ] };
+  const d = card.html(onFamily, catalogue, down, null, '', { term: 'year' });
+  ok('C15 moving down: a free switch, no payment button for that plan', d.includes("__app.switchPlan('sync')") && /Switch to Sync · free/.test(d) && !d.includes("buy('sync_year')")
+     && /becomes about 9 months of Sync/.test(d) && /Add 1 year · ₹1,499/.test(d));
+  ok('C16 how long, in words', PlanCard.span(20) === '20 days' && PlanCard.span(273) === 'about 9 months' && PlanCard.span(820) === 'about 2 years 3 months' && PlanCard.span(365) === 'about 12 months');
+  const s = server({ switch: () => ({ data: { ok: true, applied: true, plan: 'sync', days: 273, endsAt: '2027-08-15' }, error: null }) });
+  const r = await new PaymentService(() => s.invoke, {}).switchPlan('sync');
+  ok('C16 a switch is one call, no Razorpay window', s.sent.length === 1 && s.sent[0].action === 'switch' && s.sent[0].plan === 'sync' && r.days === 273);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

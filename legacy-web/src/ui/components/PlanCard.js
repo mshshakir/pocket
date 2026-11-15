@@ -121,7 +121,7 @@ export class PlanCard {
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join('')}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling
-          ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans starts the new one today; time left on the old one isn\'t carried over.' : ''}`
+          ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : 'Online payment is coming soon.'}</div>
       </div>`;
   }
@@ -141,10 +141,13 @@ export class PlanCard {
       p.sharing && 'Daily, monthly and yearly family summaries',
     ].filter(Boolean);
     const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === 'active' && plan.term !== 'trial' ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
+    const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
     const button = !offers ? ''
+      : down ? this.#switchDown(p, down, buying)
       : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === 'month' ? 'monthly' : 'yearly'}.</div>`
       : !product.available && product.reason === 'lifetime' ? ''
-      : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}`, buying, true, 'w-full justify-center mt-3');
+      : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}`, buying, true, 'w-full justify-center mt-3')
+        + (product.switchDays ? `<div class="plan-switch-note">+ ${PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? 'plan')}</div>` : '');
     const trial = this.#trialLink(p, plan, offers, buying);
     const popular = p.sharing && !current;
     return `
@@ -165,6 +168,25 @@ export class PlanCard {
         ${button}
         ${trial}
       </div>`;
+  }
+
+  /** Moving to a cheaper plan: free, the time left becomes days on it. */
+  #switchDown(p, down, buying) {
+    const busy = buying === `switch:${p.code}`;
+    return `
+      <button class="btn btn-primary plan-buy w-full justify-center mt-3" ${buying ? 'disabled' : ''}
+        onclick="window.__app.switchPlan('${Html.escape(p.code)}')">${busy ? 'Switching…' : `Switch to ${Html.escape(p.name)} · free`}</button>
+      <div class="plan-switch-note">Your time left on ${Html.escape(down.fromName)} becomes ${PlanCard.span(down.days)} of ${Html.escape(p.name)}.</div>`;
+  }
+
+  /** 273 → "about 9 months"; 20 → "20 days". */
+  static span(days) {
+    const d = Math.max(0, Math.floor(days));
+    if (d < 45) return `${d} day${d === 1 ? '' : 's'}`;
+    const months = Math.round(d / 30.4375);
+    if (months < 18) return `about ${months} months`;
+    const years = Math.floor(months / 12), rest = months % 12;
+    return `about ${years} year${years === 1 ? '' : 's'}${rest ? ` ${rest} month${rest === 1 ? '' : 's'}` : ''}`;
   }
 
   /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */

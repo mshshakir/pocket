@@ -4563,7 +4563,12 @@ RULES:
     async offers(code = "") {
       const c = String(code ?? "").trim();
       const data = await this.#call({ action: "products", ...c ? { code: c } : {} });
-      return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, products: Array.isArray(data.products) ? data.products : [] };
+      return {
+        keyId: data.keyId ?? null,
+        coupon: data.coupon ?? null,
+        switches: data.switches ?? {},
+        products: Array.isArray(data.products) ? data.products : []
+      };
     }
     /**
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
@@ -4571,6 +4576,15 @@ RULES:
      * @returns {Promise<{applied: boolean}>}
      * @throws {PaymentError}  code 'dismissed' when the person closed the window
      */
+    /**
+     * Moves to a cheaper plan without paying; the time left becomes days there.
+     * @param {string} plan  e.g. 'sync'
+     * @returns {Promise<{applied: boolean, plan: string, days: number, endsAt: string}>}
+     */
+    async switchPlan(plan) {
+      const r = await this.#call({ action: "switch", plan });
+      return { applied: r.applied === true, plan: r.plan, days: r.days, endsAt: r.endsAt };
+    }
     async buy(product, who = {}) {
       const code = (who.code ?? "").trim();
       const order = await this.#call({ action: "order", product, ...code ? { code } : {} });
@@ -9124,6 +9138,250 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/PlanCard.js
+  var PlanCard = class _PlanCard {
+    /**
+     * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
+     * @param {object[]|null} catalogue  rows of the plans table, or null while loading
+     * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
+     * @param {string|null} [buying]  the product being paid for right now
+     * @param {string} [coupon]  the code typed so far
+     * @param {{term?: 'month'|'year', couponOpen?: boolean, highlight?: string|null}} [ui]
+     *   the Monthly/Yearly choice, whether the code box is open, a plan to point out
+     */
+    html(plan, catalogue, offers = null, buying = null, coupon = "", ui = {}) {
+      return `
+      <div class="card-muted p-3 mb-3" id="planCard">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="text-sm font-medium">Your plan</div>
+          <span class="chip ${this.#chipClass(plan)}">${Html.escape(this.#title(plan))}</span>
+        </div>
+        <div class="text-xs text-zinc-500 leading-relaxed">${this.#status(plan)}</div>
+        ${this.#details(plan)}
+        <div class="grid grid-cols-1 gap-2 mt-3">
+          <button class="btn ${plan.state === "grace" ? "btn-primary" : "btn-outline"} justify-center" onclick="window.__app.downloadMyData()">
+            <i data-lucide="download"></i> Download my data
+          </button>
+        </div>
+        ${this.#offers(plan, catalogue, offers, buying, coupon, ui)}
+      </div>`;
+    }
+    #title(plan) {
+      if (plan.isLifetime) return `${plan.planName} \xB7 for life`;
+      if (plan.state === "grace") return `${plan.planName} \xB7 ended`;
+      if (plan.state === "lapsed") return "Free \xB7 plan ended";
+      return plan.planName;
+    }
+    #chipClass(plan) {
+      if (plan.state === "grace") return "plan-chip-warn";
+      return plan.isPaid ? "plan-chip-paid" : "";
+    }
+    #status(plan) {
+      const day = (d) => d.toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" });
+      switch (plan.state) {
+        case "active":
+          if (plan.isLifetime) return "Everything in your plan is included, with no end date.";
+          if (plan.term === "trial") return `Trial until ${day(plan.endsAt)}.`;
+          return plan.endsAt ? `${plan.toJSON().autoRenew ? "Renews" : "Active until"} ${day(plan.endsAt)}.` : "Active.";
+        case "grace":
+          return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ""}. Your cloud copy is read-only until <strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
+        case "lapsed":
+          return "Pocket keeps working on this device, with every export. Cloud sync and Telegram are paused; your cloud copy is kept and comes back when you renew.";
+        default:
+          return "Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with family come with Sync and Family.";
+      }
+    }
+    #details(plan) {
+      const rows = [];
+      if (plan.can("sharing") || plan.isReadOnly && plan.canSee("sharing")) {
+        rows.push(["People", `${plan.seatsUsed} of ${plan.seats}, you included`]);
+      }
+      for (const c of plan.coveredBy) {
+        rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Family plan${c.access === "read" ? " (ended, read-only)" : ""}`]);
+      }
+      rows.push(["AI scans & voice", this.#ai(plan)]);
+      return `
+      <div class="mt-2 divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
+        ${rows.map(([k, v]) => `
+          <div class="flex justify-between gap-3 py-1.5">
+            <span class="text-zinc-500">${k}</span><span class="text-right">${v}</span>
+          </div>`).join("")}
+      </div>`;
+    }
+    #ai(plan) {
+      if (plan.aiUnlimited) return "Unlimited";
+      const own = plan.aiCredits;
+      const pools = plan.coveredBy.filter((c) => c.access === "write" && (c.aiUnlimited || c.aiCredits > 0));
+      const parts = [`${own.toLocaleString()} credit${own === 1 ? "" : "s"}${plan.can("sharing") ? " (family pool)" : ""}`];
+      for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
+      return parts.join(" \xB7 ");
+    }
+    /**
+     * The plans on offer: a Monthly / Yearly switch, then one card per plan with
+     * its price for that term, what it includes, and one button. The trial is a
+     * small link on the plan that has one. Without online payment the cards
+     * still show prices, and say payment is coming.
+     */
+    #offers(plan, catalogue, offers, buying, coupon, ui) {
+      if (plan.isLifetime) return "";
+      if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
+      const paid = catalogue.filter((p) => p.code !== "free" && (p.monthly_paise != null || p.yearly_paise != null));
+      if (!paid.length) return "";
+      const selling = !!(plan.paymentsOpen && offers);
+      const term = ui.term === "month" ? "month" : "year";
+      const save = Math.max(0, ...paid.map((p) => _PlanCard.#saving(p)));
+      const tab = (t, label) => `<button class="plan-term ${term === t ? "on" : ""}" onclick="window.__app.setPlanTerm('${t}')">${label}</button>`;
+      const switching = plan.state === "active" && plan.isPaid && plan.term !== "trial";
+      return `
+      <div class="mt-4">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="text-sm font-medium">${plan.isPaid && plan.state === "active" ? "Plans" : "Choose a plan"}</div>
+          <div class="plan-terms">${tab("month", "Monthly")}${tab("year", `Yearly${save ? ` <span class="plan-save">save ${save}%</span>` : ""}`)}</div>
+        </div>
+        ${selling ? this.#couponField(coupon, ui) : ""}
+        ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
+        ${this.#aiPack(plan, selling ? offers : null, buying)}
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
+      </div>`;
+    }
+    /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
+    #planBox(p, plan, term, offers, buying, highlight) {
+      const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial";
+      const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
+      const listPaise = term === "month" ? p.monthly_paise : p.yearly_paise;
+      const price = product ? _PlanCard.#price(product) : listPaise != null ? _PlanCard.#inr(listPaise) : null;
+      const perMonth = term === "year" && listPaise != null ? _PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
+      const save = term === "year" ? _PlanCard.#saving(p) : 0;
+      const features = [
+        p.sync && "Cloud sync on all your devices",
+        p.telegram && "Log by Telegram, voice or receipt scan",
+        p.sharing && `Share with up to ${p.seats - 1} family members`,
+        p.sharing && "Daily, monthly and yearly family summaries"
+      ].filter(Boolean);
+      const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
+      const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
+      const button = !offers ? "" : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}`, buying, true, "w-full justify-center mt-3") + (product.switchDays ? `<div class="plan-switch-note">+ ${_PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? "plan")}</div>` : "");
+      const trial = this.#trialLink(p, plan, offers, buying);
+      const popular = p.sharing && !current;
+      return `
+      <div class="plan-box ${current ? "plan-current" : ""} ${highlight === p.code ? "plan-highlight" : ""}" id="plan-${Html.escape(p.code)}">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="font-semibold flex items-center gap-2 flex-wrap">${Html.escape(p.name)}
+              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : ""}</div>
+            ${save ? `<div class="plan-save mt-1 inline-block">save ${save}% vs monthly</div>` : ""}
+          </div>
+          <div class="text-right">
+            ${price ? `<div class="plan-price">${price}<span class="plan-per">/${term}</span></div>` : '<div class="text-xs text-zinc-400">\u2014</div>'}
+            ${_PlanCard.#codeNote(product)}
+            ${perMonth ? `<div class="text-[11px] text-zinc-500">about ${perMonth} a month</div>` : ""}
+          </div>
+        </div>
+        <ul class="plan-features">${features.map((f) => `<li><i data-lucide="check"></i>${Html.escape(f)}</li>`).join("")}</ul>
+        ${button}
+        ${trial}
+      </div>`;
+    }
+    /** Moving to a cheaper plan: free, the time left becomes days on it. */
+    #switchDown(p, down, buying) {
+      const busy = buying === `switch:${p.code}`;
+      return `
+      <button class="btn btn-primary plan-buy w-full justify-center mt-3" ${buying ? "disabled" : ""}
+        onclick="window.__app.switchPlan('${Html.escape(p.code)}')">${busy ? "Switching\u2026" : `Switch to ${Html.escape(p.name)} \xB7 free`}</button>
+      <div class="plan-switch-note">Your time left on ${Html.escape(down.fromName)} becomes ${_PlanCard.span(down.days)} of ${Html.escape(p.name)}.</div>`;
+    }
+    /** 273 → "about 9 months"; 20 → "20 days". */
+    static span(days) {
+      const d = Math.max(0, Math.floor(days));
+      if (d < 45) return `${d} day${d === 1 ? "" : "s"}`;
+      const months = Math.round(d / 30.4375);
+      if (months < 18) return `about ${months} months`;
+      const years = Math.floor(months / 12), rest = months % 12;
+      return `about ${years} year${years === 1 ? "" : "s"}${rest ? ` ${rest} month${rest === 1 ? "" : "s"}` : ""}`;
+    }
+    /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */
+    #trialLink(p, plan, offers, buying) {
+      if (p.trial_paise == null || !p.trial_days || !plan.trialAvailable) return "";
+      if (plan.state === "active" && plan.isPaid) return "";
+      const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
+      if (offers && (!product || !product.available)) return "";
+      const text = `or try it for ${p.trial_days} days for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
+      if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
+      return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
+    }
+    /** Percent saved by paying yearly instead of 12 monthly payments (0 when it can't be worked out). */
+    static #saving(p) {
+      if (!p.monthly_paise || !p.yearly_paise) return 0;
+      return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
+    }
+    #aiPack(plan, offers, buying) {
+      if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return "";
+      const pack = offers.products.find((o) => o.product === "ai_pack" && o.available);
+      if (!pack) return "";
+      return `
+      <div class="plan-box plan-box-slim">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
+            <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
+            ${_PlanCard.#codeNote(pack)}
+          </div>
+          ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
+        </div>
+      </div>`;
+    }
+    /** @param {string} label  safe HTML (built here from numbers and fixed words) */
+    #button(o, label, buying, primary, extra = "") {
+      const busy = buying === o.product;
+      return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy ${extra}" ${buying ? "disabled" : ""}
+      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : label}</button>`;
+    }
+    /**
+     * The coupon code: a "Have a code?" link, then a box with Apply. Once a
+     * code is applied, it shows as a chip with Remove, and the plans below show
+     * their final amounts with it.
+     */
+    #couponField(coupon, ui) {
+      const applied = ui.couponApplied;
+      if (applied) {
+        return `
+        <div class="plan-code-on">
+          <i data-lucide="ticket-percent"></i>
+          <span><b>${Html.escape(applied)}</b> applied</span>
+          <button class="plan-trial ml-auto" onclick="window.__app.removeCoupon()">Remove</button>
+        </div>`;
+      }
+      if (!ui.couponOpen && !coupon && !ui.couponError) {
+        return '<div class="mb-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
+      }
+      const busy = !!ui.couponChecking;
+      return `
+      <div class="mb-2">
+        <div class="flex items-center gap-2">
+          <input class="input plan-coupon flex-1" placeholder="Code" maxlength="32" autocomplete="off" ${busy ? "disabled" : ""}
+            value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.applyCoupon()}">
+          <button class="btn btn-outline plan-buy" ${busy ? "disabled" : ""} onclick="window.__app.applyCoupon()">${busy ? "Checking\u2026" : "Apply"}</button>
+        </div>
+        ${ui.couponError ? `<div class="plan-code-error">${Html.escape(ui.couponError)}</div>` : ""}
+      </div>`;
+    }
+    /** "You save ₹300 with LAUNCH20" under a price the code changed. */
+    static #codeNote(o) {
+      if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return "";
+      return `<div class="plan-code-note">You save ${_PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
+    }
+    /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
+    static #price(o) {
+      const now = _PlanCard.#inr(o.amountPaise);
+      if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
+      return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
+    }
+    static #inr(paise) {
+      return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
+    }
+  };
+
   // src/ui/components/BudgetShareSheet.js
   var BudgetShareSheet = class extends OverlaySheet {
     /** @type {Store} */
@@ -13494,232 +13752,6 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/components/PlanCard.js
-  var PlanCard = class _PlanCard {
-    /**
-     * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
-     * @param {object[]|null} catalogue  rows of the plans table, or null while loading
-     * @param {{products: object[]}|null} [offers]  from the payments function, or null while loading / off
-     * @param {string|null} [buying]  the product being paid for right now
-     * @param {string} [coupon]  the code typed so far
-     * @param {{term?: 'month'|'year', couponOpen?: boolean, highlight?: string|null}} [ui]
-     *   the Monthly/Yearly choice, whether the code box is open, a plan to point out
-     */
-    html(plan, catalogue, offers = null, buying = null, coupon = "", ui = {}) {
-      return `
-      <div class="card-muted p-3 mb-3" id="planCard">
-        <div class="flex items-center justify-between gap-2 mb-1">
-          <div class="text-sm font-medium">Your plan</div>
-          <span class="chip ${this.#chipClass(plan)}">${Html.escape(this.#title(plan))}</span>
-        </div>
-        <div class="text-xs text-zinc-500 leading-relaxed">${this.#status(plan)}</div>
-        ${this.#details(plan)}
-        <div class="grid grid-cols-1 gap-2 mt-3">
-          <button class="btn ${plan.state === "grace" ? "btn-primary" : "btn-outline"} justify-center" onclick="window.__app.downloadMyData()">
-            <i data-lucide="download"></i> Download my data
-          </button>
-        </div>
-        ${this.#offers(plan, catalogue, offers, buying, coupon, ui)}
-      </div>`;
-    }
-    #title(plan) {
-      if (plan.isLifetime) return `${plan.planName} \xB7 for life`;
-      if (plan.state === "grace") return `${plan.planName} \xB7 ended`;
-      if (plan.state === "lapsed") return "Free \xB7 plan ended";
-      return plan.planName;
-    }
-    #chipClass(plan) {
-      if (plan.state === "grace") return "plan-chip-warn";
-      return plan.isPaid ? "plan-chip-paid" : "";
-    }
-    #status(plan) {
-      const day = (d) => d.toLocaleDateString(void 0, { day: "numeric", month: "short", year: "numeric" });
-      switch (plan.state) {
-        case "active":
-          if (plan.isLifetime) return "Everything in your plan is included, with no end date.";
-          if (plan.term === "trial") return `Trial until ${day(plan.endsAt)}.`;
-          return plan.endsAt ? `${plan.toJSON().autoRenew ? "Renews" : "Active until"} ${day(plan.endsAt)}.` : "Active.";
-        case "grace":
-          return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ""}. Your cloud copy is read-only until <strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
-        case "lapsed":
-          return "Pocket keeps working on this device, with every export. Cloud sync and Telegram are paused; your cloud copy is kept and comes back when you renew.";
-        default:
-          return "Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with family come with Sync and Family.";
-      }
-    }
-    #details(plan) {
-      const rows = [];
-      if (plan.can("sharing") || plan.isReadOnly && plan.canSee("sharing")) {
-        rows.push(["People", `${plan.seatsUsed} of ${plan.seats}, you included`]);
-      }
-      for (const c of plan.coveredBy) {
-        rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Family plan${c.access === "read" ? " (ended, read-only)" : ""}`]);
-      }
-      rows.push(["AI scans & voice", this.#ai(plan)]);
-      return `
-      <div class="mt-2 divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
-        ${rows.map(([k, v]) => `
-          <div class="flex justify-between gap-3 py-1.5">
-            <span class="text-zinc-500">${k}</span><span class="text-right">${v}</span>
-          </div>`).join("")}
-      </div>`;
-    }
-    #ai(plan) {
-      if (plan.aiUnlimited) return "Unlimited";
-      const own = plan.aiCredits;
-      const pools = plan.coveredBy.filter((c) => c.access === "write" && (c.aiUnlimited || c.aiCredits > 0));
-      const parts = [`${own.toLocaleString()} credit${own === 1 ? "" : "s"}${plan.can("sharing") ? " (family pool)" : ""}`];
-      for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
-      return parts.join(" \xB7 ");
-    }
-    /**
-     * The plans on offer: a Monthly / Yearly switch, then one card per plan with
-     * its price for that term, what it includes, and one button. The trial is a
-     * small link on the plan that has one. Without online payment the cards
-     * still show prices, and say payment is coming.
-     */
-    #offers(plan, catalogue, offers, buying, coupon, ui) {
-      if (plan.isLifetime) return "";
-      if (catalogue === null) return '<div class="text-xs text-zinc-400 mt-3">Loading plans\u2026</div>';
-      const paid = catalogue.filter((p) => p.code !== "free" && (p.monthly_paise != null || p.yearly_paise != null));
-      if (!paid.length) return "";
-      const selling = !!(plan.paymentsOpen && offers);
-      const term = ui.term === "month" ? "month" : "year";
-      const save = Math.max(0, ...paid.map((p) => _PlanCard.#saving(p)));
-      const tab = (t, label) => `<button class="plan-term ${term === t ? "on" : ""}" onclick="window.__app.setPlanTerm('${t}')">${label}</button>`;
-      const switching = plan.state === "active" && plan.isPaid && plan.term !== "trial";
-      return `
-      <div class="mt-4">
-        <div class="flex items-center justify-between gap-2 mb-2">
-          <div class="text-sm font-medium">${plan.isPaid && plan.state === "active" ? "Plans" : "Choose a plan"}</div>
-          <div class="plan-terms">${tab("month", "Monthly")}${tab("year", `Yearly${save ? ` <span class="plan-save">save ${save}%</span>` : ""}`)}</div>
-        </div>
-        ${selling ? this.#couponField(coupon, ui) : ""}
-        ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
-        ${this.#aiPack(plan, selling ? offers : null, buying)}
-        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans starts the new one today; time left on the old one isn't carried over." : ""}` : "Online payment is coming soon."}</div>
-      </div>`;
-    }
-    /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
-    #planBox(p, plan, term, offers, buying, highlight) {
-      const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial";
-      const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
-      const listPaise = term === "month" ? p.monthly_paise : p.yearly_paise;
-      const price = product ? _PlanCard.#price(product) : listPaise != null ? _PlanCard.#inr(listPaise) : null;
-      const perMonth = term === "year" && listPaise != null ? _PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
-      const save = term === "year" ? _PlanCard.#saving(p) : 0;
-      const features = [
-        p.sync && "Cloud sync on all your devices",
-        p.telegram && "Log by Telegram, voice or receipt scan",
-        p.sharing && `Share with up to ${p.seats - 1} family members`,
-        p.sharing && "Daily, monthly and yearly family summaries"
-      ].filter(Boolean);
-      const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
-      const button = !offers ? "" : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}`, buying, true, "w-full justify-center mt-3");
-      const trial = this.#trialLink(p, plan, offers, buying);
-      const popular = p.sharing && !current;
-      return `
-      <div class="plan-box ${current ? "plan-current" : ""} ${highlight === p.code ? "plan-highlight" : ""}" id="plan-${Html.escape(p.code)}">
-        <div class="flex items-start justify-between gap-2">
-          <div>
-            <div class="font-semibold flex items-center gap-2 flex-wrap">${Html.escape(p.name)}
-              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : ""}</div>
-            ${save ? `<div class="plan-save mt-1 inline-block">save ${save}% vs monthly</div>` : ""}
-          </div>
-          <div class="text-right">
-            ${price ? `<div class="plan-price">${price}<span class="plan-per">/${term}</span></div>` : '<div class="text-xs text-zinc-400">\u2014</div>'}
-            ${_PlanCard.#codeNote(product)}
-            ${perMonth ? `<div class="text-[11px] text-zinc-500">about ${perMonth} a month</div>` : ""}
-          </div>
-        </div>
-        <ul class="plan-features">${features.map((f) => `<li><i data-lucide="check"></i>${Html.escape(f)}</li>`).join("")}</ul>
-        ${button}
-        ${trial}
-      </div>`;
-    }
-    /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */
-    #trialLink(p, plan, offers, buying) {
-      if (p.trial_paise == null || !p.trial_days || !plan.trialAvailable) return "";
-      if (plan.state === "active" && plan.isPaid) return "";
-      const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
-      if (offers && (!product || !product.available)) return "";
-      const text = `or try it for ${p.trial_days} days for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
-      if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
-      return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
-    }
-    /** Percent saved by paying yearly instead of 12 monthly payments (0 when it can't be worked out). */
-    static #saving(p) {
-      if (!p.monthly_paise || !p.yearly_paise) return 0;
-      return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
-    }
-    #aiPack(plan, offers, buying) {
-      if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return "";
-      const pack = offers.products.find((o) => o.product === "ai_pack" && o.available);
-      if (!pack) return "";
-      return `
-      <div class="plan-box plan-box-slim">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
-            <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
-            ${_PlanCard.#codeNote(pack)}
-          </div>
-          ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
-        </div>
-      </div>`;
-    }
-    /** @param {string} label  safe HTML (built here from numbers and fixed words) */
-    #button(o, label, buying, primary, extra = "") {
-      const busy = buying === o.product;
-      return `<button class="btn ${primary ? "btn-primary" : "btn-outline"} plan-buy ${extra}" ${buying ? "disabled" : ""}
-      onclick="window.__app.buy('${Html.escape(o.product)}')">${busy ? "Opening\u2026" : label}</button>`;
-    }
-    /**
-     * The coupon code: a "Have a code?" link, then a box with Apply. Once a
-     * code is applied, it shows as a chip with Remove, and the plans below show
-     * their final amounts with it.
-     */
-    #couponField(coupon, ui) {
-      const applied = ui.couponApplied;
-      if (applied) {
-        return `
-        <div class="plan-code-on">
-          <i data-lucide="ticket-percent"></i>
-          <span><b>${Html.escape(applied)}</b> applied</span>
-          <button class="plan-trial ml-auto" onclick="window.__app.removeCoupon()">Remove</button>
-        </div>`;
-      }
-      if (!ui.couponOpen && !coupon && !ui.couponError) {
-        return '<div class="mb-2"><button class="plan-trial" onclick="window.__app.openCoupon()">Have a code?</button></div>';
-      }
-      const busy = !!ui.couponChecking;
-      return `
-      <div class="mb-2">
-        <div class="flex items-center gap-2">
-          <input class="input plan-coupon flex-1" placeholder="Code" maxlength="32" autocomplete="off" ${busy ? "disabled" : ""}
-            value="${Html.escape(coupon)}" oninput="window.__app.setCoupon(this.value)"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.applyCoupon()}">
-          <button class="btn btn-outline plan-buy" ${busy ? "disabled" : ""} onclick="window.__app.applyCoupon()">${busy ? "Checking\u2026" : "Apply"}</button>
-        </div>
-        ${ui.couponError ? `<div class="plan-code-error">${Html.escape(ui.couponError)}</div>` : ""}
-      </div>`;
-    }
-    /** "You save ₹300 with LAUNCH20" under a price the code changed. */
-    static #codeNote(o) {
-      if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return "";
-      return `<div class="plan-code-note">You save ${_PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
-    }
-    /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
-    static #price(o) {
-      const now = _PlanCard.#inr(o.amountPaise);
-      if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
-      return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
-    }
-    static #inr(paise) {
-      return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
-    }
-  };
-
   // src/ui/modals/SettingsModal.js
   var SettingsModal = class {
     /** @type {Store} */
@@ -17413,6 +17445,33 @@ This replaces your current grouping.`
         this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : "Payment received \u2014 your plan is updated");
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
+      } finally {
+        this.#buying = null;
+        await this.#refreshPlanInfo();
+        this.#modal.refresh();
+      }
+    }
+    /**
+     * Moves to a cheaper plan for free; the time left becomes days on it.
+     * Leaving a plan with sharing warns that family members lose the shared space.
+     * @param {string} code  e.g. 'sync'
+     */
+    async switchPlan(code) {
+      if (this.#buying || !this.#sync.currentUser) return;
+      const option = this.#paymentOffers?.switches?.[code];
+      const target = this.#planCatalogue?.find((p) => p.code === code);
+      const current = this.#planCatalogue?.find((p) => p.code === this.getPlan()?.plan);
+      if (!option || !target) return;
+      const losing = current?.sharing && !target.sharing ? " People you share with will lose access to your shared space today (their own books stay)." : "";
+      if (!confirm(`Switch to ${target.name} now? Your time left on ${option.fromName} becomes ${PlanCard.span(option.days)} of ${target.name}, at no charge.${losing}`)) return;
+      this.#payments ??= this.#sync.payments();
+      this.#buying = `switch:${code}`;
+      this.#modal.refresh();
+      try {
+        await this.#payments.switchPlan(code);
+        this.#toast.show(`You're on ${target.name} now`);
+      } catch (e) {
+        this.#toast.show(e?.message || "The switch didn't go through. Please try again.");
       } finally {
         this.#buying = null;
         await this.#refreshPlanInfo();

@@ -9,6 +9,12 @@
  *   order  { product, code? } → { orderId, keyId, amount, listAmount, coupon?, currency, name }
  *                         product 'programme' = the habit programme place offered to them
  *   verify { orderId, paymentId, signature } → { ok, applied }
+ *   switch { plan }     → { ok, applied, plan, days, endsAt }  moving down to a
+ *                         cheaper plan: no payment, the time left becomes days there
+ *
+ * Moving up is an ordinary order: the full price, plus the time left on the
+ * old plan as extra days (products show it as switchDays; switches lists
+ * the free moves down).
  *
  * From Razorpay, POST /payments/webhook with X-Razorpay-Signature:
  *   payment.captured / order.paid → the order is applied (if the app's verify
@@ -37,6 +43,8 @@ export class PaymentHandler {
     trial_used: 'You\'ve already used your trial.',
     has_plan: 'The trial is for people without a plan.',
     no_place: 'There is no programme place waiting for you to pay for.',
+    no_credit: 'There\'s no paid time left on your plan to move.',
+    not_lower: 'Moving to a bigger plan needs a payment; your time left is added as extra days.',
     coupon_unknown: 'That code isn\'t valid.',
     coupon_not_started: 'That code isn\'t active yet.',
     coupon_expired: 'That code has expired.',
@@ -93,6 +101,7 @@ export class PaymentHandler {
         return await this.#order(userId, String(body.product ?? ''), code);
       }
       case 'verify': return await this.#verify(userId, body);
+      case 'switch': return await this.#switch(userId, String(body.plan ?? ''));
       default: return this.#fail(400, 'bad_request', 'Unknown action.');
     }
   }
@@ -100,8 +109,12 @@ export class PaymentHandler {
   async #products(userId: string, code: string | null): Promise<Response> {
     const products = await this.#store.products();
     const quotes = await Promise.all(products.map((p) => this.#store.quote(userId, p.product)));
-    const listed = products.map((p, i) => ({ ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason }));
-    if (!code) return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: listed });
+    const listed = products.map((p, i) => ({
+      ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason,
+      ...(quotes[i].switchDays ? { switchDays: quotes[i].switchDays, switchFrom: quotes[i].switchFrom } : {}),
+    }));
+    const switches = await this.#store.switchOptions(userId);
+    if (!code) return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: listed, switches });
 
     // Price each item this person can buy with the code too.
     const withCode = await Promise.all(products.map((p, i) =>
@@ -114,7 +127,17 @@ export class PaymentHandler {
     });
     const fits = applied.filter((p) => 'coupon' in p).map((p) => p.product);
     if (!fits.length) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_not_for_this);
-    return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: applied, coupon: { code, products: fits } });
+    return this.#json(200, { keyId: this.#razorpay?.keyId ?? null, products: applied, switches, coupon: { code, products: fits } });
+  }
+
+  async #switch(userId: string, plan: string): Promise<Response> {
+    if (!/^[a-z_]{1,32}$/.test(plan)) return this.#fail(400, 'bad_request', 'Which plan?');
+    const r = await this.#store.switchPlan(userId, plan);
+    if (!r.ok) {
+      const reason = r.reason ?? '';
+      return this.#fail(reason === 'closed' ? 503 : 409, reason === 'closed' ? 'closed' : 'not_allowed', PaymentHandler.#REFUSALS[reason] ?? 'Not available.');
+    }
+    return this.#json(200, { ok: true, applied: true, plan: r.plan, days: r.days, endsAt: r.endsAt });
   }
 
   /** Refusals that mean the code itself is no good (not just "not for this item"). */

@@ -35,7 +35,8 @@ export class PaymentService {
   async offers(code = '') {
     const c = String(code ?? '').trim();
     const data = await this.#call({ action: 'products', ...(c ? { code: c } : {}) });
-    return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, products: Array.isArray(data.products) ? data.products : [] };
+    return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, switches: data.switches ?? {},
+             products: Array.isArray(data.products) ? data.products : [] };
   }
 
   /**
@@ -44,6 +45,16 @@ export class PaymentService {
    * @returns {Promise<{applied: boolean}>}
    * @throws {PaymentError}  code 'dismissed' when the person closed the window
    */
+  /**
+   * Moves to a cheaper plan without paying; the time left becomes days there.
+   * @param {string} plan  e.g. 'sync'
+   * @returns {Promise<{applied: boolean, plan: string, days: number, endsAt: string}>}
+   */
+  async switchPlan(plan) {
+    const r = await this.#call({ action: 'switch', plan });
+    return { applied: r.applied === true, plan: r.plan, days: r.days, endsAt: r.endsAt };
+  }
+
   async buy(product, who = {}) {
     const code = (who.code ?? '').trim();
     const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}) });

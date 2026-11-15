@@ -25,6 +25,18 @@ class FakeStore {
   orders = new Map<string, { user: string; paid: boolean; product: string }>();
   fulfilled: string[] = [];
   products() { return Promise.resolve(PRODUCTS); }
+  switches: Record<string, { fromPlan: string; fromName: string; creditPaise: number; days: number; lower: boolean }> = {};
+  switchOptions() { return Promise.resolve(this.switches); }
+  switchedTo: string[] = [];
+  switchPlan(_u: string, plan: string) {
+    const o = this.switches[plan];
+    if (!this.open) return Promise.resolve({ ok: false, reason: 'closed' as const });
+    if (!o) return Promise.resolve({ ok: false, reason: 'no_credit' as const });
+    if (!o.lower) return Promise.resolve({ ok: false, reason: 'not_lower' as const });
+    this.switchedTo.push(plan);
+    return Promise.resolve({ ok: true, applied: true, plan, days: o.days, endsAt: '2029-02-12T00:00:00Z' });
+  }
+  switchDays = 0;
   quotedWith: (string | null)[] = [];
   offered = false;
   quote(_u: string, product: string, code: string | null = null): Promise<Quote> {
@@ -47,6 +59,7 @@ class FakeStore {
     const p = PRODUCTS.find((x) => x.product === product);
     if (!p) return Promise.resolve({ ok: false, reason: 'unknown' });
     if (p.term === 'trial' && this.trialUsed) return Promise.resolve({ ok: false, reason: 'trial_used' });
+    if (this.switchDays && p.term === 'month') return Promise.resolve({ ok: true, ...p, switchDays: this.switchDays, switchFrom: 'Family' });
     return Promise.resolve({ ok: true, ...p });
   }
   saved: Quote[] = [];
@@ -213,6 +226,25 @@ console.log('\npayments function');
   }
   const plain = await (await make(new FakeStore()).handle(app({ action: 'products', code: '' }))).json();
   ok('P27 an empty code is just the price list', !plain.coupon && plain.products.length === 3);
+}
+
+{
+  const s = new FakeStore(); rzpCalls = [];
+  s.switches = { sync: { fromPlan: 'family', fromName: 'Family', creditPaise: 74900, days: 273, lower: true },
+                 big: { fromPlan: 'family', fromName: 'Family', creditPaise: 74900, days: 120, lower: false } };
+  s.switchDays = 90;
+  const j = await (await make(s).handle(app({ action: 'products' }))).json();
+  ok('P28 the price list says what a switch brings: extra days on a bigger plan, free moves down',
+    j.products.find((p: { product: string }) => p.product === 'sync_month').switchDays === 90 && j.switches.sync.days === 273 && j.switches.sync.lower === true, JSON.stringify(j));
+  const done = await (await make(s).handle(app({ action: 'switch', plan: 'sync' }))).json();
+  ok('P29 moving down: no Razorpay, the plan changes with the days', done.ok && done.days === 273 && s.switchedTo.join() === 'sync' && !rzpCalls.length, JSON.stringify(done));
+  const up = await make(s).handle(app({ action: 'switch', plan: 'big' }));
+  const upj = await up.json();
+  ok('P30 moving up for free is refused, and says to pay', up.status === 409 && /needs a payment/.test(upj.error), JSON.stringify(upj));
+  const none = await (await make(new FakeStore()).handle(app({ action: 'switch', plan: 'sync' }))).json();
+  ok('P31 nothing paid to move: refused', /no paid time/.test(none.error));
+  const odd = await make(s).handle(app({ action: 'switch', plan: "x'; drop" }));
+  ok('P32 an odd plan name never reaches the database', odd.status === 400 && s.switchedTo.length === 1);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

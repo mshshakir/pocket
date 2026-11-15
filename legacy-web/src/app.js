@@ -55,6 +55,7 @@ import { SwipeRowController }  from './ui/components/SwipeRowController.js';
 import { Space }               from './domain/services/Space.js';
 import { SpaceRegistry }       from './domain/services/SpaceRegistry.js';
 import { SpaceSheet }          from './ui/components/SpaceSheet.js';
+import { PlanCard }            from './ui/components/PlanCard.js';
 import { BudgetShareSheet }    from './ui/components/BudgetShareSheet.js';
 import { OwnerSpaceService }    from './domain/services/OwnerSpaceService.js';
 import { SpaceComposerSheet }   from './ui/components/SpaceComposerSheet.js';
@@ -786,6 +787,35 @@ export class Application {
       this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added' : 'Payment received — your plan is updated');
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
+    } finally {
+      this.#buying = null;
+      await this.#refreshPlanInfo();
+      this.#modal.refresh();
+    }
+  }
+
+  /**
+   * Moves to a cheaper plan for free; the time left becomes days on it.
+   * Leaving a plan with sharing warns that family members lose the shared space.
+   * @param {string} code  e.g. 'sync'
+   */
+  async switchPlan(code) {
+    if (this.#buying || !this.#sync.currentUser) return;
+    const option = this.#paymentOffers?.switches?.[code];
+    const target = this.#planCatalogue?.find((p) => p.code === code);
+    const current = this.#planCatalogue?.find((p) => p.code === this.getPlan()?.plan);
+    if (!option || !target) return;
+    const losing = current?.sharing && !target.sharing
+      ? ' People you share with will lose access to your shared space today (their own books stay).' : '';
+    if (!confirm(`Switch to ${target.name} now? Your time left on ${option.fromName} becomes ${PlanCard.span(option.days)} of ${target.name}, at no charge.${losing}`)) return;
+    this.#payments ??= this.#sync.payments();
+    this.#buying = `switch:${code}`;
+    this.#modal.refresh();
+    try {
+      await this.#payments.switchPlan(code);
+      this.#toast.show(`You're on ${target.name} now`);
+    } catch (e) {
+      this.#toast.show(e?.message || 'The switch didn\'t go through. Please try again.');
     } finally {
       this.#buying = null;
       await this.#refreshPlanInfo();
