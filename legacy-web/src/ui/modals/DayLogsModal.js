@@ -156,17 +156,38 @@ export class DayLogsModal {
   }
 
   /** "Delivered ✓" (tap to take back) or "Mark as delivered"; nothing on a day with none or ahead. */
+  /**
+   * Under each delivery: "Delivered · not paid yet" (Undo), "Not delivered ·
+   * not counted" (Undo), or, when nobody has said yet, two buttons.
+   */
   #confirmLine(item, plan, date, qty, paid, ctx) {
-    if (qty <= 0 || date > DateService.todayIso() || plan.stateOn(date) === 'before') return '';
-    const on = plan.confirmedOn(date);
+    if (date > DateService.todayIso() || plan.stateOn(date) === 'before') return '';
     const can = ctx.canChange(item);
     const id = Html.escape(item.id);
-    const tone = paid ? 'paid' : on ? 'owed' : 'unconfirmed';
-    const word = paid ? (on ? 'Delivered · paid' : 'Paid') : on ? 'Delivered · not paid yet' : 'Not confirmed yet';
+    const back = `{reopen:{name:'dayLogs',opts:{date:'${date}'}}}`;
+    if (qty <= 0) {
+      if (!plan.changedOn(date)) return '';
+      return `
+      <div class="delivery-confirm skipped">
+        <span>Not delivered · not counted</span>
+        ${can ? `<button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Undo</button>` : ''}
+      </div>`;
+    }
+    const on = plan.confirmedOn(date);
+    if (on || paid) {
+      return `
+      <div class="delivery-confirm ${paid ? 'paid' : 'owed'}">
+        <span>${paid ? (on ? 'Delivered · paid' : 'Paid') : 'Delivered · not paid yet'}</span>
+        ${can && on ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',false,${back})">Undo</button>` : ''}
+      </div>`;
+    }
     return `
-      <div class="delivery-confirm ${tone}">
-        <span>${word}</span>
-        ${can ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',${on ? 'false' : 'true'},{reopen:{name:'dayLogs',opts:{date:'${date}'}}})">${on ? 'Undo' : '✓ Mark as delivered'}</button>` : ''}
+      <div class="delivery-confirm unconfirmed">
+        <span>Did it come?</span>
+        ${can ? `<span class="flex gap-3">
+          <button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',true,${back})">✓ Delivered</button>
+          <button type="button" onclick="window.__app.notDelivered('${id}','${date}',true)">✗ Not delivered</button>
+        </span>` : ''}
       </div>`;
   }
 

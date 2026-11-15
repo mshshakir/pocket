@@ -3423,14 +3423,18 @@ export class Application {
     const marks = DeliveryPlan.withMark(item, date, qty);
     const after = new DeliveryPlan({ ...item, marks }).qtyOn(date);
     const undo = { itemId, date, mark: plan.changedOn(date) ? item.marks[date] : null, adjustments: item.adjustments ?? [] };
-    const reopen = { name: 'dayLogs', opts: { date, flash: itemId } };
+    // stay: changed from the week strip, so no day window opens
+    const reopen = opts.stay ? null : { name: 'dayLogs', opts: { date, flash: itemId } };
 
     if (ctx.ownerId) {
       const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
       if (!(await this.#sharedDelivery(itemId, change, reopen))) return;
+      if (after === 0 && new DeliveryPlan(item).confirmedOn(date)) await this.#sharedDelivery(itemId, { unconfirm: date }, reopen);
     } else {
       const own = this.#ownItem(itemId);
       const change = { marks };
+      // none came: it can't also be "delivered"
+      if (after === 0 && new DeliveryPlan(own).confirmedOn(date)) change.confirmed = DeliveryPlan.withConfirmed(own, date, false);
       if (this.#vendorDues.isPaid(own, date) && !opts.undo) {
         const diff = Math.round((after - before) * plan.priceOn(date));
         const money = this.#fx.formatMoney(Math.abs(diff), own.currency || this.#store.getState().user.homeCurrency);
@@ -3495,12 +3499,24 @@ export class Application {
   }
 
   /** Delivered / not confirmed, from the Deliveries tab's week strip. */
+  /**
+   * A tap on a day in the week strip moves it along:
+   * not confirmed → delivered → not delivered → back to the usual (not confirmed).
+   * A paid day opens the day window instead, where a change becomes an adjustment.
+   */
   toggleDeliveryDay(itemId, date) {
     const item = this.deliveryContext().items.find((i) => i.id === itemId);
     if (!item) return;
-    const plan = new DeliveryPlan(item);
-    if (plan.qtyOn(date) <= 0) return void this.openModal('dayLogs', { date });
-    this.confirmDelivery(itemId, date, !plan.confirmedOn(date));
+    const status = this.#vendorDues.statusOn(item, date);
+    if (status === 'unconfirmed') return void this.confirmDelivery(itemId, date, true);
+    if (status === 'owed') return void this.notDelivered(itemId, date);
+    if (status === 'skipped') return void this.resetDelivery(itemId, date, true);
+    this.openModal('dayLogs', { date });
+  }
+
+  /** Nothing came that day: 0 for the day, so it isn't counted (and isn't "delivered"). */
+  notDelivered(itemId, date, reopen = false) {
+    return this.setDelivery(itemId, date, 0, reopen ? {} : { stay: true });
   }
 
   stepDelivery(itemId, date, delta) {
@@ -3510,11 +3526,11 @@ export class Application {
     this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
   }
 
-  resetDelivery(itemId, date) {
+  resetDelivery(itemId, date, stay = false) {
     const item = this.deliveryContext().items.find((i) => i.id === itemId);
     if (!item) return;
     const usual = new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, date) }).qtyOn(date);
-    this.setDelivery(itemId, date, usual);
+    this.setDelivery(itemId, date, usual, stay ? { stay: true } : {});
   }
 
   submitPause(e, itemId) {

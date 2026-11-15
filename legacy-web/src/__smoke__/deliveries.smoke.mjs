@@ -20,6 +20,7 @@
  *   B4  the item form saves the check-in: who, 9:00 by default, the time zone
  *
  *   K1  confirming a day: red until paid, green after; unconfirmed days still count but are flagged
+ *   K3  not delivered: one tap in the strip cycle or the day window; not counted, not "delivered"; Undo / tap again brings the usual back
  *   K2  in the app: the week strip and day window confirm / unconfirm; Home says to check Regulars; the calendar shows it
  *
  * Run: node src/__smoke__/deliveries.smoke.mjs
@@ -451,7 +452,7 @@ function boot(extraTx = []) {
   await app.confirmDelivery('ri_milk', y, false, { reopen: { name: 'dayLogs', opts: { date: y } } });
   await wait(20);
   m = app.vendorDues.items()[0];
-  ok('K2 Undo there takes it back', !m.confirmed[y] && /Mark as delivered/.test(w.document.body.textContent));
+  ok('K2 Undo there takes it back', !m.confirmed[y] && /✓ Delivered/.test(w.document.body.textContent) && /✗ Not delivered/.test(w.document.body.textContent));
   await app.confirmDelivery('ri_milk', y, true);
   app.closeModal();
   app.setCalTab('grid');
@@ -464,6 +465,34 @@ function boot(extraTx = []) {
   await wait(20);
   m = app.vendorDues.items()[0];
   ok('K2 once paid the day is green', app.vendorDues.statusOn(m, y) === 'paid');
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  const y = daysAgo(2);
+  const owed = () => app.vendorDues.due(app.vendorDues.items()[0]).amount;
+  const before = owed();
+  app.navigate('calendar'); app.setCalTab('deliveries');
+  await wait(20);
+  app.toggleDeliveryDay('ri_milk', y);
+  await wait(20);
+  ok('K3 first tap: delivered (red)', app.vendorDues.statusOn(app.vendorDues.items()[0], y) === 'owed' && !w.document.querySelector('.modal-backdrop.open'));
+  app.toggleDeliveryDay('ri_milk', y);
+  await wait(20);
+  let m = app.vendorDues.items()[0];
+  ok('K3 second tap: not delivered — not counted, no longer "delivered", no window opened',
+     app.vendorDues.statusOn(m, y) === 'skipped' && !m.confirmed?.[y] && owed() === before - 6400 && !w.document.querySelector('.modal-backdrop.open'), `${owed()} vs ${before}`);
+  app.toggleDeliveryDay('ri_milk', y);
+  await wait(20);
+  m = app.vendorDues.items()[0];
+  ok('K3 third tap: back to the usual, counted again, not confirmed', app.vendorDues.statusOn(m, y) === 'unconfirmed' && owed() === before);
+  app.openModal('dayLogs', { date: y });
+  await wait(20);
+  app.notDelivered('ri_milk', y, true);
+  await wait(30);
+  ok('K3 the day window\'s Not delivered says "not counted" with Undo', /Not delivered · not counted/.test(w.document.body.textContent) && owed() === before - 6400);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -13490,7 +13490,7 @@ This replaces your current grouping.`
         const week = Array.from({ length: 7 }, (_, i) => DeliveryPlan.addDays(today, i - 6)).map((d) => {
           const st = dues ? dues.statusOn(it, d, today) : null;
           const word = st ? _CalendarView.#DELIVERY_WORD[st] : p.trackFrom && d < p.trackFrom ? "not counted yet" : "no delivery";
-          const click = can && (st || (!p.trackFrom || d >= p.trackFrom)) ? st === "paid" || st === "owed" || st === "unconfirmed" ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})` : "";
+          const click = can && (st || (!p.trackFrom || d >= p.trackFrom)) ? st ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})` : "";
           return `<button type="button" ${click ? `onclick="${click}"` : "disabled"} title="${DeliveryPlan.shortDate(d)} \xB7 ${word}">
             <span class="cal-bill ${st || "none"}">${st ? `<i data-lucide="${Html.icon(it.icon)}"></i>` : ""}</span>
             ${d === today ? "<b>Today</b>" : DeliveryPlan.DAY_NAMES[DeliveryPlan.weekday(d)]}
@@ -13517,7 +13517,7 @@ This replaces your current grouping.`
       ${this.inGuestSpace ? "" : this.#renderDues(state)}
       <h3 class="font-semibold mt-5 mb-2 text-sm">Items</h3>
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${list}</div>
-      <p class="text-xs text-zinc-500 mt-3">Tap a day to mark it delivered (red until you pay, then green) or to take that back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Tap a day: once for <b>delivered</b> (red until you pay, then green), again for <b>not delivered</b> (not counted), again to go back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
     }
     /** "every month", "every 2 weeks". */
     #every(r) {
@@ -16531,17 +16531,38 @@ This replaces your current grouping.`
       </div>`;
     }
     /** "Delivered ✓" (tap to take back) or "Mark as delivered"; nothing on a day with none or ahead. */
+    /**
+     * Under each delivery: "Delivered · not paid yet" (Undo), "Not delivered ·
+     * not counted" (Undo), or, when nobody has said yet, two buttons.
+     */
     #confirmLine(item, plan, date, qty, paid, ctx) {
-      if (qty <= 0 || date > DateService.todayIso() || plan.stateOn(date) === "before") return "";
-      const on = plan.confirmedOn(date);
+      if (date > DateService.todayIso() || plan.stateOn(date) === "before") return "";
       const can = ctx.canChange(item);
       const id = Html.escape(item.id);
-      const tone = paid ? "paid" : on ? "owed" : "unconfirmed";
-      const word = paid ? on ? "Delivered \xB7 paid" : "Paid" : on ? "Delivered \xB7 not paid yet" : "Not confirmed yet";
+      const back = `{reopen:{name:'dayLogs',opts:{date:'${date}'}}}`;
+      if (qty <= 0) {
+        if (!plan.changedOn(date)) return "";
+        return `
+      <div class="delivery-confirm skipped">
+        <span>Not delivered \xB7 not counted</span>
+        ${can ? `<button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Undo</button>` : ""}
+      </div>`;
+      }
+      const on = plan.confirmedOn(date);
+      if (on || paid) {
+        return `
+      <div class="delivery-confirm ${paid ? "paid" : "owed"}">
+        <span>${paid ? on ? "Delivered \xB7 paid" : "Paid" : "Delivered \xB7 not paid yet"}</span>
+        ${can && on ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',false,${back})">Undo</button>` : ""}
+      </div>`;
+      }
       return `
-      <div class="delivery-confirm ${tone}">
-        <span>${word}</span>
-        ${can ? `<button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',${on ? "false" : "true"},{reopen:{name:'dayLogs',opts:{date:'${date}'}}})">${on ? "Undo" : "\u2713 Mark as delivered"}</button>` : ""}
+      <div class="delivery-confirm unconfirmed">
+        <span>Did it come?</span>
+        ${can ? `<span class="flex gap-3">
+          <button type="button" onclick="window.__app.confirmDelivery('${id}','${date}',true,${back})">\u2713 Delivered</button>
+          <button type="button" onclick="window.__app.notDelivered('${id}','${date}',true)">\u2717 Not delivered</button>
+        </span>` : ""}
       </div>`;
     }
     #deliveries(list, date, s, ctx, flash) {
@@ -21800,13 +21821,15 @@ The ${logged} entr${logged === 1 ? "y" : "ies"} already logged from it stay in y
       const marks = DeliveryPlan.withMark(item, date, qty);
       const after = new DeliveryPlan({ ...item, marks }).qtyOn(date);
       const undo = { itemId, date, mark: plan.changedOn(date) ? item.marks[date] : null, adjustments: item.adjustments ?? [] };
-      const reopen = { name: "dayLogs", opts: { date, flash: itemId } };
+      const reopen = opts.stay ? null : { name: "dayLogs", opts: { date, flash: itemId } };
       if (ctx.ownerId) {
         const change = date in marks ? { set: { date, qty: marks[date] } } : { clear: date };
         if (!await this.#sharedDelivery(itemId, change, reopen)) return;
+        if (after === 0 && new DeliveryPlan(item).confirmedOn(date)) await this.#sharedDelivery(itemId, { unconfirm: date }, reopen);
       } else {
         const own = this.#ownItem(itemId);
         const change = { marks };
+        if (after === 0 && new DeliveryPlan(own).confirmedOn(date)) change.confirmed = DeliveryPlan.withConfirmed(own, date, false);
         if (this.#vendorDues.isPaid(own, date) && !opts.undo) {
           const diff = Math.round((after - before) * plan.priceOn(date));
           const money = this.#fx.formatMoney(Math.abs(diff), own.currency || this.#store.getState().user.homeCurrency);
@@ -21875,12 +21898,23 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       );
     }
     /** Delivered / not confirmed, from the Deliveries tab's week strip. */
+    /**
+     * A tap on a day in the week strip moves it along:
+     * not confirmed → delivered → not delivered → back to the usual (not confirmed).
+     * A paid day opens the day window instead, where a change becomes an adjustment.
+     */
     toggleDeliveryDay(itemId, date) {
       const item = this.deliveryContext().items.find((i) => i.id === itemId);
       if (!item) return;
-      const plan = new DeliveryPlan(item);
-      if (plan.qtyOn(date) <= 0) return void this.openModal("dayLogs", { date });
-      this.confirmDelivery(itemId, date, !plan.confirmedOn(date));
+      const status = this.#vendorDues.statusOn(item, date);
+      if (status === "unconfirmed") return void this.confirmDelivery(itemId, date, true);
+      if (status === "owed") return void this.notDelivered(itemId, date);
+      if (status === "skipped") return void this.resetDelivery(itemId, date, true);
+      this.openModal("dayLogs", { date });
+    }
+    /** Nothing came that day: 0 for the day, so it isn't counted (and isn't "delivered"). */
+    notDelivered(itemId, date, reopen = false) {
+      return this.setDelivery(itemId, date, 0, reopen ? {} : { stay: true });
     }
     stepDelivery(itemId, date, delta) {
       const item = this.deliveryContext().items.find((i) => i.id === itemId);
@@ -21888,11 +21922,11 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       const now = new DeliveryPlan(item).qtyOn(date);
       this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
     }
-    resetDelivery(itemId, date) {
+    resetDelivery(itemId, date, stay = false) {
       const item = this.deliveryContext().items.find((i) => i.id === itemId);
       if (!item) return;
       const usual = new DeliveryPlan({ ...item, marks: DeliveryPlan.withoutMark(item, date) }).qtyOn(date);
-      this.setDelivery(itemId, date, usual);
+      this.setDelivery(itemId, date, usual, stay ? { stay: true } : {});
     }
     submitPause(e, itemId) {
       e.preventDefault();

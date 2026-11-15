@@ -388,7 +388,7 @@ export class CalendarView extends BaseView {
         const st = dues ? dues.statusOn(it, d, today) : null;
         const word = st ? CalendarView.#DELIVERY_WORD[st] : (p.trackFrom && d < p.trackFrom ? 'not counted yet' : 'no delivery');
         const click = can && (st || (!p.trackFrom || d >= p.trackFrom))
-          ? (st === 'paid' || st === 'owed' || st === 'unconfirmed' ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})`)
+          ? (st ? `window.__app.toggleDeliveryDay('${Html.js(it.id)}','${d}')` : `window.__app.openModal('dayLogs',{date:'${d}'})`)
           : '';
         return `<button type="button" ${click ? `onclick="${click}"` : 'disabled'} title="${DeliveryPlan.shortDate(d)} · ${word}">
             <span class="cal-bill ${st || 'none'}">${st ? `<i data-lucide="${Html.icon(it.icon)}"></i>` : ''}</span>
@@ -416,7 +416,7 @@ export class CalendarView extends BaseView {
       ${this.inGuestSpace ? '' : this.#renderDues(state)}
       <h3 class="font-semibold mt-5 mb-2 text-sm">Items</h3>
       <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${list}</div>
-      <p class="text-xs text-zinc-500 mt-3">Tap a day to mark it delivered (red until you pay, then green) or to take that back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
+      <p class="text-xs text-zinc-500 mt-3">Tap a day: once for <b>delivered</b> (red until you pay, then green), again for <b>not delivered</b> (not counted), again to go back. Days not confirmed still count in what you owe; change a quantity from the Calendar tab.</p>`;
   }
 
   /** "every month", "every 2 weeks". */
