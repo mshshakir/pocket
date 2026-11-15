@@ -12876,10 +12876,13 @@ This replaces your current grouping.`
         const total = logs.reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
         const isToday = c.iso === todayStr;
         const firstItem = logs[0] ? (state.regularItems || []).find((i) => i.id === logs[0].regularItemId) : null;
-        const moreCount = Math.max(0, logs.length - 1);
         const dots = logs.slice(0, 4).map((t) => {
           const it = (state.regularItems || []).find((i) => i.id === t.regularItemId);
-          return it ? `<span title="${this.escapeHtml(it.name)}" class="inline-block rounded-full border border-white/60 dark:border-zinc-900" style="width:10px;height:10px;background:${it.color}"></span>` : "";
+          return it ? `<span title="${this.escapeHtml(it.name)}" class="inline-block rounded-full" style="width:7px;height:7px;background:${Html.color(it.color)}"></span>` : "";
+        }).join("");
+        const icons = logs.slice(0, 3).map((t) => {
+          const it = (state.regularItems || []).find((i) => i.id === t.regularItemId);
+          return it ? `<span class="icon-pill" title="${this.escapeHtml(it.name)}" style="background:${Html.color(it.color)}22;color:${Html.color(it.color)};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>` : "";
         }).join("");
         const primaryColor = firstItem ? firstItem.color : "";
         const changed = plans.some((p) => p.stateOn(c.iso) === "changed");
@@ -12894,12 +12897,9 @@ This replaces your current grouping.`
                 </div>
                 ${firstItem ? `
                   <div class="flex-1 flex items-center justify-center min-h-0">
-                    <span class="icon-pill md:hidden" style="background:${firstItem.color}22;color:${firstItem.color};width:20px;height:20px">
-                      <i data-lucide="${firstItem.icon}" style="width:11px;height:11px"></i>
-                    </span>
-                    <div class="hidden md:flex gap-0.5 flex-wrap justify-center items-center">${dots}${moreCount > 4 ? `<span class="text-[9px] text-zinc-500">+${logs.length - 4}</span>` : ""}</div>
+                    <div class="flex md:hidden gap-0.5 flex-wrap justify-center items-center">${dots}${logs.length > 4 ? `<span class="text-[9px] text-zinc-500">+${logs.length - 4}</span>` : ""}</div>
+                    <div class="hidden md:flex gap-1 flex-wrap justify-center items-center">${icons}${logs.length > 3 ? `<span class="text-[10px] text-zinc-500">+${logs.length - 3}</span>` : ""}</div>
                   </div>
-                  ${moreCount > 0 ? `<div class="text-[9px] text-zinc-500 text-center md:hidden">+${moreCount}</div>` : ""}
                 ` : '<div class="flex-1"></div>'}
                 ${total > 0 ? `<div class="text-[9px] text-zinc-500 truncate text-center">${this.formatMoney(total, home)}</div>` : ""}
               </button>`;
