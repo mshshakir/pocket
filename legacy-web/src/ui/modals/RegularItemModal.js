@@ -12,12 +12,19 @@
  *
  * Fields: name, defaultAmount, currency, accountId, sharedOwnerId, categoryId,
  *         frequency, icon, color
+ *
+ * "Pay the vendor later" items (milk, newspaper) also carry the usual pattern —
+ * payLater, usualQty, usualDays, unit, vendor, trackFrom — see DeliveryPlan.
+ * They are not logged day by day: the calendar works out each day from the
+ * pattern, and paying the vendor records the expense (VendorDues).
  */
 import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
 import { CategoryField }   from '../components/CategoryField.js';
 import { AccountRef }      from '../../domain/services/AccountRef.js';
+import { DeliveryPlan }    from '../../domain/services/DeliveryPlan.js';
+import { DateService }     from '../../domain/services/DateService.js';
 
 const ITEM_ICONS = [
   'coffee','shopping-basket','bus','dumbbell','utensils','heart-pulse',
@@ -110,7 +117,7 @@ export class RegularItemModal {
         <!-- Amount + Currency -->
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Default amount</label>
+            <label class="text-xs text-zinc-500" data-price-label>${data.payLater ? 'Price per unit' : 'Default amount'}</label>
             <input class="input" name="defaultAmount" type="number" step="${CurrencyService.stepFor(data.currency)}" min="0"
                    placeholder="0.00" value="${amountVal || ''}">
           </div>
@@ -153,15 +160,8 @@ export class RegularItemModal {
           })}
         </div>
 
-        <!-- Frequency -->
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Frequency</label>
-          <select class="select" name="frequency">
-            <option value="daily"   ${data.frequency === 'daily'   ? 'selected' : ''}>Daily</option>
-            <option value="weekly"  ${data.frequency === 'weekly'  ? 'selected' : ''}>Weekly</option>
-            <option value="monthly" ${(!data.frequency || data.frequency === 'monthly') ? 'selected' : ''}>Monthly</option>
-          </select>
-        </div>
+        <!-- How it's paid -->
+        ${this.#payment(data, editing)}
 
         <!-- Icon -->
         <div class="mb-3">
@@ -205,6 +205,72 @@ export class RegularItemModal {
           </button>
         </div>
       </form>`;
+  }
+
+  /**
+   * "Each time" (logged when bought) or "Pay the vendor later" (a usual
+   * pattern; the calendar fills in each day, exceptions are marked there).
+   */
+  #payment(data, editing) {
+    const later = data.payLater === true;
+    const plan  = new DeliveryPlan(data);
+    const days  = plan.usualDays;
+    const today = DateService.toIso(new Date());
+    const toggle = "const f=this.form, l=this.value==='later';"
+      + "f.querySelector('[data-later]').hidden=!l;"
+      + "f.querySelector('[data-price-label]').textContent=l?'Price per unit':'Default amount';";
+    return `
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500 block mb-1">How do you pay?</label>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="pay-choice">
+              <input type="radio" name="pay" value="each" ${later ? '' : 'checked'} onchange="${toggle}">
+              <span><b>Each time</b><small>Log it when you buy, e.g. coffee</small></span>
+            </label>
+            <label class="pay-choice">
+              <input type="radio" name="pay" value="later" ${later ? 'checked' : ''} onchange="${toggle}">
+              <span><b>Pay the vendor later</b><small>Daily deliveries, settle monthly, e.g. milk</small></span>
+            </label>
+          </div>
+        </div>
+
+        <div data-later ${later ? '' : 'hidden'} class="mb-4 later-box">
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-xs text-zinc-500">Usual quantity</label>
+              <input class="input" name="usualQty" type="number" min="0" step="any" value="${plan.usualQty}">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Unit (optional)</label>
+              <input class="input" name="unit" maxlength="12" placeholder="L, packet, visit" value="${this.#esc(data.unit || '')}">
+            </div>
+          </div>
+          <label class="text-xs text-zinc-500 block mb-1">Comes on</label>
+          <div class="day-picks mb-3">
+            ${DeliveryPlan.DAY_NAMES.map((n, i) => `
+              <label><input type="checkbox" name="usualDays" value="${i}" ${days.includes(i) ? 'checked' : ''}><span>${n[0]}</span></label>`).join('')}
+          </div>
+          <div class="grid grid-cols-2 gap-3 mb-2">
+            <div>
+              <label class="text-xs text-zinc-500">Paid to (optional)</label>
+              <input class="input" name="vendor" maxlength="40" placeholder="e.g. Doodhwala" value="${this.#esc(data.vendor || '')}">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">${editing?.payLater ? 'Counting since' : 'Start counting from'}</label>
+              <input class="input" name="trackFrom" type="date" value="${this.#esc(plan.trackFrom || today)}">
+            </div>
+          </div>
+          ${editing?.payLater ? `
+          <div>
+            <label class="text-xs text-zinc-500">If you changed the price, it applies from</label>
+            <input class="input" name="priceFrom" type="date" value="${today}">
+          </div>` : ''}
+          <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+            Each day is filled in from this pattern; on the calendar, mark only the days that were different.
+            Nothing is spent until you pay the vendor from <b>Dues</b>.
+            Items with the same "Paid to" are settled together.
+          </div>
+        </div>`;
   }
 
   #esc(s) {

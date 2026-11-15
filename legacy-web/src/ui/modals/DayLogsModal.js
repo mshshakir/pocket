@@ -5,14 +5,23 @@
  * user's book, so its entries never reach `state.transactions`. Reading through
  * RegularLogService merges both books, which is what stops such an entry from
  * vanishing the moment it is saved.
+ *
+ * Pay-later items (milk, newspaper) aren't logged here: their day is worked
+ * out from the usual pattern (DeliveryPlan), so this only changes the days
+ * that were different — and not once the vendor has been paid for them.
  */
+import { DeliveryPlan } from '../../domain/services/DeliveryPlan.js';
+import { Html }         from '../../core/Html.js';
+
 export class DayLogsModal {
   #store;
   #hijriService;
   #currencyService;
   #regularLogs;
+  #dues;
 
-  constructor({ store, hijriService, currencyService, regularLogService }) {
+  constructor({ store, hijriService, currencyService, regularLogService, vendorDues = null }) {
+    this.#dues = vendorDues;
     this.#store = store;
     this.#hijriService = hijriService;
     this.#currencyService = currencyService;
@@ -22,7 +31,9 @@ export class DayLogsModal {
   render({ date } = {}) {
     if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
     const s = this.#store.getState();
-    const items = s.regularItems || [];
+    const all = s.regularItems || [];
+    const deliveries = all.filter((i) => i.payLater === true);
+    const items = all.filter((i) => i.payLater !== true);
     const logs = this.#regularLogs
       ? this.#regularLogs.onDate(date)
       : (s.transactions || []).filter(t => t.regularItemId && t.date === date);
@@ -32,7 +43,7 @@ export class DayLogsModal {
     })();
 
     const logRows = logs.map(log => {
-      const item = items.find(i => i.id === log.regularItemId);
+      const item = all.find(i => i.id === log.regularItemId);
       const cur = log.currency || s.user.homeCurrency;
       const qty = log.qty ?? 1;
       const unitAmt = log.unitAmount != null ? log.unitAmount : log.amount;
@@ -77,9 +88,11 @@ export class DayLogsModal {
           </button>
         </div>
 
+        ${deliveries.length ? this.#deliveries(deliveries, date, s) : ''}
+
         ${logs.length > 0
-          ? `<div class="mb-4">${logRows}</div>`
-          : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
+          ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ''}${logRows}</div>`
+          : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
         ${items.length > 0 ? `
         <div class="text-sm font-semibold mb-3">Add entry</div>
@@ -106,7 +119,50 @@ export class DayLogsModal {
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+        </form>` : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+      </div>`;
+  }
+
+  /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
+  #deliveries(list, date, s) {
+    const rows = list.map((item) => {
+      const plan = new DeliveryPlan(item);
+      const state = plan.stateOn(date);
+      const qty = plan.qtyOn(date);
+      const paid = this.#dues?.isPaid(item, date) ?? false;
+      const id = Html.escape(item.id);
+      const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : '';
+      const label = state === 'before' ? 'Not counted yet'
+        : state === 'paused' ? 'Paused'
+        : state === 'changed' ? (qty ? `Changed · usual ${plan.qtyLabel(plan.usualOn(date))}` : 'None today')
+        : state === 'off' ? 'Not a delivery day' : 'Usual';
+      const color = Html.color(item.color);
+      return `
+        <div class="delivery-row ${state === 'changed' ? 'is-changed' : ''}">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:30px;height:30px">
+            <i data-lucide="${Html.icon(item.icon)}" style="width:15px;height:15px"></i>
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
+            <div class="text-xs text-zinc-500">${label}${cost ? ` · ${cost}` : ''}${paid ? ' · paid' : ''}</div>
+          </div>
+          ${paid || state === 'before' ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '—'}</span>` : `
+          <div class="delivery-step">
+            <button type="button" aria-label="Less" onclick="window.__app.stepDelivery('${id}','${date}',-1)" ${qty <= 0 ? 'disabled' : ''}><i data-lucide="minus"></i></button>
+            <span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : '0'}</span>
+            <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
+          </div>`}
+        </div>
+        ${!paid && state === 'changed' ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ''}`;
+    }).join('');
+    return `
+      <div class="mb-4">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Deliveries</div>
+          <button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>
+        </div>
+        ${rows}
+        <div class="text-[11px] text-zinc-500 mt-1">Filled in from the usual — change only what was different.</div>
       </div>`;
   }
 

@@ -3236,6 +3236,316 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/DeliveryPlan.js
+  var DeliveryPlan = class _DeliveryPlan {
+    static ALL_DAYS = Object.freeze([0, 1, 2, 3, 4, 5, 6]);
+    static DAY_NAMES = Object.freeze(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+    /** @type {object} */
+    #item;
+    /** @param {object} item  a regular item */
+    constructor(item) {
+      this.#item = item || {};
+    }
+    // ── what the item says ──────────────────────────────────────────────
+    get item() {
+      return this.#item;
+    }
+    get isTracked() {
+      return this.#item.payLater === true;
+    }
+    get vendor() {
+      return String(this.#item.vendor || "").trim() || this.#item.name || "Vendor";
+    }
+    get unit() {
+      return String(this.#item.unit || "").trim();
+    }
+    get usualQty() {
+      const q = Number(this.#item.usualQty);
+      return Number.isFinite(q) && q >= 0 ? q : 1;
+    }
+    get trackFrom() {
+      return _DeliveryPlan.isIso(this.#item.trackFrom) ? this.#item.trackFrom : null;
+    }
+    get usualDays() {
+      const d = Array.isArray(this.#item.usualDays) ? this.#item.usualDays.filter((x) => Number.isInteger(x) && x >= 0 && x <= 6) : null;
+      return d && d.length ? [...new Set(d)].sort() : [..._DeliveryPlan.ALL_DAYS];
+    }
+    /** "Every day", "Mon–Sat", "Mon, Wed, Fri". */
+    get daysLabel() {
+      const d = this.usualDays;
+      if (d.length === 7) return "Every day";
+      if (d.join() === "1,2,3,4,5,6") return "Mon\u2013Sat";
+      if (d.join() === "1,2,3,4,5") return "Mon\u2013Fri";
+      return d.map((x) => _DeliveryPlan.DAY_NAMES[x]).join(", ");
+    }
+    /** "2 L", "1 packet", "3". */
+    qtyLabel(qty) {
+      const n = Number.isInteger(qty) ? String(qty) : String(Math.round(qty * 100) / 100);
+      return this.unit ? `${n} ${this.unit}` : n;
+    }
+    // ── one day ─────────────────────────────────────────────────────────
+    /** How many on a usual `iso` (0 before tracking starts or on a day off). */
+    usualOn(iso) {
+      if (!this.isTracked || !_DeliveryPlan.isIso(iso)) return 0;
+      if (this.trackFrom && iso < this.trackFrom) return 0;
+      return this.usualDays.includes(_DeliveryPlan.weekday(iso)) ? this.usualQty : 0;
+    }
+    pausedOn(iso) {
+      return (Array.isArray(this.#item.pauses) ? this.#item.pauses : []).some((p) => _DeliveryPlan.isIso(p?.from) && _DeliveryPlan.isIso(p?.to) && iso >= p.from && iso <= p.to);
+    }
+    /** True when the day was marked different from the usual. */
+    changedOn(iso) {
+      const m = this.#item.marks;
+      return !!m && Object.prototype.hasOwnProperty.call(m, iso);
+    }
+    /** What came on `iso`: a marked quantity, else 0 when paused, else the usual. */
+    qtyOn(iso) {
+      if (!this.isTracked || this.trackFrom && iso < this.trackFrom) return 0;
+      if (this.changedOn(iso)) return Math.max(0, Number(this.#item.marks[iso]) || 0);
+      if (this.pausedOn(iso)) return 0;
+      return this.usualOn(iso);
+    }
+    /** Price of one unit on `iso`, in minor units. */
+    priceOn(iso) {
+      const list = _DeliveryPlan.#sortedPrices(this.#item.prices);
+      let price = null;
+      for (const p of list) {
+        if (p.from <= iso) price = p.unit;
+      }
+      if (price == null) price = list.length ? list[0].unit : Number(this.#item.defaultAmount) || 0;
+      return price;
+    }
+    /** 'usual' | 'changed' | 'paused' | 'off' (not a delivery day) | 'before' (tracking hadn't started). */
+    stateOn(iso) {
+      if (this.trackFrom && iso < this.trackFrom) return "before";
+      if (this.changedOn(iso)) return "changed";
+      if (this.pausedOn(iso)) return "paused";
+      return this.usualOn(iso) > 0 ? "usual" : "off";
+    }
+    // ── a period ────────────────────────────────────────────────────────
+    /**
+     * Every day from `from` to `to` (inclusive) with what came and its cost.
+     * @returns {{date: string, qty: number, unit: number, amount: number, state: string}[]}
+     */
+    lines(from, to) {
+      if (!_DeliveryPlan.isIso(from) || !_DeliveryPlan.isIso(to) || from > to) return [];
+      const out = [];
+      for (let iso = from; iso <= to; iso = _DeliveryPlan.addDays(iso, 1)) {
+        const qty = this.qtyOn(iso);
+        const unit = this.priceOn(iso);
+        out.push({ date: iso, qty, unit, amount: Math.round(qty * unit), state: this.stateOn(iso) });
+        if (out.length > 1500) break;
+      }
+      return out;
+    }
+    /** Totals for a period: { from, to, days (with a delivery), qty, amount, lines }. */
+    totals(from, to) {
+      const lines = this.lines(from, to);
+      return {
+        from,
+        to,
+        lines,
+        days: lines.filter((l) => l.qty > 0).length,
+        qty: Math.round(lines.reduce((s, l) => s + l.qty, 0) * 100) / 100,
+        amount: lines.reduce((s, l) => s + l.amount, 0)
+      };
+    }
+    // ── changes to store on the item ────────────────────────────────────
+    /** New `marks` with `iso` set to `qty`; marking the usual again just clears the mark. */
+    static withMark(item, iso, qty) {
+      const marks = { ...item?.marks || {} };
+      const plan = new _DeliveryPlan({ ...item, marks: {} });
+      const plain = plan.pausedOn(iso) ? 0 : plan.usualOn(iso);
+      const q = Math.max(0, Math.round((Number(qty) || 0) * 100) / 100);
+      if (q === plain) delete marks[iso];
+      else marks[iso] = q;
+      return marks;
+    }
+    /** New `marks` without `iso` (back to the usual). */
+    static withoutMark(item, iso) {
+      const marks = { ...item?.marks || {} };
+      delete marks[iso];
+      return marks;
+    }
+    /** New `pauses` with [from, to] added (overlapping or touching pauses merge). */
+    static withPause(item, from, to) {
+      if (!_DeliveryPlan.isIso(from) || !_DeliveryPlan.isIso(to)) return item?.pauses || [];
+      if (from > to) [from, to] = [to, from];
+      const all = [...Array.isArray(item?.pauses) ? item.pauses : [], { from, to }].filter((p) => _DeliveryPlan.isIso(p.from) && _DeliveryPlan.isIso(p.to)).sort((a, b) => a.from.localeCompare(b.from));
+      const merged = [];
+      for (const p of all) {
+        const last = merged[merged.length - 1];
+        if (last && p.from <= _DeliveryPlan.addDays(last.to, 1)) {
+          if (p.to > last.to) last.to = p.to;
+        } else merged.push({ ...p });
+      }
+      return merged;
+    }
+    /** New `pauses` without the one covering `iso`. */
+    static withoutPause(item, iso) {
+      return (Array.isArray(item?.pauses) ? item.pauses : []).filter((p) => !(iso >= p.from && iso <= p.to));
+    }
+    /**
+     * New `prices` after the price changes to `unit` from `from`. The old price
+     * is kept for the days before, so past days keep costing what they cost.
+     */
+    static withPrice(item, unit, from) {
+      const old = Number(item?.defaultAmount) || 0;
+      let list = _DeliveryPlan.#sortedPrices(item?.prices);
+      if (!list.length) list = [{ from: "2000-01-01", unit: old }];
+      list = list.filter((p) => p.from < from);
+      if (!list.length) list = [{ from: "2000-01-01", unit: old }].filter((p) => p.from < from);
+      list.push({ from, unit: Math.max(0, Math.round(Number(unit) || 0)) });
+      return list;
+    }
+    /** `marks` with days before `iso` dropped (they're paid and nobody edits them). */
+    static marksFrom(marks, iso) {
+      return Object.fromEntries(Object.entries(marks || {}).filter(([d]) => d >= iso));
+    }
+    // ── dates ───────────────────────────────────────────────────────────
+    static isIso(s) {
+      return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    }
+    static addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      const t = new Date(Date.UTC(y, m - 1, d + n));
+      return t.toISOString().slice(0, 10);
+    }
+    static weekday(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    }
+    /** "3 Nov" / "3 Nov 2026". */
+    static shortDate(iso, withYear = false) {
+      const [y, m, d] = iso.split("-").map(Number);
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${d} ${months[m - 1]}${withYear ? ` ${y}` : ""}`;
+    }
+    /** "1–15 Nov 2026", "28 Oct – 3 Nov 2026". */
+    static rangeLabel(from, to) {
+      if (from === to) return _DeliveryPlan.shortDate(from, true);
+      const [fy, fm] = from.split("-");
+      const [ty, tm] = to.split("-");
+      if (fy === ty && fm === tm) return `${Number(from.slice(8))}\u2013${_DeliveryPlan.shortDate(to, true)}`;
+      return `${_DeliveryPlan.shortDate(from, fy !== ty)} \u2013 ${_DeliveryPlan.shortDate(to, true)}`;
+    }
+    static #sortedPrices(prices) {
+      return (Array.isArray(prices) ? prices : []).filter((p) => _DeliveryPlan.isIso(p?.from) && Number.isFinite(Number(p?.unit))).map((p) => ({ from: p.from, unit: Number(p.unit) })).sort((a, b) => a.from.localeCompare(b.from));
+    }
+  };
+
+  // src/domain/services/VendorDues.js
+  var VendorDues = class _VendorDues {
+    /** @type {{getState: () => object}} */
+    #store;
+    /** @type {{all: () => object[]}|null} */
+    #logs;
+    /**
+     * @param {object} deps
+     * @param {{getState: () => object}} deps.store
+     * @param {{all: () => object[]}} [deps.regularLogs]  every regular-item entry, both books
+     */
+    constructor({ store, regularLogs = null }) {
+      this.#store = store;
+      this.#logs = regularLogs;
+    }
+    /** Today as YYYY-MM-DD (local). */
+    static today() {
+      return DateService.toIso(/* @__PURE__ */ new Date());
+    }
+    /** Pay-later items in this book. */
+    items() {
+      return (this.#store.getState().regularItems || []).filter((i) => i.payLater === true);
+    }
+    plan(item) {
+      return new DeliveryPlan(item);
+    }
+    /** Settlement entries for an item, newest first. */
+    payments(itemId) {
+      return this.#entries().filter((t) => t.regularItemId === itemId && t.settles && DeliveryPlan.isIso(t.settles.to)).sort((a, b) => b.settles.to.localeCompare(a.settles.to) || String(b.date).localeCompare(String(a.date)));
+    }
+    /** The last day already paid for (null when nothing is). */
+    paidTo(itemId) {
+      return this.payments(itemId)[0]?.settles.to ?? null;
+    }
+    /** True when `iso` is covered by a payment, so it shouldn't be edited. */
+    isPaid(item, iso) {
+      const to = this.paidTo(item.id);
+      return !!to && iso <= to;
+    }
+    /** First day not yet paid. */
+    openFrom(item) {
+      const plan = this.plan(item);
+      const to = this.paidTo(item.id);
+      const after = to ? DeliveryPlan.addDays(to, 1) : null;
+      const start = plan.trackFrom || after || _VendorDues.today();
+      return after && after > start ? after : start;
+    }
+    /** What's owed for an item up to `upTo` (default today): DeliveryPlan totals, or null when nothing is open. */
+    due(item, upTo = _VendorDues.today()) {
+      const from = this.openFrom(item);
+      if (from > upTo) return null;
+      return { item, plan: this.plan(item), ...this.plan(item).totals(from, upTo) };
+    }
+    /**
+     * Everything owed, by vendor:
+     * [{ vendor, currency, amount, lines: [{item, plan, from, to, qty, days, amount, lines}], lastPaid }]
+     * Vendors with something due come first, largest first.
+     */
+    byVendor(upTo = _VendorDues.today()) {
+      const groups = /* @__PURE__ */ new Map();
+      for (const item of this.items()) {
+        const plan = this.plan(item);
+        const key = plan.vendor.toLowerCase();
+        if (!groups.has(key)) groups.set(key, { vendor: plan.vendor, currency: item.currency, amount: 0, lines: [], lastPaid: null });
+        const g = groups.get(key);
+        const d = this.due(item, upTo);
+        if (d) {
+          g.lines.push(d);
+          g.amount += d.amount;
+        } else g.lines.push({ item, plan, from: null, to: null, qty: 0, days: 0, amount: 0, lines: [] });
+        const last = this.payments(item.id)[0];
+        if (last && (!g.lastPaid || String(last.date) > String(g.lastPaid.date))) g.lastPaid = last;
+      }
+      return [...groups.values()].sort((a, b) => b.amount - a.amount || a.vendor.localeCompare(b.vendor));
+    }
+    /** Total owed across all vendors, in each currency: { INR: 186000 }. */
+    totalOwed(upTo = _VendorDues.today()) {
+      const out = {};
+      for (const g of this.byVendor(upTo)) for (const l of g.lines) {
+        const cur = l.item.currency || "INR";
+        out[cur] = (out[cur] || 0) + l.amount;
+      }
+      return out;
+    }
+    /**
+     * A plain-text bill to send or check against the vendor's.
+     * @param {object} group  one entry of byVendor()
+     * @param {(minor: number, currency: string) => string} money
+     */
+    static statement(group, money) {
+      const parts = [`${group.vendor}`];
+      for (const l of group.lines) {
+        if (!l.from) continue;
+        const plan = l.plan;
+        parts.push("", `${l.item.name} \xB7 ${DeliveryPlan.rangeLabel(l.from, l.to)}`);
+        for (const d of l.lines) {
+          if (d.qty === 0 && d.state === "off") continue;
+          const note = d.state === "paused" ? " (away)" : d.state === "changed" && d.qty === 0 ? " (none)" : d.state === "changed" ? " *" : "";
+          parts.push(`${DeliveryPlan.shortDate(d.date)}  ${d.qty ? plan.qtyLabel(d.qty) : "\u2014"}${d.qty ? `  ${money(d.amount, l.item.currency)}` : ""}${note}`);
+        }
+        parts.push(`${l.item.name}: ${plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"} = ${money(l.amount, l.item.currency)}`);
+      }
+      parts.push("", `Total due: ${money(group.amount, group.currency)}`);
+      if (group.lines.some((l) => l.lines?.some((d) => d.state === "changed" && d.qty > 0))) parts.push("* different from the usual");
+      return parts.join("\n");
+    }
+    #entries() {
+      if (this.#logs) return this.#logs.all();
+      return (this.#store.getState().transactions || []).filter((t) => t.regularItemId);
+    }
+  };
+
   // src/domain/services/ReceiptScanService.js
   var ReceiptScanService = class {
     /** @type {Store} */
@@ -12245,7 +12555,7 @@ This replaces your current grouping.`
     // ISO date of focused month
     /** @type {string} */
     #tab = "grid";
-    // 'grid' | 'summary' | 'items'
+    // 'grid' | 'dues' | 'summary' | 'items'
     constructor() {
       super();
       this.#hijri = new HijriCalendarService();
@@ -12315,13 +12625,15 @@ This replaces your current grouping.`
       <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
         <button onclick="window.__app.setCalTab('grid')"
                 class="px-3 py-2 text-sm ${this.#tab === "grid" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Calendar</button>
+        ${!this.inGuestSpace && this.#tracked(state).length ? `<button onclick="window.__app.setCalTab('dues')"
+                class="px-3 py-2 text-sm ${this.#tab === "dues" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Dues</button>` : ""}
         <button onclick="window.__app.setCalTab('summary')"
-                class="px-3 py-2 text-sm ${this.#tab === "summary" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Monthly summary</button>
+                class="px-3 py-2 text-sm ${this.#tab === "summary" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${this.#tracked(state).length && !this.inGuestSpace ? "Summary" : "Monthly summary"}</button>
         <button onclick="window.__app.setCalTab('items')"
                 class="px-3 py-2 text-sm ${this.#tab === "items" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Items</button>
       </div>
 
-      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "summary" ? this.#renderSummary(state) : this.#renderItems(state)}
+      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "dues" && !this.inGuestSpace ? this.#renderDues(state) : this.#tab === "summary" ? this.#renderSummary(state) : this.#renderItems(state)}
     `;
     }
     // ── Sub-views ─────────────────────────────────────────────────────────
@@ -12365,6 +12677,8 @@ This replaces your current grouping.`
         monthSpent = this.#logsForMonth(year, monthIdx, state).reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       }
       while (cells.length % 7 !== 0) cells.push(null);
+      const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
+      const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr).reduce((sum, c) => sum + plans.reduce((t, p) => t + this.convert(Math.round(p.qtyOn(c.iso) * p.priceOn(c.iso)), p.item.currency || home, home), 0), 0) : 0;
       return `
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-1">
@@ -12377,7 +12691,7 @@ This replaces your current grouping.`
           </button>
           <button class="btn btn-ghost text-xs" onclick="window.__app.resetCalFocus()">Today</button>
         </div>
-        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? "Hijri month" : "month"}</div>
+        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? "Hijri month" : "month"}${plans.length ? ` \xB7 ${this.formatMoney(deliveryCost, home)} delivered` : ""}</div>
       </div>
 
       <div class="card p-2 md:p-3">
@@ -12397,12 +12711,14 @@ This replaces your current grouping.`
           return it ? `<span title="${this.escapeHtml(it.name)}" class="inline-block rounded-full border border-white/60 dark:border-zinc-900" style="width:10px;height:10px;background:${it.color}"></span>` : "";
         }).join("");
         const primaryColor = firstItem ? firstItem.color : "";
+        const changed = plans.some((p) => p.stateOn(c.iso) === "changed");
+        const paused = !changed && plans.some((p) => p.stateOn(c.iso) === "paused");
         return `
               <button onclick="window.__app.openModal('dayLogs',{date:'${c.iso}'})"
                       class="aspect-square rounded-lg flex flex-col items-stretch p-1 md:p-1.5 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 transition border ${isToday ? "border-zinc-900 dark:border-white" : "border-transparent"} ${logs.length ? "bg-zinc-50 dark:bg-zinc-900" : ""}"
                       style="${logs.length && primaryColor ? `box-shadow: inset 0 -3px 0 0 ${primaryColor}` : ""}">
                 <div class="flex items-center justify-between leading-none">
-                  <span class="${isToday ? "font-semibold" : ""} ${logs.length ? "font-medium" : ""}">${c.primary}</span>
+                  <span class="${isToday ? "font-semibold" : ""} ${logs.length ? "font-medium" : ""}">${c.primary}${changed ? '<span class="cal-mark" title="A delivery was different"></span>' : paused ? '<span class="cal-mark cal-mark-paused" title="Deliveries paused"></span>' : ""}</span>
                   ${showBoth ? `<span class="text-[9px] text-zinc-500 truncate ml-1">${this.escapeHtml(c.secondary)}</span>` : ""}
                 </div>
                 ${firstItem ? `
@@ -12521,11 +12837,74 @@ This replaces your current grouping.`
             </div>
             <div class="flex-1 min-w-0">
               <div class="font-medium truncate">${this.escapeHtml(it.name)}</div>
-              <div class="text-xs text-zinc-500 truncate">${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} default \xB7 ${it.currency || this.homeCurrency}</div>
+              <div class="text-xs text-zinc-500 truncate">${it.payLater ? (() => {
+        const p = new DeliveryPlan(it);
+        return `${this.escapeHtml(p.qtyLabel(p.usualQty))} \xB7 ${p.daysLabel} \xB7 ${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} each \xB7 pay ${this.escapeHtml(p.vendor)} later`;
+      })() : `${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} default \xB7 ${it.currency || this.homeCurrency}`}</div>
             </div>
             <i data-lucide="chevron-right" class="text-zinc-400 flex-shrink-0"></i>
           </button>`).join("")}
       </div>`;
+    }
+    /** What's owed to each vendor, with Pay, Bill and Pause. */
+    #renderDues(state) {
+      const dues = window.__app?.vendorDues;
+      const groups = dues ? dues.byVendor() : [];
+      if (!groups.length) {
+        return `<div class="card p-8 text-center">${this.emptyState("No pay-later items", "Edit an item like milk or the newspaper and choose \u201CPay the vendor later\u201D.")}</div>`;
+      }
+      const home = this.homeCurrency;
+      const owed = groups.reduce((t, g) => t + this.convert(g.amount, g.currency || home, home), 0);
+      const owing = groups.filter((g) => g.amount > 0).length;
+      return `
+      <div class="card p-4 mb-3 flex items-center justify-between">
+        <div><div class="text-xs text-zinc-500">Owed today</div><div class="text-2xl font-semibold">${this.formatMoney(owed, home)}</div></div>
+        <div class="text-xs text-zinc-500 text-right">${owing} vendor${owing === 1 ? "" : "s"} to pay<br>nothing is spent until you pay</div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        ${groups.map((g) => this.#vendorCard(g)).join("")}
+      </div>`;
+    }
+    #vendorCard(g) {
+      const vendorArg = Html.escape(JSON.stringify(g.vendor));
+      const cur = g.currency || this.homeCurrency;
+      const lines = g.lines.map((l) => {
+        const it = l.item;
+        const color = Html.color(it.color);
+        const pattern = `${l.plan.qtyLabel(l.plan.usualQty)} \xB7 ${l.plan.daysLabel}`;
+        return `
+        <div class="flex items-center gap-3 py-2">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:14px;height:14px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">${Html.escape(it.name)}</div>
+            <div class="text-xs text-zinc-500 truncate">${l.from ? `${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? "" : "s"}` : `Paid up \xB7 ${Html.escape(pattern)}`}</div>
+          </div>
+          <div class="text-right">
+            <div class="text-sm font-medium">${this.formatMoney(l.amount, it.currency || cur)}</div>
+            ${this.inGuestSpace ? "" : `<button class="text-[11px] text-zinc-500 underline" onclick="window.__app.openModal('pauseDeliveries',{itemId:'${Html.escape(it.id)}'})">Pause</button>`}
+          </div>
+        </div>`;
+      }).join("");
+      return `
+      <div class="card p-4">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="font-semibold truncate">${Html.escape(g.vendor)}</div>
+            <div class="text-xs text-zinc-500">${g.lastPaid ? `Last paid ${this.formatMoney(g.lastPaid.amount, g.lastPaid.currency || cur)} on ${DeliveryPlan.shortDate(g.lastPaid.date, true)}` : "Not paid yet"}</div>
+          </div>
+          <div class="text-right"><div class="text-xs text-zinc-500">Due</div><div class="text-lg font-semibold">${this.formatMoney(g.amount, cur)}</div></div>
+        </div>
+        <div class="divide-y divide-zinc-100 dark:divide-zinc-800 mt-2">${lines}</div>
+        ${this.inGuestSpace ? "" : `
+        <div class="flex gap-2 mt-3">
+          <button class="btn btn-primary flex-1 justify-center" ${g.amount > 0 ? "" : "disabled"} onclick="window.__app.openModal('settle',{vendor:${vendorArg}})"><i data-lucide="check"></i> Pay</button>
+          <button class="btn btn-outline" ${g.amount > 0 ? "" : "disabled"} onclick="window.__app.shareStatement(${vendorArg})"><i data-lucide="share-2"></i> Bill</button>
+        </div>`}
+      </div>`;
+    }
+    /** Pay-later items of the book on screen. */
+    #tracked(state) {
+      return (state.regularItems || []).filter((i) => i.payLater === true);
     }
     // ── Helpers ───────────────────────────────────────────────────────────
     /** Hijri off in Settings means a plain Gregorian calendar, whatever mode was chosen before. */
@@ -14887,7 +15266,7 @@ This replaces your current grouping.`
         <!-- Amount + Currency -->
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Default amount</label>
+            <label class="text-xs text-zinc-500" data-price-label>${data.payLater ? "Price per unit" : "Default amount"}</label>
             <input class="input" name="defaultAmount" type="number" step="${CurrencyService.stepFor(data.currency)}" min="0"
                    placeholder="0.00" value="${amountVal || ""}">
           </div>
@@ -14930,15 +15309,8 @@ This replaces your current grouping.`
       })}
         </div>
 
-        <!-- Frequency -->
-        <div class="mb-4">
-          <label class="text-xs text-zinc-500">Frequency</label>
-          <select class="select" name="frequency">
-            <option value="daily"   ${data.frequency === "daily" ? "selected" : ""}>Daily</option>
-            <option value="weekly"  ${data.frequency === "weekly" ? "selected" : ""}>Weekly</option>
-            <option value="monthly" ${!data.frequency || data.frequency === "monthly" ? "selected" : ""}>Monthly</option>
-          </select>
-        </div>
+        <!-- How it's paid -->
+        ${this.#payment(data, editing)}
 
         <!-- Icon -->
         <div class="mb-3">
@@ -14983,6 +15355,69 @@ This replaces your current grouping.`
         </div>
       </form>`;
     }
+    /**
+     * "Each time" (logged when bought) or "Pay the vendor later" (a usual
+     * pattern; the calendar fills in each day, exceptions are marked there).
+     */
+    #payment(data, editing) {
+      const later = data.payLater === true;
+      const plan = new DeliveryPlan(data);
+      const days = plan.usualDays;
+      const today = DateService.toIso(/* @__PURE__ */ new Date());
+      const toggle = "const f=this.form, l=this.value==='later';f.querySelector('[data-later]').hidden=!l;f.querySelector('[data-price-label]').textContent=l?'Price per unit':'Default amount';";
+      return `
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500 block mb-1">How do you pay?</label>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="pay-choice">
+              <input type="radio" name="pay" value="each" ${later ? "" : "checked"} onchange="${toggle}">
+              <span><b>Each time</b><small>Log it when you buy, e.g. coffee</small></span>
+            </label>
+            <label class="pay-choice">
+              <input type="radio" name="pay" value="later" ${later ? "checked" : ""} onchange="${toggle}">
+              <span><b>Pay the vendor later</b><small>Daily deliveries, settle monthly, e.g. milk</small></span>
+            </label>
+          </div>
+        </div>
+
+        <div data-later ${later ? "" : "hidden"} class="mb-4 later-box">
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-xs text-zinc-500">Usual quantity</label>
+              <input class="input" name="usualQty" type="number" min="0" step="any" value="${plan.usualQty}">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Unit (optional)</label>
+              <input class="input" name="unit" maxlength="12" placeholder="L, packet, visit" value="${this.#esc(data.unit || "")}">
+            </div>
+          </div>
+          <label class="text-xs text-zinc-500 block mb-1">Comes on</label>
+          <div class="day-picks mb-3">
+            ${DeliveryPlan.DAY_NAMES.map((n, i) => `
+              <label><input type="checkbox" name="usualDays" value="${i}" ${days.includes(i) ? "checked" : ""}><span>${n[0]}</span></label>`).join("")}
+          </div>
+          <div class="grid grid-cols-2 gap-3 mb-2">
+            <div>
+              <label class="text-xs text-zinc-500">Paid to (optional)</label>
+              <input class="input" name="vendor" maxlength="40" placeholder="e.g. Doodhwala" value="${this.#esc(data.vendor || "")}">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">${editing?.payLater ? "Counting since" : "Start counting from"}</label>
+              <input class="input" name="trackFrom" type="date" value="${this.#esc(plan.trackFrom || today)}">
+            </div>
+          </div>
+          ${editing?.payLater ? `
+          <div>
+            <label class="text-xs text-zinc-500">If you changed the price, it applies from</label>
+            <input class="input" name="priceFrom" type="date" value="${today}">
+          </div>` : ""}
+          <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
+            Each day is filled in from this pattern; on the calendar, mark only the days that were different.
+            Nothing is spent until you pay the vendor from <b>Dues</b>.
+            Items with the same "Paid to" are settled together.
+          </div>
+        </div>`;
+    }
     #esc(s) {
       return (s || "").toString().replace(
         /[&<>"']/g,
@@ -14997,7 +15432,9 @@ This replaces your current grouping.`
     #hijriService;
     #currencyService;
     #regularLogs;
-    constructor({ store, hijriService, currencyService, regularLogService }) {
+    #dues;
+    constructor({ store, hijriService, currencyService, regularLogService, vendorDues = null }) {
+      this.#dues = vendorDues;
       this.#store = store;
       this.#hijriService = hijriService;
       this.#currencyService = currencyService;
@@ -15006,7 +15443,9 @@ This replaces your current grouping.`
     render({ date } = {}) {
       if (!date) return '<div class="p-5 text-sm text-zinc-500">No date specified.</div>';
       const s = this.#store.getState();
-      const items = s.regularItems || [];
+      const all = s.regularItems || [];
+      const deliveries = all.filter((i) => i.payLater === true);
+      const items = all.filter((i) => i.payLater !== true);
       const logs = this.#regularLogs ? this.#regularLogs.onDate(date) : (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
       const hijriStr = (() => {
         if (!s.user?.showHijri) return "";
@@ -15017,7 +15456,7 @@ This replaces your current grouping.`
         }
       })();
       const logRows = logs.map((log) => {
-        const item = items.find((i) => i.id === log.regularItemId);
+        const item = all.find((i) => i.id === log.regularItemId);
         const cur = log.currency || s.user.homeCurrency;
         const qty = log.qty ?? 1;
         const unitAmt = log.unitAmount != null ? log.unitAmount : log.amount;
@@ -15058,7 +15497,9 @@ This replaces your current grouping.`
           </button>
         </div>
 
-        ${logs.length > 0 ? `<div class="mb-4">${logRows}</div>` : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
+        ${deliveries.length ? this.#deliveries(deliveries, date, s) : ""}
+
+        ${logs.length > 0 ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ""}${logRows}</div>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
         ${items.length > 0 ? `
         <div class="text-sm font-semibold mb-3">Add entry</div>
@@ -15085,11 +15526,177 @@ This replaces your current grouping.`
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+        </form>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+      </div>`;
+    }
+    /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
+    #deliveries(list, date, s) {
+      const rows = list.map((item) => {
+        const plan = new DeliveryPlan(item);
+        const state = plan.stateOn(date);
+        const qty = plan.qtyOn(date);
+        const paid = this.#dues?.isPaid(item, date) ?? false;
+        const id = Html.escape(item.id);
+        const cost = qty ? this.#currencyService.formatMoney(Math.round(qty * plan.priceOn(date)), item.currency || s.user.homeCurrency) : "";
+        const label = state === "before" ? "Not counted yet" : state === "paused" ? "Paused" : state === "changed" ? qty ? `Changed \xB7 usual ${plan.qtyLabel(plan.usualOn(date))}` : "None today" : state === "off" ? "Not a delivery day" : "Usual";
+        const color = Html.color(item.color);
+        return `
+        <div class="delivery-row ${state === "changed" ? "is-changed" : ""}">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:30px;height:30px">
+            <i data-lucide="${Html.icon(item.icon)}" style="width:15px;height:15px"></i>
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">${Html.escape(item.name)}</div>
+            <div class="text-xs text-zinc-500">${label}${cost ? ` \xB7 ${cost}` : ""}${paid ? " \xB7 paid" : ""}</div>
+          </div>
+          ${paid || state === "before" ? `<span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "\u2014"}</span>` : `
+          <div class="delivery-step">
+            <button type="button" aria-label="Less" onclick="window.__app.stepDelivery('${id}','${date}',-1)" ${qty <= 0 ? "disabled" : ""}><i data-lucide="minus"></i></button>
+            <span class="delivery-qty">${qty ? Html.escape(plan.qtyLabel(qty)) : "0"}</span>
+            <button type="button" aria-label="More" onclick="window.__app.stepDelivery('${id}','${date}',1)"><i data-lucide="plus"></i></button>
+          </div>`}
+        </div>
+        ${!paid && state === "changed" ? `<div class="delivery-reset"><button type="button" onclick="window.__app.resetDelivery('${id}','${date}')">Back to usual</button></div>` : ""}`;
+      }).join("");
+      return `
+      <div class="mb-4">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Deliveries</div>
+          <button type="button" class="text-xs text-zinc-500 underline" onclick="window.__app.closeModal();window.__app.setCalTab('dues')">See dues</button>
+        </div>
+        ${rows}
+        <div class="text-[11px] text-zinc-500 mt-1">Filled in from the usual \u2014 change only what was different.</div>
       </div>`;
     }
     #esc(s) {
       return (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
+    }
+  };
+
+  // src/ui/modals/SettleModal.js
+  var SettleModal = class {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    /** @type {() => VendorDues} */
+    #dues;
+    /** @param {{dues: () => VendorDues}} deps */
+    constructor({ dues }) {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+      this.#dues = dues;
+    }
+    render(opts = {}) {
+      const upTo = DeliveryPlan.isIso(opts.upTo) ? opts.upTo : VendorDues.today();
+      const group = this.#dues().byVendor(upTo).find((g) => g.vendor.toLowerCase() === String(opts.vendor || "").toLowerCase());
+      const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
+      if (!group) return `<div class="p-5"><div class="flex justify-between items-center"><b>Nothing to pay</b>${close}</div></div>`;
+      const open = group.lines.filter((l) => l.from && l.amount > 0);
+      const first = open[0]?.item || group.lines[0].item;
+      const vendorArg = Html.escape(JSON.stringify(group.vendor));
+      const rows = open.map((l) => {
+        const cur = l.item.currency || "INR";
+        return `
+        <div class="settle-row">
+          <div class="min-w-0">
+            <div class="font-medium text-sm">${Html.escape(l.item.name)}</div>
+            <div class="text-xs text-zinc-500">${DeliveryPlan.rangeLabel(l.from, l.to)} \xB7 ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}</div>
+          </div>
+          <div class="settle-amount">
+            <span class="text-xs text-zinc-500">${Html.escape(cur)}</span>
+            <input class="input" type="number" min="0" step="${CurrencyService.stepFor(cur)}" name="amount_${Html.escape(l.item.id)}"
+                   value="${this.#fx.fromMinor(l.amount, cur)}">
+          </div>
+        </div>`;
+      }).join("");
+      return `
+      <form class="p-5" style="min-width:320px;max-width:480px" onsubmit="window.__app.submitSettle(event, ${vendorArg}, '${upTo}')">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">Pay ${Html.escape(group.vendor)}</h3>
+          ${close}
+        </div>
+        <div class="text-xs text-zinc-500 mb-4">${group.lastPaid ? `Last paid ${this.#fx.formatMoney(group.lastPaid.amount, group.lastPaid.currency || group.currency)} on ${DeliveryPlan.shortDate(group.lastPaid.date, true)}` : "First payment"}</div>
+
+        <label class="text-xs text-zinc-500">Pay for deliveries up to</label>
+        <input class="input mb-4" type="date" name="upTo" value="${upTo}" max="${VendorDues.today()}"
+               onchange="window.__app.openModal('settle', { vendor: ${vendorArg}, upTo: this.value })">
+
+        ${open.length ? rows : '<p class="text-sm text-zinc-500 mb-4">Nothing owed up to this day.</p>'}
+
+        ${open.length ? `
+        <div class="settle-total"><span>Total</span><b>${this.#fx.formatMoney(group.amount, group.currency || "INR")}</b></div>
+
+        <div class="grid grid-cols-2 gap-3 mt-4 mb-4">
+          <div>
+            <label class="text-xs text-zinc-500">Paid from</label>
+            <select class="select" name="account">${this.#accounts(first)}</select>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Paid on</label>
+            <input class="input" type="date" name="paidOn" value="${VendorDues.today()}">
+          </div>
+        </div>
+
+        <div class="flex gap-2">
+          <button type="button" class="btn btn-outline" onclick="window.__app.shareStatement(${vendorArg}, '${upTo}')">
+            <i data-lucide="share-2"></i> Bill
+          </button>
+          <div class="flex-1"></div>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Record payment</button>
+        </div>
+        <div class="text-[11px] text-zinc-500 mt-3 leading-relaxed">Records ${open.length === 1 ? "an expense" : `${open.length} expenses (one per item)`} in your book. Days up to ${DeliveryPlan.shortDate(upTo)} are then marked paid.</div>` : ""}
+      </form>`;
+    }
+    /** Your accounts, plus shared ones you can add to; the item's own account first. */
+    #accounts(item) {
+      const state = this.#store.getState();
+      const chosen = AccountRef.fromRecord(item).toValue();
+      const own = (state.accounts || []).filter((a) => !a.archived).map((a) => `<option value="${Html.escape(a.id)}" ${chosen === a.id ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("");
+      const shared = (state._sharedData || []).map((share) => {
+        const opts = (share.accounts || []).filter((a) => (share.permission || {})[a.id] !== "view").map((a) => {
+          const v = new AccountRef(a.id, share._ownerId).toValue();
+          return `<option value="${Html.escape(v)}" ${chosen === v ? "selected" : ""}>${Html.escape(a.name)}</option>`;
+        }).join("");
+        return opts ? `<optgroup label="Shared by ${Html.escape(share.sharedBy || "Family")}">${opts}</optgroup>` : "";
+      }).join("");
+      return `<optgroup label="My accounts">${own}</optgroup>${shared}`;
+    }
+  };
+
+  // src/ui/modals/PauseDeliveriesModal.js
+  var PauseDeliveriesModal = class {
+    /** @type {Store} */
+    #store;
+    constructor() {
+      this.#store = Store.getInstance();
+    }
+    render(opts = {}) {
+      const item = (this.#store.getState().regularItems || []).find((i) => i.id === opts.itemId);
+      if (!item) return '<div class="p-5 text-sm text-zinc-500">Item not found.</div>';
+      const today = VendorDues.today();
+      const pauses = (Array.isArray(item.pauses) ? item.pauses : []).filter((p) => p.to >= today);
+      const id = Html.escape(item.id);
+      return `
+      <form class="p-5" style="min-width:300px;max-width:420px" onsubmit="window.__app.submitPause(event,'${id}')">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">Pause ${Html.escape(item.name)}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <p class="text-xs text-zinc-500 mb-4">Away, or the vendor is on leave? Nothing is counted on these days.</p>
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div><label class="text-xs text-zinc-500">From</label><input class="input" type="date" name="from" value="${today}" required></div>
+          <div><label class="text-xs text-zinc-500">To</label><input class="input" type="date" name="to" value="${DeliveryPlan.addDays(today, 6)}" required></div>
+        </div>
+        <button class="btn btn-primary w-full" type="submit"><i data-lucide="pause"></i> Pause</button>
+        ${pauses.length ? `
+        <div class="text-sm font-semibold mt-5 mb-2">Coming up</div>
+        ${pauses.map((p) => `
+          <div class="flex items-center justify-between card p-2.5 mb-2 text-sm">
+            <span>${DeliveryPlan.rangeLabel(p.from, p.to)}</span>
+            <button type="button" class="btn btn-ghost text-xs" onclick="window.__app.liftPause('${id}','${p.from}')">Remove</button>
+          </div>`).join("")}` : ""}
+      </form>`;
     }
   };
 
@@ -16820,6 +17427,8 @@ This replaces your current grouping.`
     #recurring;
     /** @type {RegularLogService}    */
     #regularLogs;
+    /** @type {VendorDues}           */
+    #vendorDues;
     /** @type {SyncService}          */
     #sync;
     /** @type {ThemeService}         */
@@ -16923,6 +17532,7 @@ This replaces your current grouping.`
       this.#budgets = new BudgetService();
       this.#recurring = new RecurringService();
       this.#regularLogs = new RegularLogService({ store: this.#store });
+      this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
       this.#sync = new SyncService();
       this.#themeService = new ThemeService(this.#store);
       this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -17022,7 +17632,8 @@ This replaces your current grouping.`
         store: this.#store,
         hijriService: this.#hijri,
         currencyService: this.#fx,
-        regularLogService: this.#regularLogs
+        regularLogService: this.#regularLogs,
+        vendorDues: this.#vendorDues
       });
       this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
       this.#modal.register("transaction", this.#txModal);
@@ -17040,6 +17651,8 @@ This replaces your current grouping.`
       this.#modal.register("regularItem", new RegularItemModal());
       this.#modal.register("reconcile", this.#reconcileModal);
       this.#modal.register("dayLogs", this.#dayLogsModal);
+      this.#modal.register("settle", new SettleModal({ dues: () => this.#vendorDues }));
+      this.#modal.register("pauseDeliveries", new PauseDeliveriesModal());
       this.#modal.register("currencySetup", this.#currencySetupModal);
       this.#bus.on("route:changed", ({ route }) => this.#renderView(route));
       this.#bus.on("toast", ({ message }) => this.#toast.show(message));
@@ -17157,6 +17770,8 @@ This replaces your current grouping.`
       "debt",
       "debtPayment",
       "regularItem",
+      "settle",
+      "pauseDeliveries",
       "csv",
       "reconcile",
       "family",
@@ -17215,6 +17830,10 @@ This replaces your current grouping.`
      */
     get regularLogs() {
       return this.#regularLogs;
+    }
+    /** What's owed to vendors for pay-later regular items. */
+    get vendorDues() {
+      return this.#vendorDues;
     }
     /**
      * The category list a field should browse.
@@ -19599,13 +20218,13 @@ They stay in your ledger as ordinary transactions and your balances do not chang
         sharedOwnerId: accRef.ownerId || null,
         categoryId: data.categoryId || null,
         icon: data.icon || "coffee",
-        color: data.color || "#f97316",
-        frequency: data.frequency || "monthly"
+        color: data.color || "#f97316"
       };
       if (!payload.name) return this.#toast.show("Name is required");
-      if (id) {
-        const item = state.regularItems.find((i) => i.id === id);
-        if (item) Object.assign(item, payload);
+      const existing = id ? state.regularItems.find((i) => i.id === id) : null;
+      Object.assign(payload, this.#deliveryFields(fd, existing, payload));
+      if (existing) {
+        Object.assign(existing, payload);
       } else {
         state.regularItems.push({ id: IdGenerator.generate("ri"), ...payload });
       }
@@ -19614,6 +20233,37 @@ They stay in your ledger as ordinary transactions and your balances do not chang
       this.#render();
       this.#toast.show(id ? "Item updated" : "Item added");
       this.#sync.schedulePush?.();
+    }
+    /**
+     * The pay-later part of the item form: the usual pattern, who is paid, and
+     * — when the price changed — the price history, so days already delivered
+     * keep the price they had (see DeliveryPlan).
+     * @param {FormData} fd
+     * @param {object|null} existing  the item before this save
+     * @param {object} payload        name/price/currency already read
+     */
+    #deliveryFields(fd, existing, payload) {
+      const later = fd.get("pay") === "later";
+      if (!later) return { payLater: false, frequency: existing?.frequency || "monthly" };
+      const today = DateService.toIso(/* @__PURE__ */ new Date());
+      const days = fd.getAll("usualDays").map(Number).filter((d) => d >= 0 && d <= 6);
+      const trackFrom = DeliveryPlan.isIso(fd.get("trackFrom")) ? fd.get("trackFrom") : existing?.trackFrom || today;
+      const out = {
+        payLater: true,
+        frequency: "daily",
+        usualQty: Math.max(0, parseFloat(fd.get("usualQty")) || 0),
+        usualDays: days.length ? days : [...DeliveryPlan.ALL_DAYS],
+        unit: String(fd.get("unit") || "").trim().slice(0, 12),
+        vendor: String(fd.get("vendor") || "").trim().slice(0, 40),
+        trackFrom
+      };
+      if (existing?.payLater && existing.defaultAmount !== payload.defaultAmount) {
+        const from = DeliveryPlan.isIso(fd.get("priceFrom")) ? fd.get("priceFrom") : today;
+        out.prices = DeliveryPlan.withPrice(existing, payload.defaultAmount, from);
+      } else if (!existing?.payLater) {
+        out.prices = [];
+      }
+      return out;
     }
     deleteRegularItem(id) {
       const s = this.#store.getState();
@@ -19646,34 +20296,62 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
       const unitPrice = parseFloat(fd.get("unitPrice")) || 0;
       const currency = item.currency || s.user.homeCurrency;
       const unitMinor = this.#fx.toMinor(unitPrice, currency);
-      const totalMinor = Math.round(unitMinor * qty);
-      const ref = AccountRef.fromRecord(item);
-      if (ref.isShared) {
-        const share = this.#sync.shareByOwner?.(ref.ownerId);
-        if (!share?._ownerId) return this.#toast.show("Shared account not found");
+      const done = await this.#recordRegularEntry(item, {
+        date,
+        qty,
+        unitMinor,
+        amountMinor: Math.round(unitMinor * qty),
+        ref: AccountRef.fromRecord(item)
+      });
+      if (done) this.openModal("dayLogs", { date });
+    }
+    /**
+     * Records one expense entry for a regular item — a day's purchase, or a
+     * payment to the vendor. An account a family member shared sends it to the
+     * OWNER's book for approval (a local row would be orphaned there), with the
+     * rate relative to the owner's home currency since that's the book it's
+     * reported in (same rule as submitTx).
+     * @param {object} item
+     * @param {{date: string, qty: number, unitMinor: number, amountMinor: number, ref: AccountRef,
+     *          description?: string, payee?: string, note?: string, extra?: object}} e
+     * @returns {Promise<boolean>} false when it couldn't be recorded (a toast says why)
+     */
+    async #recordRegularEntry(item, e) {
+      const s = this.#store.getState();
+      const currency = item.currency || s.user.homeCurrency;
+      const base = {
+        id: IdGenerator.generate("tx"),
+        regularItemId: item.id,
+        date: e.date,
+        hijriDate: this.#hijri.toHijri(e.date),
+        amount: e.amountMinor,
+        unitAmount: e.unitMinor,
+        qty: e.qty,
+        currency,
+        description: e.description || item.name,
+        payee: e.payee || item.name,
+        note: e.note || "",
+        type: "expense",
+        categoryId: item.categoryId || null,
+        splits: null,
+        paymentType: "cash",
+        recurring: null,
+        recordState: "cleared",
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        ...e.extra || {}
+      };
+      if (e.ref.isShared) {
+        const share = this.#sync.shareByOwner?.(e.ref.ownerId);
+        if (!share?._ownerId) {
+          this.#toast.show("Shared account not found");
+          return false;
+        }
         const ownerHome = share.homeCurrency || s.user.homeCurrency;
         const tx2 = {
-          id: IdGenerator.generate("tx"),
-          regularItemId: itemId,
-          accountId: ref.accountId,
-          date,
-          hijriDate: this.#hijri.toHijri(date),
-          amount: totalMinor,
-          unitAmount: unitMinor,
-          qty,
-          currency,
+          ...base,
+          accountId: e.ref.accountId,
           exchangeRate: (RATES[currency] || 1) / (RATES[ownerHome] || 1),
-          refAmount: this.#fx.convert(totalMinor, currency, ownerHome),
-          description: item.name,
-          payee: item.name,
-          note: "",
-          type: "expense",
-          categoryId: item.categoryId || null,
-          splits: null,
-          paymentType: "cash",
-          recurring: null,
-          recordState: "cleared",
-          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+          refAmount: this.#fx.convert(e.amountMinor, currency, ownerHome),
           addedBy: this.#sync.currentUser?.email || null
         };
         try {
@@ -19682,40 +20360,132 @@ The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay 
           this.#sync.scheduleSharesRefresh?.(3e3);
           this.#sync.scheduleSharesRefresh?.(8e3);
         } catch (err) {
-          return this.#toast.show("Failed to submit: " + (err.message || err));
+          this.#toast.show("Failed to submit: " + (err.message || err));
+          return false;
         }
-        this.openModal("dayLogs", { date });
-        return;
+        return true;
       }
-      const accountId = item.accountId || s.accounts[0]?.id;
-      const exRate3 = (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1);
       const tx = {
-        id: IdGenerator.generate("tx"),
-        regularItemId: itemId,
-        accountId,
-        date,
-        hijriDate: this.#hijri.toHijri(date),
-        amount: totalMinor,
-        unitAmount: unitMinor,
-        qty,
-        currency,
-        exchangeRate: exRate3,
-        refAmount: this.#fx.convert(totalMinor, currency, s.user.homeCurrency),
-        description: item.name,
-        payee: item.name,
-        note: "",
-        type: "expense",
-        categoryId: item.categoryId || null,
-        splits: null,
-        paymentType: "cash",
-        recurring: null,
-        recordState: "cleared",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
+        ...base,
+        accountId: e.ref.accountId || item.accountId || s.accounts[0]?.id,
+        exchangeRate: (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1),
+        refAmount: this.#fx.convert(e.amountMinor, currency, s.user.homeCurrency)
       };
       s.transactions.push(tx);
       this.#store.flush();
       this.#sync.schedulePush?.();
-      this.openModal("dayLogs", { date });
+      return true;
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+    // Pay-later items: the usual pattern, exceptions, pauses, paying the vendor
+    // ──────────────────────────────────────────────────────────────────────────
+    /** An item of this book (never one seen in someone else's space). */
+    #ownItem(itemId) {
+      return (this.#store.getState().regularItems || []).find((i) => i.id === itemId) || null;
+    }
+    /** Saves a change to an item's delivery data and redraws. */
+    #saveDelivery(item, change, reopen) {
+      Object.assign(item, change);
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+      this.#render();
+      if (reopen) this.openModal(reopen.name, reopen.opts);
+    }
+    /** How many came on a day (0 = none). Paid days can't change. */
+    setDelivery(itemId, date, qty) {
+      const item = this.#ownItem(itemId);
+      if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
+      if (this.#vendorDues.isPaid(item, date)) return this.#toast.show("That day is already paid");
+      this.#saveDelivery(item, { marks: DeliveryPlan.withMark(item, date, qty) }, { name: "dayLogs", opts: { date } });
+    }
+    stepDelivery(itemId, date, delta) {
+      const item = this.#ownItem(itemId);
+      if (!item) return;
+      const now = new DeliveryPlan(item).qtyOn(date);
+      this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
+    }
+    resetDelivery(itemId, date) {
+      const item = this.#ownItem(itemId);
+      if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
+      this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: "dayLogs", opts: { date } });
+    }
+    submitPause(e, itemId) {
+      e.preventDefault();
+      const item = this.#ownItem(itemId);
+      const fd = new FormData(e.target);
+      if (!item) return;
+      item.pauses = DeliveryPlan.withPause(item, fd.get("from"), fd.get("to"));
+      this.#saveDelivery(item, {}, { name: "pauseDeliveries", opts: { itemId } });
+      this.#toast.show(`${item.name} paused`);
+    }
+    liftPause(itemId, from) {
+      const item = this.#ownItem(itemId);
+      if (!item) return;
+      this.#saveDelivery(item, { pauses: DeliveryPlan.withoutPause(item, from) }, { name: "pauseDeliveries", opts: { itemId } });
+    }
+    /**
+     * Pays a vendor: one expense per item for the days up to `upTo`, each
+     * marking the days it covers. Old marks are then trimmed (paid days are
+     * never edited again).
+     */
+    async submitSettle(e, vendor, upTo) {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const to = DeliveryPlan.isIso(fd.get("upTo")) ? fd.get("upTo") : upTo;
+      const paidOn = DeliveryPlan.isIso(fd.get("paidOn")) ? fd.get("paidOn") : VendorDues.today();
+      const ref = AccountRef.parse(fd.get("account"));
+      const group = this.#vendorDues.byVendor(to).find((g) => g.vendor.toLowerCase() === String(vendor).toLowerCase());
+      const open = (group?.lines || []).filter((l) => l.from && l.amount > 0);
+      if (!open.length) return this.#toast.show("Nothing owed");
+      let recorded = 0;
+      for (const l of open) {
+        const cur = l.item.currency || this.#store.getState().user.homeCurrency;
+        const typed = parseFloat(fd.get(`amount_${l.item.id}`));
+        const amount = Number.isFinite(typed) ? this.#fx.toMinor(typed, cur) : l.amount;
+        if (amount <= 0) continue;
+        const range = DeliveryPlan.rangeLabel(l.from, l.to);
+        const ok = await this.#recordRegularEntry(l.item, {
+          date: paidOn,
+          qty: l.qty,
+          unitMinor: l.qty ? Math.round(amount / l.qty) : amount,
+          amountMinor: amount,
+          ref,
+          description: `${l.item.name} \xB7 ${range}`,
+          payee: group.vendor,
+          note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? "" : "s"}`,
+          extra: { settles: { from: l.from, to: l.to, qty: l.qty } }
+        });
+        if (!ok) break;
+        recorded++;
+        const item = this.#ownItem(l.item.id);
+        if (item) item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+      }
+      if (!recorded) return;
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`Paid ${group.vendor} \xB7 up to ${DeliveryPlan.shortDate(to)}`);
+    }
+    /** The vendor's bill as text: the share sheet on phones, else copied. */
+    async shareStatement(vendor, upTo) {
+      const group = this.#vendorDues.byVendor(upTo || VendorDues.today()).find((g) => g.vendor.toLowerCase() === String(vendor).toLowerCase());
+      if (!group) return;
+      const text = VendorDues.statement(group, (m, c) => this.#fx.formatMoney(m, c || group.currency));
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: `${group.vendor} bill`, text });
+          return;
+        }
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+        this.#toast.show("Bill copied \u2014 paste it in WhatsApp");
+      } catch (_) {
+        this.#toast.show("Couldn't copy the bill");
+      }
     }
     async deleteRegularLog(logId, date) {
       const s = this.#store.getState();

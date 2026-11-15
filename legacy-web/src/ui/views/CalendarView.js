@@ -2,6 +2,7 @@
  * CalendarView — Regular purchases calendar with three sub-tabs:
  *   • grid     — calendar grid with dots/icons per day
  *   • summary  — monthly spend breakdown table
+ *   • dues     — what's owed to each vendor for pay-later items, with Pay and Bill
  *   • items    — list of configured regular-purchase items
  *
  * Supports Gregorian, Hijri, and "both" display modes.
@@ -9,11 +10,13 @@
 import { BaseView }          from './BaseView.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { DateService }          from '../../domain/services/DateService.js';
+import { DeliveryPlan }         from '../../domain/services/DeliveryPlan.js';
+import { Html }                 from '../../core/Html.js';
 
 export class CalendarView extends BaseView {
   /** @type {HijriCalendarService} */  #hijri;
   /** @type {string|null} */           #focus = null;   // ISO date of focused month
-  /** @type {string} */                #tab   = 'grid'; // 'grid' | 'summary' | 'items'
+  /** @type {string} */                #tab   = 'grid'; // 'grid' | 'dues' | 'summary' | 'items'
 
   constructor() {
     super();
@@ -79,13 +82,16 @@ export class CalendarView extends BaseView {
       <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
         <button onclick="window.__app.setCalTab('grid')"
                 class="px-3 py-2 text-sm ${this.#tab==='grid'?'border-b-2 border-zinc-900 dark:border-white font-medium':'text-zinc-500'}">Calendar</button>
+        ${!this.inGuestSpace && this.#tracked(state).length ? `<button onclick="window.__app.setCalTab('dues')"
+                class="px-3 py-2 text-sm ${this.#tab==='dues'?'border-b-2 border-zinc-900 dark:border-white font-medium':'text-zinc-500'}">Dues</button>` : ''}
         <button onclick="window.__app.setCalTab('summary')"
-                class="px-3 py-2 text-sm ${this.#tab==='summary'?'border-b-2 border-zinc-900 dark:border-white font-medium':'text-zinc-500'}">Monthly summary</button>
+                class="px-3 py-2 text-sm ${this.#tab==='summary'?'border-b-2 border-zinc-900 dark:border-white font-medium':'text-zinc-500'}">${this.#tracked(state).length && !this.inGuestSpace ? 'Summary' : 'Monthly summary'}</button>
         <button onclick="window.__app.setCalTab('items')"
                 class="px-3 py-2 text-sm ${this.#tab==='items'?'border-b-2 border-zinc-900 dark:border-white font-medium':'text-zinc-500'}">Items</button>
       </div>
 
       ${this.#tab === 'grid'    ? this.#renderGrid(state)    :
+        this.#tab === 'dues' && !this.inGuestSpace ? this.#renderDues(state) :
         this.#tab === 'summary' ? this.#renderSummary(state) :
                                   this.#renderItems(state)}
     `;
@@ -137,6 +143,9 @@ export class CalendarView extends BaseView {
         .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
     }
     while (cells.length % 7 !== 0) cells.push(null);
+    const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
+    const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr)
+      .reduce((sum, c) => sum + plans.reduce((t, p) => t + this.convert(Math.round(p.qtyOn(c.iso) * p.priceOn(c.iso)), p.item.currency || home, home), 0), 0) : 0;
 
     return `
       <div class="flex items-center justify-between mb-3">
@@ -150,7 +159,7 @@ export class CalendarView extends BaseView {
           </button>
           <button class="btn btn-ghost text-xs" onclick="window.__app.resetCalFocus()">Today</button>
         </div>
-        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? 'Hijri month' : 'month'}</div>
+        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? 'Hijri month' : 'month'}${plans.length ? ` · ${this.formatMoney(deliveryCost, home)} delivered` : ''}</div>
       </div>
 
       <div class="card p-2 md:p-3">
@@ -170,12 +179,14 @@ export class CalendarView extends BaseView {
               return it ? `<span title="${this.escapeHtml(it.name)}" class="inline-block rounded-full border border-white/60 dark:border-zinc-900" style="width:10px;height:10px;background:${it.color}"></span>` : '';
             }).join('');
             const primaryColor = firstItem ? firstItem.color : '';
+            const changed = plans.some((p) => p.stateOn(c.iso) === 'changed');
+            const paused  = !changed && plans.some((p) => p.stateOn(c.iso) === 'paused');
             return `
               <button onclick="window.__app.openModal('dayLogs',{date:'${c.iso}'})"
                       class="aspect-square rounded-lg flex flex-col items-stretch p-1 md:p-1.5 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 transition border ${isToday ? 'border-zinc-900 dark:border-white' : 'border-transparent'} ${logs.length ? 'bg-zinc-50 dark:bg-zinc-900' : ''}"
                       style="${logs.length && primaryColor ? `box-shadow: inset 0 -3px 0 0 ${primaryColor}` : ''}">
                 <div class="flex items-center justify-between leading-none">
-                  <span class="${isToday ? 'font-semibold' : ''} ${logs.length ? 'font-medium' : ''}">${c.primary}</span>
+                  <span class="${isToday ? 'font-semibold' : ''} ${logs.length ? 'font-medium' : ''}">${c.primary}${changed ? '<span class="cal-mark" title="A delivery was different"></span>' : paused ? '<span class="cal-mark cal-mark-paused" title="Deliveries paused"></span>' : ''}</span>
                   ${showBoth ? `<span class="text-[9px] text-zinc-500 truncate ml-1">${this.escapeHtml(c.secondary)}</span>` : ''}
                 </div>
                 ${firstItem ? `
@@ -303,12 +314,75 @@ export class CalendarView extends BaseView {
             </div>
             <div class="flex-1 min-w-0">
               <div class="font-medium truncate">${this.escapeHtml(it.name)}</div>
-              <div class="text-xs text-zinc-500 truncate">${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} default · ${it.currency || this.homeCurrency}</div>
+              <div class="text-xs text-zinc-500 truncate">${it.payLater
+                ? (() => { const p = new DeliveryPlan(it); return `${this.escapeHtml(p.qtyLabel(p.usualQty))} · ${p.daysLabel} · ${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} each · pay ${this.escapeHtml(p.vendor)} later`; })()
+                : `${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} default · ${it.currency || this.homeCurrency}`}</div>
             </div>
             <i data-lucide="chevron-right" class="text-zinc-400 flex-shrink-0"></i>
           </button>`).join('')}
       </div>`;
   }
+
+  /** What's owed to each vendor, with Pay, Bill and Pause. */
+  #renderDues(state) {
+    const dues = window.__app?.vendorDues;
+    const groups = dues ? dues.byVendor() : [];
+    if (!groups.length) {
+      return `<div class="card p-8 text-center">${this.emptyState('No pay-later items', 'Edit an item like milk or the newspaper and choose “Pay the vendor later”.')}</div>`;
+    }
+    const home = this.homeCurrency;
+    const owed = groups.reduce((t, g) => t + this.convert(g.amount, g.currency || home, home), 0);
+    const owing = groups.filter((g) => g.amount > 0).length;
+    return `
+      <div class="card p-4 mb-3 flex items-center justify-between">
+        <div><div class="text-xs text-zinc-500">Owed today</div><div class="text-2xl font-semibold">${this.formatMoney(owed, home)}</div></div>
+        <div class="text-xs text-zinc-500 text-right">${owing} vendor${owing === 1 ? '' : 's'} to pay<br>nothing is spent until you pay</div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        ${groups.map((g) => this.#vendorCard(g)).join('')}
+      </div>`;
+  }
+
+  #vendorCard(g) {
+    const vendorArg = Html.escape(JSON.stringify(g.vendor));
+    const cur = g.currency || this.homeCurrency;
+    const lines = g.lines.map((l) => {
+      const it = l.item;
+      const color = Html.color(it.color);
+      const pattern = `${l.plan.qtyLabel(l.plan.usualQty)} · ${l.plan.daysLabel}`;
+      return `
+        <div class="flex items-center gap-3 py-2">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:14px;height:14px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">${Html.escape(it.name)}</div>
+            <div class="text-xs text-zinc-500 truncate">${l.from ? `${DeliveryPlan.rangeLabel(l.from, l.to)} · ${Html.escape(l.plan.qtyLabel(l.qty))} on ${l.days} day${l.days === 1 ? '' : 's'}` : `Paid up · ${Html.escape(pattern)}`}</div>
+          </div>
+          <div class="text-right">
+            <div class="text-sm font-medium">${this.formatMoney(l.amount, it.currency || cur)}</div>
+            ${this.inGuestSpace ? '' : `<button class="text-[11px] text-zinc-500 underline" onclick="window.__app.openModal('pauseDeliveries',{itemId:'${Html.escape(it.id)}'})">Pause</button>`}
+          </div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="card p-4">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="font-semibold truncate">${Html.escape(g.vendor)}</div>
+            <div class="text-xs text-zinc-500">${g.lastPaid ? `Last paid ${this.formatMoney(g.lastPaid.amount, g.lastPaid.currency || cur)} on ${DeliveryPlan.shortDate(g.lastPaid.date, true)}` : 'Not paid yet'}</div>
+          </div>
+          <div class="text-right"><div class="text-xs text-zinc-500">Due</div><div class="text-lg font-semibold">${this.formatMoney(g.amount, cur)}</div></div>
+        </div>
+        <div class="divide-y divide-zinc-100 dark:divide-zinc-800 mt-2">${lines}</div>
+        ${this.inGuestSpace ? '' : `
+        <div class="flex gap-2 mt-3">
+          <button class="btn btn-primary flex-1 justify-center" ${g.amount > 0 ? '' : 'disabled'} onclick="window.__app.openModal('settle',{vendor:${vendorArg}})"><i data-lucide="check"></i> Pay</button>
+          <button class="btn btn-outline" ${g.amount > 0 ? '' : 'disabled'} onclick="window.__app.shareStatement(${vendorArg})"><i data-lucide="share-2"></i> Bill</button>
+        </div>`}
+      </div>`;
+  }
+
+  /** Pay-later items of the book on screen. */
+  #tracked(state) { return (state.regularItems || []).filter((i) => i.payLater === true); }
 
   // ── Helpers ───────────────────────────────────────────────────────────
 

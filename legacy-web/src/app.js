@@ -31,6 +31,8 @@ import { BudgetService }       from './domain/services/BudgetService.js';
 import { RecurringService }    from './domain/services/RecurringService.js';
 import { AccountRef }          from './domain/services/AccountRef.js';
 import { RegularLogService }   from './domain/services/RegularLogService.js';
+import { DeliveryPlan }        from './domain/services/DeliveryPlan.js';
+import { VendorDues }          from './domain/services/VendorDues.js';
 import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
@@ -86,6 +88,8 @@ import { ReconcileModal }   from './ui/modals/ReconcileModal.js';
 import { AuthModal }        from './ui/modals/AuthModal.js';
 import { RegularItemModal }     from './ui/modals/RegularItemModal.js';
 import { DayLogsModal }         from './ui/modals/DayLogsModal.js';
+import { SettleModal }          from './ui/modals/SettleModal.js';
+import { PauseDeliveriesModal } from './ui/modals/PauseDeliveriesModal.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
 import { PlanBanner }           from './ui/components/PlanBanner.js';
@@ -126,6 +130,7 @@ export class Application {
   /** @type {BudgetService}        */ #budgets;
   /** @type {RecurringService}     */ #recurring;
   /** @type {RegularLogService}    */ #regularLogs;
+  /** @type {VendorDues}           */ #vendorDues;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
@@ -208,6 +213,7 @@ export class Application {
     this.#budgets     = new BudgetService();
     this.#recurring   = new RecurringService();
     this.#regularLogs = new RegularLogService({ store: this.#store });
+    this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
     this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -345,6 +351,7 @@ export class Application {
       hijriService:       this.#hijri,
       currencyService:    this.#fx,
       regularLogService:  this.#regularLogs,
+      vendorDues:         this.#vendorDues,
     });
     this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
     this.#modal.register('transaction',  this.#txModal);
@@ -362,6 +369,8 @@ export class Application {
     this.#modal.register('regularItem',  new RegularItemModal());
     this.#modal.register('reconcile',    this.#reconcileModal);
     this.#modal.register('dayLogs',      this.#dayLogsModal);
+    this.#modal.register('settle',       new SettleModal({ dues: () => this.#vendorDues }));
+    this.#modal.register('pauseDeliveries', new PauseDeliveriesModal());
     this.#modal.register('currencySetup',this.#currencySetupModal);
 
     // 7. Subscribe to events
@@ -509,7 +518,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem',
+    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -573,6 +582,8 @@ export class Application {
    * @returns {RegularLogService}
    */
   get regularLogs() { return this.#regularLogs; }
+  /** What's owed to vendors for pay-later regular items. */
+  get vendorDues() { return this.#vendorDues; }
 
   /**
    * The category list a field should browse.
@@ -3138,14 +3149,15 @@ export class Application {
       categoryId:    data.categoryId || null,
       icon:          data.icon  || 'coffee',
       color:         data.color || '#f97316',
-      frequency:     data.frequency  || 'monthly',
     };
 
     if (!payload.name) return this.#toast.show('Name is required');
 
-    if (id) {
-      const item = state.regularItems.find((i) => i.id === id);
-      if (item) Object.assign(item, payload);
+    const existing = id ? state.regularItems.find((i) => i.id === id) : null;
+    Object.assign(payload, this.#deliveryFields(fd, existing, payload));
+
+    if (existing) {
+      Object.assign(existing, payload);
     } else {
       state.regularItems.push({ id: IdGenerator.generate('ri'), ...payload });
     }
@@ -3155,6 +3167,38 @@ export class Application {
     this.#render();
     this.#toast.show(id ? 'Item updated' : 'Item added');
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * The pay-later part of the item form: the usual pattern, who is paid, and
+   * — when the price changed — the price history, so days already delivered
+   * keep the price they had (see DeliveryPlan).
+   * @param {FormData} fd
+   * @param {object|null} existing  the item before this save
+   * @param {object} payload        name/price/currency already read
+   */
+  #deliveryFields(fd, existing, payload) {
+    const later = fd.get('pay') === 'later';
+    if (!later) return { payLater: false, frequency: existing?.frequency || 'monthly' };
+    const today = DateService.toIso(new Date());
+    const days = fd.getAll('usualDays').map(Number).filter((d) => d >= 0 && d <= 6);
+    const trackFrom = DeliveryPlan.isIso(fd.get('trackFrom')) ? fd.get('trackFrom') : (existing?.trackFrom || today);
+    const out = {
+      payLater:  true,
+      frequency: 'daily',
+      usualQty:  Math.max(0, parseFloat(fd.get('usualQty')) || 0),
+      usualDays: days.length ? days : [...DeliveryPlan.ALL_DAYS],
+      unit:      String(fd.get('unit') || '').trim().slice(0, 12),
+      vendor:    String(fd.get('vendor') || '').trim().slice(0, 40),
+      trackFrom,
+    };
+    if (existing?.payLater && existing.defaultAmount !== payload.defaultAmount) {
+      const from = DeliveryPlan.isIso(fd.get('priceFrom')) ? fd.get('priceFrom') : today;
+      out.prices = DeliveryPlan.withPrice(existing, payload.defaultAmount, from);
+    } else if (!existing?.payLater) {
+      out.prices = [];
+    }
+    return out;
   }
 
   deleteRegularItem(id) {
@@ -3199,40 +3243,58 @@ export class Application {
     const unitPrice = parseFloat(fd.get('unitPrice')) || 0;
     const currency = item.currency || s.user.homeCurrency;
     const unitMinor = this.#fx.toMinor(unitPrice, currency);
-    const totalMinor = Math.round(unitMinor * qty);
-    const ref = AccountRef.fromRecord(item);
+    const done = await this.#recordRegularEntry(item, {
+      date, qty, unitMinor, amountMinor: Math.round(unitMinor * qty), ref: AccountRef.fromRecord(item),
+    });
+    if (done) this.openModal('dayLogs', { date });
+  }
 
-    // ── Shared default account → contribute to the OWNER's book ───────────
-    // The account doesn't exist locally, so a local row would be orphaned. The
-    // rate/refAmount must also be relative to the OWNER's home currency, since
-    // that is the book the row is reported in (same rule as submitTx).
-    if (ref.isShared) {
-      const share = this.#sync.shareByOwner?.(ref.ownerId);
-      if (!share?._ownerId) return this.#toast.show('Shared account not found');
+  /**
+   * Records one expense entry for a regular item — a day's purchase, or a
+   * payment to the vendor. An account a family member shared sends it to the
+   * OWNER's book for approval (a local row would be orphaned there), with the
+   * rate relative to the owner's home currency since that's the book it's
+   * reported in (same rule as submitTx).
+   * @param {object} item
+   * @param {{date: string, qty: number, unitMinor: number, amountMinor: number, ref: AccountRef,
+   *          description?: string, payee?: string, note?: string, extra?: object}} e
+   * @returns {Promise<boolean>} false when it couldn't be recorded (a toast says why)
+   */
+  async #recordRegularEntry(item, e) {
+    const s = this.#store.getState();
+    const currency = item.currency || s.user.homeCurrency;
+    const base = {
+      id:            IdGenerator.generate('tx'),
+      regularItemId: item.id,
+      date:          e.date,
+      hijriDate:     this.#hijri.toHijri(e.date),
+      amount:        e.amountMinor,
+      unitAmount:    e.unitMinor,
+      qty:           e.qty,
+      currency,
+      description:   e.description || item.name,
+      payee:         e.payee || item.name,
+      note:          e.note || '',
+      type:          'expense',
+      categoryId:    item.categoryId || null,
+      splits:        null,
+      paymentType:   'cash',
+      recurring:     null,
+      recordState:   'cleared',
+      createdAt:     new Date().toISOString(),
+      ...(e.extra || {}),
+    };
+
+    if (e.ref.isShared) {
+      const share = this.#sync.shareByOwner?.(e.ref.ownerId);
+      if (!share?._ownerId) { this.#toast.show('Shared account not found'); return false; }
       const ownerHome = share.homeCurrency || s.user.homeCurrency;
       const tx = {
-        id:            IdGenerator.generate('tx'),
-        regularItemId: itemId,
-        accountId:     ref.accountId,
-        date,
-        hijriDate:     this.#hijri.toHijri(date),
-        amount:        totalMinor,
-        unitAmount:    unitMinor,
-        qty,
-        currency,
-        exchangeRate:  (RATES[currency] || 1) / (RATES[ownerHome] || 1),
-        refAmount:     this.#fx.convert(totalMinor, currency, ownerHome),
-        description:   item.name,
-        payee:         item.name,
-        note:          '',
-        type:          'expense',
-        categoryId:    item.categoryId || null,
-        splits:        null,
-        paymentType:   'cash',
-        recurring:     null,
-        recordState:   'cleared',
-        createdAt:     new Date().toISOString(),
-        addedBy:       this.#sync.currentUser?.email || null,
+        ...base,
+        accountId:    e.ref.accountId,
+        exchangeRate: (RATES[currency] || 1) / (RATES[ownerHome] || 1),
+        refAmount:    this.#fx.convert(e.amountMinor, currency, ownerHome),
+        addedBy:      this.#sync.currentUser?.email || null,
       };
       try {
         await this.#sync.submitContribution(share._ownerId, tx);
@@ -3240,41 +3302,137 @@ export class Application {
         this.#sync.scheduleSharesRefresh?.(3000);
         this.#sync.scheduleSharesRefresh?.(8000);
       } catch (err) {
-        return this.#toast.show('Failed to submit: ' + (err.message || err));
+        this.#toast.show('Failed to submit: ' + (err.message || err));
+        return false;
       }
-      this.openModal('dayLogs', { date });
-      return;
+      return true;
     }
 
-    const accountId = item.accountId || s.accounts[0]?.id;
-    const exRate3  = (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1);
     const tx = {
-      id: IdGenerator.generate('tx'),
-      regularItemId: itemId,
-      accountId,
-      date,
-      hijriDate:    this.#hijri.toHijri(date),
-      amount:       totalMinor,
-      unitAmount:   unitMinor,
-      qty,
-      currency,
-      exchangeRate: exRate3,
-      refAmount:    this.#fx.convert(totalMinor, currency, s.user.homeCurrency),
-      description:  item.name,
-      payee:        item.name,
-      note:         '',
-      type:         'expense',
-      categoryId:   item.categoryId || null,
-      splits:       null,
-      paymentType:  'cash',
-      recurring:    null,
-      recordState:  'cleared',
-      createdAt:    new Date().toISOString(),
+      ...base,
+      accountId:    e.ref.accountId || item.accountId || s.accounts[0]?.id,
+      exchangeRate: (RATES[currency] || 1) / (RATES[s.user.homeCurrency] || 1),
+      refAmount:    this.#fx.convert(e.amountMinor, currency, s.user.homeCurrency),
     };
     s.transactions.push(tx);
     this.#store.flush();
     this.#sync.schedulePush?.();
-    this.openModal('dayLogs', { date });
+    return true;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Pay-later items: the usual pattern, exceptions, pauses, paying the vendor
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** An item of this book (never one seen in someone else's space). */
+  #ownItem(itemId) {
+    return (this.#store.getState().regularItems || []).find((i) => i.id === itemId) || null;
+  }
+
+  /** Saves a change to an item's delivery data and redraws. */
+  #saveDelivery(item, change, reopen) {
+    Object.assign(item, change);
+    this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.#render();
+    if (reopen) this.openModal(reopen.name, reopen.opts);
+  }
+
+  /** How many came on a day (0 = none). Paid days can't change. */
+  setDelivery(itemId, date, qty) {
+    const item = this.#ownItem(itemId);
+    if (!item?.payLater || !DeliveryPlan.isIso(date)) return;
+    if (this.#vendorDues.isPaid(item, date)) return this.#toast.show('That day is already paid');
+    this.#saveDelivery(item, { marks: DeliveryPlan.withMark(item, date, qty) }, { name: 'dayLogs', opts: { date } });
+  }
+
+  stepDelivery(itemId, date, delta) {
+    const item = this.#ownItem(itemId);
+    if (!item) return;
+    const now = new DeliveryPlan(item).qtyOn(date);
+    this.setDelivery(itemId, date, Math.max(0, now + Number(delta)));
+  }
+
+  resetDelivery(itemId, date) {
+    const item = this.#ownItem(itemId);
+    if (!item?.payLater || this.#vendorDues.isPaid(item, date)) return;
+    this.#saveDelivery(item, { marks: DeliveryPlan.withoutMark(item, date) }, { name: 'dayLogs', opts: { date } });
+  }
+
+  submitPause(e, itemId) {
+    e.preventDefault();
+    const item = this.#ownItem(itemId);
+    const fd = new FormData(e.target);
+    if (!item) return;
+    item.pauses = DeliveryPlan.withPause(item, fd.get('from'), fd.get('to'));
+    this.#saveDelivery(item, {}, { name: 'pauseDeliveries', opts: { itemId } });
+    this.#toast.show(`${item.name} paused`);
+  }
+
+  liftPause(itemId, from) {
+    const item = this.#ownItem(itemId);
+    if (!item) return;
+    this.#saveDelivery(item, { pauses: DeliveryPlan.withoutPause(item, from) }, { name: 'pauseDeliveries', opts: { itemId } });
+  }
+
+  /**
+   * Pays a vendor: one expense per item for the days up to `upTo`, each
+   * marking the days it covers. Old marks are then trimmed (paid days are
+   * never edited again).
+   */
+  async submitSettle(e, vendor, upTo) {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const to = DeliveryPlan.isIso(fd.get('upTo')) ? fd.get('upTo') : upTo;
+    const paidOn = DeliveryPlan.isIso(fd.get('paidOn')) ? fd.get('paidOn') : VendorDues.today();
+    const ref = AccountRef.parse(fd.get('account'));
+    const group = this.#vendorDues.byVendor(to).find((g) => g.vendor.toLowerCase() === String(vendor).toLowerCase());
+    const open = (group?.lines || []).filter((l) => l.from && l.amount > 0);
+    if (!open.length) return this.#toast.show('Nothing owed');
+
+    let recorded = 0;
+    for (const l of open) {
+      const cur = l.item.currency || this.#store.getState().user.homeCurrency;
+      const typed = parseFloat(fd.get(`amount_${l.item.id}`));
+      const amount = Number.isFinite(typed) ? this.#fx.toMinor(typed, cur) : l.amount;
+      if (amount <= 0) continue;
+      const range = DeliveryPlan.rangeLabel(l.from, l.to);
+      const ok = await this.#recordRegularEntry(l.item, {
+        date: paidOn, qty: l.qty, unitMinor: l.qty ? Math.round(amount / l.qty) : amount, amountMinor: amount, ref,
+        description: `${l.item.name} · ${range}`, payee: group.vendor,
+        note: `Paid ${group.vendor}: ${l.plan.qtyLabel(l.qty)} on ${l.days} day${l.days === 1 ? '' : 's'}`,
+        extra: { settles: { from: l.from, to: l.to, qty: l.qty } },
+      });
+      if (!ok) break;
+      recorded++;
+      const item = this.#ownItem(l.item.id);
+      if (item) item.marks = DeliveryPlan.marksFrom(item.marks, DeliveryPlan.addDays(l.to, -120));
+    }
+    if (!recorded) return;
+    this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`Paid ${group.vendor} · up to ${DeliveryPlan.shortDate(to)}`);
+  }
+
+  /** The vendor's bill as text: the share sheet on phones, else copied. */
+  async shareStatement(vendor, upTo) {
+    const group = this.#vendorDues.byVendor(upTo || VendorDues.today())
+      .find((g) => g.vendor.toLowerCase() === String(vendor).toLowerCase());
+    if (!group) return;
+    const text = VendorDues.statement(group, (m, c) => this.#fx.formatMoney(m, c || group.currency));
+    try {
+      if (navigator.share) { await navigator.share({ title: `${group.vendor} bill`, text }); return; }
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      this.#toast.show('Bill copied — paste it in WhatsApp');
+    } catch (_) {
+      this.#toast.show('Couldn\'t copy the bill');
+    }
   }
 
   async deleteRegularLog(logId, date) {
