@@ -24,6 +24,12 @@
   .reveal.in{opacity:1;transform:none;}
   [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
   .grad-text{background:linear-gradient(90deg,#10b981,#0ea5e9 55%,#6366f1);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .phone{background:#18181b;padding:6px;border-radius:30px;box-shadow:0 25px 50px -12px rgba(24,24,27,.28);}
+  .phone img{display:block;width:100%;height:auto;border-radius:25px;background:#fafafa;}
+  .browser{background:#fff;border:1px solid #e4e4e7;border-radius:16px;overflow:hidden;box-shadow:0 25px 50px -12px rgba(24,24,27,.18);}
+  .browser-bar{display:flex;gap:6px;align-items:center;padding:10px 14px;border-bottom:1px solid #f0f0f2;background:#fafafa;}
+  .browser-bar span{width:10px;height:10px;border-radius:9999px;background:#e4e4e7;}
+  .browser img{display:block;width:100%;height:auto;}
   .card-soft{background:#fff;border:1px solid #ececef;border-radius:20px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
   .ring-dot{box-shadow:0 0 0 4px #fff;}
   #programme ul svg{flex-shrink:0}
@@ -42,23 +48,24 @@
       <div class="w-9 h-9 rounded-xl bg-zinc-900 text-white grid place-items-center font-bold">P</div>
       <span class="font-semibold tracking-tight text-lg">Pocket</span>
     </a>
-    <nav class="hidden lg:flex items-center gap-7 text-sm text-zinc-600">
+    <nav class="hidden lg:flex items-center gap-5 xl:gap-6 ml-8 text-sm text-zinc-600 whitespace-nowrap">
+      <a href="#tour" class="hover:text-zinc-900 transition">Tour</a>
       <a href="#features" class="hover:text-zinc-900 transition">Features</a>
       <a href="#telegram" class="hover:text-zinc-900 transition">Telegram</a>
-      <a href="#reports" class="hover:text-zinc-900 transition">Reports</a>
+      <a href="#reports" class="hidden xl:inline hover:text-zinc-900 transition">Reports</a>
       <a href="#investments" class="hover:text-zinc-900 transition">Investments</a>
       <a href="#pricing" class="hover:text-zinc-900 transition">Pricing</a>
-      <a href="#programme" class="hover:text-zinc-900 transition">Habit programme</a>
-      <a href="#open-source" class="hover:text-zinc-900 transition">Open source</a>
-      <a href="#privacy" class="hover:text-zinc-900 transition">Privacy</a>
+      <a href="#programme" class="hidden xl:inline hover:text-zinc-900 transition">Habit programme</a>
+      <a href="#open-source" class="hidden xl:inline hover:text-zinc-900 transition">Open source</a>
+      <a href="#privacy" class="hidden xl:inline hover:text-zinc-900 transition">Privacy</a>
     </nav>
     <div class="flex items-center gap-2">
       <a href="app.html#signin"
-         class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition">
+         class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition whitespace-nowrap">
         <i data-lucide="log-in"></i> Sign in
       </a>
       <a href="app.html"
-         class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition shadow-sm">
+         class="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition shadow-sm whitespace-nowrap">
         Go to app <i data-lucide="arrow-right"></i>
       </a>
     </div>
@@ -88,74 +95,22 @@
          class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition shadow-lg shadow-zinc-900/10">
         <i data-lucide="log-in"></i> Sign in
       </a>
-      <a href="app.html"
+      <a href="app.html?demo"
          class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 transition shadow-sm">
-        Go to app <i data-lucide="arrow-right"></i>
+        <i data-lucide="sparkles"></i> See it with sample data
       </a>
     </div>
-    <p class="mt-4 text-xs text-zinc-500">Sign in with Google · Free · Works on mobile & desktop</p>
+    <p class="mt-4 text-xs text-zinc-500">Sign in with Google · Free · Works on mobile & desktop · Look around first — no sign-in needed</p>
 
-    <!-- App preview mock -->
-    <div class="reveal mt-14 max-w-4xl mx-auto">
-      <div class="card-soft p-3 md:p-4">
-        <div class="rounded-2xl bg-gradient-to-b from-zinc-50 to-white border border-zinc-100 p-4 md:p-6 text-left">
-          <!-- top row -->
-          <div class="flex items-center justify-between mb-5">
-            <div>
-              <div class="text-xs uppercase tracking-wider text-zinc-400">Overview</div>
-              <div class="text-xl font-bold tracking-tight">Dashboard</div>
-            </div>
-            <span class="inline-flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full"><i data-lucide="cloud-check" style="width:14px;height:14px"></i> Synced</span>
-          </div>
-          <!-- stat cards -->
-          <div class="grid grid-cols-3 gap-3 mb-5">
-            <div class="rounded-xl bg-white border border-zinc-100 p-4">
-              <div class="text-[11px] text-zinc-400">Total balance</div>
-              <div class="text-lg md:text-2xl font-bold tracking-tight mt-1">$14,250</div>
-              <div class="text-[11px] text-zinc-400 mt-1">4 accounts · USD</div>
-            </div>
-            <div class="rounded-xl bg-white border border-zinc-100 p-4">
-              <div class="text-[11px] text-zinc-400 flex items-center gap-1"><i data-lucide="arrow-down-left" style="width:12px;height:12px;color:#10b981"></i> Income</div>
-              <div class="text-lg md:text-2xl font-bold text-emerald-500 mt-1">$5,800</div>
-            </div>
-            <div class="rounded-xl bg-white border border-zinc-100 p-4">
-              <div class="text-[11px] text-zinc-400 flex items-center gap-1"><i data-lucide="arrow-up-right" style="width:12px;height:12px;color:#f43f5e"></i> Expenses</div>
-              <div class="text-lg md:text-2xl font-bold text-rose-500 mt-1">$2,340</div>
-            </div>
-          </div>
-          <!-- chart + list -->
-          <div class="grid md:grid-cols-3 gap-3">
-            <div class="rounded-xl bg-white border border-zinc-100 p-4 flex flex-col items-center justify-center">
-              <div class="text-xs text-zinc-400 self-start mb-2">Top spending</div>
-              <!-- donut -->
-              <svg viewBox="0 0 36 36" class="w-28 h-28">
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f4f4f5" stroke-width="4"></circle>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f97316" stroke-width="4" stroke-dasharray="38 100" stroke-dashoffset="0" transform="rotate(-90 18 18)"></circle>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#3b82f6" stroke-width="4" stroke-dasharray="26 100" stroke-dashoffset="-38" transform="rotate(-90 18 18)"></circle>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#8b5cf6" stroke-width="4" stroke-dasharray="18 100" stroke-dashoffset="-64" transform="rotate(-90 18 18)"></circle>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" stroke-width="4" stroke-dasharray="18 100" stroke-dashoffset="-82" transform="rotate(-90 18 18)"></circle>
-              </svg>
-            </div>
-            <div class="md:col-span-2 rounded-xl bg-white border border-zinc-100 p-4">
-              <div class="text-xs text-zinc-400 mb-3">Recent transactions</div>
-              <div class="space-y-3">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#f9731622;color:#f97316"><i data-lucide="utensils" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Whole Foods</div><div class="text-[11px] text-zinc-400">Food & Drink · Main Checking</div></div></div>
-                  <div class="text-sm font-semibold text-rose-500">-$87.45</div>
-                </div>
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#22c55e22;color:#22c55e"><i data-lucide="banknote" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Acme Corp</div><div class="text-[11px] text-zinc-400">Salary · Main Checking</div></div></div>
-                  <div class="text-sm font-semibold text-emerald-500">+$5,800</div>
-                </div>
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-3"><span class="w-8 h-8 rounded-lg grid place-items-center" style="background:#3b82f622;color:#3b82f6"><i data-lucide="arrow-right-left" style="width:15px;height:15px"></i></span><div><div class="text-sm font-medium">Transfer → High-Yield Save</div><div class="text-[11px] text-zinc-400">€500 · cross-currency</div></div></div>
-                  <div class="text-sm font-semibold text-zinc-500">$540</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- The app itself (sample data; img/app is made by scripts/screenshots.mjs) -->
+    <div class="reveal mt-14 max-w-5xl mx-auto relative md:mb-12">
+      <a href="app.html?demo" class="block browser text-left" aria-label="Open the app with sample data">
+        <div class="browser-bar"><span></span><span></span><span></span><div class="ml-3 text-[11px] text-zinc-400">Pocket · Dashboard</div></div>
+        <img src="img/app/desktop-dashboard.webp" width="1280" height="820" alt="Pocket's dashboard: a low cash alert, an instalment due, the electricity bill coming up, and this month's income and spending">
+      </a>
+      <a href="app.html?demo=budgets" class="hidden md:block absolute -right-6 -bottom-10 w-[210px] phone" aria-label="Open Budgets with sample data">
+        <img src="img/app/budgets.webp" width="390" height="844" alt="Budgets on a phone: Shopping over its limit, a weekly eating-out budget">
+      </a>
     </div>
   </div>
 </section>
@@ -167,6 +122,125 @@
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">1 text</div><div class="text-xs text-zinc-500 mt-1">to log an expense on Telegram</div></div>
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">Real-time</div><div class="text-xs text-zinc-500 mt-1">family sync</div></div>
     <div class="reveal"><div class="text-2xl md:text-3xl font-extrabold tracking-tight">0 ads</div><div class="text-xs text-zinc-500 mt-1">your data stays yours</div></div>
+  </div>
+</section>
+
+<!-- ── Tour: the app itself (img/app is made by scripts/screenshots.mjs) ── -->
+<section id="tour" class="max-w-6xl mx-auto px-5 py-14 md:py-20">
+  <div class="text-center max-w-2xl mx-auto mb-14 reveal">
+    <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-emerald-600"><i data-lucide="smartphone" style="width:14px;height:14px"></i> Take a look</span>
+    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">This is the app — with a sample household’s six months</h2>
+    <p class="mt-4 text-zinc-600">Every picture is a real screen. Tap one, or open the app with the same sample data and look around — nothing is saved, and no sign-in is needed.</p>
+    <a href="app.html?demo" class="mt-6 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition"><i data-lucide="sparkles"></i> Open the app with sample data</a>
+  </div>
+  <div class="space-y-20 md:space-y-28">
+  <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
+    <div class="">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-emerald-600"><i data-lucide="target" style="width:14px;height:14px"></i> Budgets</span>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Budgets that look ahead, not just back</h3>
+      <p class="mt-2 text-zinc-600">Know before the month ends whether you’ll make it.</p>
+      <ul class="mt-5 space-y-3">
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="gauge" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">A mark on every bar shows where you’d be if you spent evenly — and about how much you can spend each day.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="receipt" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Bills and deliveries still to come show in the bar, so “₹5,000 left” means ₹5,000 is really free.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="calendar-range" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">By month, Hijri month, week or year — or set dates for a trip or a few special days.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="send" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">A Telegram message at 80%, at 100%, and when you’re spending faster than planned.</span></li>
+      </ul>
+      <a href="app.html?demo=budgets" class="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-zinc-900 underline underline-offset-4 hover:text-emerald-700">See this in the app with sample data <i data-lucide="arrow-right" style="width:15px;height:15px"></i></a>
+    </div>
+    <div class="flex justify-center gap-4 ">
+        <a href="app.html?demo=budgets" class="phone block w-[46%] max-w-[230px] " aria-label="Open this in the app with sample data">
+          <img src="img/app/budgets.webp" width="390" height="844" loading="lazy" alt="Budgets: Shopping over its limit, eating out this week, food on a faster pace than planned">
+        </a>
+        <a href="app.html?demo=budgets" class="phone block w-[46%] max-w-[230px] mt-10" aria-label="Open this in the app with sample data">
+          <img src="img/app/budget-detail.webp" width="390" height="844" loading="lazy" alt="One budget: spent, still to come, pace, and the six months before">
+        </a>
+    </div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
+    <div class="md:order-2">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-sky-600"><i data-lucide="repeat" style="width:14px;height:14px"></i> Regulars</span>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Bills, deliveries and the things you buy every day</h3>
+      <p class="mt-2 text-zinc-600">The money that goes out on its own, in one place.</p>
+      <ul class="mt-5 space-y-3">
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="zap" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Bills that change each month wait for you to enter the amount — with a reminder before they’re due.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="pause" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Pause the gym for a month, or anything that repeats, and resume when you’re back.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="milk" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Milk and the newspaper: mark the days, pause when you’re away, and pay the vendor exactly what’s owed.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="zap" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Shortcuts for chai or an auto: one tap and it’s logged.</span></li>
+      </ul>
+      <a href="app.html?demo=bills" class="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-zinc-900 underline underline-offset-4 hover:text-emerald-700">See this in the app with sample data <i data-lucide="arrow-right" style="width:15px;height:15px"></i></a>
+    </div>
+    <div class="flex justify-center gap-4 md:order-1">
+        <a href="app.html?demo=bills" class="phone block w-[46%] max-w-[230px] " aria-label="Open this in the app with sample data">
+          <img src="img/app/bills.webp" width="390" height="844" loading="lazy" alt="Bills: electricity due soon, salary, rent, a paused gym membership">
+        </a>
+        <a href="app.html?demo=deliveries" class="phone block w-[46%] max-w-[230px] mt-10" aria-label="Open this in the app with sample data">
+          <img src="img/app/deliveries.webp" width="390" height="844" loading="lazy" alt="Deliveries: what is owed to the milkman and the news agency this month">
+        </a>
+    </div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
+    <div class="">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-violet-600"><i data-lucide="hand-coins" style="width:14px;height:14px"></i> Debts & reimbursements</span>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Everything you owe — and everything owed to you</h3>
+      <p class="mt-2 text-zinc-600">One total, each with a Pay button.</p>
+      <ul class="mt-5 space-y-3">
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="credit-card" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Credit card: the bill, its due date, and what you’ve spent since the statement.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="calendar-check" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Loans paid back in monthly instalments: how many are paid, and when you’re behind.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="handshake" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Money you lent, with what came back.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="undo-2" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Expenses your office, insurer or a friend will pay back — grouped by claim, with what’s still to come.</span></li>
+      </ul>
+      <a href="app.html?demo=debts" class="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-zinc-900 underline underline-offset-4 hover:text-emerald-700">See this in the app with sample data <i data-lucide="arrow-right" style="width:15px;height:15px"></i></a>
+    </div>
+    <div class="flex justify-center gap-4 ">
+        <a href="app.html?demo=debts" class="phone block w-[46%] max-w-[230px] " aria-label="Open this in the app with sample data">
+          <img src="img/app/debts.webp" width="390" height="844" loading="lazy" alt="Debts: an instalment behind, the credit card bill, bills and deliveries to pay">
+        </a>
+        <a href="app.html?demo=debts" class="phone block w-[46%] max-w-[230px] mt-10" aria-label="Open this in the app with sample data">
+          <img src="img/app/reimbursements.webp" width="390" height="844" loading="lazy" alt="Owed to you: a friend’s loan and two claims waiting to be paid back">
+        </a>
+    </div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
+    <div class="md:order-2">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-orange-600"><i data-lucide="sparkles" style="width:14px;height:14px"></i> Habits</span>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">See your habits before they cost you</h3>
+      <p class="mt-2 text-zinc-600">Food delivery, cabs, chai — counted for you.</p>
+      <ul class="mt-5 space-y-3">
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="hash" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">How many times this month and how much, against last month.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="flag" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Set a limit — “10 deliveries a month” — and get a note as you get close.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="chart-column" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Six months at a glance, and which days of the week it happens most.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="lightbulb" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Pocket notices what you buy often and offers to track it.</span></li>
+      </ul>
+      <a href="app.html?demo=habits" class="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-zinc-900 underline underline-offset-4 hover:text-emerald-700">See this in the app with sample data <i data-lucide="arrow-right" style="width:15px;height:15px"></i></a>
+    </div>
+    <div class="flex justify-center gap-4 md:order-1">
+        <a href="app.html?demo=habits" class="phone block w-[62%] max-w-[270px]" aria-label="Open this in the app with sample data">
+          <img src="img/app/habits.webp" width="390" height="844" loading="lazy" alt="Habits: food delivery 6 of 10 times this month, with days and months">
+        </a>
+    </div>
+  </div>
+  <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
+    <div class="">
+      <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-teal-600"><i data-lucide="wallet" style="width:14px;height:14px"></i> Accounts</span>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Every account, every alert, on one screen</h3>
+      <p class="mt-2 text-zinc-600">Your Dashboard tells you what needs doing today.</p>
+      <ul class="mt-5 space-y-3">
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="triangle-alert" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">A warning when an account drops below the amount you set.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="bell" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Instalments, bills and vendors to pay — each with a Pay button.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="folder" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Group accounts, and leave out ones that aren’t yours, like office petty cash.</span></li>
+          <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="gem" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Gold, silver and shares counted at today’s price.</span></li>
+      </ul>
+      <a href="app.html?demo=accounts" class="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-zinc-900 underline underline-offset-4 hover:text-emerald-700">See this in the app with sample data <i data-lucide="arrow-right" style="width:15px;height:15px"></i></a>
+    </div>
+    <div class="flex justify-center gap-4 ">
+        <a href="app.html?demo=dashboard" class="phone block w-[46%] max-w-[230px] " aria-label="Open this in the app with sample data">
+          <img src="img/app/dashboard.webp" width="390" height="844" loading="lazy" alt="Dashboard: low cash, an instalment overdue, the electricity bill, money owed to vendors">
+        </a>
+        <a href="app.html?demo=accounts" class="phone block w-[46%] max-w-[230px] mt-10" aria-label="Open this in the app with sample data">
+          <img src="img/app/accounts.webp" width="390" height="844" loading="lazy" alt="Accounts in two groups, with a petty-cash account left out of totals">
+        </a>
+    </div>
+  </div>
   </div>
 </section>
 
@@ -290,37 +364,12 @@
 
   <div class="mt-12 grid md:grid-cols-2 gap-10 md:gap-14 items-center">
 
-    <!-- investments mock -->
+    <!-- investments: the real screen (sample data) -->
     <div class="reveal">
-      <div class="mx-auto max-w-sm rounded-[2rem] bg-zinc-900 p-2.5 shadow-2xl shadow-zinc-900/20">
-        <div class="rounded-[1.6rem] overflow-hidden bg-zinc-50 p-4 space-y-3 text-[13px]">
-          <div class="rounded-2xl bg-white p-4 shadow-sm">
-            <div class="text-[11px] text-zinc-500">Worth now</div>
-            <div class="text-2xl font-extrabold tracking-tight">₹4,82,600</div>
-            <div class="text-xs mt-0.5"><span class="text-zinc-500">Invested ₹4,26,470 ·</span> <span class="text-emerald-600 font-semibold">+₹56,130 (+13.2%)</span></div>
-          </div>
-          <div class="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs flex items-center gap-2">
-            <i data-lucide="trending-up" class="text-emerald-600" style="width:14px;height:14px"></i>
-            <span><b>22k gold</b> is up 20.4% — your alert is reached</span>
-          </div>
-          <div class="rounded-2xl bg-white p-3 shadow-sm flex items-center gap-3">
-            <span class="w-9 h-9 rounded-xl grid place-items-center" style="background:#f59e0b22;color:#d97706"><i data-lucide="gem" style="width:16px;height:16px"></i></span>
-            <div class="flex-1"><div class="font-semibold">22k gold</div><div class="text-[11px] text-zinc-500">25 g · avg ₹10,620 / g</div></div>
-            <div class="text-right"><div class="font-semibold">₹3,19,700</div><div class="text-[11px] text-emerald-600">+20.4%</div></div>
-          </div>
-          <div class="rounded-2xl bg-white p-3 shadow-sm flex items-center gap-3">
-            <span class="w-9 h-9 rounded-xl grid place-items-center" style="background:#94a3b822;color:#64748b"><i data-lucide="circle" style="width:16px;height:16px"></i></span>
-            <div class="flex-1"><div class="font-semibold">999 silver</div><div class="text-[11px] text-zinc-500">200 g · avg ₹172 / g</div></div>
-            <div class="text-right"><div class="font-semibold">₹39,000</div><div class="text-[11px] text-emerald-600">+13.4%</div></div>
-          </div>
-          <div class="rounded-2xl bg-white p-3 shadow-sm flex items-center gap-3">
-            <span class="w-9 h-9 rounded-xl grid place-items-center" style="background:#6366f122;color:#4f46e5"><i data-lucide="briefcase" style="width:16px;height:16px"></i></span>
-            <div class="flex-1"><div class="font-semibold">Tata Consultancy Services</div><div class="text-[11px] text-zinc-500">30 shares · TCS · dividends ₹1,650</div></div>
-            <div class="text-right"><div class="font-semibold">₹1,23,900</div><div class="text-[11px] text-rose-500">−2.1%</div></div>
-          </div>
-        </div>
-      </div>
-      <p class="mt-4 text-center text-xs text-zinc-500">Sample figures.</p>
+      <a href="app.html?demo=investments" class="phone block mx-auto max-w-[290px]" aria-label="Open Investments with sample data">
+        <img src="img/app/investments.webp" width="390" height="844" loading="lazy" alt="Investments: gold, silver and shares with worth, gain and average cost">
+      </a>
+      <p class="mt-4 text-center text-xs text-zinc-500"><a href="app.html?demo=investments" class="underline underline-offset-4 hover:text-zinc-900">See it in the app with sample data</a></p>
     </div>
 
     <!-- copy -->
@@ -444,6 +493,8 @@
                 <span class="rounded-lg bg-sky-50 py-1 text-center">Salary ›</span><span class="rounded-lg bg-sky-50 py-1 text-center">Business ›</span>
               </div>
             </div></div>
+            <!-- bot: a budget alert, sent on its own -->
+            <div class="flex justify-start"><div class="max-w-[85%] rounded-2xl rounded-bl-md bg-white px-3 py-2 shadow-sm">🟡 Food &amp; Drink budget: ₹16,400 of ₹20,000 used (82%) · ₹3,600 left for 9 days · November</div></div>
           </div>
           <div class="flex items-center gap-2 px-3 py-2.5 bg-white border-t border-zinc-200">
             <div class="flex-1 rounded-full bg-zinc-100 px-3 py-1.5 text-[12px] text-zinc-400">Message</div>
@@ -451,7 +502,7 @@
           </div>
         </div>
       </div>
-      <p class="mt-4 text-center text-xs text-zinc-500">Entries appear in the Pocket app straight away — on every device.</p>
+      <p class="mt-4 text-center text-xs text-zinc-500">Entries appear in the Pocket app straight away — on every device. Budget alerts and bill reminders come to you here too.</p>
     </div>
 
   </div>

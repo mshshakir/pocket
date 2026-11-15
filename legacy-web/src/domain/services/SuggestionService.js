@@ -68,6 +68,9 @@ export class SuggestionService {
     return out.sort((a, b) => b.days - a.days).slice(0, 2);
   }
 
+  /** How a payee is compared (also by habit suggestions): trimmed, lower case. */
+  static payeeKey(payee) { return SuggestionService.#key(payee); }
+
   /** The dismissal key for a suggestion. */
   static dismissKey(kind, payee) {
     return `${kind}:${SuggestionService.#key(payee)}`;

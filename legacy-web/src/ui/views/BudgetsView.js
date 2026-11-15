@@ -118,9 +118,6 @@ export class BudgetsView extends BaseView {
             <div class="flex items-center justify-between gap-2">
               <div class="font-semibold flex items-center gap-2 min-w-0">
                 <span class="truncate">${title}</span>
-                ${multi
-                  ? `<span class="chip flex-shrink-0" style="font-size:.65rem">${cats.length} categories</span>`
-                  : (hasSubs ? '<span class="chip flex-shrink-0" style="font-size:.65rem">incl. sub-categories</span>' : '')}
               </div>
               ${this.inGuestSpace ? '' : `
               <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.shareBudget('${this.jsArg(b.id)}')" title="Share this budget">
@@ -130,7 +127,7 @@ export class BudgetsView extends BaseView {
                 <i data-lucide="pencil"></i>
               </button>`}
             </div>
-            <div class="text-xs text-zinc-500">${periodLabel}${rollWord}</div>
+            <div class="text-xs text-zinc-500">${periodLabel}${rollWord}${multi ? ` · ${cats.length} categories` : hasSubs ? ' · incl. sub-categories' : ''}</div>
           </div>
         </div>
         <div class="mt-4">

@@ -34,6 +34,7 @@ import { DEFAULT_CATEGORIES } from './constants.js';
 import { IdGenerator } from '../domain/services/IdGenerator.js';
 import { DateService } from '../domain/services/DateService.js';
 import { BookCleaner } from '../domain/services/BookCleaner.js';
+import { SuggestionService } from '../domain/services/SuggestionService.js';
 
 export class SampleBook {
   static DAYS = 180;
@@ -69,8 +70,15 @@ export class SampleBook {
     const budgets = this.#budgets();
     const habits = this.#habits();
     const s = (list) => list.map((x) => BookCleaner.markSample(x));
+    const user = SampleBook.#user();
+    // Keep the screens tidy: the app's own suggestions for this made-up
+    // spending are already answered — except one habit suggestion (Amazon),
+    // so that feature still shows.
+    const payees = [...new Set(this.#tx.filter((t) => t.type === 'expense' && t.payee).map((t) => SuggestionService.payeeKey(t.payee)))];
+    user.dismissedSuggestions = payees.flatMap((k) => [`bill:${k}`, `delivery:${k}`]);
+    user.dismissedHabitSuggestions = payees.filter((k) => k !== 'amazon');
     return {
-      user: SampleBook.#user(),
+      user,
       accounts:           s(Object.values(this.#acc)),
       accountGroups:      s(groups),
       categories:         this.#cats,
@@ -192,8 +200,8 @@ export class SampleBook {
     for (const d of this.#days()) {
       const wd = SampleBook.#weekday(d);
       const thisMonth = d >= monthStart;
-      if (wd === 6) this.#add({ acc: this.#pick(['bank', 'card']), cat: 'Groceries', payee: this.#pick(['BigBasket', 'DMart', 'Reliance Fresh']), amount: this.#money(1800, 4200), date: d, note: 'Weekly groceries' });
-      if (this.#rand() < 0.36) this.#add({ acc: this.#pick(['bank', 'card']), cat: 'Eating out', payee: this.#pick(['Swiggy', 'Swiggy', 'Zomato']), amount: this.#money(280, 820), date: d });
+      if (wd === 6) this.#add({ acc: this.#pick(['bank', 'card']), cat: 'Groceries', payee: this.#pick(['BigBasket', 'DMart', 'Reliance Fresh']), amount: this.#money(1500, 3200), date: d, note: 'Weekly groceries' });
+      if (this.#rand() < 0.26) this.#add({ acc: this.#pick(['bank', 'card']), cat: 'Eating out', payee: this.#pick(['Swiggy', 'Swiggy', 'Zomato']), amount: this.#money(280, 820), date: d });
       if (wd !== 0 && this.#rand() < 0.55) this.#add({ acc: 'cash', cat: 'Food & Drink', payee: 'Chai', amount: 2000, date: d, pay: 'cash', regularItemId: this.#chaiId });
       if (this.#rand() < 0.22) this.#add({ acc: this.#pick(['cash', 'bank']), cat: 'Cabs & autos', payee: this.#pick(['Uber', 'Ola', 'Auto']), amount: this.#money(90, 520), date: d, pay: 'cash' });
       if (d.slice(8) === '08' || d.slice(8) === '22') this.#add({ acc: 'card', cat: 'Fuel', payee: 'Indian Oil', amount: this.#money(1800, 2600), date: d, pay: 'card' });
@@ -201,6 +209,10 @@ export class SampleBook {
       if (this.#rand() < 0.04) this.#add({ acc: 'bank', cat: 'Medicines', payee: 'Apollo Pharmacy', amount: this.#money(240, 1100), date: d });
       if (d.slice(8) === '12') this.#transfer('bank', 'cash', 150000, d, 'ATM withdrawal');
     }
+    // This month's shopping goes over its ₹6,000 budget, so that shows.
+    const second = SampleBook.#addDays(monthStart, 1);
+    if (second <= this.#today) this.#add({ acc: 'card', cat: 'Shopping', payee: 'Myntra', amount: 479900, date: second, pay: 'card', note: 'Winter jackets' });
+    this.#add({ acc: 'card', cat: 'Shopping', payee: 'Amazon', amount: 249900, date: this.#today, pay: 'card', note: 'Pressure cooker' });
     this.#add({ acc: 'bank', cat: 'Education', payee: 'Coursera', amount: 399900, date: this.#ago(70), note: 'Data course, 3 months' });
     this.#add({ acc: 'bank', cat: 'Education', payee: 'Crossword', amount: 128000, date: this.#ago(18), note: 'Two books' });
     this.#add({ acc: 'petty', cat: 'Food & Drink', payee: 'Office snacks', amount: 64000, date: this.#ago(6), pay: 'cash' });
@@ -415,11 +427,11 @@ export class SampleBook {
       amount, currency: 'INR', period, rollover: false, alerts: true, ...x });
     const tripStart = SampleBook.#addDays(this.#today, 12);
     return [
-      b(['Food & Drink'], 1800000, 'gregorian'),
+      b(['Food & Drink'], 2000000, 'gregorian'),
       b(['Shopping'], 600000, 'gregorian'),
       b(['Transport'], 900000, 'gregorian', { rollover: true, rolloverCap: 300000 }),
       b(['Bills'], 650000, 'gregorian'),
-      b(['Eating out'], 220000, 'week'),
+      b(['Eating out'], 260000, 'week'),
       b(['Education'], 2500000, 'year'),
       b(['Health'], 400000, 'hijri'),
       b(['Travel'], 4000000, 'range', { startDate: tripStart, endDate: SampleBook.#addDays(tripStart, 5) }),

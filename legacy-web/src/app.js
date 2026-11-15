@@ -13,6 +13,7 @@ import { Router }     from './core/Router.js';
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 import { SeedFactory } from './data/seed.js';
+import { DemoMode } from './core/DemoMode.js';
 import { BookCleaner } from './domain/services/BookCleaner.js';
 import { StateMigrator } from './data/StateMigrator.js';
 import {
@@ -473,6 +474,20 @@ export class Application {
     //    a book that belongs to an account waits on "Opening your book…")
     this.#render();
 
+    // 8b. Demo mode (app.html?demo): the sample book in memory only — cloud
+    //     sync never starts, so nothing is saved and no real book is touched.
+    if (DemoMode.active) {
+      this.#sessionChecked = true;
+      const start = DemoMode.start;
+      if (start) {
+        this.navigate(start.page);
+        if (start.tab && start.page === 'calendar') this.setCalTab(start.tab);
+        if (start.tab && start.page === 'reports') this.setReportTab(start.tab);
+      }
+      this.#render();
+      return;
+    }
+
     // 9. Init Supabase — restores session, pulls cloud data, then re-renders
     if (!this.#sync.init()) {
       this.#sessionChecked = true;
@@ -600,6 +615,8 @@ export class Application {
   ]);
 
   openModal(name, opts = {}) {
+    // In the demo, signing in means leaving it for the real app.
+    if (DemoMode.active && name === 'auth') { window.location.href = DemoMode.exitUrl('#signin'); return; }
     if (this.#lockState() && name !== 'auth') return; // the book stays closed until sign-in
     const space = this.#spaces?.active?.();
     if (space && !space.isHome && Application.#HOME_ONLY_MODALS.has(name)) {
@@ -5475,7 +5492,7 @@ export class Application {
     }
 
     const html = view.render?.() ?? '';
-    content.innerHTML = html;
+    content.innerHTML = (DemoMode.active ? DemoMode.bannerHtml() : '') + html;
     view.onAfterRender?.();
     lucide?.createIcons?.();
 

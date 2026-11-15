@@ -96,8 +96,79 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/core/DemoMode.js
+  var DemoMode = class _DemoMode {
+    /** Screens a link can open: menu pages, plus tabs inside two of them. */
+    static #TABS = Object.freeze({
+      bills: ["calendar", "bills"],
+      deliveries: ["calendar", "deliveries"],
+      shortcuts: ["calendar", "shortcuts"],
+      calendar: ["calendar", "grid"],
+      habits: ["reports", "habits"],
+      reports: ["reports", "overview"]
+    });
+    static #PAGES = Object.freeze(["dashboard", "transactions", "accounts", "budgets", "debts", "investments", "categories"]);
+    /** @type {Map<string, string>} */
+    static #memory = /* @__PURE__ */ new Map();
+    static get active() {
+      try {
+        return new URLSearchParams(globalThis.location?.search || "").has("demo");
+      } catch (_) {
+        return false;
+      }
+    }
+    /** The screen the link asked for: { page, tab? } or null. */
+    static get start() {
+      let want = "";
+      try {
+        want = (new URLSearchParams(globalThis.location?.search || "").get("demo") || "").toLowerCase().trim();
+      } catch (_) {
+      }
+      if (_DemoMode.#TABS[want]) return { page: _DemoMode.#TABS[want][0], tab: _DemoMode.#TABS[want][1] };
+      return _DemoMode.#PAGES.includes(want) ? { page: want, tab: null } : null;
+    }
+    /**
+     * A localStorage stand-in that forgets everything when the page closes —
+     * what Repository uses in demo mode.
+     */
+    static get storage() {
+      const m = _DemoMode.#memory;
+      return {
+        getItem: (k) => m.has(k) ? m.get(k) : null,
+        setItem: (k, v) => {
+          m.set(k, String(v));
+        },
+        removeItem: (k) => {
+          m.delete(k);
+        }
+      };
+    }
+    /** The real app (leaving the demo), optionally with a hash such as #signin. */
+    static exitUrl(hash = "") {
+      const path = globalThis.location?.pathname || "app.html";
+      return `${path}${hash}`;
+    }
+    /** The strip shown above every page in the demo. */
+    static bannerHtml() {
+      return `
+      <div class="demo-banner mb-4 rounded-xl px-4 py-3 flex flex-wrap items-center gap-3"
+           style="background:linear-gradient(90deg,#10b98118,#0ea5e918);border:1px solid #10b98140">
+        <i data-lucide="sparkles" style="width:18px;height:18px;color:#10b981"></i>
+        <div class="flex-1 min-w-[12rem] text-sm">
+          <b>You're looking at sample data.</b>
+          <span class="text-zinc-500">Tap around \u2014 nothing you change here is saved.</span>
+        </div>
+        <a class="btn btn-primary btn-sm" href="${_DemoMode.exitUrl("#signin")}">Start my own book</a>
+      </div>`;
+    }
+  };
+
   // src/core/Repository.js
   var Repository = class _Repository {
+    /** Where the book is kept: this device's localStorage, or memory only in demo mode. */
+    static get #ls() {
+      return DemoMode.active ? DemoMode.storage : localStorage;
+    }
     static #STORAGE_KEY = "pocket.v1";
     static #BACKUP_KEY = "pocket.v1.corrupt";
     /**
@@ -115,7 +186,7 @@ var _PocketApp = (() => {
     /** @returns {string|null} the owner recorded on the device right now (any tab may have written it) */
     static storedOwner() {
       try {
-        return localStorage.getItem(_Repository.#OWNER_KEY) || null;
+        return _Repository.#ls.getItem(_Repository.#OWNER_KEY) || null;
       } catch (_) {
         return null;
       }
@@ -127,7 +198,7 @@ var _PocketApp = (() => {
      */
     static storedBook() {
       try {
-        const raw = localStorage.getItem(_Repository.#STORAGE_KEY);
+        const raw = _Repository.#ls.getItem(_Repository.#STORAGE_KEY);
         return raw == null ? null : JSON.parse(raw);
       } catch (_) {
         return null;
@@ -161,12 +232,12 @@ var _PocketApp = (() => {
     }
     save(state) {
       try {
-        localStorage.setItem(
+        _Repository.#ls.setItem(
           _Repository.#STORAGE_KEY,
           JSON.stringify(_Repository.stripTransient(state))
         );
-        if (this.#owner) localStorage.setItem(_Repository.#OWNER_KEY, this.#owner);
-        else localStorage.removeItem(_Repository.#OWNER_KEY);
+        if (this.#owner) _Repository.#ls.setItem(_Repository.#OWNER_KEY, this.#owner);
+        else _Repository.#ls.removeItem(_Repository.#OWNER_KEY);
         return true;
       } catch (err) {
         console.error("[Repository] Failed to save state:", err);
@@ -179,7 +250,7 @@ var _PocketApp = (() => {
      */
     load() {
       this.lastLoadCorrupted = false;
-      const raw = localStorage.getItem(_Repository.#STORAGE_KEY);
+      const raw = _Repository.#ls.getItem(_Repository.#STORAGE_KEY);
       if (raw == null) return null;
       this.#owner = _Repository.storedOwner();
       try {
@@ -187,7 +258,7 @@ var _PocketApp = (() => {
       } catch (err) {
         console.error("[Repository] Corrupt persisted state \u2014 backed up to", _Repository.#BACKUP_KEY, err);
         try {
-          localStorage.setItem(_Repository.#BACKUP_KEY, raw);
+          _Repository.#ls.setItem(_Repository.#BACKUP_KEY, raw);
         } catch (_) {
         }
         this.lastLoadCorrupted = true;
@@ -198,9 +269,9 @@ var _PocketApp = (() => {
      * Wipe all persisted data (logout / reset).
      */
     clear() {
-      localStorage.removeItem(_Repository.#STORAGE_KEY);
+      _Repository.#ls.removeItem(_Repository.#STORAGE_KEY);
       try {
-        localStorage.removeItem(_Repository.#OWNER_KEY);
+        _Repository.#ls.removeItem(_Repository.#OWNER_KEY);
       } catch (_) {
       }
       this.#owner = null;
@@ -1124,6 +1195,132 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/SuggestionService.js
+  var SuggestionService = class _SuggestionService {
+    static BILL_MIN = 3;
+    static BILL_GAP = Object.freeze([25, 35]);
+    static BILL_LOOKBACK = 130;
+    static DAILY_WINDOW = 14;
+    static DAILY_MIN = 8;
+    /**
+     * @param {object} state
+     * @param {string} today YYYY-MM-DD
+     * @returns {{kind:'bill', payee:string, last:object, amount:number, changes:boolean, count:number}[]}
+     */
+    static bills(state, today) {
+      const since = _SuggestionService.#addDays(today, -_SuggestionService.BILL_LOOKBACK);
+      const repeating = _SuggestionService.#repeatingPayees(state);
+      const out = [];
+      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
+        if (repeating.has(key) || _SuggestionService.#dismissed(state, "bill", key)) continue;
+        const months = _SuggestionService.#monthlyRun(list);
+        if (months.length < _SuggestionService.BILL_MIN) continue;
+        const last = months[months.length - 1];
+        if (_SuggestionService.#daysBetween(last.date, today) > _SuggestionService.BILL_GAP[1] + 5) continue;
+        out.push({
+          kind: "bill",
+          payee: last.payee.trim(),
+          last,
+          amount: last.amount,
+          count: months.length,
+          changes: new Set(months.map((t) => t.amount)).size > 1
+        });
+      }
+      return out.sort((a, b) => b.count - a.count).slice(0, 2);
+    }
+    /**
+     * @param {object} state
+     * @param {string} today YYYY-MM-DD
+     * @returns {{kind:'delivery', payee:string, amount:number, currency:string, accountId:string, categoryId:string|null, days:number}[]}
+     */
+    static deliveries(state, today) {
+      const since = _SuggestionService.#addDays(today, -(_SuggestionService.DAILY_WINDOW - 1));
+      const have = new Set((state.regularItems || []).filter((i) => i.payLater === true).map((i) => _SuggestionService.#key(i.name)));
+      const out = [];
+      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
+        if (have.has(key) || _SuggestionService.#dismissed(state, "delivery", key)) continue;
+        const days = new Set(list.map((t) => t.date)).size;
+        if (days < _SuggestionService.DAILY_MIN) continue;
+        const last = list[list.length - 1];
+        out.push({
+          kind: "delivery",
+          payee: last.payee.trim(),
+          days,
+          amount: _SuggestionService.#mode(list.map((t) => t.amount)),
+          currency: _SuggestionService.#mode(list.map((t) => t.currency)),
+          accountId: _SuggestionService.#mode(list.map((t) => t.accountId)),
+          categoryId: _SuggestionService.#mode(list.map((t) => t.categoryId).filter(Boolean)) ?? null
+        });
+      }
+      return out.sort((a, b) => b.days - a.days).slice(0, 2);
+    }
+    /** How a payee is compared (also by habit suggestions): trimmed, lower case. */
+    static payeeKey(payee) {
+      return _SuggestionService.#key(payee);
+    }
+    /** The dismissal key for a suggestion. */
+    static dismissKey(kind, payee) {
+      return `${kind}:${_SuggestionService.#key(payee)}`;
+    }
+    // ── helpers ──────────────────────────────────────────────────────────────
+    /** Plain expenses (not repeats, not from shortcuts or vendor payments), by payee, oldest first. */
+    static #byPayee(state, since, today) {
+      const groups = /* @__PURE__ */ new Map();
+      for (const t of state.transactions || []) {
+        if (t.type !== "expense" || !t.payee || t.date < since || t.date > today) continue;
+        if (t.recurring || t.recurringSourceId || t.regularItemId || t.settles || t.billOf) continue;
+        const key = _SuggestionService.#key(t.payee);
+        if (!key) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+      }
+      for (const list of groups.values()) list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      return groups;
+    }
+    /** Payees that already repeat (a template, or a copy of one). */
+    static #repeatingPayees(state) {
+      return new Set((state.transactions || []).filter((t) => t.payee && (t.recurring || t.recurringSourceId)).map((t) => _SuggestionService.#key(t.payee)));
+    }
+    /** The longest run ending at the latest entry where each is 25–35 days after the one before (one per month). */
+    static #monthlyRun(list) {
+      const [lo, hi] = _SuggestionService.BILL_GAP;
+      const run = [list[list.length - 1]];
+      for (let i = list.length - 2; i >= 0; i--) {
+        const gap = _SuggestionService.#daysBetween(list[i].date, run[0].date);
+        if (gap < lo) continue;
+        if (gap > hi) break;
+        run.unshift(list[i]);
+      }
+      return run;
+    }
+    static #dismissed(state, kind, key) {
+      return (state.user?.dismissedSuggestions || []).includes(`${kind}:${key}`);
+    }
+    static #key(s) {
+      return String(s || "").trim().toLowerCase();
+    }
+    static #mode(values) {
+      const counts = /* @__PURE__ */ new Map();
+      let best = null, bestN = 0;
+      for (const v of values) {
+        const n = (counts.get(v) || 0) + 1;
+        counts.set(v, n);
+        if (n >= bestN) {
+          best = v;
+          bestN = n;
+        }
+      }
+      return best;
+    }
+    static #daysBetween(a, b) {
+      return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+  };
+
   // src/data/SampleBook.js
   var SampleBook = class _SampleBook {
     static DAYS = 180;
@@ -1162,8 +1359,12 @@ var _PocketApp = (() => {
       const budgets = this.#budgets();
       const habits = this.#habits();
       const s = (list) => list.map((x) => BookCleaner.markSample(x));
+      const user = _SampleBook.#user();
+      const payees = [...new Set(this.#tx.filter((t) => t.type === "expense" && t.payee).map((t) => SuggestionService.payeeKey(t.payee)))];
+      user.dismissedSuggestions = payees.flatMap((k) => [`bill:${k}`, `delivery:${k}`]);
+      user.dismissedHabitSuggestions = payees.filter((k) => k !== "amazon");
       return {
-        user: _SampleBook.#user(),
+        user,
         accounts: s(Object.values(this.#acc)),
         accountGroups: s(groups),
         categories: this.#cats,
@@ -1289,8 +1490,8 @@ var _PocketApp = (() => {
       for (const d of this.#days()) {
         const wd = _SampleBook.#weekday(d);
         const thisMonth = d >= monthStart;
-        if (wd === 6) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Groceries", payee: this.#pick(["BigBasket", "DMart", "Reliance Fresh"]), amount: this.#money(1800, 4200), date: d, note: "Weekly groceries" });
-        if (this.#rand() < 0.36) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Eating out", payee: this.#pick(["Swiggy", "Swiggy", "Zomato"]), amount: this.#money(280, 820), date: d });
+        if (wd === 6) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Groceries", payee: this.#pick(["BigBasket", "DMart", "Reliance Fresh"]), amount: this.#money(1500, 3200), date: d, note: "Weekly groceries" });
+        if (this.#rand() < 0.26) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Eating out", payee: this.#pick(["Swiggy", "Swiggy", "Zomato"]), amount: this.#money(280, 820), date: d });
         if (wd !== 0 && this.#rand() < 0.55) this.#add({ acc: "cash", cat: "Food & Drink", payee: "Chai", amount: 2e3, date: d, pay: "cash", regularItemId: this.#chaiId });
         if (this.#rand() < 0.22) this.#add({ acc: this.#pick(["cash", "bank"]), cat: "Cabs & autos", payee: this.#pick(["Uber", "Ola", "Auto"]), amount: this.#money(90, 520), date: d, pay: "cash" });
         if (d.slice(8) === "08" || d.slice(8) === "22") this.#add({ acc: "card", cat: "Fuel", payee: "Indian Oil", amount: this.#money(1800, 2600), date: d, pay: "card" });
@@ -1298,6 +1499,9 @@ var _PocketApp = (() => {
         if (this.#rand() < 0.04) this.#add({ acc: "bank", cat: "Medicines", payee: "Apollo Pharmacy", amount: this.#money(240, 1100), date: d });
         if (d.slice(8) === "12") this.#transfer("bank", "cash", 15e4, d, "ATM withdrawal");
       }
+      const second = _SampleBook.#addDays(monthStart, 1);
+      if (second <= this.#today) this.#add({ acc: "card", cat: "Shopping", payee: "Myntra", amount: 479900, date: second, pay: "card", note: "Winter jackets" });
+      this.#add({ acc: "card", cat: "Shopping", payee: "Amazon", amount: 249900, date: this.#today, pay: "card", note: "Pressure cooker" });
       this.#add({ acc: "bank", cat: "Education", payee: "Coursera", amount: 399900, date: this.#ago(70), note: "Data course, 3 months" });
       this.#add({ acc: "bank", cat: "Education", payee: "Crossword", amount: 128e3, date: this.#ago(18), note: "Two books" });
       this.#add({ acc: "petty", cat: "Food & Drink", payee: "Office snacks", amount: 64e3, date: this.#ago(6), pay: "cash" });
@@ -1598,11 +1802,11 @@ var _PocketApp = (() => {
       });
       const tripStart = _SampleBook.#addDays(this.#today, 12);
       return [
-        b(["Food & Drink"], 18e5, "gregorian"),
+        b(["Food & Drink"], 2e6, "gregorian"),
         b(["Shopping"], 6e5, "gregorian"),
         b(["Transport"], 9e5, "gregorian", { rollover: true, rolloverCap: 3e5 }),
         b(["Bills"], 65e4, "gregorian"),
-        b(["Eating out"], 22e4, "week"),
+        b(["Eating out"], 26e4, "week"),
         b(["Education"], 25e5, "year"),
         b(["Health"], 4e5, "hijri"),
         b(["Travel"], 4e6, "range", { startDate: tripStart, endDate: _SampleBook.#addDays(tripStart, 5) })
@@ -14957,7 +15161,6 @@ This replaces your current grouping.`
             <div class="flex items-center justify-between gap-2">
               <div class="font-semibold flex items-center gap-2 min-w-0">
                 <span class="truncate">${title}</span>
-                ${multi ? `<span class="chip flex-shrink-0" style="font-size:.65rem">${cats.length} categories</span>` : hasSubs ? '<span class="chip flex-shrink-0" style="font-size:.65rem">incl. sub-categories</span>' : ""}
               </div>
               ${this.inGuestSpace ? "" : `
               <button class="btn btn-ghost flex-shrink-0" onclick="event.stopPropagation(); window.__app.shareBudget('${this.jsArg(b.id)}')" title="Share this budget">
@@ -14967,7 +15170,7 @@ This replaces your current grouping.`
                 <i data-lucide="pencil"></i>
               </button>`}
             </div>
-            <div class="text-xs text-zinc-500">${periodLabel}${rollWord}</div>
+            <div class="text-xs text-zinc-500">${periodLabel}${rollWord}${multi ? ` \xB7 ${cats.length} categories` : hasSubs ? " \xB7 incl. sub-categories" : ""}</div>
           </div>
         </div>
         <div class="mt-4">
@@ -16733,128 +16936,6 @@ This replaces your current grouping.`
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
-    }
-  };
-
-  // src/domain/services/SuggestionService.js
-  var SuggestionService = class _SuggestionService {
-    static BILL_MIN = 3;
-    static BILL_GAP = Object.freeze([25, 35]);
-    static BILL_LOOKBACK = 130;
-    static DAILY_WINDOW = 14;
-    static DAILY_MIN = 8;
-    /**
-     * @param {object} state
-     * @param {string} today YYYY-MM-DD
-     * @returns {{kind:'bill', payee:string, last:object, amount:number, changes:boolean, count:number}[]}
-     */
-    static bills(state, today) {
-      const since = _SuggestionService.#addDays(today, -_SuggestionService.BILL_LOOKBACK);
-      const repeating = _SuggestionService.#repeatingPayees(state);
-      const out = [];
-      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
-        if (repeating.has(key) || _SuggestionService.#dismissed(state, "bill", key)) continue;
-        const months = _SuggestionService.#monthlyRun(list);
-        if (months.length < _SuggestionService.BILL_MIN) continue;
-        const last = months[months.length - 1];
-        if (_SuggestionService.#daysBetween(last.date, today) > _SuggestionService.BILL_GAP[1] + 5) continue;
-        out.push({
-          kind: "bill",
-          payee: last.payee.trim(),
-          last,
-          amount: last.amount,
-          count: months.length,
-          changes: new Set(months.map((t) => t.amount)).size > 1
-        });
-      }
-      return out.sort((a, b) => b.count - a.count).slice(0, 2);
-    }
-    /**
-     * @param {object} state
-     * @param {string} today YYYY-MM-DD
-     * @returns {{kind:'delivery', payee:string, amount:number, currency:string, accountId:string, categoryId:string|null, days:number}[]}
-     */
-    static deliveries(state, today) {
-      const since = _SuggestionService.#addDays(today, -(_SuggestionService.DAILY_WINDOW - 1));
-      const have = new Set((state.regularItems || []).filter((i) => i.payLater === true).map((i) => _SuggestionService.#key(i.name)));
-      const out = [];
-      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
-        if (have.has(key) || _SuggestionService.#dismissed(state, "delivery", key)) continue;
-        const days = new Set(list.map((t) => t.date)).size;
-        if (days < _SuggestionService.DAILY_MIN) continue;
-        const last = list[list.length - 1];
-        out.push({
-          kind: "delivery",
-          payee: last.payee.trim(),
-          days,
-          amount: _SuggestionService.#mode(list.map((t) => t.amount)),
-          currency: _SuggestionService.#mode(list.map((t) => t.currency)),
-          accountId: _SuggestionService.#mode(list.map((t) => t.accountId)),
-          categoryId: _SuggestionService.#mode(list.map((t) => t.categoryId).filter(Boolean)) ?? null
-        });
-      }
-      return out.sort((a, b) => b.days - a.days).slice(0, 2);
-    }
-    /** The dismissal key for a suggestion. */
-    static dismissKey(kind, payee) {
-      return `${kind}:${_SuggestionService.#key(payee)}`;
-    }
-    // ── helpers ──────────────────────────────────────────────────────────────
-    /** Plain expenses (not repeats, not from shortcuts or vendor payments), by payee, oldest first. */
-    static #byPayee(state, since, today) {
-      const groups = /* @__PURE__ */ new Map();
-      for (const t of state.transactions || []) {
-        if (t.type !== "expense" || !t.payee || t.date < since || t.date > today) continue;
-        if (t.recurring || t.recurringSourceId || t.regularItemId || t.settles || t.billOf) continue;
-        const key = _SuggestionService.#key(t.payee);
-        if (!key) continue;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(t);
-      }
-      for (const list of groups.values()) list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
-      return groups;
-    }
-    /** Payees that already repeat (a template, or a copy of one). */
-    static #repeatingPayees(state) {
-      return new Set((state.transactions || []).filter((t) => t.payee && (t.recurring || t.recurringSourceId)).map((t) => _SuggestionService.#key(t.payee)));
-    }
-    /** The longest run ending at the latest entry where each is 25–35 days after the one before (one per month). */
-    static #monthlyRun(list) {
-      const [lo, hi] = _SuggestionService.BILL_GAP;
-      const run = [list[list.length - 1]];
-      for (let i = list.length - 2; i >= 0; i--) {
-        const gap = _SuggestionService.#daysBetween(list[i].date, run[0].date);
-        if (gap < lo) continue;
-        if (gap > hi) break;
-        run.unshift(list[i]);
-      }
-      return run;
-    }
-    static #dismissed(state, kind, key) {
-      return (state.user?.dismissedSuggestions || []).includes(`${kind}:${key}`);
-    }
-    static #key(s) {
-      return String(s || "").trim().toLowerCase();
-    }
-    static #mode(values) {
-      const counts = /* @__PURE__ */ new Map();
-      let best = null, bestN = 0;
-      for (const v of values) {
-        const n = (counts.get(v) || 0) + 1;
-        counts.set(v, n);
-        if (n >= bestN) {
-          best = v;
-          bestN = n;
-        }
-      }
-      return best;
-    }
-    static #daysBetween(a, b) {
-      return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
-    }
-    static #addDays(iso, n) {
-      const [y, m, d] = iso.split("-").map(Number);
-      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
     }
   };
 
@@ -23725,6 +23806,17 @@ This replaces your current grouping.`
         this.#render();
       });
       this.#render();
+      if (DemoMode.active) {
+        this.#sessionChecked = true;
+        const start = DemoMode.start;
+        if (start) {
+          this.navigate(start.page);
+          if (start.tab && start.page === "calendar") this.setCalTab(start.tab);
+          if (start.tab && start.page === "reports") this.setReportTab(start.tab);
+        }
+        this.#render();
+        return;
+      }
       if (!this.#sync.init()) {
         this.#sessionChecked = true;
         this.#render();
@@ -23849,6 +23941,10 @@ This replaces your current grouping.`
       "currencySetup"
     ]);
     openModal(name, opts = {}) {
+      if (DemoMode.active && name === "auth") {
+        window.location.href = DemoMode.exitUrl("#signin");
+        return;
+      }
       if (this.#lockState() && name !== "auth") return;
       const space = this.#spaces?.active?.();
       if (space && !space.isHome && _Application.#HOME_ONLY_MODALS.has(name)) {
@@ -28572,7 +28668,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }
       }
       const html = view.render?.() ?? "";
-      content.innerHTML = html;
+      content.innerHTML = (DemoMode.active ? DemoMode.bannerHtml() : "") + html;
       view.onAfterRender?.();
       lucide?.createIcons?.();
       if (focusKey) {

@@ -2,9 +2,16 @@
  * Repository — Persistence abstraction over localStorage.
  *
  * Isolates storage mechanics so they can be swapped (e.g. IndexedDB,
- * server-side) without touching any domain or UI code.
+ * server-side) without touching any domain or UI code. In demo mode
+ * (DemoMode) the book lives in memory only, so the device's saved book is
+ * never read or written.
  */
+import { DemoMode } from './DemoMode.js';
+
 export class Repository {
+  /** Where the book is kept: this device's localStorage, or memory only in demo mode. */
+  static get #ls() { return DemoMode.active ? DemoMode.storage : localStorage; }
+
   static #STORAGE_KEY = 'pocket.v1';
   static #BACKUP_KEY  = 'pocket.v1.corrupt';
   /**
@@ -24,7 +31,7 @@ export class Repository {
 
   /** @returns {string|null} the owner recorded on the device right now (any tab may have written it) */
   static storedOwner() {
-    try { return localStorage.getItem(Repository.#OWNER_KEY) || null; } catch (_) { return null; }
+    try { return Repository.#ls.getItem(Repository.#OWNER_KEY) || null; } catch (_) { return null; }
   }
 
   /**
@@ -34,7 +41,7 @@ export class Repository {
    */
   static storedBook() {
     try {
-      const raw = localStorage.getItem(Repository.#STORAGE_KEY);
+      const raw = Repository.#ls.getItem(Repository.#STORAGE_KEY);
       return raw == null ? null : JSON.parse(raw);
     } catch (_) { return null; }
   }
@@ -66,12 +73,12 @@ export class Repository {
 
   save(state) {
     try {
-      localStorage.setItem(
+      Repository.#ls.setItem(
         Repository.#STORAGE_KEY,
         JSON.stringify(Repository.stripTransient(state)),
       );
-      if (this.#owner) localStorage.setItem(Repository.#OWNER_KEY, this.#owner);
-      else localStorage.removeItem(Repository.#OWNER_KEY);
+      if (this.#owner) Repository.#ls.setItem(Repository.#OWNER_KEY, this.#owner);
+      else Repository.#ls.removeItem(Repository.#OWNER_KEY);
       return true;
     } catch (err) {
       console.error('[Repository] Failed to save state:', err);
@@ -85,7 +92,7 @@ export class Repository {
    */
   load() {
     this.lastLoadCorrupted = false;
-    const raw = localStorage.getItem(Repository.#STORAGE_KEY);
+    const raw = Repository.#ls.getItem(Repository.#STORAGE_KEY);
     if (raw == null) return null; // genuinely empty → seeding fresh is correct
     this.#owner = Repository.storedOwner();
 
@@ -96,7 +103,7 @@ export class Repository {
       // backup key for manual recovery and flag the corruption so the caller can
       // warn the user instead of overwriting good cloud data with seed state.
       console.error('[Repository] Corrupt persisted state — backed up to', Repository.#BACKUP_KEY, err);
-      try { localStorage.setItem(Repository.#BACKUP_KEY, raw); } catch (_) {}
+      try { Repository.#ls.setItem(Repository.#BACKUP_KEY, raw); } catch (_) {}
       this.lastLoadCorrupted = true;
       return null;
     }
@@ -106,8 +113,8 @@ export class Repository {
    * Wipe all persisted data (logout / reset).
    */
   clear() {
-    localStorage.removeItem(Repository.#STORAGE_KEY);
-    try { localStorage.removeItem(Repository.#OWNER_KEY); } catch (_) { /* private mode */ }
+    Repository.#ls.removeItem(Repository.#STORAGE_KEY);
+    try { Repository.#ls.removeItem(Repository.#OWNER_KEY); } catch (_) { /* private mode */ }
     this.#owner = null;
   }
 }
