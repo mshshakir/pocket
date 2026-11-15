@@ -93,6 +93,78 @@ export class CategoryMerge {
       + this.#list('habits').filter((h) => (h.categoryIds || []).some((x) => ids.has(x))).length;
   }
 
+  // ── Several at once ─────────────────────────────────────────────────
+
+  /**
+   * Where a set of categories could all go. They must share one type; none of
+   * them (nor anything inside one of them) can be the target.
+   * @param {string[]} ids
+   * @returns {object[]}
+   */
+  targetsMany(ids) {
+    const list = this.#ordered(ids);
+    if (!list.length || !this.#oneType(list)) return [];
+    const picked = new Set(list);
+    return list.reduce((acc, id) => acc.filter((t) => this.check(id, t.id).ok), this.targets(list[0]))
+      .filter((t) => !picked.has(t.id) && !picked.has(t.parentId));
+  }
+
+  /**
+   * @param {string[]} ids
+   * @param {string} targetId
+   * @returns {{ok:true}|{ok:false, reason:string}}
+   */
+  checkMany(ids, targetId) {
+    const list = this.#ordered(ids);
+    if (!list.length) return { ok: false, reason: 'Pick at least one category' };
+    if (!this.#oneType(list)) return { ok: false, reason: 'Pick categories of one type (all expense, or all income)' };
+    if (!this.targetsMany(list).some((t) => t.id === targetId)) {
+      const bad = list.map((id) => this.check(id, targetId)).find((r) => !r.ok);
+      return bad || { ok: false, reason: 'It can\'t go into one of the categories you picked' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * What merging several would change, worked out on a copy of the book.
+   * @param {string[]} ids
+   * @param {string} targetId
+   */
+  previewMany(ids, targetId) {
+    const res = new CategoryMerge(CategoryMerge.#copy(this.#state)).applyMany(ids, targetId);
+    return res.ok ? res.summary : null;
+  }
+
+  /**
+   * Merge several categories into one. Sub-categories go first, so a picked
+   * sub isn't first carried along by its picked parent. All or nothing: if a
+   * step fails, the ones already done are put back.
+   * @param {string[]} ids
+   * @param {string} targetId
+   * @returns {{ok:true, summary:object, undo:object}|{ok:false, reason:string}}
+   */
+  applyMany(ids, targetId) {
+    const can = this.checkMany(ids, targetId);
+    if (!can.ok) return can;
+    const steps = [], movedSubs = [], mergedSubs = [];
+    for (const id of this.#ordered(ids)) {
+      const res = this.apply(id, targetId);
+      if (!res.ok) { this.revert({ steps }); return res; }
+      steps.push(res.undo);
+      movedSubs.push(...res.summary.movedSubs);
+      mergedSubs.push(...res.summary.mergedSubs);
+    }
+    // Count each changed thing once, even if two picked categories touched it.
+    const changed = (coll) => new Set(steps.flatMap((u) => u.objects.filter((o) => o.coll === coll).map((o) => o.id))).size;
+    const summary = {
+      merged: steps.length,
+      entries: changed('transactions'), regulars: changed('regularItems'),
+      budgets: changed('budgets'), habits: changed('habits'),
+      movedSubs, mergedSubs,
+    };
+    return { ok: true, summary, undo: { steps } };
+  }
+
   // ── Mutations ────────────────────────────────────────────────────────
 
   /**
@@ -165,6 +237,10 @@ export class CategoryMerge {
    */
   revert(undo) {
     if (!undo) return;
+    if (Array.isArray(undo.steps)) {
+      for (const step of [...undo.steps].reverse()) this.revert(step);
+      return;
+    }
     const cats = this.#cats();
     for (const c of undo.removed) if (!cats.some((x) => x.id === c.id)) cats.push(CategoryMerge.#copy(c));
     for (const { coll, id, copy } of undo.objects) {
@@ -178,6 +254,15 @@ export class CategoryMerge {
   }
 
   // ── Private ──────────────────────────────────────────────────────────
+
+  /** Existing ids, unique, sub-categories before main ones. */
+  #ordered(ids) {
+    const seen = new Set();
+    return (ids || []).filter((id) => this.#find(id) && !seen.has(id) && seen.add(id))
+      .sort((a, b) => (this.#find(a).parentId ? 0 : 1) - (this.#find(b).parentId ? 0 : 1));
+  }
+
+  #oneType(ids) { return new Set(ids.map((id) => this.#find(id).type)).size === 1; }
 
   /** source → target, plus each source sub-category → same-named target sub-category */
   #idMap(sourceId, targetId) {

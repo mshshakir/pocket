@@ -2359,6 +2359,77 @@ var _PocketApp = (() => {
       const ids = /* @__PURE__ */ new Set([id, ...this.#children(id).map((c) => c.id)]);
       return this.#list("transactions").filter((t) => this.#txUses(t, ids)).length + this.#list("regularItems").filter((i) => ids.has(i.categoryId)).length + this.#list("budgets").filter((b) => this.#budgetIds(b).some((x) => ids.has(x))).length + this.#list("habits").filter((h) => (h.categoryIds || []).some((x) => ids.has(x))).length;
     }
+    // ── Several at once ─────────────────────────────────────────────────
+    /**
+     * Where a set of categories could all go. They must share one type; none of
+     * them (nor anything inside one of them) can be the target.
+     * @param {string[]} ids
+     * @returns {object[]}
+     */
+    targetsMany(ids) {
+      const list = this.#ordered(ids);
+      if (!list.length || !this.#oneType(list)) return [];
+      const picked = new Set(list);
+      return list.reduce((acc, id) => acc.filter((t) => this.check(id, t.id).ok), this.targets(list[0])).filter((t) => !picked.has(t.id) && !picked.has(t.parentId));
+    }
+    /**
+     * @param {string[]} ids
+     * @param {string} targetId
+     * @returns {{ok:true}|{ok:false, reason:string}}
+     */
+    checkMany(ids, targetId) {
+      const list = this.#ordered(ids);
+      if (!list.length) return { ok: false, reason: "Pick at least one category" };
+      if (!this.#oneType(list)) return { ok: false, reason: "Pick categories of one type (all expense, or all income)" };
+      if (!this.targetsMany(list).some((t) => t.id === targetId)) {
+        const bad = list.map((id) => this.check(id, targetId)).find((r) => !r.ok);
+        return bad || { ok: false, reason: "It can't go into one of the categories you picked" };
+      }
+      return { ok: true };
+    }
+    /**
+     * What merging several would change, worked out on a copy of the book.
+     * @param {string[]} ids
+     * @param {string} targetId
+     */
+    previewMany(ids, targetId) {
+      const res = new _CategoryMerge(_CategoryMerge.#copy(this.#state)).applyMany(ids, targetId);
+      return res.ok ? res.summary : null;
+    }
+    /**
+     * Merge several categories into one. Sub-categories go first, so a picked
+     * sub isn't first carried along by its picked parent. All or nothing: if a
+     * step fails, the ones already done are put back.
+     * @param {string[]} ids
+     * @param {string} targetId
+     * @returns {{ok:true, summary:object, undo:object}|{ok:false, reason:string}}
+     */
+    applyMany(ids, targetId) {
+      const can = this.checkMany(ids, targetId);
+      if (!can.ok) return can;
+      const steps = [], movedSubs = [], mergedSubs = [];
+      for (const id of this.#ordered(ids)) {
+        const res = this.apply(id, targetId);
+        if (!res.ok) {
+          this.revert({ steps });
+          return res;
+        }
+        steps.push(res.undo);
+        movedSubs.push(...res.summary.movedSubs);
+        mergedSubs.push(...res.summary.mergedSubs);
+      }
+      const changed = (coll) => new Set(steps.flatMap((u) => u.objects.filter((o) => o.coll === coll).map((o) => o.id))).size;
+      const summary = {
+        merged: steps.length,
+        entries: changed("transactions"),
+        regulars: changed("regularItems"),
+        budgets: changed("budgets"),
+        habits: changed("habits"),
+        movedSubs,
+        mergedSubs
+      };
+      return { ok: true, summary, undo: { steps } };
+    }
     // ── Mutations ────────────────────────────────────────────────────────
     /**
      * Merge source into target.
@@ -2426,6 +2497,10 @@ var _PocketApp = (() => {
      */
     revert(undo) {
       if (!undo) return;
+      if (Array.isArray(undo.steps)) {
+        for (const step of [...undo.steps].reverse()) this.revert(step);
+        return;
+      }
       const cats = this.#cats();
       for (const c of undo.removed) if (!cats.some((x) => x.id === c.id)) cats.push(_CategoryMerge.#copy(c));
       for (const { coll, id, copy } of undo.objects) {
@@ -2438,6 +2513,14 @@ var _PocketApp = (() => {
       if (undo.collapsed && this.#state.user) this.#state.user.collapsedCategories = undo.collapsed.slice();
     }
     // ── Private ──────────────────────────────────────────────────────────
+    /** Existing ids, unique, sub-categories before main ones. */
+    #ordered(ids) {
+      const seen = /* @__PURE__ */ new Set();
+      return (ids || []).filter((id) => this.#find(id) && !seen.has(id) && seen.add(id)).sort((a, b) => (this.#find(a).parentId ? 0 : 1) - (this.#find(b).parentId ? 0 : 1));
+    }
+    #oneType(ids) {
+      return new Set(ids.map((id) => this.#find(id).type)).size === 1;
+    }
     /** source → target, plus each source sub-category → same-named target sub-category */
     #idMap(sourceId, targetId) {
       const map = /* @__PURE__ */ new Map([[sourceId, targetId]]);
@@ -2695,6 +2778,24 @@ var _PocketApp = (() => {
      */
     mergeInto(id, intoId) {
       const res = this.#merger().apply(id, intoId);
+      if (res.ok) this.#store.flush();
+      return res;
+    }
+    /** Where several categories could all go. @param {string[]} ids */
+    mergeTargetsMany(ids) {
+      return this.#merger().targetsMany(ids);
+    }
+    /** What merging several would move (null if it can't). */
+    mergePreviewMany(ids, intoId) {
+      return this.#merger().previewMany(ids, intoId);
+    }
+    /**
+     * Merge several categories into one, all or nothing.
+     * @param {string[]} ids
+     * @param {string} intoId
+     */
+    mergeManyInto(ids, intoId) {
+      const res = this.#merger().applyMany(ids, intoId);
       if (res.ok) this.#store.flush();
       return res;
     }
@@ -12734,8 +12835,31 @@ This replaces your current grouping.`
 
   // src/ui/views/CategoriesView.js
   var CategoriesView = class extends BaseView {
+    /** Picking categories to merge: on/off, and which are ticked. */
+    #picking = false;
+    /** @type {Set<string>} */
+    #picked = /* @__PURE__ */ new Set();
     constructor() {
       super();
+    }
+    // ── Selection (driven by Application) ────────────────────────────────
+    get picking() {
+      return this.#picking;
+    }
+    get pickedIds() {
+      return [...this.#picked];
+    }
+    togglePicking() {
+      this.#picking = !this.#picking;
+      this.#picked.clear();
+    }
+    togglePick(id) {
+      if (this.#picked.has(id)) this.#picked.delete(id);
+      else this.#picked.add(id);
+    }
+    clearPicking() {
+      this.#picking = false;
+      this.#picked.clear();
     }
     render() {
       const state = this.state;
@@ -12756,13 +12880,18 @@ This replaces your current grouping.`
             ${anyCollapsed ? `<button class="btn btn-ghost text-sm" onclick="window.__app.expandAllCategories()" title="Expand every parent"><i data-lucide="chevrons-up-down" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Expand all</span></button>` : ""}
           ` : ""}
           ${this.inGuestSpace ? "" : `
-          <button class="btn btn-primary" onclick="window.__app.openModal('category')">
+          <button class="btn ${this.#picking ? "btn-primary" : "btn-outline"} category-pick-toggle" onclick="window.__app.toggleCategoryPicking()" title="Pick categories to merge into one">
+            <i data-lucide="${this.#picking ? "x" : "merge"}"></i><span class="${this.#picking ? "" : "hidden md:inline"} ml-1">${this.#picking ? "Cancel" : "Merge"}</span>
+          </button>
+          ${this.#picking ? "" : `<button class="btn btn-primary" onclick="window.__app.openModal('category')">
             <i data-lucide="plus"></i> New category
-          </button>`}
+          </button>`}`}
         </div>
       </div>
 
+      ${this.#picking ? `<div class="text-sm text-zinc-500 mb-4 px-1">Tick the categories to merge, then pick where they go.</div>` : ""}
       ${sections.map((sec) => this.#section(sec, state.categories, collapsed)).join("")}
+      ${this.#pickBar(state.categories)}
     `;
     }
     // ── Private ───────────────────────────────────────────────────────────
@@ -12795,8 +12924,9 @@ This replaces your current grouping.`
       return `
       <div class="w-full flex items-center gap-2 px-2 hover:bg-zinc-50 dark:hover:bg-zinc-900">
         ${toggleIcon || '<span style="width:24px;display:inline-block"></span>'}
-        <button onclick="window.__app.openModal('category',{id:'${p.id}'})"
+        <button ${this.#rowAction(p)}
                 class="flex-1 flex items-center gap-3 py-3 text-left">
+          ${this.#tick(p)}
           <div class="icon-pill" style="background:${p.color}22;color:${p.color}">
             <i data-lucide="${p.icon}"></i>
           </div>
@@ -12808,8 +12938,9 @@ This replaces your current grouping.`
     }
     #childRow(c) {
       return `
-      <button onclick="window.__app.openModal('category',{id:'${c.id}'})"
+      <button ${this.#rowAction(c)}
               class="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900 pl-12">
+        ${this.#tick(c)}
         <div class="icon-pill" style="background:${c.color}22;color:${c.color};width:28px;height:28px">
           <i data-lucide="${c.icon}" style="width:14px;height:14px"></i>
         </div>
@@ -12817,6 +12948,39 @@ This replaces your current grouping.`
         <span class="chip" style="font-size:.65rem">sub</span>
         <i data-lucide="chevron-right" class="text-zinc-400"></i>
       </button>`;
+    }
+    // ── Picking ───────────────────────────────────────────────────────────
+    /** Type of the first ticked category: others are greyed out until untick. */
+    #pickType() {
+      const first = this.#picked.values().next().value;
+      return first ? this.state.categories.find((c) => c.id === first)?.type ?? null : null;
+    }
+    #rowAction(c) {
+      if (!this.#picking) return `onclick="window.__app.openModal('category',{id:'${c.id}'})"`;
+      const type = this.#pickType();
+      if (type && c.type !== type) return 'disabled style="opacity:.4;cursor:not-allowed" title="Pick categories of one type"';
+      return `onclick="window.__app.toggleCategoryPick('${c.id}')" data-pick="${c.id}"`;
+    }
+    #tick(c) {
+      if (!this.#picking) return "";
+      const on = this.#picked.has(c.id);
+      return `<i data-lucide="${on ? "check-square" : "square"}" class="${on ? "text-zinc-900 dark:text-white" : "text-zinc-400"}" style="width:18px;height:18px;flex-shrink:0"></i>`;
+    }
+    #pickBar(categories) {
+      if (!this.#picking) return "";
+      const n = [...this.#picked].filter((id) => categories.some((c) => c.id === id)).length;
+      return `
+      <div class="h-20"></div>
+      <div class="fixed bottom-20 md:bottom-6 left-0 right-0 flex justify-center z-40 px-4">
+        <div class="card flex items-center gap-2 px-3 py-3 shadow-2xl category-pick-bar" style="max-width:520px;width:100%">
+          <span class="text-sm font-medium">${n} selected</span>
+          <div class="flex-1"></div>
+          <button class="btn btn-ghost text-sm" onclick="window.__app.toggleCategoryPicking()">Cancel</button>
+          <button class="btn btn-primary text-sm" ${n ? "" : "disabled"} onclick="window.__app.mergePickedCategories()">
+            <i data-lucide="merge"></i> Merge into\u2026
+          </button>
+        </div>
+      </div>`;
     }
   };
 
@@ -15329,28 +15493,14 @@ This replaces your current grouping.`
           </div>
         </div>
 
-        ${editing ? this.#moreOptions(editing) : ""}
-
         <div class="flex items-center gap-2">
           ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteCategory('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : ""}
+          ${editing ? `<button type="button" class="btn btn-outline category-merge-btn" onclick="window.__app.openCategoryMerge('${editing.id}')" title="Move everything into another category"><i data-lucide="merge"></i><span class="hidden sm:inline ml-1">Merge</span></button>` : ""}
           <div class="flex-1"></div>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
-    }
-    /** Advanced actions, folded away so the everyday form stays simple. */
-    #moreOptions(cat) {
-      return `
-        <details class="category-more mb-4 rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <summary class="cursor-pointer select-none px-3 py-2 text-sm text-zinc-500">More options</summary>
-          <div class="px-3 pb-3">
-            <button type="button" class="btn btn-outline w-full justify-start" onclick="window.__app.openCategoryMerge('${cat.id}')">
-              <i data-lucide="merge"></i> Merge into another category\u2026
-            </button>
-            <div class="text-xs text-zinc-500 mt-1">Moves its entries, regulars, budgets and sub-categories, then removes ${this.#esc(cat.name)}. You can undo it.</div>
-          </div>
-        </details>`;
     }
     #esc(s) {
       return (s || "").toString().replace(
@@ -15368,40 +15518,47 @@ This replaces your current grouping.`
     constructor({ categories }) {
       this.#categories = categories;
     }
+    /** The picked ids from opts, existing ones only. */
+    static idsOf(opts = {}) {
+      return Array.isArray(opts.ids) ? opts.ids : opts.id ? [opts.id] : [];
+    }
     render(opts = {}) {
       const cats = this.#categories();
-      const src = cats.find(opts.id);
+      const srcs = _CategoryMergeModal.idsOf(opts).map((id) => cats.find(id)).filter(Boolean);
       const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>`;
-      if (!src) return `<div class="p-5"><div class="flex justify-between items-center"><b>Category not found</b>${close}</div></div>`;
+      const head = (title2) => `<div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">${title2}</h3>${close}</div>`;
+      if (!srcs.length) return `<div class="p-5">${head("Category not found")}</div>`;
       const del = opts.mode === "delete";
-      const targets = cats.mergeTargets(src.id);
-      const into = targets.find((t) => t.id === opts.into)?.id || "";
-      const name = Html.escape(src.name);
+      const ids = srcs.map((c) => c.id);
+      const idsArg = ids.join(",");
+      const one = srcs.length === 1;
+      const name = one ? Html.escape(srcs[0].name) : `${srcs.length} categories`;
       const title = del ? `Delete ${name}` : `Merge ${name}`;
-      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : `Everything in ${name} moves to the category you pick, then ${name} is removed. The other category keeps its name, colour and limit.`;
+      if (new Set(srcs.map((c) => c.type)).size > 1) {
+        return `<div class="p-5">${head(title)}<p class="text-sm text-zinc-500">Pick categories of one type \u2014 all expense, or all income.</p></div>`;
+      }
+      const targets = cats.mergeTargetsMany(ids);
+      const into = targets.find((t) => t.id === opts.into)?.id || "";
+      const list = one ? "" : `<div class="flex flex-wrap gap-1 mb-3">${srcs.map((c) => `<span class="chip">${Html.escape(cats.fullName(c.id))}</span>`).join("")}</div>`;
+      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : `Everything in ${one ? name : "these"} moves to the category you pick, then ${one ? `${name} is` : "they are"} removed. The other category keeps its name, colour and limit.`;
       if (!targets.length) {
-        return `
-        <div class="p-5">
-          <div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">${title}</h3>${close}</div>
-          <p class="text-sm text-zinc-500">There's no other ${Html.escape(src.type)} category to move it to. Add one first.</p>
-        </div>`;
+        return `<div class="p-5">${head(title)}${list}<p class="text-sm text-zinc-500">There's no other ${Html.escape(srcs[0].type)} category ${one ? "it" : "they"} can all go into. Add one first.</p></div>`;
       }
       return `
-      <form onsubmit="window.__app.mergeCategory(event,'${src.id}','${del ? "delete" : "merge"}')" class="p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-lg font-semibold">${title}</h3>${close}
-        </div>
+      <form onsubmit="window.__app.mergeCategory(event,'${idsArg}','${del ? "delete" : "merge"}')" class="p-5">
+        ${head(title)}
+        ${list}
         <p class="text-sm text-zinc-500 mb-4">${intro}</p>
 
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Move to</label>
-          <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${src.id}', this.value)">
+          <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${idsArg}', this.value)">
             <option value="">\u2014 Pick a category \u2014</option>
             ${targets.map((t) => `<option value="${t.id}" ${t.id === into ? "selected" : ""}>${Html.escape(cats.fullName(t.id))}</option>`).join("")}
           </select>
         </div>
 
-        <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(src.id, into) : ""}</div>
+        <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(ids, into) : ""}</div>
 
         <div class="flex items-center gap-2">
           <div class="flex-1"></div>
@@ -15415,25 +15572,25 @@ This replaces your current grouping.`
     /**
      * The plain-words line under the picker, e.g.
      * "Moves 42 entries and 2 regulars to Food. Its sub-category Snacks moves too."
-     * @param {string} id
+     * @param {string[]} ids
      * @param {string} intoId
      * @returns {string} HTML
      */
-    previewText(id, intoId) {
+    previewText(ids, intoId) {
       const cats = this.#categories();
       const tgt = cats.find(intoId);
-      if (!tgt) return "";
-      const p = cats.mergePreview(id, intoId);
+      const p = tgt ? cats.mergePreviewMany(ids, intoId) : null;
+      if (!p) return "";
       const parts = [
         _CategoryMergeModal.#count(p.entries, "entry", "entries"),
         _CategoryMergeModal.#count(p.regulars, "regular", "regulars"),
         _CategoryMergeModal.#count(p.budgets, "budget", "budgets"),
         _CategoryMergeModal.#count(p.habits, "habit", "habits")
       ].filter(Boolean);
-      const what = parts.length ? `Moves ${_CategoryMergeModal.#join(parts)}` : "Nothing uses it yet; it just goes";
+      const what = parts.length ? `Moves ${_CategoryMergeModal.#join(parts)}` : "Nothing uses them yet; they just go";
       const lines = [`${what} to <b>${Html.escape(cats.fullName(tgt.id))}</b>.`];
-      if (p.movedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.movedSubs)} moves under ${Html.escape(tgt.name)}.`);
-      if (p.mergedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.mergedSubs)} joins the one with the same name.`);
+      if (p.movedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.movedSubs)} ${p.movedSubs.length === 1 ? "moves" : "move"} under ${Html.escape(tgt.name)}.`);
+      if (p.mergedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.mergedSubs)} ${p.mergedSubs.length === 1 ? "joins the one" : "join the ones"} with the same name.`);
       return lines.map((l) => `<div>${l}</div>`).join("") + `<div class="text-xs text-zinc-500 mt-1">You can undo this straight after.</div>`;
     }
     // ── Private ──────────────────────────────────────────────────────────
@@ -15445,7 +15602,7 @@ This replaces your current grouping.`
     }
     static #subs(names) {
       const list = names.map((n) => Html.escape(n));
-      return names.length === 1 ? `Its sub-category ${list[0]}` : `Its sub-categories ${_CategoryMergeModal.#join(list)}`;
+      return names.length === 1 ? `Sub-category ${list[0]}` : `Sub-categories ${_CategoryMergeModal.#join(list)}`;
     }
   };
 
@@ -19573,6 +19730,7 @@ This replaces your current grouping.`
     navigate(id) {
       if (id === "__add") return this.openModal("transaction", {});
       if (id === "__more") return this.#openMoreMenu();
+      if (id !== "categories") this.#views.get("categories")?.clearPicking?.();
       this.#router.navigate(id);
       this.#render();
     }
@@ -21705,7 +21863,7 @@ Leave empty to use your own name.`,
           return this.#toast.show(`${twin.name} already exists here \u2014 pick another name`);
         }
         if (!confirm(`${twin.name} already exists. Merge into it?`)) return;
-        return this.#runCategoryMerge(id, twin.id);
+        return this.#runCategoryMerge([id], twin.id);
       }
       const payload = { name: data.name, type: data.type, color: data.color, icon: data.icon, parentId };
       if (id) this.#categories.update(id, payload);
@@ -21724,42 +21882,63 @@ Leave empty to use your own name.`,
       this.#sync.schedulePush?.();
     }
     /**
-     * Open the merge picker (Edit category → More options, or Delete when used).
-     * @param {string} id
+     * Open the merge picker (Edit category → Merge, or Delete when used).
+     * @param {string|string[]} ids
      * @param {'merge'|'delete'} [mode='merge']
      */
-    openCategoryMerge(id, mode = "merge") {
-      this.openModal("categoryMerge", { id, mode });
+    openCategoryMerge(ids, mode = "merge") {
+      this.openModal("categoryMerge", { ids: _Application.#idList(ids), mode });
+    }
+    /** Categories → Merge: turn ticking on or off. */
+    toggleCategoryPicking() {
+      this.#views.get("categories")?.togglePicking?.();
+      this.#render();
+    }
+    toggleCategoryPick(id) {
+      this.#views.get("categories")?.togglePick?.(id);
+      this.#render();
+    }
+    /** The bar's "Merge into…": open the picker for everything ticked. */
+    mergePickedCategories() {
+      const ids = this.#views.get("categories")?.pickedIds ?? [];
+      if (!ids.length) return this.#toast.show("Tick at least one category");
+      this.openCategoryMerge(ids);
     }
     /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
-    previewCategoryMerge(id, intoId) {
+    previewCategoryMerge(ids, intoId) {
       const el = document.getElementById("categoryMergePreview");
-      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(id, intoId) : "";
+      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(_Application.#idList(ids), intoId) : "";
     }
-    mergeCategory(event, id) {
+    mergeCategory(event, ids) {
       event.preventDefault();
       const intoId = new FormData(event.target).get("into");
       if (!intoId) return this.#toast.show("Pick a category to move it to");
-      this.#runCategoryMerge(id, String(intoId));
+      this.#runCategoryMerge(_Application.#idList(ids), String(intoId));
     }
-    #runCategoryMerge(id, intoId) {
-      const from = this.#categories.find(id)?.name || "Category";
+    /** '<id>,<id>' from an onclick, or an array → array of ids */
+    static #idList(ids) {
+      return (Array.isArray(ids) ? ids : String(ids || "").split(",")).map(String).filter(Boolean);
+    }
+    #runCategoryMerge(ids, intoId) {
+      const names = ids.map((id) => this.#categories.find(id)?.name).filter(Boolean);
       const into = this.#categories.fullName(intoId);
-      const res = this.#categories.mergeInto(id, intoId);
+      const res = this.#categories.mergeManyInto(ids, intoId);
       if (!res.ok) return this.#toast.show(res.reason);
+      this.#views.get("categories")?.clearPicking?.();
       this.closeModal();
       this.#render();
       this.#sync.schedulePush?.();
+      const what = names.length === 1 ? names[0] : `${names.length} categories`;
       const n = res.summary.entries;
-      this.#toast.show(`${from} merged into ${into}${n ? ` \xB7 ${n} ${n === 1 ? "entry" : "entries"} moved` : ""}`, {
-        action: { label: "Undo", run: () => this.#undoCategoryMerge(res.undo, from) }
+      this.#toast.show(`${what} merged into ${into}${n ? ` \xB7 ${n} ${n === 1 ? "entry" : "entries"} moved` : ""}`, {
+        action: { label: "Undo", run: () => this.#undoCategoryMerge(res.undo, what) }
       });
     }
-    #undoCategoryMerge(undo, name) {
+    #undoCategoryMerge(undo, what) {
       this.#categories.undoMerge(undo);
       this.#render();
       this.#sync.schedulePush?.();
-      this.#toast.show(`Undone \xB7 ${name} is back`);
+      this.#toast.show(`Undone \xB7 ${what} ${/categories$/.test(what) ? "are" : "is"} back`);
     }
     toggleCategoryCollapse(id) {
       const state = this.#store.getState();

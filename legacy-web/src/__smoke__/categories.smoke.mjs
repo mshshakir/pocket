@@ -6,10 +6,13 @@
  *   M3  merge moves every reference, dedupes lists, removes the source
  *   M4  subs move under the target; a same-named sub merges into the target's
  *   M5  undo puts everything back, even after the arrays were swapped
- *   A1  in the app: More options → Merge shows the picker and the preview line
+ *   P1  several at once: targets, mixed types refused, a picked sub + its picked parent
+ *   P2  several at once: counts each changed thing once; undo puts all back
+ *   A1  in the app: Edit → Merge shows the picker and the preview line
  *   A2  merging shows a toast with Undo; Undo brings it back
  *   A3  renaming to a name that's taken offers a merge
  *   A4  Delete on a used category opens "move and delete"; an unused one just goes
+ *   A5  Categories → Merge: tick several, other types greyed, merge them into one, Undo
  *
  * Run: node src/__smoke__/categories.smoke.mjs
  */
@@ -90,6 +93,26 @@ const book = () => ({
     JSON.stringify(s.user) === JSON.stringify(before.user));
 }
 
+{
+  const m = new CategoryMerge(book());
+  ok('P1 Grocery + Fuel can go into Food only', m.targetsMany(['groc', 'fuel']).map((c) => c.id).join() === 'food');
+  ok('P1 expense + income refused', /one type/.test(m.checkMany(['fuel', 'salary'], 'food').reason || ''));
+  ok('P1 not into one of the picked ones, nor a sub of one', !m.targetsMany(['groc', 'fuel']).some((c) => ['groc', 'fuel', 'fruit', 'gveg'].includes(c.id)));
+  const s = book();
+  const before = JSON.stringify(s);
+  const mm = new CategoryMerge(s);
+  const pre = mm.previewMany(['groc', 'gveg', 'fuel'], 'food');
+  ok('P1 preview leaves the book alone', JSON.stringify(s) === before);
+  const res = mm.applyMany(['groc', 'gveg', 'fuel'], 'food');
+  ok('P1 picked sub + its parent + another: all go into Food', res.ok && !s.categories.some((c) => ['groc', 'gveg', 'fuel'].includes(c.id)) && s.transactions.every((t) => !t.categoryId || t.categoryId === 'food'), JSON.stringify(res.reason || ''));
+  ok('P1 Fruit still moves under Food', s.categories.find((c) => c.id === 'fruit').parentId === 'food');
+  ok('P2 split entry counted once: 4 entries, 1 regular, 2 budgets, 1 habit; preview agrees', res.summary.entries === 4 && res.summary.regulars === 1 && res.summary.budgets === 2 && res.summary.habits === 1 && res.summary.merged === 3 && JSON.stringify(pre) === JSON.stringify(res.summary), JSON.stringify(res.summary));
+  ok('P2 split legs both in Food', s.transactions[2].splits.every((x) => x.categoryId === 'food'));
+  mm.revert(res.undo);
+  const norm = (st) => JSON.stringify({ ...st, categories: [...st.categories].sort((a, b) => a.id.localeCompare(b.id)) });
+  ok('P2 undo puts all three back exactly', norm(s) === norm(JSON.parse(before)));
+}
+
 // ── in the app ────────────────────────────────────────────────────────────
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -124,9 +147,8 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   const app = w.__app;
   app.openModal('category', { id: 'groc' });
   await wait(20);
-  const more = w.document.querySelector('details.category-more');
-  ok('A1 the edit form has More options with Merge', more && /Merge into another category/.test(more.textContent));
-  ok('A1 a new category has no More options', (app.openModal('category'), !w.document.querySelector('details.category-more')));
+  ok('A1 the edit form shows a Merge button', !!w.document.querySelector('.category-merge-btn'));
+  ok('A1 a new category has no Merge button', (app.openModal('category'), !w.document.querySelector('.category-merge-btn')));
   app.openCategoryMerge('groc');
   await wait(20);
   const opts = [...w.document.querySelectorAll('select[name="into"] option')].map((o) => o.value).filter(Boolean);
@@ -193,6 +215,41 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   app.deleteCategory('spare');
   await wait(20);
   ok('A4 an unused category is just deleted', !ids(w).includes('spare'));
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  app.navigate('categories');
+  await wait(20);
+  const view = () => w.document.getElementById('viewContent');
+  ok('A5 the Categories screen shows Merge', !!view().querySelector('.category-pick-toggle'));
+  app.toggleCategoryPicking();
+  await wait(20);
+  ok('A5 ticking mode: bar with 0 selected and Merge disabled', /0 selected/.test(view().querySelector('.category-pick-bar')?.textContent || '') && view().querySelector('.category-pick-bar button[disabled]'));
+  app.toggleCategoryPick('groc');
+  await wait(20);
+  ok('A5 after ticking an expense, Salary (income) is greyed out', !view().querySelector('[data-pick="salary"]') && view().querySelector('[data-pick="fuel"]'));
+  app.toggleCategoryPick('fuel');
+  await wait(20);
+  ok('A5 2 selected', /2 selected/.test(view().querySelector('.category-pick-bar').textContent));
+  app.mergePickedCategories();
+  await wait(20);
+  ok('A5 picker titled "Merge 2 categories", offers Food', /Merge 2 categories/.test(w.document.body.textContent) && [...w.document.querySelectorAll('select[name="into"] option')].map((o) => o.value).filter(Boolean).join() === 'food');
+  app.previewCategoryMerge('groc,fuel', 'food');
+  ok('A5 preview counts both', /Moves 4 entries/.test(w.document.getElementById('categoryMergePreview').textContent), w.document.getElementById('categoryMergePreview').textContent);
+  const f = w.document.querySelector('form');
+  f.querySelector('[name="into"]').value = 'food';
+  app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
+  await wait(20);
+  ok('A5 both gone, ticking ends, toast says 2 categories', !ids(w).includes('groc') && !ids(w).includes('fuel') && !view().querySelector('.category-pick-bar') && /2 categories merged into Food · 4 entries moved/.test(toastText(w)), toastText(w));
+  w.document.querySelector('.toast-action').click();
+  await wait(20);
+  ok('A5 Undo brings both back', ids(w).includes('groc') && ids(w).includes('fuel') && ids(w).includes('gveg'));
+  app.toggleCategoryPicking(); app.navigate('dashboard'); app.navigate('categories');
+  await wait(20);
+  ok('A5 leaving the screen ends ticking', !view().querySelector('.category-pick-bar'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

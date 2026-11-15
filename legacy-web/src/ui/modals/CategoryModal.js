@@ -73,29 +73,14 @@ export class CategoryModal {
           </div>
         </div>
 
-        ${editing ? this.#moreOptions(editing) : ''}
-
         <div class="flex items-center gap-2">
           ${editing ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteCategory('${editing.id}')"><i data-lucide="trash-2"></i> Delete</button>` : ''}
+          ${editing ? `<button type="button" class="btn btn-outline category-merge-btn" onclick="window.__app.openCategoryMerge('${editing.id}')" title="Move everything into another category"><i data-lucide="merge"></i><span class="hidden sm:inline ml-1">Merge</span></button>` : ''}
           <div class="flex-1"></div>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
-  }
-
-  /** Advanced actions, folded away so the everyday form stays simple. */
-  #moreOptions(cat) {
-    return `
-        <details class="category-more mb-4 rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <summary class="cursor-pointer select-none px-3 py-2 text-sm text-zinc-500">More options</summary>
-          <div class="px-3 pb-3">
-            <button type="button" class="btn btn-outline w-full justify-start" onclick="window.__app.openCategoryMerge('${cat.id}')">
-              <i data-lucide="merge"></i> Merge into another category…
-            </button>
-            <div class="text-xs text-zinc-500 mt-1">Moves its entries, regulars, budgets and sub-categories, then removes ${this.#esc(cat.name)}. You can undo it.</div>
-          </div>
-        </details>`;
   }
 
   #esc(s) {

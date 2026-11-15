@@ -251,6 +251,23 @@ export class CategoryService {
     return res;
   }
 
+  /** Where several categories could all go. @param {string[]} ids */
+  mergeTargetsMany(ids) { return this.#merger().targetsMany(ids); }
+
+  /** What merging several would move (null if it can't). */
+  mergePreviewMany(ids, intoId) { return this.#merger().previewMany(ids, intoId); }
+
+  /**
+   * Merge several categories into one, all or nothing.
+   * @param {string[]} ids
+   * @param {string} intoId
+   */
+  mergeManyInto(ids, intoId) {
+    const res = this.#merger().applyMany(ids, intoId);
+    if (res.ok) this.#store.flush();
+    return res;
+  }
+
   /** Put a merge back. @param {object} undo  from mergeInto() */
   undoMerge(undo) {
     this.#merger().revert(undo);

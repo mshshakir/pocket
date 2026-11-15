@@ -475,6 +475,7 @@ export class Application {
   navigate(id) {
     if (id === '__add')  return this.openModal('transaction', {});
     if (id === '__more') return this.#openMoreMenu();
+    if (id !== 'categories') this.#views.get('categories')?.clearPicking?.(); // leaving ends merge ticking
     this.#router.navigate(id);
     this.#render();
   }
@@ -2749,7 +2750,7 @@ export class Application {
         return this.#toast.show(`${twin.name} already exists here — pick another name`);
       }
       if (!confirm(`${twin.name} already exists. Merge into it?`)) return;
-      return this.#runCategoryMerge(id, twin.id);
+      return this.#runCategoryMerge([id], twin.id);
     }
     // Delegate the actual mutation to CategoryService (single source of truth).
     const payload = { name: data.name, type: data.type, color: data.color, icon: data.icon, parentId };
@@ -2771,45 +2772,70 @@ export class Application {
   }
 
   /**
-   * Open the merge picker (Edit category → More options, or Delete when used).
-   * @param {string} id
+   * Open the merge picker (Edit category → Merge, or Delete when used).
+   * @param {string|string[]} ids
    * @param {'merge'|'delete'} [mode='merge']
    */
-  openCategoryMerge(id, mode = 'merge') {
-    this.openModal('categoryMerge', { id, mode });
+  openCategoryMerge(ids, mode = 'merge') {
+    this.openModal('categoryMerge', { ids: Application.#idList(ids), mode });
+  }
+
+  /** Categories → Merge: turn ticking on or off. */
+  toggleCategoryPicking() {
+    this.#views.get('categories')?.togglePicking?.();
+    this.#render();
+  }
+
+  toggleCategoryPick(id) {
+    this.#views.get('categories')?.togglePick?.(id);
+    this.#render();
+  }
+
+  /** The bar's "Merge into…": open the picker for everything ticked. */
+  mergePickedCategories() {
+    const ids = this.#views.get('categories')?.pickedIds ?? [];
+    if (!ids.length) return this.#toast.show('Tick at least one category');
+    this.openCategoryMerge(ids);
   }
 
   /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
-  previewCategoryMerge(id, intoId) {
+  previewCategoryMerge(ids, intoId) {
     const el = document.getElementById('categoryMergePreview');
-    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(id, intoId) : '';
+    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(Application.#idList(ids), intoId) : '';
   }
 
-  mergeCategory(event, id) {
+  mergeCategory(event, ids) {
     event.preventDefault();
     const intoId = new FormData(event.target).get('into');
     if (!intoId) return this.#toast.show('Pick a category to move it to');
-    this.#runCategoryMerge(id, String(intoId));
+    this.#runCategoryMerge(Application.#idList(ids), String(intoId));
   }
 
-  #runCategoryMerge(id, intoId) {
-    const from = this.#categories.find(id)?.name || 'Category';
-    const into = this.#categories.fullName(intoId);
-    const res  = this.#categories.mergeInto(id, intoId);
+  /** '<id>,<id>' from an onclick, or an array → array of ids */
+  static #idList(ids) {
+    return (Array.isArray(ids) ? ids : String(ids || '').split(',')).map(String).filter(Boolean);
+  }
+
+  #runCategoryMerge(ids, intoId) {
+    const names = ids.map((id) => this.#categories.find(id)?.name).filter(Boolean);
+    const into  = this.#categories.fullName(intoId);
+    const res   = this.#categories.mergeManyInto(ids, intoId);
     if (!res.ok) return this.#toast.show(res.reason);
+    this.#views.get('categories')?.clearPicking?.();
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();
-    const n = res.summary.entries;
-    this.#toast.show(`${from} merged into ${into}${n ? ` · ${n} ${n === 1 ? 'entry' : 'entries'} moved` : ''}`, {
-      action: { label: 'Undo', run: () => this.#undoCategoryMerge(res.undo, from) },
+    const what = names.length === 1 ? names[0] : `${names.length} categories`;
+    const n    = res.summary.entries;
+    this.#toast.show(`${what} merged into ${into}${n ? ` · ${n} ${n === 1 ? 'entry' : 'entries'} moved` : ''}`, {
+      action: { label: 'Undo', run: () => this.#undoCategoryMerge(res.undo, what) },
     });
   }
 
-  #undoCategoryMerge(undo, name) {
+  #undoCategoryMerge(undo, what) {
     this.#categories.undoMerge(undo);
     this.#render();
     this.#sync.schedulePush?.();
-    this.#toast.show(`Undone · ${name} is back`);
+    this.#toast.show(`Undone · ${what} ${/categories$/.test(what) ? 'are' : 'is'} back`);
   }
 
   toggleCategoryCollapse(id) {
