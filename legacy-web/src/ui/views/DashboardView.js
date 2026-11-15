@@ -189,7 +189,9 @@ export class DashboardView extends BaseView {
     const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
     const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
     const unconfirmed = window.__app?.vendorDues?.unconfirmed?.(today) ?? [];
-    if (!bills.length && !owedRows.length && !unconfirmed.length) return '';
+    // Card bills and loan instalments overdue or due within a few days.
+    const reminders = window.__app?.owed?.reminders?.(today) ?? [];
+    if (!bills.length && !owedRows.length && !unconfirmed.length && !reminders.length) return '';
     const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>'
       : b.today ? '<span class="bill-tag bill-today">today</span>'
       : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
@@ -204,6 +206,15 @@ export class DashboardView extends BaseView {
             <span class="flex-1 text-left">${unconfirmed.map((u) => `${this.escapeHtml(u.item.name)}: ${u.days.length} day${u.days.length === 1 ? '' : 's'}`).join(' · ')} not confirmed — check Regulars</span>
             <i data-lucide="chevron-right"></i>
           </button>` : ''}
+        ${reminders.map((r) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0 owe-reminder">
+            <i data-lucide="${r.kind === 'card' ? 'credit-card' : 'calendar-clock'}" class="text-zinc-400" style="width:16px;height:16px"></i>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">${this.escapeHtml(r.name)}${r.kind === 'card' ? ' bill' : ' instalment'}</div>
+              <div class="flex items-center gap-2">${r.overdue ? '<span class="bill-tag bill-late">overdue</span>' : `<span class="text-xs text-zinc-500">due ${this.escapeHtml(this.#short(r.date))}</span>`}<span class="text-xs text-zinc-500">${this.formatMoney(r.amount, r.currency)}</span></div>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="${r.kind === 'card' ? `window.__app.payCardBill('${this.escapeHtml(r.id)}')` : `window.__app.payLoanInstalment('${this.escapeHtml(r.id)}')`}">Pay</button>
+          </div>`).join('')}
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">

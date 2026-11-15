@@ -43,7 +43,7 @@ export class AccountModal {
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Type</label>
-            <select class="select" name="type">
+            <select class="select" name="type" onchange="document.getElementById('accCardFields').style.display = this.value === 'card' ? '' : 'none'">
               ${ACCOUNT_TYPES.map((t) => `<option value="${t.id}" ${a.type===t.id?'selected':''}>${t.label}</option>`).join('')}
             </select>
           </div>
@@ -72,6 +72,25 @@ export class AccountModal {
             : 'A non-zero starting balance is recorded as an <b>Opening balance</b> transaction in the ledger.'}
         </div>
 
+        <div id="accCardFields" class="card-muted p-3 mb-3" ${a.type === 'card' ? '' : 'style="display:none"'}>
+          <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="credit-card" style="width:14px;height:14px"></i> Credit card</div>
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-zinc-500">Limit</label>
+              <input class="input" name="creditLimit" type="number" min="0" step="${CurrencyService.stepFor(a.currency)}" value="${a.creditLimit ? this.#fx.fromMinor(a.creditLimit, a.currency) : ''}" placeholder="optional">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Statement day</label>
+              ${this.#daySelect('statementDay', a.statementDay)}
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Due day</label>
+              ${this.#daySelect('dueDay', a.dueDay)}
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500 mt-2">The statement day is when the bank closes each bill; the due day is when it must be paid. Pocket works out each bill from your entries. For the balance, enter what you owe as a minus amount (e.g. −12000).</div>
+        </div>
+
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Group</label>
           <select class="select" name="groupId" id="accGroupSelect"
@@ -96,6 +115,14 @@ export class AccountModal {
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
+  }
+
+  /** Day of month 1–31, or blank. */
+  #daySelect(name, value) {
+    const v = Number(value) || 0;
+    return `<select class="select" name="${name}"><option value="">—</option>${
+      Array.from({ length: 31 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${v === d ? 'selected' : ''}>${d}</option>`).join('')
+    }</select>`;
   }
 
   #esc(s) {

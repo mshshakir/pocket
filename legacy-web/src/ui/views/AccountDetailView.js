@@ -5,6 +5,8 @@
  * monthly-balance sub-view, and reconcile banner for owned accounts.
  * Also handles shared accounts (family sharing) in read/edit mode.
  */
+import { CardCycle }    from '../../domain/services/CardCycle.js';
+import { DeliveryPlan } from '../../domain/services/DeliveryPlan.js';
 import { BaseView }               from './BaseView.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 import { TransactionService }     from '../../domain/services/TransactionService.js';
@@ -200,6 +202,8 @@ export class AccountDetailView extends BaseView {
         </div>
       </div>
 
+      ${!isShared && CardCycle.isCard(a) ? this.#cardPanel(a, canManage) : ''}
+
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <div class="card-muted p-3"><div class="text-xs text-zinc-500">This month in</div><div class="text-lg font-semibold text-emerald-500">+${this.formatMoney(mthIn, a.currency)}</div></div>
         <div class="card-muted p-3"><div class="text-xs text-zinc-500">This month out</div><div class="text-lg font-semibold text-rose-500">-${this.formatMoney(mthOut, a.currency)}</div></div>
@@ -384,6 +388,45 @@ export class AccountDetailView extends BaseView {
           </tbody>
         </table>
       </div>`;
+  }
+
+  /**
+   * Credit card: this bill, when it's due, what's been paid, what's on the
+   * next bill, and the limit. Set-up prompt when the days aren't filled in.
+   */
+  #cardPanel(a, canManage) {
+    const c = window.__app?.owed?.cardCycle?.(a, DateService.todayIso());
+    if (!c) return '';
+    const cur  = a.currency;
+    const edit = canManage ? `window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})` : '';
+    const limit = c.limit ? `
+          <div class="progress mt-3"><div style="width:${c.usedPct}%;background:${c.usedPct >= 100 ? '#ef4444' : c.usedPct >= 80 ? '#f59e0b' : '#6366f1'}"></div></div>
+          <div class="text-xs text-zinc-500 mt-1">${this.formatMoney(c.owed, cur)} used · ${this.formatMoney(Math.max(0, c.available), cur)} left of ${this.formatMoney(c.limit, cur)}</div>` : '';
+    if (c.status === 'none') {
+      return `
+        <div class="card p-4 mb-4 card-panel">
+          <div class="font-medium flex items-center gap-2"><i data-lucide="credit-card" style="width:16px;height:16px"></i> Credit card</div>
+          <div class="text-sm text-zinc-500 mt-1">${this.formatMoney(c.owed, cur)} owed.${canManage ? ` <a href="#" class="underline" onclick="event.preventDefault();${edit}">Add the statement and due days</a> to see each bill and when it's due.` : ''}</div>
+          ${limit}
+        </div>`;
+    }
+    const word = { clear: 'No bill this month', paid: 'Bill paid', overdue: 'Overdue', soon: 'Due soon', open: 'To pay' }[c.status];
+    const tone = c.status === 'overdue' ? 'text-rose-500' : c.status === 'paid' || c.status === 'clear' ? 'text-emerald-600' : '';
+    return `
+        <div class="card p-4 mb-4 card-panel">
+          <div class="flex items-start gap-3">
+            <div class="flex-1">
+              <div class="text-xs text-zinc-500">This bill · closed ${DeliveryPlan.shortDate(c.statement)}${c.dueDate ? ` · due ${DeliveryPlan.shortDate(c.dueDate)}` : ''}</div>
+              <div class="text-2xl font-semibold ${tone}">${c.billLeft > 0 ? this.formatMoney(c.billLeft, cur) : word}</div>
+              <div class="text-xs text-zinc-500 mt-1">
+                ${c.billLeft > 0 ? `${word} · ` : ''}Bill ${this.formatMoney(c.bill, cur)} · paid since ${this.formatMoney(c.paid, cur)} · spent since ${this.formatMoney(c.unbilled, cur)} (next bill)
+              </div>
+            </div>
+            ${canManage && (c.billLeft > 0 || c.owed > 0) ? `<button class="btn btn-primary" onclick="window.__app.payCardBill('${this.jsArg(a.id)}')"><i data-lucide="banknote"></i> Pay bill</button>` : ''}
+          </div>
+          ${limit}
+          <div class="text-xs text-zinc-400 mt-2">Worked out from your entries, not from the bank.</div>
+        </div>`;
   }
 
   #bulkBar(isShared = false, shareIndex = null) {

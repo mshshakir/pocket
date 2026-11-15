@@ -82,6 +82,9 @@ import { CategoryModal }    from './ui/modals/CategoryModal.js';
 import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
 import { HelpModal }        from './ui/modals/HelpModal.js';
 import { HelpGuide }        from './ui/components/HelpGuide.js';
+import { OwedService }      from './domain/services/OwedService.js';
+import { CardCycle }        from './domain/services/CardCycle.js';
+import { LoanInstalments }  from './domain/services/LoanInstalments.js';
 import { BudgetModal }      from './ui/modals/BudgetModal.js';
 import { SettingsModal }    from './ui/modals/SettingsModal.js';
 import { CsvModal }         from './ui/modals/CsvModal.js';
@@ -144,6 +147,7 @@ export class Application {
   /** @type {VendorDues}           */ #vendorDues;
   /** @type {BillService}          */ #bills;
   /** @type {CategoryMergeModal}   */ #categoryMergeModal;
+  /** @type {OwedService}          */ #owed;
   /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
@@ -230,6 +234,7 @@ export class Application {
     this.#habits      = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
     this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+    this.#owed        = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
     this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -611,6 +616,7 @@ export class Application {
   get vendorDues() { return this.#vendorDues; }
   /** Recurring bills that wait to be paid (amount changes). */
   get bills() { return this.#bills; }
+  get owed()  { return this.#owed; }
   /** Habits followed in Reports. */
   get habits() { return this.#habits; }
   /** The signed-in email, for "who gets the Telegram message". */
@@ -2456,7 +2462,7 @@ export class Application {
 
       // Delegate the entity update to AccountService (mutates the same object);
       // the balance-adjustment ledger entry is orchestrated here.
-      this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
+      this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data) });
 
       // A pure currency switch re-denominates the account; it is not a
       // real-world balance change, so it must not mint a ledger entry. The
@@ -2494,6 +2500,7 @@ export class Application {
     // New account — AccountService owns the entity row; opening-balance ledger
     // entry is orchestrated here.
     const a     = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: 'wallet', groupId });
+    Object.assign(a, this.#cardFields(data));
     const newId = a.id;
     if (newMinor !== 0) {
       const positive = newMinor > 0;
@@ -2514,6 +2521,22 @@ export class Application {
     this.closeModal(); this.#render();
     this.#toast.show('Account added' + (newMinor !== 0 ? ' · opening balance logged' : ''));
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Credit-card settings from the account form. Kept (not cleared) when the
+   * type changes away from card, so switching back doesn't lose them.
+   * @returns {{creditLimit?:number|null, statementDay?:number|null, dueDay?:number|null}}
+   */
+  #cardFields(data) {
+    if (data.type !== 'card') return {};
+    const day = (v) => { const n = Math.round(Number(v)); return n >= 1 && n <= 31 ? n : null; };
+    const limit = Number(data.creditLimit);
+    return {
+      creditLimit:  limit > 0 ? this.#fx.toMinor(limit, data.currency) : null,
+      statementDay: day(data.statementDay),
+      dueDay:       day(data.dueDay),
+    };
   }
 
   deleteAccount(id) {
@@ -2969,9 +2992,12 @@ export class Application {
     if (id) {
       const debt = state.debts.find((x) => x.id === id);
       if (!debt) return;
+      const inst = this.#instalmentFields(data, debt.currency);
+      if (inst.error) return this.#toast.show(inst.error);
       debt.counterparty = data.counterparty || debt.counterparty;
       debt.dueDate      = data.dueDate || null;
       debt.note         = data.note || '';
+      Object.assign(debt, inst.fields);
 
       const wasPaid   = debt.status === 'paid';
       const nowPaid   = !!data.markPaid;
@@ -2997,6 +3023,8 @@ export class Application {
     if (!data.counterparty?.trim()) return this.#toast.show('Add a counterparty');
     const acc = state.accounts.find((a) => a.id === data.accountId);
     if (!acc) return this.#toast.show('Pick an account');
+    const inst = this.#instalmentFields(data, currency);
+    if (inst.error) return this.#toast.show(inst.error);
 
     const debtId  = IdGenerator.generate('dbt');
     const txId    = IdGenerator.generate('tx');
@@ -3022,12 +3050,60 @@ export class Application {
       principal, currency, accountId: data.accountId,
       dateTaken: data.dateTaken, dueDate: data.dueDate || null,
       note: data.note || '', status: 'active', initialTxId: txId,
+      ...inst.fields,
     });
 
     this.#store.persist();
     this.closeModal(); this.#render();
     this.#toast.show(isBorrowed ? 'Debt recorded · account credited' : 'Loan recorded · account debited');
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Pay a card's bill: a transfer from your usual (non-card) account into the
+   * card, filled in with what's left of the bill — or, with no statement day
+   * set, everything owed. The amount can be changed before saving.
+   * @param {string} accountId  the card
+   */
+  payCardBill(accountId) {
+    const state = this.#store.getState();
+    const card  = state.accounts.find((a) => a.id === accountId);
+    if (!card) return this.#toast.show('Card not found');
+    const cycle  = this.#owed.cardCycle(card, DateService.todayIso());
+    const amount = cycle.billLeft > 0 ? cycle.billLeft : cycle.owed;
+    const usual  = state.accounts.find((a) => a.id === this.#accounts.defaultId());
+    const from   = usual && !CardCycle.isCard(usual) && !usual.archived ? usual
+      : state.accounts.find((a) => !a.archived && !CardCycle.isCard(a) && a.id !== card.id);
+    if (!from) return this.#toast.show('Add a bank or cash account to pay the card from');
+    this.openModal('transaction', { preset: {
+      type: 'transfer', accountId: from.id, transferToAccountId: card.id,
+      // A new entry's preset amount is in MAJOR units (see TransactionModal).
+      amount: this.#fx.fromMinor(amount, card.currency), currency: card.currency, payee: `${card.name} bill`, note: '',
+      date: DateService.todayIso(), paymentType: 'transfer',
+    } });
+  }
+
+  /** Pay a loan's instalment (or what's behind): the payment form, filled in. */
+  payLoanInstalment(debtId) {
+    const debt = (this.#store.getState().debts || []).find((d) => d.id === debtId);
+    if (!debt) return;
+    const i = LoanInstalments.of(debt, this.#owed.paidOn(debt), DateService.todayIso());
+    this.openModal('debtPayment', { id: debtId, amount: i?.dueNow || undefined });
+  }
+
+  /**
+   * "Paid back in monthly instalments" from the debt form.
+   * @returns {{fields:object}|{error:string}}  fields are null when switched off
+   */
+  #instalmentFields(data, currency) {
+    if (!data.instalments) return { fields: { instalmentAmount: null, instalmentDay: null, instalmentCount: null } };
+    const amount = this.#fx.toMinor(data.instalmentAmount || 0, currency);
+    const day    = Math.round(Number(data.instalmentDay));
+    const count  = Math.round(Number(data.instalmentCount));
+    if (!(amount > 0)) return { error: 'Enter the amount of each instalment' };
+    if (!(day >= 1 && day <= 31)) return { error: 'Pick the day instalments are due' };
+    if (!(count >= 1)) return { error: 'Enter how many instalments' };
+    return { fields: { instalmentAmount: amount, instalmentDay: day, instalmentCount: count } };
   }
 
   submitDebtPayment(event, debtId) {

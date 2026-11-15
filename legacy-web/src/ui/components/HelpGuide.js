@@ -21,6 +21,7 @@ export class HelpGuide {
       points: [
         'Add one account for each place you keep money: your wallet (<b>Cash</b>), each bank account (<b>Bank</b>), each <b>Credit Card</b>, and any <b>Savings</b> or <b>Investment</b>.',
         '<b>Starting balance</b>: what’s in it today. Every entry you add from then on moves it up or down.',
+        '<b>Credit card</b>: enter what you owe as a minus amount, and fill in the <b>limit</b>, <b>statement day</b> and <b>due day</b>. The card’s page then shows this bill, when it’s due, and what’s left to spend, with a <b>Pay bill</b> button.',
         'Pick the account’s own currency. Totals are shown in your home currency.',
         'Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.',
         'Balance doesn’t match? Edit the account and type the current balance — Pocket adds a “Balance adjustment” entry. If <b>Reconcile</b> shows on an account, tap it.',
@@ -52,13 +53,13 @@ export class HelpGuide {
     },
     debts: {
       title: 'Debts',
-      intro: 'Keep track of money you lent or borrowed.',
+      intro: 'Everything you have to pay, and money owed to you.',
       points: [
-        'Choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to.',
-        'Each debt and payment is also an entry in that account, so your balances stay right.',
-        'Tap <b>Record payment</b> as money comes back or goes out; the bar shows what’s left.',
-        'Use <b>Mark as fully paid</b> when it’s settled.',
-        'At the top: what you owe and what’s owed to you, in your home currency.',
+        '<b>You owe</b> adds up four things, each in its own group: <b>Loans</b> you took, <b>Credit cards</b>, <b>Bills</b> due, and what you owe for <b>Deliveries</b>. Bills coming up this week are shown but not counted yet.',
+        'Each <b>Pay</b> button uses the usual flow for that thing, so paying here or in Regulars or Accounts is the same.',
+        'New debt: choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to. It’s also an entry in that account, so balances stay right.',
+        'A loan from a person is paid back whenever, in any amounts. For a bank or car loan, tick <b>Paid back in monthly instalments</b> — it then shows what’s due each month and how many are paid.',
+        'Tap <b>Record payment</b> as money comes back or goes out; the bar shows what’s left. <b>Mark as fully paid</b> when it’s settled.',
       ],
     },
     categories: {

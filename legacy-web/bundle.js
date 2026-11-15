@@ -10902,6 +10902,7 @@ This replaces your current grouping.`
         points: [
           "Add one account for each place you keep money: your wallet (<b>Cash</b>), each bank account (<b>Bank</b>), each <b>Credit Card</b>, and any <b>Savings</b> or <b>Investment</b>.",
           "<b>Starting balance</b>: what\u2019s in it today. Every entry you add from then on moves it up or down.",
+          "<b>Credit card</b>: enter what you owe as a minus amount, and fill in the <b>limit</b>, <b>statement day</b> and <b>due day</b>. The card\u2019s page then shows this bill, when it\u2019s due, and what\u2019s left to spend, with a <b>Pay bill</b> button.",
           "Pick the account\u2019s own currency. Totals are shown in your home currency.",
           "Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.",
           "Balance doesn\u2019t match? Edit the account and type the current balance \u2014 Pocket adds a \u201CBalance adjustment\u201D entry. If <b>Reconcile</b> shows on an account, tap it.",
@@ -10933,13 +10934,13 @@ This replaces your current grouping.`
       },
       debts: {
         title: "Debts",
-        intro: "Keep track of money you lent or borrowed.",
+        intro: "Everything you have to pay, and money owed to you.",
         points: [
-          "Choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to.",
-          "Each debt and payment is also an entry in that account, so your balances stay right.",
-          "Tap <b>Record payment</b> as money comes back or goes out; the bar shows what\u2019s left.",
-          "Use <b>Mark as fully paid</b> when it\u2019s settled.",
-          "At the top: what you owe and what\u2019s owed to you, in your home currency."
+          "<b>You owe</b> adds up four things, each in its own group: <b>Loans</b> you took, <b>Credit cards</b>, <b>Bills</b> due, and what you owe for <b>Deliveries</b>. Bills coming up this week are shown but not counted yet.",
+          "Each <b>Pay</b> button uses the usual flow for that thing, so paying here or in Regulars or Accounts is the same.",
+          "New debt: choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to. It\u2019s also an entry in that account, so balances stay right.",
+          "A loan from a person is paid back whenever, in any amounts. For a bank or car loan, tick <b>Paid back in monthly instalments</b> \u2014 it then shows what\u2019s due each month and how many are paid.",
+          "Tap <b>Record payment</b> as money comes back or goes out; the bar shows what\u2019s left. <b>Mark as fully paid</b> when it\u2019s settled."
         ]
       },
       categories: {
@@ -11797,7 +11798,8 @@ This replaces your current grouping.`
       const owed = window.__app?.vendorDues?.totalOwed?.() ?? {};
       const owedRows = Object.entries(owed).filter(([, v]) => v > 0);
       const unconfirmed = window.__app?.vendorDues?.unconfirmed?.(today) ?? [];
-      if (!bills.length && !owedRows.length && !unconfirmed.length) return "";
+      const reminders = window.__app?.owed?.reminders?.(today) ?? [];
+      if (!bills.length && !owedRows.length && !unconfirmed.length && !reminders.length) return "";
       const when = (b) => b.overdue ? '<span class="bill-tag bill-late">overdue</span>' : b.today ? '<span class="bill-tag bill-today">today</span>' : `<span class="text-xs text-zinc-500">${this.escapeHtml(this.#short(b.date))}</span>`;
       return `
       <div class="card p-4 mb-4">
@@ -11810,6 +11812,15 @@ This replaces your current grouping.`
             <span class="flex-1 text-left">${unconfirmed.map((u) => `${this.escapeHtml(u.item.name)}: ${u.days.length} day${u.days.length === 1 ? "" : "s"}`).join(" \xB7 ")} not confirmed \u2014 check Regulars</span>
             <i data-lucide="chevron-right"></i>
           </button>` : ""}
+        ${reminders.map((r) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0 owe-reminder">
+            <i data-lucide="${r.kind === "card" ? "credit-card" : "calendar-clock"}" class="text-zinc-400" style="width:16px;height:16px"></i>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">${this.escapeHtml(r.name)}${r.kind === "card" ? " bill" : " instalment"}</div>
+              <div class="flex items-center gap-2">${r.overdue ? '<span class="bill-tag bill-late">overdue</span>' : `<span class="text-xs text-zinc-500">due ${this.escapeHtml(this.#short(r.date))}</span>`}<span class="text-xs text-zinc-500">${this.formatMoney(r.amount, r.currency)}</span></div>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="${r.kind === "card" ? `window.__app.payCardBill('${this.escapeHtml(r.id)}')` : `window.__app.payLoanInstalment('${this.escapeHtml(r.id)}')`}">Pay</button>
+          </div>`).join("")}
         ${bills.slice(0, 6).map((b) => `
           <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
             <div class="flex-1 min-w-0">
@@ -12419,6 +12430,80 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/CardCycle.js
+  var CardCycle = class _CardCycle {
+    /** Days before the due date when a bill counts as "due soon". */
+    static SOON = 5;
+    /** @param {object} account */
+    static isCard(account) {
+      return account?.type === "card";
+    }
+    /**
+     * @param {object} account
+     * @param {number} balance  the account's balance now (minor units; negative = owed)
+     * @param {object[]} transactions
+     * @param {string} today  YYYY-MM-DD
+     * @param {import('./CurrencyService.js').CurrencyService} fx
+     */
+    static of(account, balance, transactions, today, fx) {
+      const owed = Math.max(0, -Math.round(balance || 0));
+      const limit = Number(account?.creditLimit) > 0 ? Math.round(account.creditLimit) : null;
+      const available = limit === null ? null : limit - owed;
+      const usedPct = limit ? Math.min(100, Math.round(100 * owed / limit)) : null;
+      const base = { owed, limit, available, usedPct, currency: account?.currency };
+      const sDay = _CardCycle.#day(account?.statementDay);
+      if (!sDay) return { ...base, status: "none" };
+      const statement = _CardCycle.lastOn(sDay, today);
+      const dDay = _CardCycle.#day(account?.dueDay);
+      const dueDate = dDay ? _CardCycle.nextAfter(dDay, statement) : null;
+      let after = 0, paid = 0, unbilled = 0;
+      for (const tx of transactions || []) {
+        if (!tx?.date || tx.date <= statement) continue;
+        const d = LedgerMath.accountDelta(tx, account, fx);
+        if (!d) continue;
+        after += d;
+        if (d > 0) paid += d;
+        else unbilled -= d;
+      }
+      const bill = Math.max(0, -Math.round((balance || 0) - after));
+      const billLeft = Math.max(0, bill - Math.round(paid));
+      const status = !bill ? "clear" : !billLeft ? "paid" : dueDate && today > dueDate ? "overdue" : dueDate && _CardCycle.#daysBetween(today, dueDate) <= _CardCycle.SOON ? "soon" : "open";
+      return { ...base, statement, dueDate, bill, paid: Math.round(paid), billLeft, unbilled: Math.round(unbilled), status };
+    }
+    /** The most recent date on or before `today` that falls on day `day`. */
+    static lastOn(day, today) {
+      const [y, m] = today.split("-").map(Number);
+      const here = _CardCycle.#on(y, m, day);
+      if (here <= today) return here;
+      return m === 1 ? _CardCycle.#on(y - 1, 12, day) : _CardCycle.#on(y, m - 1, day);
+    }
+    /** The first date strictly after `iso` that falls on day `day`. */
+    static nextAfter(day, iso) {
+      const [y, m] = iso.split("-").map(Number);
+      const here = _CardCycle.#on(y, m, day);
+      if (here > iso) return here;
+      return m === 12 ? _CardCycle.#on(y + 1, 1, day) : _CardCycle.#on(y, m + 1, day);
+    }
+    /** Whole days from a to b (b later → positive). */
+    static daysUntil(a, b) {
+      return _CardCycle.#daysBetween(a, b);
+    }
+    // ── Private ──────────────────────────────────────────────────────────
+    static #day(v) {
+      const n = Math.round(Number(v));
+      return n >= 1 && n <= 31 ? n : 0;
+    }
+    /** YYYY-MM-DD for day `day` of a month, clamped to the month's length. */
+    static #on(y, m, day) {
+      const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const d = Math.min(day, last);
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+    static #daysBetween(a, b) {
+      return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
+    }
+  };
+
   // src/ui/views/AccountDetailView.js
   var AccountDetailView = class extends BaseView {
     /** @type {TransactionRowRenderer} */
@@ -12610,6 +12695,8 @@ This replaces your current grouping.`
         </div>
       </div>
 
+      ${!isShared && CardCycle.isCard(a) ? this.#cardPanel(a, canManage) : ""}
+
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <div class="card-muted p-3"><div class="text-xs text-zinc-500">This month in</div><div class="text-lg font-semibold text-emerald-500">+${this.formatMoney(mthIn, a.currency)}</div></div>
         <div class="card-muted p-3"><div class="text-xs text-zinc-500">This month out</div><div class="text-lg font-semibold text-rose-500">-${this.formatMoney(mthOut, a.currency)}</div></div>
@@ -12789,6 +12876,44 @@ This replaces your current grouping.`
           </tbody>
         </table>
       </div>`;
+    }
+    /**
+     * Credit card: this bill, when it's due, what's been paid, what's on the
+     * next bill, and the limit. Set-up prompt when the days aren't filled in.
+     */
+    #cardPanel(a, canManage) {
+      const c = window.__app?.owed?.cardCycle?.(a, DateService.todayIso());
+      if (!c) return "";
+      const cur = a.currency;
+      const edit = canManage ? `window.__app.openModal('account',{id:'${this.jsArg(a.id)}'})` : "";
+      const limit = c.limit ? `
+          <div class="progress mt-3"><div style="width:${c.usedPct}%;background:${c.usedPct >= 100 ? "#ef4444" : c.usedPct >= 80 ? "#f59e0b" : "#6366f1"}"></div></div>
+          <div class="text-xs text-zinc-500 mt-1">${this.formatMoney(c.owed, cur)} used \xB7 ${this.formatMoney(Math.max(0, c.available), cur)} left of ${this.formatMoney(c.limit, cur)}</div>` : "";
+      if (c.status === "none") {
+        return `
+        <div class="card p-4 mb-4 card-panel">
+          <div class="font-medium flex items-center gap-2"><i data-lucide="credit-card" style="width:16px;height:16px"></i> Credit card</div>
+          <div class="text-sm text-zinc-500 mt-1">${this.formatMoney(c.owed, cur)} owed.${canManage ? ` <a href="#" class="underline" onclick="event.preventDefault();${edit}">Add the statement and due days</a> to see each bill and when it's due.` : ""}</div>
+          ${limit}
+        </div>`;
+      }
+      const word = { clear: "No bill this month", paid: "Bill paid", overdue: "Overdue", soon: "Due soon", open: "To pay" }[c.status];
+      const tone = c.status === "overdue" ? "text-rose-500" : c.status === "paid" || c.status === "clear" ? "text-emerald-600" : "";
+      return `
+        <div class="card p-4 mb-4 card-panel">
+          <div class="flex items-start gap-3">
+            <div class="flex-1">
+              <div class="text-xs text-zinc-500">This bill \xB7 closed ${DeliveryPlan.shortDate(c.statement)}${c.dueDate ? ` \xB7 due ${DeliveryPlan.shortDate(c.dueDate)}` : ""}</div>
+              <div class="text-2xl font-semibold ${tone}">${c.billLeft > 0 ? this.formatMoney(c.billLeft, cur) : word}</div>
+              <div class="text-xs text-zinc-500 mt-1">
+                ${c.billLeft > 0 ? `${word} \xB7 ` : ""}Bill ${this.formatMoney(c.bill, cur)} \xB7 paid since ${this.formatMoney(c.paid, cur)} \xB7 spent since ${this.formatMoney(c.unbilled, cur)} (next bill)
+              </div>
+            </div>
+            ${canManage && (c.billLeft > 0 || c.owed > 0) ? `<button class="btn btn-primary" onclick="window.__app.payCardBill('${this.jsArg(a.id)}')"><i data-lucide="banknote"></i> Pay bill</button>` : ""}
+          </div>
+          ${limit}
+          <div class="text-xs text-zinc-400 mt-2">Worked out from your entries, not from the bank.</div>
+        </div>`;
     }
     #bulkBar(isShared = false, shareIndex = null) {
       if (!this.#multiSelect) return "";
@@ -13679,6 +13804,53 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/LoanInstalments.js
+  var LoanInstalments = class _LoanInstalments {
+    /** Days before the next date when an instalment counts as "due soon". */
+    static SOON = 5;
+    /** @param {object} debt */
+    static has(debt) {
+      return Number(debt?.instalmentAmount) > 0 && Number(debt?.instalmentDay) >= 1 && Number(debt?.instalmentCount) >= 1;
+    }
+    /**
+     * Where a loan stands against its instalments.
+     * @param {object} debt
+     * @param {number} paid  total repaid so far, minor units in the debt's currency
+     * @param {string} today YYYY-MM-DD
+     * @returns {null|{amount:number, count:number, paidCount:number, dates:string[],
+     *   nextDate:string|null, behind:number, dueNow:number, status:'done'|'overdue'|'soon'|'open'}}
+     *   behind  how much of what's fallen due by today is still unpaid
+     *   dueNow  what to pay next: what's behind, else one instalment
+     */
+    static of(debt, paid, today) {
+      if (!_LoanInstalments.has(debt)) return null;
+      const amount = Math.round(debt.instalmentAmount);
+      const count = Math.round(debt.instalmentCount);
+      const dates = _LoanInstalments.dates(debt);
+      const remaining = Math.max(0, (debt.principal || 0) - paid);
+      const paidCount = Math.min(count, Math.floor((paid + 1) / amount));
+      const fallen = dates.filter((d) => d <= today).length;
+      const owedByNow = Math.min(debt.principal || Infinity, fallen * amount);
+      const behind = Math.max(0, Math.min(remaining, owedByNow - paid));
+      const nextDate = remaining <= 0 ? null : dates[paidCount] ?? dates.at(-1);
+      const dueNow = remaining <= 0 ? 0 : Math.min(remaining, behind || amount);
+      const status = remaining <= 0 || debt.status === "paid" ? "done" : behind > 0 ? "overdue" : nextDate && CardCycle.daysUntil(today, nextDate) <= _LoanInstalments.SOON ? "soon" : "open";
+      return { amount, count, paidCount, dates, nextDate, behind, dueNow, status };
+    }
+    /** Every instalment date, oldest first. */
+    static dates(debt) {
+      if (!_LoanInstalments.has(debt)) return [];
+      const day = Math.round(debt.instalmentDay);
+      const out = [];
+      let d = CardCycle.nextAfter(day, debt.dateTaken || "1970-01-01");
+      for (let i = 0; i < Math.round(debt.instalmentCount) && i < 600; i++) {
+        out.push(d);
+        d = CardCycle.nextAfter(day, d);
+      }
+      return out;
+    }
+  };
+
   // src/ui/views/DebtsView.js
   var DebtsView = class extends BaseView {
     constructor() {
@@ -13686,11 +13858,16 @@ This replaces your current grouping.`
     }
     render() {
       const { state, homeCurrency: home } = this;
+      const today = DateService.todayIso();
       const debts = state.debts || [];
       const active = debts.filter((d) => d.status !== "paid");
       const paid = debts.filter((d) => d.status === "paid");
-      const youOwe = active.filter((d) => d.type === "borrowed").reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
-      const owedToYou = active.filter((d) => d.type === "lent").reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+      const lent = active.filter((d) => d.type === "lent");
+      const borrowed = active.filter((d) => d.type === "borrowed");
+      const owedToYou = lent.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+      const owed = this.inGuestSpace ? null : window.__app?.owed?.summary?.(today) ?? null;
+      const youOwe = owed ? owed.totals.all : borrowed.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+      const nothing = !active.length && !(owed && (owed.cards.length || owed.bills.length || owed.vendors.length));
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
@@ -13704,36 +13881,101 @@ This replaces your current grouping.`
       </div>
 
       <div class="grid grid-cols-2 gap-4 mb-6">
-        <div class="card p-5">
+        <div class="card p-5 owe-total">
           <div class="text-xs text-zinc-500 mb-1 flex items-center gap-1.5">
             <i data-lucide="arrow-down-left" class="text-rose-500"></i> You owe
           </div>
           <div class="text-2xl font-semibold text-rose-500">${this.formatMoney(youOwe, home)}</div>
-          <div class="text-xs text-zinc-500 mt-1">${active.filter((d) => d.type === "borrowed").length} active</div>
+          <div class="text-xs text-zinc-500 mt-1">${owed ? this.#breakdown(owed) : `${borrowed.length} active`}</div>
         </div>
         <div class="card p-5">
           <div class="text-xs text-zinc-500 mb-1 flex items-center gap-1.5">
             <i data-lucide="arrow-up-right" class="text-emerald-500"></i> Owed to you
           </div>
           <div class="text-2xl font-semibold text-emerald-500">${this.formatMoney(owedToYou, home)}</div>
-          <div class="text-xs text-zinc-500 mt-1">${active.filter((d) => d.type === "lent").length} active</div>
+          <div class="text-xs text-zinc-500 mt-1">${lent.length} active</div>
         </div>
       </div>
 
-      ${active.length === 0 ? `<div class="card p-10 text-center">${this.emptyState("No active debts", "Record money you have borrowed or lent. The amount syncs straight to the linked account.")}</div>` : `<div class="text-xs uppercase tracking-wider text-zinc-500 mb-2">Active</div>
-           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-             ${active.map((d) => this.#debtCard(d, state)).join("")}
-           </div>`}
+      ${nothing ? `<div class="card p-10 text-center">${this.emptyState("Nothing owed", "Record money you have borrowed or lent. Credit cards, bills due and delivery dues show here too.")}</div>` : `
+          ${this.#section("Loans", "owe-loans", borrowed.length ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">${borrowed.map((d) => this.#debtCard(d, state, today)).join("")}</div>` : "")}
+          ${owed ? this.#section("Credit cards", "owe-cards", this.#cards(owed.cards)) : ""}
+          ${owed ? this.#section("Bills", "owe-bills", this.#bills(owed.bills, state)) : ""}
+          ${owed ? this.#section("Deliveries", "owe-vendors", this.#vendors(owed.vendors)) : ""}
+          ${this.#section("Owed to you", "owed-to-you", lent.length ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">${lent.map((d) => this.#debtCard(d, state, today)).join("")}</div>` : "")}
+        `}
 
       ${paid.length ? `
         <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2">Paid off</div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          ${paid.map((d) => this.#debtCard(d, state)).join("")}
+          ${paid.map((d) => this.#debtCard(d, state, today)).join("")}
         </div>` : ""}
     `;
     }
+    // ── "I owe" groups ────────────────────────────────────────────────────
+    #section(title, cls, body) {
+      if (!body) return "";
+      return `<div class="${cls} mb-6"><div class="text-xs uppercase tracking-wider text-zinc-500 mb-2">${title}</div>${body}</div>`;
+    }
+    /** "Loans ₹a · Cards ₹b · Bills ₹c · Deliveries ₹d" — only the non-zero ones. */
+    #breakdown(owed) {
+      const h = owed.home, t = owed.totals;
+      const parts = [["Loans", t.loans], ["Cards", t.cards], ["Bills", t.bills], ["Deliveries", t.vendors]].filter(([, v]) => v > 0).map(([k, v]) => `${k} ${this.formatMoney(v, h)}`);
+      return parts.length ? parts.join(" \xB7 ") : "Nothing right now";
+    }
+    #cards(cards) {
+      if (!cards.length) return "";
+      return `<div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${cards.map(({ account: a, cycle: c }) => {
+        const cur = a.currency;
+        const tag = { overdue: '<span class="bill-tag bill-late">overdue</span>', soon: '<span class="bill-tag bill-today">due soon</span>', paid: '<span class="text-xs text-emerald-600">bill paid \u2713</span>' }[c.status] || "";
+        const line = c.status === "none" ? `${this.formatMoney(c.owed, cur)} owed \xB7 <a class="underline" href="#" onclick="event.preventDefault();window.__app.openModal('account',{id:'${a.id}'})">add statement & due days</a>` : c.billLeft > 0 ? `${this.formatMoney(c.billLeft, cur)} due ${c.dueDate ? DeliveryPlan.shortDate(c.dueDate) : ""}` : `${this.formatMoney(c.owed, cur)} owed`;
+        const bar = c.limit ? `<div class="progress mt-2"><div style="width:${c.usedPct}%;background:${c.usedPct >= 100 ? "#ef4444" : c.usedPct >= 80 ? "#f59e0b" : "#6366f1"}"></div></div>
+          <div class="text-xs text-zinc-500 mt-1">${this.formatMoney(c.owed, cur)} used \xB7 ${this.formatMoney(Math.max(0, c.available), cur)} left of ${this.formatMoney(c.limit, cur)}</div>` : "";
+        return `
+        <div class="p-4 owe-card" data-card="${a.id}">
+          <div class="flex items-center gap-3">
+            <button class="icon-pill" style="background:${a.color}22;color:${a.color}" onclick="window.__app.openAccountDetail('${a.id}')"><i data-lucide="credit-card"></i></button>
+            <button class="flex-1 min-w-0 text-left" onclick="window.__app.openAccountDetail('${a.id}')">
+              <div class="font-medium truncate">${this.escapeHtml(a.name)} ${tag}</div>
+              <div class="text-sm">${line}</div>
+              ${c.unbilled > 0 && c.status !== "none" ? `<div class="text-xs text-zinc-500">+ ${this.formatMoney(c.unbilled, cur)} spent since the statement</div>` : ""}
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="window.__app.payCardBill('${a.id}')">Pay</button>
+          </div>
+          ${bar}
+        </div>`;
+      }).join("")}</div>`;
+    }
+    #bills(bills, state) {
+      if (!bills.length) return "";
+      const now = bills.filter((b) => b.counted);
+      const soon = bills.filter((b) => !b.counted);
+      const row = (b) => `
+      <div class="flex items-center gap-3 p-3 owe-bill ${b.counted ? "" : "opacity-70"}">
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium truncate">${this.escapeHtml(BillService.nameOf(b.template, state))}</div>
+          <div class="text-xs text-zinc-500">${b.overdue ? '<span class="bill-tag bill-late">overdue</span> ' : b.today ? '<span class="bill-tag bill-today">today</span> ' : ""}${DeliveryPlan.shortDate(b.date)} \xB7 last ${this.formatMoney(b.lastAmount || 0, b.currency)}</div>
+        </div>
+        <button class="btn ${b.counted ? "btn-primary" : "btn-outline"} btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${this.escapeHtml(b.template.id)}',date:'${b.date}'})">Pay</button>
+      </div>`;
+      return `<div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
+        ${now.map(row).join("")}
+        ${soon.length ? `<div class="px-3 pt-3 pb-1 text-xs text-zinc-500">Coming up this week \xB7 not counted yet</div>${soon.map(row).join("")}` : ""}
+      </div>`;
+    }
+    #vendors(vendors) {
+      if (!vendors.length) return "";
+      return `<div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${vendors.map((v) => `
+      <div class="flex items-center gap-3 p-3 owe-vendor">
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium truncate">${this.escapeHtml(v.vendor)}</div>
+          <div class="text-xs text-zinc-500">${this.formatMoney(v.amount, v.currency)} for deliveries</div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="window.__app.openModal('settle',{vendor:${this.escapeHtml(JSON.stringify(v.vendor))}})">Pay</button>
+      </div>`).join("")}</div>`;
+    }
     // ── Private ───────────────────────────────────────────────────────────
-    #debtCard(d, state) {
+    #debtCard(d, state, today = DateService.todayIso()) {
       const acc = state.accounts.find((a) => a.id === d.accountId);
       const rem = this.#remaining(d, state);
       const paidAmt = this.#paidAmount(d, state);
@@ -13743,8 +13985,8 @@ This replaces your current grouping.`
       const typeLabel = isBorrowed ? "You owe" : "Owed to you";
       const typeIcon = isBorrowed ? "arrow-down-left" : "arrow-up-right";
       const due = d.dueDate ? /* @__PURE__ */ new Date(d.dueDate + "T12:00:00") : null;
-      const today = /* @__PURE__ */ new Date();
-      const daysUntilDue = due ? Math.ceil((due - today) / 864e5) : null;
+      const now = /* @__PURE__ */ new Date();
+      const daysUntilDue = due ? Math.ceil((due - now) / 864e5) : null;
       const payTxs = state.transactions.filter((t) => t.debtId === d.id && t.id !== d.initialTxId);
       return `
       <div class="card p-5 ${d.status === "paid" ? "opacity-60" : ""}">
@@ -13773,9 +14015,24 @@ This replaces your current grouping.`
             <span class="text-zinc-500">${pct}% repaid \xB7 ${payTxs.length} payment${payTxs.length === 1 ? "" : "s"}</span>
             ${d.status === "paid" ? `<span class="text-emerald-500 inline-flex items-center gap-1"><i data-lucide="check-circle-2" style="width:11px;height:11px"></i> Paid off</span>` : daysUntilDue !== null ? daysUntilDue < 0 ? `<span class="text-rose-500">Overdue ${-daysUntilDue}d</span>` : `<span class="text-zinc-500">Due in ${daysUntilDue}d</span>` : '<span class="text-zinc-500">No due date</span>'}
           </div>
+          ${this.#instalmentLine(d, paidAmt, today)}
           ${d.note ? `<div class="text-xs text-zinc-500 mt-2">${this.escapeHtml(d.note)}</div>` : ""}
         </div>
       </div>`;
+    }
+    /** "8 of 24 paid · next ₹5,000 on 5 Dec", or how much is behind, with a Pay button. */
+    #instalmentLine(d, paidAmt, today) {
+      const i = LoanInstalments.of(d, paidAmt, today);
+      if (!i) return "";
+      const cur = d.currency;
+      const text = i.status === "done" ? `All ${i.count} instalments paid` : i.status === "overdue" ? `<span class="text-rose-500">Behind ${this.formatMoney(i.behind, cur)}</span> \xB7 ${i.paidCount} of ${i.count} paid` : `${i.paidCount} of ${i.count} paid \xB7 next ${this.formatMoney(i.amount, cur)} on ${DeliveryPlan.shortDate(i.nextDate)}`;
+      const canPay = i.status !== "done" && !this.inGuestSpace;
+      return `
+          <div class="loan-instalments flex items-center gap-2 mt-3 text-xs">
+            <i data-lucide="calendar-clock" style="width:13px;height:13px" class="text-zinc-400"></i>
+            <span class="flex-1">${text}</span>
+            ${canPay ? `<button class="btn ${i.status === "overdue" || i.status === "soon" ? "btn-primary" : "btn-outline"} btn-sm" onclick="window.__app.payLoanInstalment('${d.id}')">Pay ${this.formatMoney(i.dueNow, cur)}</button>` : ""}
+          </div>`;
     }
     /** Remaining balance = principal − sum of payment transactions (cross-currency aware) */
     #remaining(d, state) {
@@ -15576,7 +15833,7 @@ This replaces your current grouping.`
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-zinc-500">Type</label>
-            <select class="select" name="type">
+            <select class="select" name="type" onchange="document.getElementById('accCardFields').style.display = this.value === 'card' ? '' : 'none'">
               ${ACCOUNT_TYPES.map((t) => `<option value="${t.id}" ${a.type === t.id ? "selected" : ""}>${t.label}</option>`).join("")}
             </select>
           </div>
@@ -15603,6 +15860,25 @@ This replaces your current grouping.`
           ${editing ? "Changing the balance writes a <b>Balance adjustment</b> transaction. Delete that entry to restore the previous balance." : "A non-zero starting balance is recorded as an <b>Opening balance</b> transaction in the ledger."}
         </div>
 
+        <div id="accCardFields" class="card-muted p-3 mb-3" ${a.type === "card" ? "" : 'style="display:none"'}>
+          <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="credit-card" style="width:14px;height:14px"></i> Credit card</div>
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-zinc-500">Limit</label>
+              <input class="input" name="creditLimit" type="number" min="0" step="${CurrencyService.stepFor(a.currency)}" value="${a.creditLimit ? this.#fx.fromMinor(a.creditLimit, a.currency) : ""}" placeholder="optional">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Statement day</label>
+              ${this.#daySelect("statementDay", a.statementDay)}
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Due day</label>
+              ${this.#daySelect("dueDay", a.dueDay)}
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500 mt-2">The statement day is when the bank closes each bill; the due day is when it must be paid. Pocket works out each bill from your entries. For the balance, enter what you owe as a minus amount (e.g. \u221212000).</div>
+        </div>
+
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Group</label>
           <select class="select" name="groupId" id="accGroupSelect"
@@ -15627,6 +15903,11 @@ This replaces your current grouping.`
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
         </div>
       </form>`;
+    }
+    /** Day of month 1–31, or blank. */
+    #daySelect(name, value) {
+      const v = Number(value) || 0;
+      return `<select class="select" name="${name}"><option value="">\u2014</option>${Array.from({ length: 31 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${v === d ? "selected" : ""}>${d}</option>`).join("")}</select>`;
     }
     #esc(s) {
       return (s || "").toString().replace(
@@ -15932,6 +16213,90 @@ This replaces your current grouping.`
           <button type="button" class="btn btn-primary" onclick="window.__app.closeModal()">Got it</button>
         </div>
       </div>`;
+    }
+  };
+
+  // src/domain/services/OwedService.js
+  var OwedService = class {
+    /** @type {object} */
+    #store;
+    /** @type {object} */
+    #fx;
+    /** @type {() => object} */
+    #bills;
+    /** @type {() => object} */
+    #vendorDues;
+    /** @type {() => object} */
+    #accounts;
+    /**
+     * @param {{store:object, fx:object, bills:() => object, vendorDues:() => object, accounts:() => object}} deps
+     *   bills / vendorDues / accounts are getters so they can be built after this
+     */
+    constructor({ store, fx, bills, vendorDues, accounts }) {
+      this.#store = store;
+      this.#fx = fx;
+      this.#bills = bills;
+      this.#vendorDues = vendorDues;
+      this.#accounts = accounts;
+    }
+    /**
+     * @param {string} today YYYY-MM-DD
+     * @returns {{home:string, loans:object[], cards:object[], bills:object[], vendors:object[],
+     *            totals:{loans:number, cards:number, bills:number, vendors:number, all:number}}}
+     */
+    summary(today) {
+      const state = this.#store.getState();
+      const home = state.user?.homeCurrency || "USD";
+      const toHome = (minor, cur) => this.#fx.convert(minor, cur || home, home);
+      const loans = (state.debts || []).filter((d) => d.type === "borrowed" && d.status !== "paid").map((debt) => {
+        const paid = this.paidOn(debt);
+        return { debt, paid, remaining: Math.max(0, (debt.principal || 0) - paid), instalments: LoanInstalments.of(debt, paid, today) };
+      });
+      const cards = (state.accounts || []).filter((a) => CardCycle.isCard(a) && !a.archived).map((account) => ({ account, cycle: this.cardCycle(account, today) })).filter((c) => c.cycle.owed > 0 || c.cycle.billLeft > 0);
+      const bills = (this.#bills()?.due(today) ?? []).map((b) => ({ ...b, counted: b.overdue || b.today }));
+      const vendors = (this.#vendorDues()?.byVendor(today) ?? []).filter((g) => g.amount > 0).map((g) => ({ vendor: g.vendor, currency: g.currency, amount: g.amount }));
+      const totals = {
+        loans: loans.reduce((s, l) => s + toHome(l.remaining, l.debt.currency), 0),
+        cards: cards.reduce((s, c) => s + toHome(c.cycle.owed, c.account.currency), 0),
+        bills: bills.filter((b) => b.counted).reduce((s, b) => s + toHome(b.lastAmount || 0, b.currency), 0),
+        vendors: vendors.reduce((s, v) => s + toHome(v.amount, v.currency), 0)
+      };
+      totals.all = totals.loans + totals.cards + totals.bills + totals.vendors;
+      return { home, loans, cards, bills, vendors, totals };
+    }
+    /**
+     * Card bills and loan instalments that need attention: overdue, or due within
+     * a few days. For the Dashboard. Oldest date first.
+     * @param {string} today
+     * @returns {{kind:'card'|'loan', id:string, name:string, date:string, amount:number, currency:string, overdue:boolean}[]}
+     */
+    reminders(today) {
+      const s = this.summary(today);
+      const out = [];
+      for (const { account, cycle } of s.cards) {
+        if (cycle.status === "overdue" || cycle.status === "soon") {
+          out.push({ kind: "card", id: account.id, name: account.name, date: cycle.dueDate, amount: cycle.billLeft, currency: account.currency, overdue: cycle.status === "overdue" });
+        }
+      }
+      for (const { debt, instalments: i } of s.loans) {
+        if (i && (i.status === "overdue" || i.status === "soon")) {
+          out.push({ kind: "loan", id: debt.id, name: debt.counterparty, date: i.nextDate, amount: i.dueNow, currency: debt.currency, overdue: i.status === "overdue" });
+        }
+      }
+      return out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    }
+    /** @param {object} account @param {string} today */
+    cardCycle(account, today) {
+      const balance = this.#accounts()?.balanceOf?.(account) ?? account.balance ?? 0;
+      return CardCycle.of(account, balance, this.#store.getState().transactions, today, this.#fx);
+    }
+    /**
+     * What's been repaid on a debt, in its own currency (payments in other
+     * currencies converted). Same rule as the Debts page has always used.
+     * @param {object} debt
+     */
+    paidOn(debt) {
+      return (this.#store.getState().transactions || []).filter((t) => t.debtId === debt.id && t.id !== debt.initialTxId).reduce((s, t) => s + this.#fx.convert(t.amount, t.currency || debt.currency, debt.currency), 0);
     }
   };
 
@@ -16578,6 +16943,8 @@ This replaces your current grouping.`
           </div>
         </div>
 
+        ${this.#instalmentFields(d)}
+
         <div class="mb-4">
           <label class="text-xs text-zinc-500">Note</label>
           <textarea class="textarea" name="note" rows="2"
@@ -16615,13 +16982,14 @@ This replaces your current grouping.`
       </form>`;
     }
     // ── Record a debt payment ────────────────────────────────────────────
-    #renderPayment({ id } = {}) {
+    #renderPayment({ id, amount } = {}) {
       const state = this.#store.getState();
       const debt = state.debts?.find((d) => d.id === id);
       if (!debt) return `<div class="p-5">Debt not found</div>`;
       const isBorrowed = debt.type === "borrowed";
       const rem = this.#debtRemaining(debt, state);
       const remDisp = this.#fx.fromMinor(rem, debt.currency);
+      const payDisp = Number(amount) > 0 ? this.#fx.fromMinor(Math.min(rem, Math.round(amount)), debt.currency) : remDisp;
       return `
       <form onsubmit="window.__app.submitDebtPayment(event,'${id}')" class="p-5">
         <div class="flex items-center justify-between mb-4">
@@ -16643,7 +17011,7 @@ This replaces your current grouping.`
           <div>
             <label class="text-xs text-zinc-500">Amount</label>
             <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(debt.currency)}" required
-                   value="${remDisp}" max="${remDisp}" autofocus>
+                   value="${payDisp}" max="${remDisp}" autofocus>
           </div>
           <div>
             <label class="text-xs text-zinc-500">Date</label>
@@ -16682,6 +17050,40 @@ This replaces your current grouping.`
         return sum + this.#fx.convert(t.amount || 0, fromCcy, debt.currency);
       }, 0);
       return Math.max(0, debt.principal - paid);
+    }
+    /** "Pay in instalments": amount each, day of month, how many. */
+    #instalmentFields(d) {
+      const on = LoanInstalments.has(d);
+      const day = Number(d.instalmentDay) || 0;
+      return `
+        <div class="mb-3">
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="instalments" ${on ? "checked" : ""}
+                   onchange="document.getElementById('debtInstFields').style.display = this.checked ? '' : 'none'">
+            <span>Paid back in monthly instalments</span>
+          </label>
+          <div id="debtInstFields" class="card-muted p-3 mt-2" ${on ? "" : 'style="display:none"'}>
+            <div class="grid grid-cols-3 gap-2">
+              <div>
+                <label class="text-xs text-zinc-500">Each</label>
+                <input class="input" name="instalmentAmount" type="number" min="0" step="${CurrencyService.stepFor(d.currency)}"
+                       value="${on ? this.#fx.fromMinor(d.instalmentAmount, d.currency) : ""}">
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">Day</label>
+                <select class="select" name="instalmentDay">
+                  <option value="">\u2014</option>
+                  ${Array.from({ length: 31 }, (_, i) => i + 1).map((n) => `<option value="${n}" ${day === n ? "selected" : ""}>${n}</option>`).join("")}
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">How many</label>
+                <input class="input" name="instalmentCount" type="number" min="1" step="1" value="${on ? Math.round(d.instalmentCount) : ""}">
+              </div>
+            </div>
+            <div class="text-xs text-zinc-500 mt-2">For a bank or car loan, e.g. 5,000 on the 5th, 24 times. It shows as due each month; every payment you record counts towards it.</div>
+          </div>
+        </div>`;
     }
     #esc(s) {
       return (s || "").toString().replace(
@@ -19773,6 +20175,8 @@ This replaces your current grouping.`
     #bills;
     /** @type {CategoryMergeModal}   */
     #categoryMergeModal;
+    /** @type {OwedService}          */
+    #owed;
     /** @type {HabitService}         */
     #habits;
     /** @type {SyncService}          */
@@ -19881,6 +20285,7 @@ This replaces your current grouping.`
       this.#habits = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
       this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+      this.#owed = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
       this.#sync = new SyncService();
       this.#themeService = new ThemeService(this.#store);
       this.#paymentTypeService = new PaymentTypeService(this.#store);
@@ -20197,6 +20602,9 @@ This replaces your current grouping.`
     /** Recurring bills that wait to be paid (amount changes). */
     get bills() {
       return this.#bills;
+    }
+    get owed() {
+      return this.#owed;
     }
     /** Habits followed in Reports. */
     get habits() {
@@ -21905,7 +22313,7 @@ Leave empty to use your own name.`,
         if (!a2) return;
         const currencyChanged = a2.currency !== data.currency;
         const wasMinor = currencyChanged ? this.#fx.convert(a2.balance, a2.currency, data.currency) : a2.balance;
-        this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId });
+        this.#accounts.update(id, { name: data.name, type: data.type, currency: data.currency, color: data.color, archived: !!data.archived, groupId, ...this.#cardFields(data) });
         if (!currencyChanged && newMinor !== wasMinor) {
           const wasMajor = wasMinor;
           const delta = newMinor - wasMinor;
@@ -21942,6 +22350,7 @@ Leave empty to use your own name.`,
         return;
       }
       const a = this.#accounts.create({ name: data.name, type: data.type, currency: data.currency, color: data.color, icon: "wallet", groupId });
+      Object.assign(a, this.#cardFields(data));
       const newId = a.id;
       if (newMinor !== 0) {
         const positive = newMinor > 0;
@@ -21971,6 +22380,24 @@ Leave empty to use your own name.`,
       this.#render();
       this.#toast.show("Account added" + (newMinor !== 0 ? " \xB7 opening balance logged" : ""));
       this.#sync.schedulePush?.();
+    }
+    /**
+     * Credit-card settings from the account form. Kept (not cleared) when the
+     * type changes away from card, so switching back doesn't lose them.
+     * @returns {{creditLimit?:number|null, statementDay?:number|null, dueDay?:number|null}}
+     */
+    #cardFields(data) {
+      if (data.type !== "card") return {};
+      const day = (v) => {
+        const n = Math.round(Number(v));
+        return n >= 1 && n <= 31 ? n : null;
+      };
+      const limit = Number(data.creditLimit);
+      return {
+        creditLimit: limit > 0 ? this.#fx.toMinor(limit, data.currency) : null,
+        statementDay: day(data.statementDay),
+        dueDay: day(data.dueDay)
+      };
     }
     deleteAccount(id) {
       const state = this.#store.getState();
@@ -22377,9 +22804,12 @@ Leave empty to use your own name.`,
       if (id) {
         const debt = state.debts.find((x) => x.id === id);
         if (!debt) return;
+        const inst2 = this.#instalmentFields(data, debt.currency);
+        if (inst2.error) return this.#toast.show(inst2.error);
         debt.counterparty = data.counterparty || debt.counterparty;
         debt.dueDate = data.dueDate || null;
         debt.note = data.note || "";
+        Object.assign(debt, inst2.fields);
         const wasPaid = debt.status === "paid";
         const nowPaid = !!data.markPaid;
         const remaining = this.#debtOutstanding(debt);
@@ -22400,6 +22830,8 @@ Leave empty to use your own name.`,
       if (!data.counterparty?.trim()) return this.#toast.show("Add a counterparty");
       const acc = state.accounts.find((a) => a.id === data.accountId);
       if (!acc) return this.#toast.show("Pick an account");
+      const inst = this.#instalmentFields(data, currency);
+      if (inst.error) return this.#toast.show(inst.error);
       const debtId = IdGenerator.generate("dbt");
       const txId = IdGenerator.generate("tx");
       const exRate = (RATES[currency] || 1) / (RATES[state.user.homeCurrency] || 1);
@@ -22438,13 +22870,63 @@ Leave empty to use your own name.`,
         dueDate: data.dueDate || null,
         note: data.note || "",
         status: "active",
-        initialTxId: txId
+        initialTxId: txId,
+        ...inst.fields
       });
       this.#store.persist();
       this.closeModal();
       this.#render();
       this.#toast.show(isBorrowed ? "Debt recorded \xB7 account credited" : "Loan recorded \xB7 account debited");
       this.#sync.schedulePush?.();
+    }
+    /**
+     * Pay a card's bill: a transfer from your usual (non-card) account into the
+     * card, filled in with what's left of the bill — or, with no statement day
+     * set, everything owed. The amount can be changed before saving.
+     * @param {string} accountId  the card
+     */
+    payCardBill(accountId) {
+      const state = this.#store.getState();
+      const card = state.accounts.find((a) => a.id === accountId);
+      if (!card) return this.#toast.show("Card not found");
+      const cycle = this.#owed.cardCycle(card, DateService.todayIso());
+      const amount = cycle.billLeft > 0 ? cycle.billLeft : cycle.owed;
+      const usual = state.accounts.find((a) => a.id === this.#accounts.defaultId());
+      const from = usual && !CardCycle.isCard(usual) && !usual.archived ? usual : state.accounts.find((a) => !a.archived && !CardCycle.isCard(a) && a.id !== card.id);
+      if (!from) return this.#toast.show("Add a bank or cash account to pay the card from");
+      this.openModal("transaction", { preset: {
+        type: "transfer",
+        accountId: from.id,
+        transferToAccountId: card.id,
+        // A new entry's preset amount is in MAJOR units (see TransactionModal).
+        amount: this.#fx.fromMinor(amount, card.currency),
+        currency: card.currency,
+        payee: `${card.name} bill`,
+        note: "",
+        date: DateService.todayIso(),
+        paymentType: "transfer"
+      } });
+    }
+    /** Pay a loan's instalment (or what's behind): the payment form, filled in. */
+    payLoanInstalment(debtId) {
+      const debt = (this.#store.getState().debts || []).find((d) => d.id === debtId);
+      if (!debt) return;
+      const i = LoanInstalments.of(debt, this.#owed.paidOn(debt), DateService.todayIso());
+      this.openModal("debtPayment", { id: debtId, amount: i?.dueNow || void 0 });
+    }
+    /**
+     * "Paid back in monthly instalments" from the debt form.
+     * @returns {{fields:object}|{error:string}}  fields are null when switched off
+     */
+    #instalmentFields(data, currency) {
+      if (!data.instalments) return { fields: { instalmentAmount: null, instalmentDay: null, instalmentCount: null } };
+      const amount = this.#fx.toMinor(data.instalmentAmount || 0, currency);
+      const day = Math.round(Number(data.instalmentDay));
+      const count = Math.round(Number(data.instalmentCount));
+      if (!(amount > 0)) return { error: "Enter the amount of each instalment" };
+      if (!(day >= 1 && day <= 31)) return { error: "Pick the day instalments are due" };
+      if (!(count >= 1)) return { error: "Enter how many instalments" };
+      return { fields: { instalmentAmount: amount, instalmentDay: day, instalmentCount: count } };
     }
     submitDebtPayment(event, debtId) {
       event.preventDefault();

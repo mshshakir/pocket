@@ -6,6 +6,7 @@ import { Store }           from '../../core/Store.js';
 import { CurrencyService } from '../../domain/services/CurrencyService.js';
 import { CURRENCIES }      from '../../data/constants.js';
 import { DateService }     from '../../domain/services/DateService.js';
+import { LoanInstalments } from '../../domain/services/LoanInstalments.js';
 
 export class DebtModal {
   /** @type {Store} */           #store;
@@ -124,6 +125,8 @@ export class DebtModal {
           </div>
         </div>
 
+        ${this.#instalmentFields(d)}
+
         <div class="mb-4">
           <label class="text-xs text-zinc-500">Note</label>
           <textarea class="textarea" name="note" rows="2"
@@ -163,7 +166,7 @@ export class DebtModal {
 
   // ── Record a debt payment ────────────────────────────────────────────
 
-  #renderPayment({ id } = {}) {
+  #renderPayment({ id, amount } = {}) {
     const state = this.#store.getState();
     const debt  = state.debts?.find((d) => d.id === id);
     if (!debt) return `<div class="p-5">Debt not found</div>`;
@@ -171,6 +174,8 @@ export class DebtModal {
     const isBorrowed = debt.type === 'borrowed';
     const rem        = this.#debtRemaining(debt, state);
     const remDisp    = this.#fx.fromMinor(rem, debt.currency);
+    // An instalment (or what's behind) can be passed in; never more than what's left.
+    const payDisp    = Number(amount) > 0 ? this.#fx.fromMinor(Math.min(rem, Math.round(amount)), debt.currency) : remDisp;
 
     return `
       <form onsubmit="window.__app.submitDebtPayment(event,'${id}')" class="p-5">
@@ -193,7 +198,7 @@ export class DebtModal {
           <div>
             <label class="text-xs text-zinc-500">Amount</label>
             <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(debt.currency)}" required
-                   value="${remDisp}" max="${remDisp}" autofocus>
+                   value="${payDisp}" max="${remDisp}" autofocus>
           </div>
           <div>
             <label class="text-xs text-zinc-500">Date</label>
@@ -235,6 +240,41 @@ export class DebtModal {
       return sum + this.#fx.convert(t.amount || 0, fromCcy, debt.currency);
     }, 0);
     return Math.max(0, debt.principal - paid);
+  }
+
+  /** "Pay in instalments": amount each, day of month, how many. */
+  #instalmentFields(d) {
+    const on  = LoanInstalments.has(d);
+    const day = Number(d.instalmentDay) || 0;
+    return `
+        <div class="mb-3">
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="instalments" ${on ? 'checked' : ''}
+                   onchange="document.getElementById('debtInstFields').style.display = this.checked ? '' : 'none'">
+            <span>Paid back in monthly instalments</span>
+          </label>
+          <div id="debtInstFields" class="card-muted p-3 mt-2" ${on ? '' : 'style="display:none"'}>
+            <div class="grid grid-cols-3 gap-2">
+              <div>
+                <label class="text-xs text-zinc-500">Each</label>
+                <input class="input" name="instalmentAmount" type="number" min="0" step="${CurrencyService.stepFor(d.currency)}"
+                       value="${on ? this.#fx.fromMinor(d.instalmentAmount, d.currency) : ''}">
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">Day</label>
+                <select class="select" name="instalmentDay">
+                  <option value="">—</option>
+                  ${Array.from({ length: 31 }, (_, i) => i + 1).map((n) => `<option value="${n}" ${day === n ? 'selected' : ''}>${n}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-zinc-500">How many</label>
+                <input class="input" name="instalmentCount" type="number" min="1" step="1" value="${on ? Math.round(d.instalmentCount) : ''}">
+              </div>
+            </div>
+            <div class="text-xs text-zinc-500 mt-2">For a bank or car loan, e.g. 5,000 on the 5th, 24 times. It shows as due each month; every payment you record counts towards it.</div>
+          </div>
+        </div>`;
   }
 
   #esc(s) {
