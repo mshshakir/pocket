@@ -10896,6 +10896,19 @@ This replaces your current grouping.`
     static #SEEN_KEY = "pocket.helpSeen";
     /** @type {Record<string, {title:string, intro:string, points:string[]}>} */
     static #PAGES = Object.freeze({
+      accounts: {
+        title: "Accounts",
+        intro: "Accounts are the places your money sits \u2014 your wallet, bank, cards and savings.",
+        points: [
+          "Add one account for each place you keep money: your wallet (<b>Cash</b>), each bank account (<b>Bank</b>), each <b>Credit Card</b>, and any <b>Savings</b> or <b>Investment</b>.",
+          "<b>Starting balance</b>: what\u2019s in it today. Every entry you add from then on moves it up or down.",
+          "Pick the account\u2019s own currency. Totals are shown in your home currency.",
+          "Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.",
+          "Balance doesn\u2019t match? Edit the account and type the current balance \u2014 Pocket adds a \u201CBalance adjustment\u201D entry. If <b>Reconcile</b> shows on an account, tap it.",
+          "<b>Groups</b> keep things tidy, like Personal and Business. Closed an account? Mark it <b>Archived</b>: its history stays, it\u2019s out of the way.",
+          "You can share an account with family so they can add entries to it."
+        ]
+      },
       calendar: {
         title: "Regulars",
         intro: "Everything that repeats, in one place.",
@@ -12246,7 +12259,9 @@ This replaces your current grouping.`
       const anyCollapsed = sections.some((s) => collapsed.has(s.id));
       return `
       <div class="flex items-center justify-between mb-6 gap-2">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Accounts</h1>
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Accounts${this.helpButton("accounts")}</h1>${this.helpHint("accounts")}
+        </div>
         <div class="flex items-center gap-2">
           ${sections.length > 1 ? `
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}
@@ -13078,7 +13093,9 @@ This replaces your current grouping.`
       const anyCollapsed = collapsibleParents.some((p) => collapsed.has(p.id));
       return `
       <div class="flex items-center justify-between mb-6 gap-2">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Categories${this.helpButton("categories")}</h1>${this.helpHint("categories")}
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Categories${this.helpButton("categories")}</h1>${this.helpHint("categories")}
+        </div>
         <div class="flex items-center gap-2">
           ${collapsibleParents.length ? `
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllCategories()" title="Collapse every parent"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}

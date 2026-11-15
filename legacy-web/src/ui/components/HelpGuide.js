@@ -15,6 +15,19 @@ export class HelpGuide {
 
   /** @type {Record<string, {title:string, intro:string, points:string[]}>} */
   static #PAGES = Object.freeze({
+    accounts: {
+      title: 'Accounts',
+      intro: 'Accounts are the places your money sits — your wallet, bank, cards and savings.',
+      points: [
+        'Add one account for each place you keep money: your wallet (<b>Cash</b>), each bank account (<b>Bank</b>), each <b>Credit Card</b>, and any <b>Savings</b> or <b>Investment</b>.',
+        '<b>Starting balance</b>: what’s in it today. Every entry you add from then on moves it up or down.',
+        'Pick the account’s own currency. Totals are shown in your home currency.',
+        'Moving money between your own accounts (bank to wallet, paying a card)? Add a <b>Transfer</b>, not an expense, so your spending stays right.',
+        'Balance doesn’t match? Edit the account and type the current balance — Pocket adds a “Balance adjustment” entry. If <b>Reconcile</b> shows on an account, tap it.',
+        '<b>Groups</b> keep things tidy, like Personal and Business. Closed an account? Mark it <b>Archived</b>: its history stays, it’s out of the way.',
+        'You can share an account with family so they can add entries to it.',
+      ],
+    },
     calendar: {
       title: 'Regulars',
       intro: 'Everything that repeats, in one place.',

@@ -35,7 +35,9 @@ export class AccountsView extends BaseView {
 
     return `
       <div class="flex items-center justify-between mb-6 gap-2">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Accounts</h1>
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Accounts${this.helpButton('accounts')}</h1>${this.helpHint('accounts')}
+        </div>
         <div class="flex items-center gap-2">
           ${sections.length > 1 ? `
             ${anyExpanded  ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllAccountGroups()" title="Collapse all groups"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ''}

@@ -3,7 +3,7 @@
  *
  *   R1  Regulars: tabs are Calendar · Bills · Deliveries · Shortcuts, Calendar opens first
  *   R2  coming back to Regulars opens Calendar again; links can still open another tab
- *   H1  Regulars, Budgets, Debts and Categories have a ? by the title; Dashboard doesn't
+ *   H1  Accounts, Regulars, Budgets, Debts and Categories have a ? by the title; Dashboard doesn't
  *   H2  a one-time hint shows until the guide is opened or "Got it" is tapped
  *   H3  the guide opens with the page's own title and bullets
  *
@@ -63,7 +63,7 @@ app.navigate('dashboard'); app.navigate('calendar'); app.setCalTab('deliveries')
 await wait(10);
 ok('R2 a link to Deliveries still lands on Deliveries', activeTab() === 'Deliveries', activeTab());
 
-for (const [route, title] of [['calendar', 'Regulars'], ['budgets', 'Budgets'], ['debts', 'Debts'], ['categories', 'Categories']]) {
+for (const [route, title] of [['accounts', 'Accounts'], ['calendar', 'Regulars'], ['budgets', 'Budgets'], ['debts', 'Debts'], ['categories', 'Categories']]) {
   app.navigate(route);
   await wait(10);
   const h1 = view().querySelector('h1');
@@ -99,6 +99,12 @@ app.closeModal();
 app.openHelp('calendar');
 await wait(10);
 ok('H3 the Regulars guide covers all four tabs', ['Calendar', 'Bills', 'Deliveries', 'Shortcuts'].every((t) => w.document.querySelector('.help-sheet').textContent.includes(t)));
+
+app.closeModal();
+app.openHelp('accounts');
+await wait(10);
+const acc = w.document.querySelector('.help-sheet').textContent;
+ok('H3 the Accounts guide covers types, starting balance, transfers and fixing a balance', ['Cash', 'Credit Card', 'Starting balance', 'Transfer', 'Balance adjustment', 'Archived'].every((t) => acc.includes(t)));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
