@@ -165,6 +165,52 @@ export class CategoryMerge {
     return { ok: true, summary, undo: { steps } };
   }
 
+  /**
+   * Which of the picked categories could be kept, with the rest merged into it.
+   * @param {string[]} ids
+   * @returns {object[]}
+   */
+  keepOptions(ids) {
+    const list = this.#ordered(ids);
+    if (list.length < 2) return [];
+    return list.filter((k) => this.checkMany(list.filter((id) => id !== k), k).ok).map((id) => this.#find(id));
+  }
+
+  /**
+   * Where a new category for these would sit: under their shared parent when
+   * they're all sub-categories of one main category, else as a main category.
+   * @param {string[]} ids
+   * @returns {string|null} parent id
+   */
+  newParentFor(ids) {
+    const list = this.#ordered(ids);
+    const parents = new Set(list.map((id) => this.#find(id).parentId || null));
+    const only = parents.size === 1 ? [...parents][0] : null;
+    return only && !list.includes(only) ? only : null;
+  }
+
+  /**
+   * Merge into a brand-new category (already built by the caller, not yet in
+   * the book). It is added first; if the merge fails it is taken out again.
+   * Undo removes it as well.
+   * @param {string[]} ids
+   * @param {object} cat  { id, name, type, parentId, icon, color }
+   */
+  applyIntoNew(ids, cat) {
+    this.#cats().push(cat);
+    const res = this.applyMany(ids, cat.id);
+    if (!res.ok) { this.#state.categories = this.#cats().filter((c) => c.id !== cat.id); return res; }
+    res.undo.created = cat.id;
+    res.summary.created = cat.name;
+    return res;
+  }
+
+  /** previewMany for a new category, on a copy of the book. */
+  previewIntoNew(ids, cat) {
+    const res = new CategoryMerge(CategoryMerge.#copy(this.#state)).applyIntoNew(ids, CategoryMerge.#copy(cat));
+    return res.ok ? res.summary : null;
+  }
+
   // ── Mutations ────────────────────────────────────────────────────────
 
   /**
@@ -239,6 +285,7 @@ export class CategoryMerge {
     if (!undo) return;
     if (Array.isArray(undo.steps)) {
       for (const step of [...undo.steps].reverse()) this.revert(step);
+      if (undo.created) this.#state.categories = this.#cats().filter((c) => c.id !== undo.created);
       return;
     }
     const cats = this.#cats();

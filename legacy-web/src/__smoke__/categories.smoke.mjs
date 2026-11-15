@@ -8,10 +8,13 @@
  *   M5  undo puts everything back, even after the arrays were swapped
  *   P1  several at once: targets, mixed types refused, a picked sub + its picked parent
  *   P2  several at once: counts each changed thing once; undo puts all back
+ *   K1  keep one of the ticked: which can be kept; the rest go into it
+ *   K2  into a new category: placed under a shared parent, else main; undo removes it
  *   A1  in the app: Edit → Merge shows the picker and the preview line
  *   A2  merging shows a toast with Undo; Undo brings it back
  *   A3  renaming to a name that's taken offers a merge
  *   A4  Delete on a used category opens "move and delete"; an unused one just goes
+ *   A6  the picker offers Keep …, other categories and + New category…; both work with Undo
  *   A5  Categories → Merge: tick several, other types greyed, merge them into one, Undo
  *
  * Run: node src/__smoke__/categories.smoke.mjs
@@ -113,6 +116,26 @@ const book = () => ({
   ok('P2 undo puts all three back exactly', norm(s) === norm(JSON.parse(before)));
 }
 
+{
+  const m = new CategoryMerge(book());
+  const keep = m.keepOptions(['groc', 'fuel']).map((c) => c.id);
+  ok('K1 Grocery or Fuel can be kept', keep.join() === 'groc,fuel', keep.join());
+  ok('K1 a sub can\'t be kept when its parent (with other subs) is ticked', !m.keepOptions(['groc', 'gveg']).some((c) => c.id === 'gveg'));
+  ok('K1 one ticked has nothing to keep', m.keepOptions(['fuel']).length === 0);
+  ok('K2 new for two subs of Food goes under Food; for mains, a main', m.newParentFor(['snacks', 'veg']) === 'food' && m.newParentFor(['groc', 'fuel']) === null && m.newParentFor(['food', 'snacks']) === null);
+  const s = book();
+  const before = JSON.stringify(s);
+  const mm = new CategoryMerge(s);
+  const res = mm.applyIntoNew(['groc', 'fuel'], { id: 'newc', name: 'Household', type: 'expense', parentId: null, icon: 'home', color: '#000' });
+  ok('K2 both go into the new Household; entries follow', res.ok && res.summary.created === 'Household' && s.categories.some((c) => c.id === 'newc') && s.transactions[3].categoryId === 'newc' && !s.categories.some((c) => c.id === 'groc' || c.id === 'fuel'));
+  ok('K2 Fruit moves under the new one', s.categories.find((c) => c.id === 'fruit').parentId === 'newc');
+  mm.revert(res.undo);
+  const norm = (st) => JSON.stringify({ ...st, categories: [...st.categories].sort((a, b) => a.id.localeCompare(b.id)) });
+  ok('K2 undo removes the new one and puts everything back', norm(s) === norm(JSON.parse(before)));
+  const bad = new CategoryMerge(book()).applyIntoNew(['fuel', 'salary'], { id: 'x', name: 'X', type: 'expense', parentId: null });
+  ok('K2 a failed merge leaves no new category behind', !bad.ok);
+}
+
 // ── in the app ────────────────────────────────────────────────────────────
 const bundleSrc = readFileSync(new URL('../../bundle.js', import.meta.url), 'utf8');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -152,7 +175,7 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   app.openCategoryMerge('groc');
   await wait(20);
   const opts = [...w.document.querySelectorAll('select[name="into"] option')].map((o) => o.value).filter(Boolean);
-  ok('A1 picker offers Food and Fuel', opts.join() === 'food,fuel', opts.join());
+  ok('A1 picker offers Food, Fuel and + New (no Keep with one ticked)', opts.join() === 'food,fuel,__new' && !w.document.querySelector('optgroup[label^="Keep"]'), opts.join());
   app.previewCategoryMerge('groc', 'food');
   const prev = w.document.getElementById('categoryMergePreview').textContent;
   ok('A1 preview: entries, Fruit moves, vegetables joins', /Moves 3 entries to Food/.test(prev) && /Fruit moves under Food/.test(prev) && /vegetables joins/.test(prev), prev);
@@ -236,7 +259,7 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   ok('A5 2 selected', /2 selected/.test(view().querySelector('.category-pick-bar').textContent));
   app.mergePickedCategories();
   await wait(20);
-  ok('A5 picker titled "Merge 2 categories", offers Food', /Merge 2 categories/.test(w.document.body.textContent) && [...w.document.querySelectorAll('select[name="into"] option')].map((o) => o.value).filter(Boolean).join() === 'food');
+  ok('A5 picker titled "Merge 2 categories", offers Food', /Merge 2 categories/.test(w.document.body.textContent) && [...w.document.querySelectorAll('select[name="into"] optgroup[label="Or move into"] option')].map((o) => o.value).join() === 'food');
   app.previewCategoryMerge('groc,fuel', 'food');
   ok('A5 preview counts both', /Moves 4 entries/.test(w.document.getElementById('categoryMergePreview').textContent), w.document.getElementById('categoryMergePreview').textContent);
   const f = w.document.querySelector('form');
@@ -250,6 +273,49 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   app.toggleCategoryPicking(); app.navigate('dashboard'); app.navigate('categories');
   await wait(20);
   ok('A5 leaving the screen ends ticking', !view().querySelector('.category-pick-bar'));
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  app.openCategoryMerge(['groc', 'fuel']);
+  await wait(20);
+  const sel = w.document.querySelector('select[name="into"]');
+  const groups = [...sel.querySelectorAll('optgroup')].map((g) => g.label + ':' + [...g.querySelectorAll('option')].map((o) => o.value).join('|'));
+  ok('A6 Keep Grocery / Keep Fuel, then Food, then + New', groups.join(' ; ') === 'Keep one of these:groc|fuel ; Or move into:food' && sel.querySelector('option[value="__new"]'), groups.join(' ; '));
+  app.previewCategoryMerge('groc,fuel', 'fuel');
+  const kp = w.document.getElementById('categoryMergePreview').textContent;
+  ok('A6 Keep Fuel: removes Grocery, moves its 1 entry, its subs move under Fuel', /Removes Grocery\./.test(kp) && /Moves 1 entry to Fuel/.test(kp) && /vegetables and Fruit move under Fuel/.test(kp), kp);
+  let f = w.document.querySelector('form');
+  sel.value = 'fuel';
+  app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
+  await wait(20);
+  ok('A6 Keep Fuel: Grocery gone, Fuel stays with its entries', !ids(w).includes('groc') && ids(w).includes('fuel') && w.__app.store.getState().transactions.find((t) => t.id === 't1').categoryId === 'fuel' && /Grocery merged into Fuel · 1 entry moved/.test(toastText(w)), toastText(w));
+  w.document.querySelector('.toast-action').click();
+  await wait(20);
+  ok('A6 Undo brings Grocery back', ids(w).includes('groc'));
+
+  app.openCategoryMerge(['groc', 'fuel']);
+  await wait(20);
+  f = w.document.querySelector('form');
+  f.querySelector('[name="into"]').value = '__new';
+  app.previewCategoryMerge('groc,fuel', '__new');
+  ok('A6 + New shows the name box and asks for a name', w.document.getElementById('categoryMergeNew').style.display === '' && /Type a name/.test(w.document.getElementById('categoryMergePreview').textContent));
+  f.querySelector('[name="newName"]').value = 'food';
+  app.previewCategoryMerge('groc,fuel', '__new');
+  ok('A6 a taken name is caught', /Food already exists/.test(w.document.getElementById('categoryMergePreview').textContent));
+  f.querySelector('[name="newName"]').value = 'Household';
+  app.previewCategoryMerge('groc,fuel', '__new');
+  const np = w.document.getElementById('categoryMergePreview').textContent;
+  ok('A6 preview: makes Household, removes both, moves 3 entries', /Makes a new category Household/.test(np) && /Removes Grocery and Fuel/.test(np) && /Moves 3 entries to Household/.test(np), np);
+  app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
+  await wait(20);
+  const hh = w.__app.store.getState().categories.find((c) => c.name === 'Household');
+  ok('A6 Household made; both gone; toast says (new)', hh && !ids(w).includes('groc') && !ids(w).includes('fuel') && w.__app.store.getState().transactions.find((t) => t.id === 't4').categoryId === hh.id && /2 categories merged into Household \(new\) · 3 entries moved/.test(toastText(w)), toastText(w));
+  w.document.querySelector('.toast-action').click();
+  await wait(20);
+  ok('A6 Undo removes Household and brings both back', !w.__app.store.getState().categories.some((c) => c.name === 'Household') && ids(w).includes('groc') && ids(w).includes('fuel'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

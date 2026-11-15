@@ -2800,15 +2800,24 @@ export class Application {
 
   /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
   previewCategoryMerge(ids, intoId) {
+    const isNew = intoId === CategoryMergeModal.NEW;
+    const box   = document.getElementById('categoryMergeNew');
+    const input = box?.querySelector('input[name="newName"]');
+    if (box) box.style.display = isNew ? '' : 'none';
+    if (isNew && input && document.activeElement !== input && !input.value) input.focus();
     const el = document.getElementById('categoryMergePreview');
-    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(Application.#idList(ids), intoId) : '';
+    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(Application.#idList(ids), intoId, input?.value || '') : '';
   }
 
   mergeCategory(event, ids) {
     event.preventDefault();
-    const intoId = new FormData(event.target).get('into');
+    const fd     = new FormData(event.target);
+    const intoId = String(fd.get('into') || '');
     if (!intoId) return this.#toast.show('Pick a category to move it to');
-    this.#runCategoryMerge(Application.#idList(ids), String(intoId));
+    const list = Application.#idList(ids);
+    if (intoId === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, String(fd.get('newName') || ''));
+    // "Keep X": the other ticked ones go into X.
+    this.#runCategoryMerge(list.filter((id) => id !== intoId), intoId);
   }
 
   /** '<id>,<id>' from an onclick, or an array → array of ids */
@@ -2816,11 +2825,16 @@ export class Application {
     return (Array.isArray(ids) ? ids : String(ids || '').split(',')).map(String).filter(Boolean);
   }
 
-  #runCategoryMerge(ids, intoId) {
+  /**
+   * @param {string[]} ids
+   * @param {string|null} intoId  null → a new category named `newName`
+   * @param {string} [newName]
+   */
+  #runCategoryMerge(ids, intoId, newName = '') {
     const names = ids.map((id) => this.#categories.find(id)?.name).filter(Boolean);
-    const into  = this.#categories.fullName(intoId);
-    const res   = this.#categories.mergeManyInto(ids, intoId);
+    const res   = intoId ? this.#categories.mergeManyInto(ids, intoId) : this.#categories.mergeIntoNew(ids, newName);
     if (!res.ok) return this.#toast.show(res.reason);
+    const into  = intoId ? this.#categories.fullName(intoId) : `${res.summary.created} (new)`;
     this.#views.get('categories')?.clearPicking?.();
     this.closeModal(); this.#render();
     this.#sync.schedulePush?.();

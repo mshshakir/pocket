@@ -2430,6 +2430,51 @@ var _PocketApp = (() => {
       };
       return { ok: true, summary, undo: { steps } };
     }
+    /**
+     * Which of the picked categories could be kept, with the rest merged into it.
+     * @param {string[]} ids
+     * @returns {object[]}
+     */
+    keepOptions(ids) {
+      const list = this.#ordered(ids);
+      if (list.length < 2) return [];
+      return list.filter((k) => this.checkMany(list.filter((id) => id !== k), k).ok).map((id) => this.#find(id));
+    }
+    /**
+     * Where a new category for these would sit: under their shared parent when
+     * they're all sub-categories of one main category, else as a main category.
+     * @param {string[]} ids
+     * @returns {string|null} parent id
+     */
+    newParentFor(ids) {
+      const list = this.#ordered(ids);
+      const parents = new Set(list.map((id) => this.#find(id).parentId || null));
+      const only = parents.size === 1 ? [...parents][0] : null;
+      return only && !list.includes(only) ? only : null;
+    }
+    /**
+     * Merge into a brand-new category (already built by the caller, not yet in
+     * the book). It is added first; if the merge fails it is taken out again.
+     * Undo removes it as well.
+     * @param {string[]} ids
+     * @param {object} cat  { id, name, type, parentId, icon, color }
+     */
+    applyIntoNew(ids, cat) {
+      this.#cats().push(cat);
+      const res = this.applyMany(ids, cat.id);
+      if (!res.ok) {
+        this.#state.categories = this.#cats().filter((c) => c.id !== cat.id);
+        return res;
+      }
+      res.undo.created = cat.id;
+      res.summary.created = cat.name;
+      return res;
+    }
+    /** previewMany for a new category, on a copy of the book. */
+    previewIntoNew(ids, cat) {
+      const res = new _CategoryMerge(_CategoryMerge.#copy(this.#state)).applyIntoNew(ids, _CategoryMerge.#copy(cat));
+      return res.ok ? res.summary : null;
+    }
     // ── Mutations ────────────────────────────────────────────────────────
     /**
      * Merge source into target.
@@ -2499,6 +2544,7 @@ var _PocketApp = (() => {
       if (!undo) return;
       if (Array.isArray(undo.steps)) {
         for (const step of [...undo.steps].reverse()) this.revert(step);
+        if (undo.created) this.#state.categories = this.#cats().filter((c) => c.id !== undo.created);
         return;
       }
       const cats = this.#cats();
@@ -2796,6 +2842,53 @@ var _PocketApp = (() => {
      */
     mergeManyInto(ids, intoId) {
       const res = this.#merger().applyMany(ids, intoId);
+      if (res.ok) this.#store.flush();
+      return res;
+    }
+    /** Which ticked categories could be kept with the rest merged in. */
+    mergeKeepOptions(ids) {
+      return this.#merger().keepOptions(ids);
+    }
+    /**
+     * The category a "New category…" merge would create (not added yet).
+     * @param {string[]} ids
+     * @param {string} name
+     * @returns {{ok:true, category:object}|{ok:false, reason:string}}
+     */
+    draftMergeTarget(ids, name) {
+      const clean = (name || "").trim();
+      if (!clean) return { ok: false, reason: "Give the new category a name" };
+      const first = this.find(ids[0]);
+      if (!first) return { ok: false, reason: "Category not found" };
+      const parentId = this.#merger().newParentFor(ids);
+      const twin = this.sameName(clean, { parentId, type: first.type });
+      if (twin && !ids.includes(twin.id)) return { ok: false, reason: `${twin.name} already exists \u2014 pick it from the list` };
+      if (twin) return { ok: false, reason: `${twin.name} is one you ticked \u2014 pick "Keep ${twin.name}" instead` };
+      const look = this.guessAppearance(clean, first.type);
+      return { ok: true, category: {
+        id: IdGenerator.generate("cat"),
+        name: clean,
+        type: first.type,
+        parentId,
+        icon: look.icon,
+        color: look.color,
+        budgetLimit: null
+      } };
+    }
+    /** What merging into a new category would move (null if it can't). */
+    mergePreviewNew(ids, name) {
+      const d = this.draftMergeTarget(ids, name);
+      return d.ok ? this.#merger().previewIntoNew(ids, d.category) : null;
+    }
+    /**
+     * Create a category named `name` and merge `ids` into it; Undo removes it.
+     * @param {string[]} ids
+     * @param {string} name
+     */
+    mergeIntoNew(ids, name) {
+      const d = this.draftMergeTarget(ids, name);
+      if (!d.ok) return d;
+      const res = this.#merger().applyIntoNew(ids, d.category);
       if (res.ok) this.#store.flush();
       return res;
     }
@@ -15512,6 +15605,8 @@ This replaces your current grouping.`
 
   // src/ui/modals/CategoryMergeModal.js
   var CategoryMergeModal = class _CategoryMergeModal {
+    /** The "+ New category…" choice in the picker. */
+    static NEW = "__new";
     /** @type {() => import('../../domain/services/CategoryService.js').CategoryService} */
     #categories;
     /** @param {{categories: () => object}} deps */
@@ -15538,12 +15633,11 @@ This replaces your current grouping.`
         return `<div class="p-5">${head(title)}<p class="text-sm text-zinc-500">Pick categories of one type \u2014 all expense, or all income.</p></div>`;
       }
       const targets = cats.mergeTargetsMany(ids);
-      const into = targets.find((t) => t.id === opts.into)?.id || "";
+      const keep = cats.mergeKeepOptions(ids);
+      const into = [...targets, ...keep].find((t) => t.id === opts.into)?.id || "";
       const list = one ? "" : `<div class="flex flex-wrap gap-1 mb-3">${srcs.map((c) => `<span class="chip">${Html.escape(cats.fullName(c.id))}</span>`).join("")}</div>`;
-      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : `Everything in ${one ? name : "these"} moves to the category you pick, then ${one ? `${name} is` : "they are"} removed. The other category keeps its name, colour and limit.`;
-      if (!targets.length) {
-        return `<div class="p-5">${head(title)}${list}<p class="text-sm text-zinc-500">There's no other ${Html.escape(srcs[0].type)} category ${one ? "it" : "they"} can all go into. Add one first.</p></div>`;
-      }
+      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : one ? `Everything in ${name} moves to the category you pick, then ${name} is removed. The category you pick keeps its name, colour and limit.` : `Keep one of them, move them all into another category, or make a new one. Everything moves there and the rest are removed.`;
+      const opt = (t, label) => `<option value="${t.id}" ${t.id === into ? "selected" : ""}>${label}</option>`;
       return `
       <form onsubmit="window.__app.mergeCategory(event,'${idsArg}','${del ? "delete" : "merge"}')" class="p-5">
         ${head(title)}
@@ -15554,8 +15648,15 @@ This replaces your current grouping.`
           <label class="text-xs text-zinc-500">Move to</label>
           <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${idsArg}', this.value)">
             <option value="">\u2014 Pick a category \u2014</option>
-            ${targets.map((t) => `<option value="${t.id}" ${t.id === into ? "selected" : ""}>${Html.escape(cats.fullName(t.id))}</option>`).join("")}
+            ${keep.length ? `<optgroup label="Keep one of these">${keep.map((t) => opt(t, `Keep ${Html.escape(cats.fullName(t.id))}`)).join("")}</optgroup>` : ""}
+            ${targets.length ? `<optgroup label="${keep.length ? "Or move into" : "Move into"}">${targets.map((t) => opt(t, Html.escape(cats.fullName(t.id)))).join("")}</optgroup>` : ""}
+            <option value="${_CategoryMergeModal.NEW}">+ New category\u2026</option>
           </select>
+        </div>
+
+        <div id="categoryMergeNew" class="mb-3" style="display:none">
+          <label class="text-xs text-zinc-500">New category name</label>
+          <input class="input" name="newName" autocomplete="off" oninput="window.__app.previewCategoryMerge('${idsArg}', '${_CategoryMergeModal.NEW}')">
         </div>
 
         <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(ids, into) : ""}</div>
@@ -15571,16 +15672,16 @@ This replaces your current grouping.`
     }
     /**
      * The plain-words line under the picker, e.g.
-     * "Moves 42 entries and 2 regulars to Food. Its sub-category Snacks moves too."
+     * "Moves 42 entries and 2 regulars to Food. Sub-category Snacks moves under Food."
      * @param {string[]} ids
-     * @param {string} intoId
+     * @param {string} intoId  a category id, or CategoryMergeModal.NEW
+     * @param {string} [newName]  the name typed for a new category
      * @returns {string} HTML
      */
-    previewText(ids, intoId) {
-      const cats = this.#categories();
-      const tgt = cats.find(intoId);
-      const p = tgt ? cats.mergePreviewMany(ids, intoId) : null;
-      if (!p) return "";
+    previewText(ids, intoId, newName = "") {
+      const plan = this.#plan(ids, intoId, newName);
+      if (plan.note !== void 0) return `<div class="text-zinc-500">${Html.escape(plan.note)}</div>`;
+      const p = plan.summary;
       const parts = [
         _CategoryMergeModal.#count(p.entries, "entry", "entries"),
         _CategoryMergeModal.#count(p.regulars, "regular", "regulars"),
@@ -15588,10 +15689,42 @@ This replaces your current grouping.`
         _CategoryMergeModal.#count(p.habits, "habit", "habits")
       ].filter(Boolean);
       const what = parts.length ? `Moves ${_CategoryMergeModal.#join(parts)}` : "Nothing uses them yet; they just go";
-      const lines = [`${what} to <b>${Html.escape(cats.fullName(tgt.id))}</b>.`];
-      if (p.movedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.movedSubs)} ${p.movedSubs.length === 1 ? "moves" : "move"} under ${Html.escape(tgt.name)}.`);
+      const lines = [];
+      if (plan.isNew) lines.push(`Makes a new category <b>${Html.escape(plan.label)}</b>.`);
+      if (plan.removed.length) lines.push(`Removes ${_CategoryMergeModal.#join(plan.removed.map((n) => Html.escape(n)))}.`);
+      lines.push(`${what} to <b>${Html.escape(plan.label)}</b>.`);
+      if (p.movedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.movedSubs)} ${p.movedSubs.length === 1 ? "moves" : "move"} under ${Html.escape(plan.shortName)}.`);
       if (p.mergedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.mergedSubs)} ${p.mergedSubs.length === 1 ? "joins the one" : "join the ones"} with the same name.`);
       return lines.map((l) => `<div>${l}</div>`).join("") + `<div class="text-xs text-zinc-500 mt-1">You can undo this straight after.</div>`;
+    }
+    /**
+     * Work out what the picked choice means: keep one of the ticked, another
+     * category, or a new one.
+     * @returns {{note?:string, summary?:object, label?:string, shortName?:string, isNew?:boolean, removed?:string[]}}
+     */
+    #plan(ids, intoId, newName) {
+      const cats = this.#categories();
+      const name = (id) => cats.find(id)?.name || "";
+      if (intoId === _CategoryMergeModal.NEW) {
+        if (!(newName || "").trim()) return { note: "Type a name for the new category." };
+        const d = cats.draftMergeTarget(ids, newName);
+        if (!d.ok) return { note: d.reason };
+        const summary2 = cats.mergePreviewNew(ids, newName);
+        if (!summary2) return { note: "They can't all go into a new category." };
+        const parent = d.category.parentId ? name(d.category.parentId) : "";
+        return {
+          summary: summary2,
+          isNew: true,
+          shortName: d.category.name,
+          label: parent ? `${parent} / ${d.category.name}` : d.category.name,
+          removed: ids.map(name)
+        };
+      }
+      if (!cats.find(intoId)) return { note: "" };
+      const from = ids.includes(intoId) ? ids.filter((id) => id !== intoId) : ids;
+      const summary = cats.mergePreviewMany(from, intoId);
+      if (!summary) return { note: "That one won't work \u2014 pick another." };
+      return { summary, label: cats.fullName(intoId), shortName: name(intoId), removed: from.length > 1 || ids.includes(intoId) ? from.map(name) : [] };
     }
     // ── Private ──────────────────────────────────────────────────────────
     static #count(n, one, many) {
@@ -21906,24 +22039,37 @@ Leave empty to use your own name.`,
     }
     /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
     previewCategoryMerge(ids, intoId) {
+      const isNew = intoId === CategoryMergeModal.NEW;
+      const box = document.getElementById("categoryMergeNew");
+      const input = box?.querySelector('input[name="newName"]');
+      if (box) box.style.display = isNew ? "" : "none";
+      if (isNew && input && document.activeElement !== input && !input.value) input.focus();
       const el = document.getElementById("categoryMergePreview");
-      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(_Application.#idList(ids), intoId) : "";
+      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(_Application.#idList(ids), intoId, input?.value || "") : "";
     }
     mergeCategory(event, ids) {
       event.preventDefault();
-      const intoId = new FormData(event.target).get("into");
+      const fd = new FormData(event.target);
+      const intoId = String(fd.get("into") || "");
       if (!intoId) return this.#toast.show("Pick a category to move it to");
-      this.#runCategoryMerge(_Application.#idList(ids), String(intoId));
+      const list = _Application.#idList(ids);
+      if (intoId === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, String(fd.get("newName") || ""));
+      this.#runCategoryMerge(list.filter((id) => id !== intoId), intoId);
     }
     /** '<id>,<id>' from an onclick, or an array → array of ids */
     static #idList(ids) {
       return (Array.isArray(ids) ? ids : String(ids || "").split(",")).map(String).filter(Boolean);
     }
-    #runCategoryMerge(ids, intoId) {
+    /**
+     * @param {string[]} ids
+     * @param {string|null} intoId  null → a new category named `newName`
+     * @param {string} [newName]
+     */
+    #runCategoryMerge(ids, intoId, newName = "") {
       const names = ids.map((id) => this.#categories.find(id)?.name).filter(Boolean);
-      const into = this.#categories.fullName(intoId);
-      const res = this.#categories.mergeManyInto(ids, intoId);
+      const res = intoId ? this.#categories.mergeManyInto(ids, intoId) : this.#categories.mergeIntoNew(ids, newName);
       if (!res.ok) return this.#toast.show(res.reason);
+      const into = intoId ? this.#categories.fullName(intoId) : `${res.summary.created} (new)`;
       this.#views.get("categories")?.clearPicking?.();
       this.closeModal();
       this.#render();

@@ -268,6 +268,50 @@ export class CategoryService {
     return res;
   }
 
+  /** Which ticked categories could be kept with the rest merged in. */
+  mergeKeepOptions(ids) { return this.#merger().keepOptions(ids); }
+
+  /**
+   * The category a "New category…" merge would create (not added yet).
+   * @param {string[]} ids
+   * @param {string} name
+   * @returns {{ok:true, category:object}|{ok:false, reason:string}}
+   */
+  draftMergeTarget(ids, name) {
+    const clean = (name || '').trim();
+    if (!clean) return { ok: false, reason: 'Give the new category a name' };
+    const first = this.find(ids[0]);
+    if (!first) return { ok: false, reason: 'Category not found' };
+    const parentId = this.#merger().newParentFor(ids);
+    const twin = this.sameName(clean, { parentId, type: first.type });
+    if (twin && !ids.includes(twin.id)) return { ok: false, reason: `${twin.name} already exists — pick it from the list` };
+    if (twin) return { ok: false, reason: `${twin.name} is one you ticked — pick "Keep ${twin.name}" instead` };
+    const look = this.guessAppearance(clean, first.type);
+    return { ok: true, category: {
+      id: IdGenerator.generate('cat'), name: clean, type: first.type, parentId,
+      icon: look.icon, color: look.color, budgetLimit: null,
+    } };
+  }
+
+  /** What merging into a new category would move (null if it can't). */
+  mergePreviewNew(ids, name) {
+    const d = this.draftMergeTarget(ids, name);
+    return d.ok ? this.#merger().previewIntoNew(ids, d.category) : null;
+  }
+
+  /**
+   * Create a category named `name` and merge `ids` into it; Undo removes it.
+   * @param {string[]} ids
+   * @param {string} name
+   */
+  mergeIntoNew(ids, name) {
+    const d = this.draftMergeTarget(ids, name);
+    if (!d.ok) return d;
+    const res = this.#merger().applyIntoNew(ids, d.category);
+    if (res.ok) this.#store.flush();
+    return res;
+  }
+
   /** Put a merge back. @param {object} undo  from mergeInto() */
   undoMerge(undo) {
     this.#merger().revert(undo);
