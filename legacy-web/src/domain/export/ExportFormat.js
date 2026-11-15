@@ -30,6 +30,9 @@ export class ExportFormat {
     ['amount', 'Amount'],
     ['addedBy', 'Added by'],
     ['source', 'From'],
+    ['reimbBy', 'Paid back by'],
+    ['paidBack', 'Amount paid back'],
+    ['reimbPct', '% reimbursed'],
   ]);
 
   static DEFAULT_TX_COLUMNS = Object.freeze(['date', 'account', 'category', 'note', 'payment', 'amount']);

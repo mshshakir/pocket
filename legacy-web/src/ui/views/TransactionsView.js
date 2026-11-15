@@ -5,6 +5,8 @@
  * Filter state lives on the view instance rather than as globals so multiple
  * view objects could theoretically coexist without side-effects.
  */
+import { CountedEntries } from '../../domain/services/CountedEntries.js';
+import { ReimbursementService } from '../../domain/services/ReimbursementService.js';
 import { BaseView }               from './BaseView.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 import { TransactionService }     from '../../domain/services/TransactionService.js';
@@ -28,8 +30,17 @@ export class TransactionsView extends BaseView {
     paymentTypes:[],
     amountMin:   '',
     amountMax:   '',
+    reimb:       '',   // '' | 'open' | 'back' | 'payments' | 'all' (TransactionsView.REIMB)
     sort:        'date-desc',
   };
+
+  /** The Reimbursements filter. */
+  static REIMB = Object.freeze([
+    ['open', 'To get back'],
+    ['back', 'Paid back'],
+    ['all', 'All marked to pay back'],
+    ['payments', 'Money paid back'],
+  ]);
   #filterOpen   = false;
   #multiSelect  = false;
   #selectedIds  = new Set();
@@ -50,6 +61,14 @@ export class TransactionsView extends BaseView {
    * @param {Set<string>} wanted  expanded set of acceptable category IDs
    * @returns {boolean}
    */
+  static #reimbMatch(mode, t, svc) {
+    if (mode === 'payments') return ReimbursementService.isPayment(t);
+    if (!ReimbursementService.isTracked(t)) return false;
+    if (mode === 'all') return true;
+    const st = svc.status(t);
+    return mode === 'open' ? st.outstanding > 0 : st.paid > 0;
+  }
+
   #matchesCategory(t, wanted) {
     const ids = (Array.isArray(t.splits) && t.splits.length)
       ? t.splits.map((s) => s.categoryId)
@@ -89,7 +108,7 @@ export class TransactionsView extends BaseView {
     Object.assign(this.#filter, {
       search: '', range: '30', dateFrom: '', dateTo: '',
       accountIds: [], categoryIds: [], types: [], paymentTypes: [],
-      amountMin: '', amountMax: '',
+      amountMin: '', amountMax: '', reimb: '',
     });
   }
 
@@ -108,8 +127,10 @@ export class TransactionsView extends BaseView {
       ? new Set(f.categoryIds.flatMap((id) => this.#categories.descendants(id)))
       : null;
 
+    const reimb = f.reimb ? new ReimbursementService(state) : null;
     const filtered = this.#txService.sort(
       state.transactions.filter((t) => {
+        if (reimb && !TransactionsView.#reimbMatch(f.reimb, t, reimb)) return false;
         if (f.dateFrom && t.date < f.dateFrom) return false;
         if (f.dateTo   && t.date > f.dateTo)   return false;
         if (!f.dateFrom && !f.dateTo && !this.#withinRange(t.date, f.range)) return false;
@@ -141,11 +162,15 @@ export class TransactionsView extends BaseView {
     const monthTotals = {};
     const dayNets     = {};   // income − expense per day, in the home currency
     if (groupByDate) {
+      // Totals count as Reports do: loans and paybacks are left out, and a
+      // paid-back expense counts only what you bore (CountedEntries).
+      const counted = CountedEntries.byId(state);
       filtered.forEach((t) => {
         (dayGroups[t.date] = dayGroups[t.date] || []).push(t);
         const ym = t.date.slice(0, 7);
         if (!monthTotals[ym]) monthTotals[ym] = { income: 0, expense: 0 };
-        const inHome = this.convert(t.amount, t.currency, home);
+        const c = counted.get(t.id);
+        const inHome = c ? this.convert(c.amount, c.currency, home) : 0;
         if (t.type === 'income')  monthTotals[ym].income  += inHome;
         if (t.type === 'expense') monthTotals[ym].expense += inHome;
         const delta = t.type === 'income' ? inHome : t.type === 'expense' ? -inHome : 0;
@@ -158,7 +183,7 @@ export class TransactionsView extends BaseView {
       f.accountIds.length + f.categoryIds.length +
       f.types.length + f.paymentTypes.length +
       (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0) +
-      (f.amountMin ? 1 : 0) + (f.amountMax ? 1 : 0) +
+      (f.amountMin ? 1 : 0) + (f.amountMax ? 1 : 0) + (f.reimb ? 1 : 0) +
       (f.range !== '30' && !f.dateFrom && !f.dateTo ? 1 : 0);
 
     return `
@@ -209,6 +234,7 @@ export class TransactionsView extends BaseView {
       ...f.paymentTypes.map((v)=> `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('paymentTypes','${this.jsArg(v)}')">×</button></span>`),
       f.dateFrom||f.dateTo ? `<span class="chip">${f.dateFrom||'…'} → ${f.dateTo||'…'} <button onclick="window.__app.txFilterClear('dates')">×</button></span>` : '',
       f.range!=='30'&&!f.dateFrom&&!f.dateTo ? `<span class="chip">${f.range==='all'?'All time':'Last '+f.range+'d'} <button onclick="window.__app.txFilterSet('range','30')">×</button></span>` : '',
+      f.reimb ? `<span class="chip">${this.escapeHtml(TransactionsView.REIMB.find(([k]) => k === f.reimb)?.[1] || '')} <button onclick="window.__app.txFilterSet('reimb','')">×</button></span>` : '',
       f.amountMin||f.amountMax ? `<span class="chip">${f.amountMin||'0'}–${f.amountMax||'∞'} ${cur} <button onclick="window.__app.txFilterClear('amounts')">×</button></span>` : '',
     ].filter(Boolean).join('');
 
@@ -263,6 +289,13 @@ export class TransactionsView extends BaseView {
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Payment method <span class="font-normal opacity-60">(multi)</span></label>
           ${this.#multiChips('paymentTypes', paymentOpts, f.paymentTypes, '＋ Add method…')}
+        </div>
+        <div>
+          <label class="text-xs font-medium text-zinc-500 mb-1 block">Reimbursements</label>
+          <select class="select" onchange="window.__app.txFilterSet('reimb',this.value)">
+            <option value="">Any entry</option>
+            ${TransactionsView.REIMB.map(([v, l]) => `<option value="${v}" ${f.reimb === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Period</label>

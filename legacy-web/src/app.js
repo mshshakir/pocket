@@ -88,6 +88,8 @@ import { CategoryModal }    from './ui/modals/CategoryModal.js';
 import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
 import { HelpModal }        from './ui/modals/HelpModal.js';
 import { FeedbackModal }    from './ui/modals/FeedbackModal.js';
+import { ReimbursementModal } from './ui/modals/ReimbursementModal.js';
+import { ReimbursementService } from './domain/services/ReimbursementService.js';
 import { HelpGuide }        from './ui/components/HelpGuide.js';
 import { SortableList }     from './ui/components/SortableList.js';
 import { OwedService }      from './domain/services/OwedService.js';
@@ -396,6 +398,7 @@ export class Application {
     this.#modal.register('investment',   new InvestmentModal());
     this.#modal.register('trade',        new TradeModal({ holdings: () => this.#holdings }));
     this.#modal.register('holdingPrice', new HoldingPriceModal({ holdings: () => this.#holdings }));
+    this.#modal.register('reimbursement', new ReimbursementModal());
     this.#modal.register('feedback',     new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
     // Drag-to-reorder lists (Accounts → Reorder); one listener for every render.
     new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
@@ -1451,6 +1454,24 @@ export class Application {
       }
     }
 
+    // Someone will pay this back (expenses only). A payback entry keeps its
+    // links; its amount can't drop below what it already shares out.
+    const existingTx = id ? state.transactions.find((x) => x.id === id) : null;
+    let reimb = {};
+    if (existingTx && ReimbursementService.isPayment(existingTx)) {
+      const shared = (existingTx.reimbAlloc || []).reduce((n, a) => n + (Number(a.pay) || 0), 0);
+      if (data.type !== 'income') return this.#toast.show('This is money paid back — it stays as money in');
+      if (minor < shared || currency !== existingTx.currency) {
+        return this.#toast.show(`It’s shared across items as ${this.#fx.formatMoney(shared, existingTx.currency)} — delete it and record it again to change that`);
+      }
+      const extra = minor - shared;
+      reimb = { reimbExtra: extra, reimbExtraAs: extra > 0 ? (existingTx.reimbExtraAs || 'keep') : null };
+    } else if (data.type !== 'transfer') {
+      const r = this.#reimbFields(fd, { amount: minor, currency, existing: existingTx });
+      if (r.error) return this.#toast.show(r.error);
+      reimb = data.type === 'expense' || existingTx?.reimbBy ? r.fields : {};
+    }
+
     let habitNote = null;
     if (id) {
       // Edit existing
@@ -1492,7 +1513,7 @@ export class Application {
           payee: data.payee, note: data.note, date: data.date,
           hijriDate: this.#hijri.toHijri(data.date),
           paymentType: data.paymentType, type: data.type,
-          splits, recurring, ...bill,
+          splits, recurring, ...bill, ...reimb,
           // Clear every transfer-only field so no dangling pair reference remains.
           transferPairId: null, transferDir: null, transferRate: null,
           ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
@@ -1537,7 +1558,7 @@ export class Application {
           payee: data.payee, note: data.note, date: data.date,
           hijriDate: this.#hijri.toHijri(data.date), // refresh snapshot when date changes
           paymentType: data.paymentType, type: data.type,
-          splits, recurring, ...bill,
+          splits, recurring, ...bill, ...reimb,
           ...(txAcctMinor !== undefined ? { acctMinor: txAcctMinor } : {}),
         });
       }
@@ -1563,6 +1584,7 @@ export class Application {
           addedBy: this.#sync.currentUser?.email || null,
           regularItemId: data.regularItemId || null,
         });
+        for (const [k, v] of Object.entries(reimb)) if (v != null) created[k] = v;
         habitNote = this.#habitNote(created, state);
         if (data.payee && !splits && data.categoryId) {
           if (!state.merchantCategories) state.merchantCategories = {};
@@ -1861,6 +1883,8 @@ export class Application {
   txFilterSet(key, value) {
     const v = this.#views.get('transactions');
     v?.setFilter?.(key, value);
+    // Items to get back can be old: show all time unless dates were picked.
+    if (key === 'reimb' && value && v?.filter && !v.filter.dateFrom && !v.filter.dateTo) v.setFilter('range', 'all');
     this.#render();
   }
 
@@ -2775,6 +2799,211 @@ export class Application {
     const st = this.#holdings.stats(h);
     this.#toast.show(st.alertNew ? `${h.name} is up ${st.gainPct}% — your alert is reached` : 'Price saved');
     this.#sync.schedulePush?.();
+  }
+
+  // ── Reimbursements ────────────────────────────────────────────────────
+
+  /** Reimbursement state for the current book (read-only helper). */
+  get reimbursements() {
+    return new ReimbursementService(this.#store.getState());
+  }
+
+  /**
+   * What the Paid back form would save: the share of each ticked item, what
+   * is closed, and any extra. Amounts in `pay` are in the account's currency,
+   * `amount` in each expense's own currency.
+   */
+  #paybackPlan(form, key) {
+    const state = this.#store.getState();
+    const svc = new ReimbursementService(state);
+    const g = svc.group(key);
+    if (!g || !form) return null;
+    const fd = new FormData(form);
+    const picked = new Set(fd.getAll('pick'));
+    const acc = state.accounts.find((a) => a.id === fd.get('accountId'));
+    const payCur = acc?.currency || g.currency;
+    const mode = ['spread', 'oldest', 'items'].includes(fd.get('mode')) ? fd.get('mode') : 'spread';
+    const items = g.items.filter((r) => picked.has(r.tx.id)).map((r) => ({
+      id: r.tx.id, tx: r.tx, owedOwn: r.outstanding,
+      outstanding: r.tx.currency === payCur ? r.outstanding : this.#fx.convert(r.outstanding, r.tx.currency, payCur),
+    }));
+    const perItem = {};
+    let perSum = 0;
+    for (const i of items) {
+      const v = Number(fd.get(`part_${i.id}`));
+      if (v > 0) { perItem[i.id] = this.#fx.toMinor(v, payCur); perSum += perItem[i.id]; }
+    }
+    let total = Number(fd.get('amount')) > 0 ? this.#fx.toMinor(Number(fd.get('amount')), payCur) : 0;
+    // Per item: what's typed per item is the payment, unless a larger total was entered.
+    if (mode === 'items') total = Math.max(total, perSum);
+    const { parts, extra } = ReimbursementService.allocate(items, total, mode, perItem);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const full = parts.map((p) => {
+      const i = byId.get(p.txId);
+      const own = p.amount >= i.outstanding ? i.owedOwn
+        : i.tx.currency === payCur ? p.amount : Math.min(i.owedOwn, this.#fx.convert(p.amount, payCur, i.tx.currency));
+      return { txId: p.txId, pay: p.amount, amount: own };
+    });
+    // What's closed: per item switches, or the batch switch for every ticked item.
+    const closes = new Set();
+    for (const i of items) {
+      if (mode === 'items' ? fd.get(`close_${i.id}`) : fd.get('closeRest')) closes.add(i.id);
+    }
+    return { g, acc, payCur, mode, items, total, parts: full, extra, closes, extraAs: fd.get('extraAs') === 'income' ? 'income' : 'keep' };
+  }
+
+  /** Live preview in the Paid back form: each item's share, the extra. */
+  updatePaybackPreview(form) {
+    if (!form) return;
+    const key = (form.getAttribute('onsubmit') || '').match(/submitPayback\(event,'([^']*)'\)/)?.[1];
+    const plan = this.#paybackPlan(form, key ? key.replace(/\\'/g, "'") : '');
+    if (!plan) return;
+    const per = plan.mode === 'items';
+    for (const el of form.querySelectorAll('[data-per-item]')) el.style.display = per ? '' : 'none';
+    const batch = form.querySelector('[data-batch-close]');
+    if (batch) batch.style.display = per ? 'none' : '';
+    const byId = new Map(plan.parts.map((p) => [p.txId, p]));
+    for (const row of form.querySelectorAll('.reimb-item')) {
+      const p = byId.get(row.dataset.tx);
+      const out = row.querySelector('.reimb-share');
+      if (out) out.textContent = p && !per ? `Gets ${this.#fx.formatMoney(p.amount, row.dataset.currency)}` : '';
+    }
+    const ex = form.querySelector('[data-extra]');
+    if (ex) {
+      ex.style.display = plan.extra > 0 ? '' : 'none';
+      const t = ex.querySelector('.reimb-extra-text');
+      if (t) t.textContent = `${this.#fx.formatMoney(plan.extra, plan.payCur)} more than the ticked items need.`;
+    }
+  }
+
+  /** Save a payback: one entry into the account, shared across the items. */
+  submitPayback(event, key) {
+    event.preventDefault();
+    const plan = this.#paybackPlan(event.target, key);
+    if (!plan) return this.#toast.show('Nothing left to get back here');
+    if (!plan.acc) return this.#toast.show('Pick the account the money went into');
+    if (!plan.items.length) return this.#toast.show('Tick the items this money is for');
+    if (!(plan.total > 0)) {
+      return this.#toast.show(plan.closes.size ? 'No money in? Use “Won’t be paid back”' : 'Enter the amount received');
+    }
+    const state = this.#store.getState();
+    const home = state.user.homeCurrency;
+    const date = new FormData(event.target).get('date') || DateService.todayIso();
+    const g = plan.g;
+    const extra = plan.extra;
+    state.transactions.push({
+      id: IdGenerator.generate('tx'), accountId: plan.acc.id, categoryId: null,
+      amount: plan.total, currency: plan.payCur,
+      exchangeRate: (RATES[plan.payCur] || 1) / (RATES[home] || 1),
+      refAmount: this.#fx.convert(plan.total, plan.payCur, home),
+      payee: g.payer, note: g.claim ? `Paid back · ${g.claim.name}` : 'Paid back',
+      date, hijriDate: this.#hijri.toHijri(date),
+      paymentType: 'transfer', recordState: 'cleared', type: 'income',
+      transferPairId: null, splits: null, tags: [ReimbursementService.TAG],
+      reimbBy: g.payer, claimId: g.claim?.id || null,
+      reimbAlloc: plan.parts.map((p) => ({ txId: p.txId, amount: p.amount, pay: p.pay })),
+      reimbExtra: extra, reimbExtraAs: extra > 0 ? plan.extraAs : null,
+      createdAt: new Date().toISOString(), addedBy: this.#sync.currentUser?.email || null,
+    });
+    let closed = 0;
+    for (const id of plan.closes) {
+      const t = state.transactions.find((x) => x.id === id);
+      if (t) { t.reimbClosed = true; closed++; }
+    }
+    this.#store.persist(); this.closeModal(); this.#render();
+    const tail = extra > 0 ? (plan.extraAs === 'income' ? ` · ${this.#fx.formatMoney(extra, plan.payCur)} extra counted as income` : ` · ${this.#fx.formatMoney(extra, plan.payCur)} kept as credit`) : '';
+    this.#toast.show(`${this.#fx.formatMoney(plan.total, plan.payCur)} paid back by ${g.payer}${closed ? ` · ${closed} closed` : ''}${tail}`);
+    this.#sync.schedulePush?.();
+  }
+
+  /** Close the ticked items: nothing more will come. They stay your spending. */
+  waiveReimbursement(key, form) {
+    const g = new ReimbursementService(this.#store.getState()).group(key);
+    if (!g) return;
+    const picked = new Set(form ? new FormData(form).getAll('pick') : g.items.map((r) => r.tx.id));
+    const items = g.items.filter((r) => picked.has(r.tx.id));
+    if (!items.length) return this.#toast.show('Tick the items that won’t be paid back');
+    const left = items.reduce((n, r) => n + r.outstanding, 0);
+    if (!window.confirm(`Close ${items.length} item${items.length === 1 ? '' : 's'}? ${this.#fx.formatMoney(left, g.currency)} stays as your own spending.`)) return;
+    for (const r of items) r.tx.reimbClosed = true;
+    this.#store.persist(); this.closeModal(); this.#render();
+    this.#toast.show(`Closed · ${this.#fx.formatMoney(left, g.currency)} counted as your spending`);
+    this.#sync.schedulePush?.();
+  }
+
+  /** Apply credit kept from an earlier over-payment to the ticked items (spread evenly). */
+  useReimbCredit(key, form) {
+    const state = this.#store.getState();
+    const svc = new ReimbursementService(state);
+    const g = svc.group(key);
+    if (!g) return;
+    const picked = new Set(form ? new FormData(form).getAll('pick') : g.items.map((r) => r.tx.id));
+    let items = g.items.filter((r) => picked.has(r.tx.id));
+    if (!items.length) return this.#toast.show('Tick the items to use the credit on');
+    const today = DateService.todayIso();
+    let used = 0;
+    for (const c of svc.creditEntries(g.payer)) {
+      const payCur = c.tx.currency;
+      const list = items.map((r) => ({
+        id: r.tx.id, tx: r.tx, owedOwn: r.outstanding,
+        outstanding: r.tx.currency === payCur ? r.outstanding : this.#fx.convert(r.outstanding, r.tx.currency, payCur),
+      })).filter((i) => i.outstanding > 0);
+      if (!list.length) break;
+      const { parts } = ReimbursementService.allocate(list, c.left, 'spread');
+      const byId = new Map(list.map((i) => [i.id, i]));
+      c.tx.reimbAlloc = c.tx.reimbAlloc || [];
+      for (const p of parts) {
+        const i = byId.get(p.txId);
+        const own = p.amount >= i.outstanding ? i.owedOwn
+          : i.tx.currency === payCur ? p.amount : Math.min(i.owedOwn, this.#fx.convert(p.amount, payCur, i.tx.currency));
+        c.tx.reimbAlloc.push({ txId: p.txId, amount: own, pay: p.amount, date: today });
+        used += p.amount;
+        const r = items.find((x) => x.tx.id === p.txId);
+        r.outstanding -= own;
+      }
+      items = items.filter((r) => r.outstanding > 0);
+    }
+    if (!used) return this.#toast.show('No credit to use');
+    this.#store.persist(); this.closeModal(); this.#render();
+    this.#toast.show(`Used ${this.#fx.formatMoney(used, g.currency)} credit from ${g.payer}`);
+    this.#sync.schedulePush?.();
+  }
+
+  /**
+   * The reimbursement fields from the transaction form, or a toast message.
+   * @returns {{fields: object}|{error: string}}
+   */
+  #reimbFields(fd, { amount, currency, existing }) {
+    const state = this.#store.getState();
+    const on = !!fd.get('reimbOn');
+    const paid = existing ? new ReimbursementService(state).paidBack(existing.id) : 0;
+    if (!on) {
+      if (paid > 0) return { error: 'Money was already paid back for this — remove that payment first' };
+      return { fields: existing?.reimbBy ? { reimbBy: null, reimbExpected: null, reimbClosed: null, claimId: null } : {} };
+    }
+    const payer = String(fd.get('reimbBy') || '').trim().slice(0, 60);
+    if (!payer) return { error: 'Who will pay you back?' };
+    let expected = Number(fd.get('reimbExpected')) > 0 ? this.#fx.toMinor(Number(fd.get('reimbExpected')), currency) : amount;
+    if (expected > amount) return { error: 'You can’t get back more than you spent' };
+    if (paid > expected) return { error: `${this.#fx.formatMoney(paid, currency)} was already paid back — expect at least that` };
+    // A claim, found by name or made new.
+    let claimId = null;
+    const claimName = String(fd.get('claimName') || '').trim().slice(0, 60);
+    if (claimName) {
+      if (!Array.isArray(state.claims)) state.claims = [];
+      const ref = String(fd.get('claimRef') || '').trim().slice(0, 40);
+      let c = state.claims.find((x) => x.name.trim().toLowerCase() === claimName.toLowerCase());
+      if (!c) { c = { id: IdGenerator.generate('claim'), name: claimName, ref }; state.claims.push(c); }
+      else if (ref && ref !== c.ref) c.ref = ref;
+      claimId = c.id;
+    }
+    return { fields: {
+      reimbBy: payer,
+      reimbExpected: expected === amount ? null : expected,
+      // Only a closed item shows this box; unticking it expects the rest again.
+      reimbClosed: fd.get('reimbClosed') ? true : null,
+      claimId,
+    } };
   }
 
   ackInvestmentAlert(id) {

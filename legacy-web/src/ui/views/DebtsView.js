@@ -5,12 +5,16 @@
  * (with instalments when set), credit cards, bills due, and delivery vendors.
  * Each row opens its own screen and pays through its own flow, so nothing is
  * copied. In someone else's space only their shared debts show, as before.
+ *
+ * "Reimbursements" lists expenses someone will pay back (ReimbursementService),
+ * grouped by claim or payer, with Paid back and Won't be paid back.
  */
 import { BaseView }        from './BaseView.js';
 import { DeliveryPlan }    from '../../domain/services/DeliveryPlan.js';
 import { BillService }     from '../../domain/services/BillService.js';
 import { LoanInstalments } from '../../domain/services/LoanInstalments.js';
 import { DateService }     from '../../domain/services/DateService.js';
+import { ReimbursementService } from '../../domain/services/ReimbursementService.js';
 
 export class DebtsView extends BaseView {
   constructor() {
@@ -25,13 +29,17 @@ export class DebtsView extends BaseView {
     const paid   = debts.filter((d) => d.status === 'paid');
     const lent   = active.filter((d) => d.type === 'lent');
     const borrowed = active.filter((d) => d.type === 'borrowed');
-    const owedToYou = lent.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+    const loansToYou = lent.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+    // Expenses someone will pay back (not in someone else's space).
+    const reimb = this.inGuestSpace ? [] : new ReimbursementService(state).groups();
+    const reimbTotal = reimb.reduce((s, g) => s + g.items.reduce((n, r) => n + this.convert(r.outstanding, r.tx.currency, home), 0), 0);
+    const owedToYou = loansToYou + reimbTotal;
 
     // At home, "I owe" also covers cards, bills and deliveries.
     const owed = this.inGuestSpace ? null : window.__app?.owed?.summary?.(today) ?? null;
     const youOwe = owed ? owed.totals.all
       : borrowed.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
-    const nothing = !active.length && !(owed && (owed.cards.length || owed.bills.length || owed.vendors.length));
+    const nothing = !active.length && !reimb.length && !(owed && (owed.cards.length || owed.bills.length || owed.vendors.length));
 
     return `
       <div class="flex items-center justify-between mb-6">
@@ -60,7 +68,9 @@ export class DebtsView extends BaseView {
             <i data-lucide="arrow-up-right" class="text-emerald-500"></i> Owed to you
           </div>
           <div class="text-2xl font-semibold text-emerald-500">${this.formatMoney(owedToYou, home)}</div>
-          <div class="text-xs text-zinc-500 mt-1">${lent.length} active</div>
+          <div class="text-xs text-zinc-500 mt-1">${reimb.length
+            ? [loansToYou > 0 ? `Loans ${this.formatMoney(loansToYou, home)}` : '', `Reimbursements ${this.formatMoney(reimbTotal, home)}`].filter(Boolean).join(' · ')
+            : `${lent.length} active`}</div>
         </div>
       </div>
 
@@ -72,6 +82,7 @@ export class DebtsView extends BaseView {
           ${owed ? this.#section('Bills', 'owe-bills', this.#bills(owed.bills, state)) : ''}
           ${owed ? this.#section('Deliveries', 'owe-vendors', this.#vendors(owed.vendors)) : ''}
           ${this.#section('Owed to you', 'owed-to-you', lent.length ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">${lent.map((d) => this.#debtCard(d, state, today)).join('')}</div>` : '')}
+          ${this.#section('Reimbursements', 'owed-reimb', this.#reimbursements(reimb))}
         `}
 
       ${paid.length ? `
@@ -151,6 +162,36 @@ export class DebtsView extends BaseView {
         </div>
         <button class="btn btn-primary btn-sm" onclick="window.__app.openModal('settle',{vendor:${this.escapeHtml(JSON.stringify(v.vendor))}})">Pay</button>
       </div>`).join('')}</div>`;
+  }
+
+  /**
+   * Expenses someone will pay back, grouped by claim or payer. Tapping a
+   * group opens it to record money paid back or close what won't come.
+   */
+  #reimbursements(groups) {
+    if (!groups.length) return '';
+    return `<div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${groups.map((g) => {
+      const pct = g.expected ? Math.round((g.paid / g.expected) * 100) : 0;
+      const sub = [
+        g.claim ? this.escapeHtml(g.payer) + (g.claim.ref ? ` · ref ${this.escapeHtml(g.claim.ref)}` : '') : '',
+        `${g.items.length} item${g.items.length === 1 ? '' : 's'}`,
+        g.paid > 0 ? `${pct}% paid back so far` : '',
+        g.credit > 0 ? `${this.formatMoney(g.credit, g.currency)} credit` : '',
+      ].filter(Boolean).join(' · ');
+      const key = this.jsArg(g.key);
+      return `
+        <div class="flex items-center gap-3 p-3 owe-reimb">
+          <button class="icon-pill" style="background:#10b98122;color:#10b981" onclick="window.__app.openModal('reimbursement',{key:'${key}'})"><i data-lucide="undo-2"></i></button>
+          <button class="flex-1 min-w-0 text-left" onclick="window.__app.openModal('reimbursement',{key:'${key}'})">
+            <div class="text-sm font-medium truncate">${this.escapeHtml(g.label)}</div>
+            <div class="text-xs text-zinc-500 truncate">${sub}</div>
+          </button>
+          <div class="text-right">
+            <div class="text-sm font-semibold text-emerald-600 whitespace-nowrap">${this.formatMoney(g.outstanding, g.currency)}</div>
+            <button class="btn btn-primary btn-sm mt-1" onclick="window.__app.openModal('reimbursement',{key:'${key}'})">Paid back</button>
+          </div>
+        </div>`;
+    }).join('')}</div>`;
   }
 
   // ── Private ───────────────────────────────────────────────────────────

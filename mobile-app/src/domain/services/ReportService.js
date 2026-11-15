@@ -9,6 +9,7 @@ import { TransactionService } from './TransactionService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
 import { DateService }         from './DateService.js';
 import { LedgerMath }          from './LedgerMath.js';
+import { CountedEntries }      from './CountedEntries.js';
 
 export class ReportService {
   /** @type {Store} */               #store;
@@ -54,7 +55,7 @@ export class ReportService {
     const home   = state.user.homeCurrency;
     const byCat  = {};
 
-    state.transactions
+    CountedEntries.list(state)
       .filter((t) => t.type === 'expense' && this.withinRange(t.date, rangeDays))
       .forEach((t) => {
         for (const slice of this.#txs.categoryAmounts(t)) {
@@ -87,7 +88,7 @@ export class ReportService {
     }
 
     const totals = Object.fromEntries(keys.map((k) => [k, 0]));
-    state.transactions
+    CountedEntries.list(state)
       .filter((t) => t.type === 'expense' && keys.includes(t.date))
       .forEach((t) => {
         totals[t.date] += this.#fx.fromMinor(
@@ -108,7 +109,7 @@ export class ReportService {
   topTransactions(n, rangeDays) {
     const state = this.#store.getState();
     const home  = state.user.homeCurrency;
-    return state.transactions
+    return CountedEntries.list(state)
       .filter((t) => t.type === 'expense' && this.withinRange(t.date, rangeDays))
       .map((t) => ({ tx: t, value: this.#fx.convert(t.amount, t.currency, home) }))
       .sort((a, b) => b.value - a.value)
@@ -198,7 +199,7 @@ export class ReportService {
     const home    = state.user.homeCurrency;
     const byMonth = {};
 
-    state.transactions
+    CountedEntries.list(state)
       .filter((t) => t.type === 'expense' && this.withinRange(t.date, rangeDays))
       .forEach((t) => {
         const h = this.#hijri.toHijri(t.date);

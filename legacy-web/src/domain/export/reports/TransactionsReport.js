@@ -22,12 +22,15 @@ export class TransactionsReport extends BaseReport {
     const amountCol = columns.find((c) => c.key === 'amount');
     const sections = this.#group(entries, rows, columns, amountCol);
 
-    const income  = entries.filter((e) => e.type === 'income').reduce((n, e) => n + e.homeAmount, 0);
-    const expense = entries.filter((e) => e.type === 'expense').reduce((n, e) => n + e.homeAmount, 0);
+    // Totals count as Reports do: loans and paybacks count nothing, and a
+    // paid-back expense counts what you bore. Each row still shows its amount.
+    const income  = entries.filter((e) => e.type === 'income').reduce((n, e) => n + (e.countedHome ?? e.homeAmount), 0);
+    const expense = entries.filter((e) => e.type === 'expense').reduce((n, e) => n + (e.countedHome ?? e.homeAmount), 0);
     const transfers = entries.filter((e) => e.type === 'transfer').length;
     const fmt = (v) => this.#fx.formatMoney(v, this.home);
     const notes = [`${entries.length.toLocaleString()} entr${entries.length === 1 ? 'y' : 'ies'} · Income ${fmt(income)} · Expense ${fmt(expense)} · Net ${fmt(income - expense)}`];
     if (transfers) notes.push(`Transfers (${transfers}) are listed but not counted in totals.`);
+    if (entries.some((e) => e.kind || e.paidBackHome)) notes.push('Loans and money paid back are listed but not counted as income; paid-back expenses count what was not paid back.');
 
     const total = this.format.showTotals && amountCol
       ? this.#labelled(columns, `Total · ${entries.length.toLocaleString()} entries`, { amount: income - expense }, true)
@@ -58,6 +61,9 @@ export class TransactionsReport extends BaseReport {
       amount:   { kind: 'money', align: 'right', weight: 1.1, currency: this.home },
       addedBy:  { kind: 'text', align: 'left', weight: 1.3 },
       source:   { kind: 'text', align: 'left', weight: 1.1 },
+      reimbBy:  { kind: 'text', align: 'left', weight: 1.2 },
+      paidBack: { kind: 'money', align: 'right', weight: 1.1, currency: this.home },
+      reimbPct: { kind: 'percent', align: 'right', weight: 0.8 },
     };
     return this.format.columns.map((key) => ({
       key,
@@ -80,7 +86,10 @@ export class TransactionsReport extends BaseReport {
       original: foreign ? this.#fx.formatMoney(e.amount, e.currency) : '',
       amount: e.type === 'transfer' ? e.homeAmount : e.signedHome,
       addedBy: e.addedBy,
-      source: e.source || '',
+      source: e.kind || e.source || '',
+      reimbBy: e.reimbBy || '',
+      paidBack: e.paidBackHome ?? null,
+      reimbPct: e.reimbPct ?? null,
       _transfer: e.type === 'transfer',
     };
   }
@@ -112,7 +121,7 @@ export class TransactionsReport extends BaseReport {
     const ordered = [...groups.entries()].sort(([a], [b]) => (by === 'day' || by === 'month' ? a.localeCompare(b) : a.localeCompare(b, undefined, { sensitivity: 'base' })));
 
     return ordered.map(([, g]) => {
-      const net = g.entries.reduce((n, e) => n + e.signedHome, 0);
+      const net = g.entries.reduce((n, e) => n + (e.countedSigned ?? e.signedHome), 0);
       const subtotal = this.format.showTotals && amountCol
         ? this.#labelled(columns, `Subtotal · ${g.rows.length}`, { amount: net }, true)
         : null;

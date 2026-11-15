@@ -10,7 +10,8 @@ import { CurrencyService } from '../../services/CurrencyService.js';
 
 export class CategoryReport extends BaseReport {
   build() {
-    const entries = this.entries().filter((e) => e.type === 'expense' || e.type === 'income');
+    // Loans and paybacks count nothing; a paid-back expense counts what you bore.
+    const entries = this.entries().filter((e) => (e.type === 'expense' || e.type === 'income') && e.countedHome > 0);
     const columns = [
       { key: 'category', label: 'Category', kind: 'text', align: 'left', weight: 2.6 },
       { key: 'count', label: 'Entries', kind: 'count', align: 'right', weight: 0.7 },
@@ -22,7 +23,7 @@ export class CategoryReport extends BaseReport {
       .filter(Boolean);
 
     const fx = new CurrencyService();
-    const sum = (t) => entries.filter((e) => e.type === t).reduce((n, e) => n + e.homeAmount, 0);
+    const sum = (t) => entries.filter((e) => e.type === t).reduce((n, e) => n + e.countedHome, 0);
     const income = sum('income'), expense = sum('expense');
     return new ReportTable({
       title: this.title('Spending and income by category'),
@@ -36,7 +37,7 @@ export class CategoryReport extends BaseReport {
 
   #section(entries, label) {
     if (!entries.length) return null;
-    const total = entries.reduce((n, e) => n + e.homeAmount, 0);
+    const total = entries.reduce((n, e) => n + e.countedHome, 0);
     const mains = new Map();
     for (const e of entries) {
       const main = this.ledger.mainCategory(e.categoryId);
@@ -44,12 +45,12 @@ export class CategoryReport extends BaseReport {
       if (!mains.has(mainKey)) mains.set(mainKey, { name: main?.name || 'Uncategorised', count: 0, amount: 0, subs: new Map() });
       const m = mains.get(mainKey);
       m.count += 1;
-      m.amount += e.homeAmount;
+      m.amount += e.countedHome;
       if (main && e.categoryId && e.categoryId !== main.id) {
         const subName = this.ledger.categoryPath(e.categoryId).split(' / ').pop();
         const s = m.subs.get(e.categoryId) || { name: subName, count: 0, amount: 0 };
         s.count += 1;
-        s.amount += e.homeAmount;
+        s.amount += e.countedHome;
         m.subs.set(e.categoryId, s);
       }
     }

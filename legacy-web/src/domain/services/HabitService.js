@@ -11,6 +11,8 @@
  * (matching that shortcut and its name) until a saved habit takes it over, so
  * the old per-item totals carry on without setting anything up.
  */
+import { CountedEntries } from './CountedEntries.js';
+
 export class HabitService {
   static ICONS = Object.freeze(['coffee', 'utensils', 'bus', 'car', 'cigarette', 'shopping-bag', 'pizza', 'beer', 'gamepad-2', 'film', 'zap', 'tag']);
   static COLORS = Object.freeze(['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#06b6d4', '#6366f1']);
@@ -48,7 +50,8 @@ export class HabitService {
 
   /** The habit's entries between two days (inclusive). */
   entries(h, state, from, to) {
-    return (state.transactions || []).filter((t) => t.date >= from && t.date <= to && HabitService.matches(h, t));
+    // Loans, paybacks and the paid-back part of an expense don't count.
+    return CountedEntries.list(state).filter((t) => t.date >= from && t.date <= to && HabitService.matches(h, t));
   }
 
   /**
@@ -132,7 +135,7 @@ export class HabitService {
     const habits = this.all(state);
     const dismissed = new Set((state.user?.dismissedHabitSuggestions || []).map((s) => String(s).toLowerCase()));
     const groups = new Map();
-    for (const t of state.transactions || []) {
+    for (const t of CountedEntries.list(state)) {
       if (t.type !== 'expense' || !t.payee || t.date < since || t.date > today || t.recurring || t.recurringSourceId) continue;
       if (habits.some((h) => HabitService.matches(h, t))) continue;
       const key = t.payee.trim().toLowerCase();

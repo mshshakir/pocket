@@ -1,13 +1,15 @@
 /**
  * MonthsReport — income, expense and net per month (Gregorian or Hijri, as
- * the format says), with the number of entries. Transfers are left out.
+ * the format says), with the number of entries. Transfers, loans and
+ * paybacks are left out; a paid-back expense counts what was not paid back.
  */
 import { BaseReport } from './BaseReport.js';
 import { ReportTable } from '../ReportTable.js';
 
 export class MonthsReport extends BaseReport {
   build() {
-    const entries = this.entries().filter((e) => e.type === 'expense' || e.type === 'income');
+    // Loans and paybacks count nothing; a paid-back expense counts what you bore.
+    const entries = this.entries().filter((e) => (e.type === 'expense' || e.type === 'income') && e.countedHome > 0);
     const columns = [
       { key: 'month', label: this.format.calendar === 'hijri' ? 'Hijri month' : 'Month', kind: 'text', align: 'left', weight: 1.6 },
       { key: 'count', label: 'Entries', kind: 'count', align: 'right', weight: 0.7 },
@@ -21,7 +23,7 @@ export class MonthsReport extends BaseReport {
       if (!months.has(key)) months.set(key, { month: label, count: 0, income: 0, expense: 0 });
       const m = months.get(key);
       m.count += 1;
-      m[e.type] += e.homeAmount;
+      m[e.type] += e.countedHome;
     }
     const rows = [...months.entries()].sort(([a], [b]) => a.localeCompare(b))
       .map(([, m]) => ({ ...m, net: m.income - m.expense }));

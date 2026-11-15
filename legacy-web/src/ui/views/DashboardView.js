@@ -9,6 +9,7 @@ import { ReportService }    from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 import { DateService }            from '../../domain/services/DateService.js';
+import { CountedEntries }   from '../../domain/services/CountedEntries.js';
 
 export class DashboardView extends BaseView {
   /** @type {ReportService} */          #reports;
@@ -26,7 +27,8 @@ export class DashboardView extends BaseView {
   render() {
     const { state, homeCurrency: home } = this;
     const monthStart = this.#reports.startOfMonth();
-    const monthTx    = state.transactions.filter((t) => new Date(t.date + 'T12:00:00') >= monthStart);
+    // Loans and paybacks don't count; a paid-back expense counts what you bore.
+    const monthTx    = CountedEntries.list(state).filter((t) => new Date(t.date + 'T12:00:00') >= monthStart);
     const income     = monthTx.filter((t) => t.type === 'income')
       .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
     const expense    = monthTx.filter((t) => t.type === 'expense')

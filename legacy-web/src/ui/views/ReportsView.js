@@ -10,6 +10,7 @@ import { ReportService }     from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { DateService }          from '../../domain/services/DateService.js';
 import { HabitService }         from '../../domain/services/HabitService.js';
+import { CountedEntries }       from '../../domain/services/CountedEntries.js';
 import { Html }                 from '../../core/Html.js';
 
 export class ReportsView extends BaseView {
@@ -210,7 +211,7 @@ export class ReportsView extends BaseView {
       labels.push(d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
     }
     const expenseByDay = Object.fromEntries(dayKeys.map((k) => [k, 0]));
-    state.transactions
+    CountedEntries.list(state)
       .filter((t) => t.type === 'expense' && dayKeys.includes(t.date))
       .forEach((t) => { expenseByDay[t.date] += this.fromMinor(this.convert(t.amount, t.currency, home), home); });
 

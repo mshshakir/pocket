@@ -8,6 +8,7 @@ import { IdGenerator }     from './IdGenerator.js';
 import { CurrencyService } from './CurrencyService.js';
 import { CategoryService } from './CategoryService.js';
 import { HijriCalendarService } from './HijriCalendarService.js';
+import { CountedEntries } from './CountedEntries.js';
 
 export class BudgetService {
   /** @type {Store} */               #store;
@@ -113,7 +114,7 @@ export class BudgetService {
     const state = this.#store.getState();
     const ids   = this.#expandedIds(budget);
     let spend = 0;
-    for (const t of state.transactions) {
+    for (const t of CountedEntries.list(state)) {
       if (!this.#inCurrentPeriod(budget, t)) continue;
       for (const slice of this.#categoryAmounts(t)) {
         if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
@@ -134,7 +135,7 @@ export class BudgetService {
     return this.targetCategoryIds(budget).map((cid) => {
       const ids = new Set(this.#cats.descendants(cid));
       let spend = 0;
-      for (const t of state.transactions) {
+      for (const t of CountedEntries.list(state)) {
         if (!this.#inCurrentPeriod(budget, t)) continue;
         for (const slice of this.#categoryAmounts(t)) {
           if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
@@ -154,8 +155,9 @@ export class BudgetService {
   periodTransactions(budget) {
     const state = this.#store.getState();
     const ids   = this.#expandedIds(budget);
+    const counted = CountedEntries.byId(state);
     return state.transactions
-      .filter((t) => this.#inCurrentPeriod(budget, t) &&
+      .filter((t) => counted.has(t.id) && this.#inCurrentPeriod(budget, t) &&
                      this.#categoryAmounts(t).some((s) => ids.has(s.categoryId)))
       .sort((a, b) => b.date.localeCompare(a.date));
   }
@@ -192,7 +194,7 @@ export class BudgetService {
     };
 
     let prevSpent = 0;
-    for (const t of state.transactions) {
+    for (const t of CountedEntries.list(state)) {
       if (!prevMatches(t)) continue;
       for (const slice of this.#categoryAmounts(t)) {
         if (ids.has(slice.categoryId)) {

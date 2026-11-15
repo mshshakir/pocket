@@ -25,12 +25,14 @@ import { Html }                from '../../core/Html.js';
 import { CurrencyService }     from '../../domain/services/CurrencyService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { TransactionService }  from '../../domain/services/TransactionService.js';
+import { ReimbursementService } from '../../domain/services/ReimbursementService.js';
 
 export class TransactionRowRenderer {
   /** @type {Store} */               #store;
   /** @type {CurrencyService} */     #fx;
   /** @type {HijriCalendarService} */ #hijri;
   /** @type {TransactionService} */  #txService;
+  /** @type {{txs: object[], at: number, svc: ReimbursementService}|null} */ #reimbCache = null;
 
   constructor() {
     this.#store     = Store.getInstance();
@@ -130,7 +132,11 @@ export class TransactionRowRenderer {
         ? `<div class="text-xs text-zinc-500">${this.#fx.formatMoney(this.#fx.convert(t.amount, t.currency, home), home)}</div>`
         : '';
     }
-    const color = sign === '-' ? 'text-rose-500' : sign === '+' ? 'text-emerald-500' : 'text-zinc-500';
+    // Money paid back and loans move balances but aren't income or spending.
+    const notCounted = ReimbursementService.isPayment(t) || ReimbursementService.isDebtEntry(t);
+    const color = notCounted ? 'text-zinc-500'
+      : sign === '-' ? 'text-rose-500' : sign === '+' ? 'text-emerald-500' : 'text-zinc-500';
+    const reimbLine = this.#reimbLine(t);
 
     // ── Click / delete handlers ───────────────────────────────────────
     // Shared member can delete transactions THEY added, regardless of permission level
@@ -234,10 +240,12 @@ export class TransactionRowRenderer {
           <div class="text-xs text-zinc-500 truncate">
             ${subline}${t.addedBy ? ` · by ${this.#esc(t.addedBy)}` : ''}
           </div>
+          ${reimbLine}
         </div>
         <div class="phone-only">
           <div class="text-sm font-medium truncate">${phoneTitle}</div>
           ${phoneSub ? `<div class="text-xs text-zinc-500 truncate">${phoneSub}</div>` : ''}
+          ${reimbLine}
         </div>
       </div>
       <div class="tx-amount text-right">
@@ -301,6 +309,38 @@ export class TransactionRowRenderer {
     return `<span title="${this.#esc(top.t)}" class="inline-flex items-center" style="color:${color}">
       <i data-lucide="moon-star" style="width:13px;height:13px"></i>
     </span>`;
+  }
+
+  /**
+   * The reimbursement line under a row: what came back (never what's
+   * missing), or that a payback / loan isn't income or spending.
+   */
+  #reimbLine(t) {
+    const chip = (text, cls = 'text-emerald-600') => `<div class="reimb-badge text-[11px] ${cls} truncate">${text}</div>`;
+    if (ReimbursementService.isPayment(t)) {
+      return chip(`Paid back by ${this.#esc(t.reimbBy || '')} · not income`, 'text-zinc-500');
+    }
+    if (ReimbursementService.isDebtEntry(t)) return chip('Loan · not income or spending', 'text-zinc-500');
+    if (!ReimbursementService.isTracked(t)) return '';
+    const st = this.#reimb().status(t);
+    const cur = t.currency;
+    if (st.closed || st.settled) {
+      return st.paid > 0 ? chip(`Reimbursed ${st.pct}% · ${this.#fx.formatMoney(st.paid, cur)}`)
+        : chip('Reimbursed 0% · closed', 'text-zinc-500');
+    }
+    if (st.paid > 0) return chip(`Paid back ${this.#fx.formatMoney(st.paid, cur)} of ${this.#fx.formatMoney(st.expected, cur)} · ${st.pct}%`);
+    return chip(`${this.#esc(st.payer)} will pay back ${this.#fx.formatMoney(st.expected, cur)}`, 'text-amber-600');
+  }
+
+  /** One service per burst of rows (a list render), rebuilt when the book changes. */
+  #reimb() {
+    const txs = this.#store.getState().transactions || [];
+    const now = Date.now();
+    const c = this.#reimbCache;
+    if (!c || c.txs !== txs || c.n !== txs.length || now - c.at > 250) {
+      this.#reimbCache = { txs, n: txs.length, at: now, svc: new ReimbursementService(this.#store.getState()) };
+    }
+    return this.#reimbCache.svc;
   }
 
   #getAccount(id) {

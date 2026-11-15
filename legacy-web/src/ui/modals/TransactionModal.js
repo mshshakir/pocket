@@ -18,6 +18,7 @@ import { DateService }              from '../../domain/services/DateService.js';
 import { Html }                     from '../../core/Html.js';
 import { NotifyField }              from '../components/NotifyField.js';
 import { ShortcutService }          from '../../domain/services/ShortcutService.js';
+import { ReimbursementService }     from '../../domain/services/ReimbursementService.js';
 
 /** Payment methods available by default. */
 const DEFAULT_PAYMENT_TYPES = ['card', 'cash', 'bank-transfer', 'cheque', 'crypto', 'other'];
@@ -125,6 +126,15 @@ export class TransactionModal {
         }
       : null;
     this.#draft.askFirst = !!form.elements?.recurringAsk?.checked;
+
+    // "Someone will pay me back"
+    if (form.elements?.reimbOn) {
+      this.#draft.reimbOn = !!form.elements.reimbOn.checked;
+      this.#draft.reimbBy = str('reimbBy');
+      this.#draft.reimbExpectedRaw = str('reimbExpected');
+      this.#draft.claimName = str('claimName');
+      this.#draft.claimRef = str('claimRef');
+    }
   }
 
   /** Discard the captured draft (used when the modal opens fresh). */
@@ -455,6 +465,9 @@ export class TransactionModal {
               class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">⚙ Manage</button>
           </div>
         </div>
+
+        ${type === 'expense' && !isSharedMode && !sharedBook ? this.#reimbSection(data, state, editing) : ''}
+        ${editing && ReimbursementService.isPayment(editing) ? this.#paybackNote(editing, state) : ''}
 
         <details class="more-options mb-3" ${moreOpen ? 'open' : ''}>
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
@@ -877,6 +890,79 @@ export class TransactionModal {
           <select class="select inline-block w-auto ml-1" name="remindDays">
             ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? 'selected' : ''}>${d === 0 ? 'on the day' : `${d} day${d === 1 ? '' : 's'} before`}</option>`).join('')}
           </select> and on the day</label>`)}
+      </div>`;
+  }
+
+  /**
+   * "Someone will pay me back": who, how much back (defaults to all of it)
+   * and an optional claim that groups several expenses.
+   */
+  #reimbSection(data, state, editing) {
+    const svc = new ReimbursementService(state);
+    const d = this.#draft;
+    const on = d.reimbOn ?? !!data.reimbBy;
+    const payer = d.reimbBy ?? (data.reimbBy || '');
+    const claim = data.claimId ? svc.claim(data.claimId) : null;
+    const claimName = d.claimName ?? (claim?.name || '');
+    const claimRef = d.claimRef ?? (claim?.ref || '');
+    const expected = d.reimbExpectedRaw ?? (Number(data.reimbExpected) > 0 ? this.#fx.fromMinor(data.reimbExpected, data.currency) : '');
+    const st = editing && editing.reimbBy ? svc.status(editing) : null;
+    const done = st && st.paid > 0
+      ? `<div class="text-xs text-emerald-600 mb-2">${st.closed || st.settled ? `Reimbursed ${st.pct}%` : `Paid back ${this.#fx.formatMoney(st.paid, editing.currency)} of ${this.#fx.formatMoney(st.expected, editing.currency)} · ${st.pct}%`}</div>`
+      : '';
+    return `
+      <div class="card-muted p-3 mb-3 reimb-section">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" name="reimbOn" ${on ? 'checked' : ''}
+                 onchange="this.closest('.reimb-section').querySelector('[data-reimb-fields]').hidden = !this.checked">
+          <i data-lucide="undo-2" style="width:13px;height:13px"></i>
+          <span class="font-medium">Someone will pay me back</span>
+        </label>
+        <div data-reimb-fields ${on ? '' : 'hidden'} class="mt-2">
+          ${done}
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div>
+              <label class="text-xs text-zinc-500">Who pays back</label>
+              <input class="input" name="reimbBy" list="reimbPayers" maxlength="60" value="${this.#esc(payer)}" placeholder="e.g. Company, insurer, Ali">
+              <datalist id="reimbPayers">${svc.payers().map((p) => `<option value="${this.#esc(p)}">`).join('')}</datalist>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">How much back</label>
+              <input class="input" name="reimbExpected" type="number" min="0" step="${CurrencyService.stepFor(data.currency)}" inputmode="decimal"
+                     value="${expected}" placeholder="All of it">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-zinc-500">Claim <span class="text-zinc-400">(optional)</span></label>
+              <input class="input" name="claimName" list="reimbClaims" maxlength="60" value="${this.#esc(claimName)}" placeholder="e.g. Nov hospital claim">
+              <datalist id="reimbClaims">${(state.claims || []).map((c) => `<option value="${this.#esc(c.name)}">`).join('')}</datalist>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Reference <span class="text-zinc-400">(optional)</span></label>
+              <input class="input" name="claimRef" maxlength="40" value="${this.#esc(claimRef)}" placeholder="Claim no.">
+            </div>
+          </div>
+          ${editing?.reimbClosed ? `<label class="flex items-center gap-2 text-xs mt-2 cursor-pointer"><input type="checkbox" name="reimbClosed" checked> Closed — nothing more expected (untick to expect the rest)</label>` : ''}
+          <div class="text-xs text-zinc-500 mt-2">It counts as your spending until paid back. Record the money from Debts → Reimbursements.</div>
+        </div>
+      </div>`;
+  }
+
+  /** A payback entry: who paid, for what — and that it isn't income. */
+  #paybackNote(tx, state) {
+    const byId = new Map(state.transactions.map((t) => [t.id, t]));
+    const items = (tx.reimbAlloc || []).map((a) => {
+      const t = byId.get(a.txId);
+      return `<li>${this.#esc(t ? (t.payee || 'Expense') : 'Deleted expense')}${t ? ` · ${TransactionModal.day(t.date)}` : ''} — ${this.#fx.formatMoney(a.amount, t?.currency || tx.currency)}</li>`;
+    }).join('');
+    const extra = Number(tx.reimbExtra) > 0
+      ? `<div class="mt-1">${this.#fx.formatMoney(tx.reimbExtra, tx.currency)} extra · ${tx.reimbExtraAs === 'income' ? 'counted as income' : 'kept as credit'}</div>` : '';
+    return `
+      <div class="card-muted p-3 mb-3 text-xs text-zinc-600 dark:text-zinc-300">
+        <div class="font-medium text-sm mb-1">Paid back by ${this.#esc(tx.reimbBy || '')} · not income</div>
+        <ul class="list-disc pl-4">${items}</ul>
+        ${extra}
       </div>`;
   }
 

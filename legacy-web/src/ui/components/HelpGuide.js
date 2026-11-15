@@ -74,6 +74,10 @@ export class HelpGuide {
         'New debt: choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to. It’s also an entry in that account, so balances stay right.',
         'A loan from a person is paid back whenever, in any amounts. For a bank or car loan, tick <b>Paid back in monthly instalments</b> — it then shows what’s due each month and how many are paid.',
         'Tap <b>Record payment</b> as money comes back or goes out; the bar shows what’s left. <b>Mark as fully paid</b> when it’s settled.',
+        'Loans and their repayments move your balances but are not income or spending.',
+        '<b>Reimbursements</b>: when you add an expense, turn on <b>Someone will pay me back</b> — who (a person, company or insurer), how much back, and a claim if several expenses go together. It counts as your spending until paid back.',
+        'When money comes, tap <b>Paid back</b>: tick the items, enter the amount and account, and share it <b>Spread evenly</b>, <b>Oldest first</b> or <b>Per item</b>. Turn on <b>The rest won’t be paid back</b> to close what’s left in the same save. Paid more? Keep the extra for their next item or count it as income.',
+        'Money paid back is not income. The expense keeps its full amount with a badge like “Reimbursed 83%”, and your spending for that month counts only what you bore. <b>Won’t be paid back</b> closes an item when nothing will come.',
       ],
     },
     categories: {

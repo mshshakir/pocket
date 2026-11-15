@@ -13,6 +13,7 @@
  */
 import { CurrencyService } from '../services/CurrencyService.js';
 import { HijriCalendarService } from '../services/HijriCalendarService.js';
+import { ReimbursementService } from '../services/ReimbursementService.js';
 
 export class LedgerEntries {
   #state;
@@ -20,6 +21,7 @@ export class LedgerEntries {
   #hijri;
   #accounts;
   #categories;
+  #reimb;
 
   /**
    * @param {object} state  a book (or a shared space's projection of one)
@@ -31,6 +33,7 @@ export class LedgerEntries {
     this.#hijri = hijri;
     this.#accounts = new Map((state.accounts || []).map((a) => [a.id, a]));
     this.#categories = new Map((state.categories || []).map((c) => [c.id, c]));
+    this.#reimb = new ReimbursementService(state);
   }
 
   get homeCurrency() {
@@ -105,7 +108,36 @@ export class LedgerEntries {
       addedBy: t.addedBy || '',
       split: part > 0,
       source: LedgerEntries.sourceOf(t),
+      ...this.#counting(t, homeAmount),
     };
+  }
+
+  /**
+   * How a row counts towards income and spending totals (CountedEntries):
+   * loans, repayments and paybacks count nothing; a paid-back expense counts
+   * what the user bore. Also the reimbursement columns.
+   */
+  #counting(t, homeAmount) {
+    const full = Number(t.amount) || 0;
+    const sign = t.type === 'income' ? 1 : t.type === 'expense' ? -1 : 0;
+    const out = { countedHome: homeAmount, reimbBy: '', paidBackHome: null, reimbPct: null, kind: '' };
+    if (ReimbursementService.isDebtEntry(t)) {
+      out.countedHome = 0; out.kind = 'Loan';
+    } else if (ReimbursementService.isPayment(t)) {
+      const extra = t.reimbExtraAs === 'income' ? Math.min(Number(t.reimbExtra) || 0, full) : 0;
+      out.countedHome = full ? Math.round(homeAmount * (extra / full)) : 0;
+      out.reimbBy = t.reimbBy || '';
+      out.kind = 'Paid back';
+    } else if (ReimbursementService.isTracked(t)) {
+      const st = this.#reimb.status(t);
+      const f = full ? st.paid / full : 0;
+      out.countedHome = Math.round(homeAmount * (1 - f));
+      out.reimbBy = st.payer;
+      out.paidBackHome = Math.round(homeAmount * f);
+      out.reimbPct = st.pct / 100;
+    }
+    out.countedSigned = sign * out.countedHome;
+    return out;
   }
 
   /**
@@ -146,6 +178,12 @@ export class LedgerEntries {
       receivedCurrency: into?.currency || null,
       homeAmount: this.#fx.convert(Number(out.amount) || 0, out.currency, this.homeCurrency),
       signedHome: 0,
+      countedHome: 0,
+      countedSigned: 0,
+      reimbBy: '',
+      paidBackHome: null,
+      reimbPct: null,
+      kind: '',
       addedBy: out.addedBy || '',
       split: false,
     };

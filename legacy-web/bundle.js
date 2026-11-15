@@ -3387,6 +3387,296 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/ReimbursementService.js
+  var ReimbursementService = class _ReimbursementService {
+    static TAG = "reimbursement";
+    /** @type {object} */
+    #state;
+    /** @type {Map<string, {amount:number, last:string|null, dates:string[]}>|null} */
+    #paid = null;
+    /** @param {object} state */
+    constructor(state) {
+      this.#state = state || {};
+    }
+    // ── What an entry is ────────────────────────────────────────────────
+    /** A payback entry (money in from the payer). */
+    static isPayment(t) {
+      return !!t && Array.isArray(t.tags) && t.tags.includes(_ReimbursementService.TAG);
+    }
+    /** A loan given or taken, or a repayment of one (Debts). */
+    static isDebtEntry(t) {
+      if (!t) return false;
+      if (t.debtRole) return true;
+      return Array.isArray(t.tags) && (t.tags.includes("debt") || t.tags.includes("debt-payment"));
+    }
+    /** An expense someone will pay back. */
+    static isTracked(t) {
+      return !!t && t.type === "expense" && !!String(t.reimbBy || "").trim();
+    }
+    /** The amount expected back (defaults to the whole expense). */
+    static expected(t) {
+      const full = Number(t?.amount) || 0;
+      const e = Number(t?.reimbExpected);
+      return Number.isFinite(e) && e > 0 ? Math.min(e, full) : full;
+    }
+    // ── Per expense ─────────────────────────────────────────────────────
+    /** Paid back so far for an expense, in its own currency (minor). */
+    paidBack(txId) {
+      return this.#paidMap().get(txId)?.amount || 0;
+    }
+    /**
+     * Everything about one tracked expense.
+     * @returns {{expected:number, paid:number, outstanding:number, closed:boolean,
+     *            settled:boolean, pct:number, last:string|null, payer:string, claimId:string|null}}
+     */
+    status(t) {
+      const expected = _ReimbursementService.expected(t);
+      const p = this.#paidMap().get(t.id);
+      const paid = Math.min(p?.amount || 0, Number(t.amount) || 0);
+      const closed = t.reimbClosed === true;
+      const outstanding = closed ? 0 : Math.max(0, expected - paid);
+      const base = expected || 1;
+      return {
+        expected,
+        paid,
+        outstanding,
+        closed,
+        settled: outstanding === 0,
+        // What came back, as a share of what was expected (never of what's missing).
+        pct: Math.round(Math.min(1, paid / base) * 100),
+        last: p?.last || null,
+        payer: String(t.reimbBy || "").trim(),
+        claimId: t.claimId || null
+      };
+    }
+    /** Expenses still waiting to be paid back. */
+    outstanding() {
+      return (this.#state.transactions || []).filter((t) => _ReimbursementService.isTracked(t)).map((t) => ({ tx: t, ...this.status(t) })).filter((r) => r.outstanding > 0).sort((a, b) => a.tx.date.localeCompare(b.tx.date));
+    }
+    /** Every tracked expense (open or settled). */
+    tracked() {
+      return (this.#state.transactions || []).filter((t) => _ReimbursementService.isTracked(t)).map((t) => ({ tx: t, ...this.status(t) }));
+    }
+    /** Names used before, most used first — for the payer suggestions. */
+    payers() {
+      const n = /* @__PURE__ */ new Map();
+      for (const t of this.#state.transactions || []) {
+        const p = String(t.reimbBy || "").trim();
+        if (p) n.set(p, (n.get(p) || 0) + 1);
+      }
+      return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+    }
+    /** The claim with this id, or null. */
+    claim(id) {
+      return (this.#state.claims || []).find((c) => c.id === id) || null;
+    }
+    // ── Groups (the Reimbursements section) ─────────────────────────────
+    /** The group key of a tracked expense: its claim, else its payer. */
+    static groupKey(t) {
+      return t.claimId ? `claim:${t.claimId}` : `payer:${String(t.reimbBy || "").trim().toLowerCase()}`;
+    }
+    /**
+     * Open items grouped by claim (when they have one) or payer.
+     * @returns {{key, label, payer, claim, items, outstanding, expected, paid, currency, credit}[]}
+     */
+    groups() {
+      const map = /* @__PURE__ */ new Map();
+      for (const r of this.outstanding()) {
+        const key = _ReimbursementService.groupKey(r.tx);
+        if (!map.has(key)) {
+          const claim = r.claimId ? this.claim(r.claimId) : null;
+          map.set(key, {
+            key,
+            payer: r.payer,
+            claim,
+            label: claim ? claim.name : r.payer,
+            items: [],
+            outstanding: 0,
+            expected: 0,
+            paid: 0,
+            currency: r.tx.currency,
+            mixed: false
+          });
+        }
+        const g = map.get(key);
+        g.items.push(r);
+        if (r.tx.currency !== g.currency) g.mixed = true;
+        g.outstanding += r.outstanding;
+        g.expected += r.expected;
+        g.paid += r.paid;
+      }
+      for (const g of map.values()) g.credit = this.credit(g.payer);
+      return [...map.values()].sort((a, b) => a.items[0].tx.date.localeCompare(b.items[0].tx.date));
+    }
+    /** A group by key — open items only. */
+    group(key) {
+      return this.groups().find((g) => g.key === key) || null;
+    }
+    // ── Credit (extra kept for the next item) ───────────────────────────
+    /**
+     * Payments from this payer whose extra was kept, with what's left of it.
+     * @returns {{tx:object, left:number}[]}  left in the payment's currency
+     */
+    creditEntries(payer) {
+      const p = String(payer || "").trim().toLowerCase();
+      return (this.#state.transactions || []).filter((t) => _ReimbursementService.isPayment(t) && t.reimbExtraAs === "keep" && String(t.reimbBy || "").trim().toLowerCase() === p).map((t) => {
+        const used = (t.reimbAlloc || []).reduce((n, a) => n + (Number(a.pay) || 0), 0);
+        return { tx: t, left: Math.max(0, (Number(t.amount) || 0) - used) };
+      }).filter((c) => c.left > 0).sort((a, b) => a.tx.date.localeCompare(b.tx.date));
+    }
+    /** Total credit kept for a payer (in the first credit entry's currency). */
+    credit(payer) {
+      return this.creditEntries(payer).reduce((n, c) => n + c.left, 0);
+    }
+    // ── Sharing a payment across items ──────────────────────────────────
+    /**
+     * Split `total` across items.
+     *
+     *   spread  — each item gets the same share of what it's owed (pro-rata)
+     *   oldest  — fills the oldest item first, then the next
+     *   items   — `perItem[txId]` is typed by the user
+     *
+     * Amounts are in one currency (the caller converts). The last item absorbs
+     * rounding so the parts add up exactly to what was shared.
+     *
+     * @param {{id:string, outstanding:number}[]} items  in date order
+     * @param {number} total
+     * @param {'spread'|'oldest'|'items'} mode
+     * @param {Object<string, number>} [perItem]
+     * @returns {{ parts: {txId:string, amount:number}[], used:number, extra:number }}
+     */
+    static allocate(items, total, mode = "spread", perItem = {}) {
+      const want = Math.max(0, Math.round(Number(total) || 0));
+      const owed = items.reduce((n, i) => n + Math.max(0, i.outstanding), 0);
+      const parts = [];
+      if (mode === "items") {
+        let used2 = 0;
+        for (const i of items) {
+          const a = Math.max(0, Math.min(i.outstanding, Math.round(Number(perItem[i.id]) || 0)));
+          if (a > 0) {
+            parts.push({ txId: i.id, amount: a });
+            used2 += a;
+          }
+        }
+        return { parts, used: used2, extra: Math.max(0, want - used2) };
+      }
+      const share = Math.min(want, owed);
+      if (mode === "oldest") {
+        let left = share;
+        for (const i of items) {
+          if (left <= 0) break;
+          const a = Math.min(left, i.outstanding);
+          if (a > 0) {
+            parts.push({ txId: i.id, amount: a });
+            left -= a;
+          }
+        }
+      } else {
+        let given = 0;
+        const open = items.filter((i) => i.outstanding > 0);
+        open.forEach((i, k) => {
+          const a = k === open.length - 1 ? share - given : Math.floor(share * i.outstanding / (owed || 1));
+          const capped = Math.max(0, Math.min(a, i.outstanding));
+          if (capped > 0) {
+            parts.push({ txId: i.id, amount: capped });
+            given += capped;
+          }
+        });
+        let rest = share - given;
+        for (const p of parts) {
+          if (rest <= 0) break;
+          const i = open.find((o) => o.id === p.txId);
+          const room = i.outstanding - p.amount;
+          const add = Math.min(room, rest);
+          p.amount += add;
+          rest -= add;
+        }
+      }
+      const used = parts.reduce((n, p) => n + p.amount, 0);
+      return { parts, used, extra: Math.max(0, want - used) };
+    }
+    // ── Internals ───────────────────────────────────────────────────────
+    #paidMap() {
+      if (this.#paid) return this.#paid;
+      const m = /* @__PURE__ */ new Map();
+      for (const t of this.#state.transactions || []) {
+        if (!_ReimbursementService.isPayment(t)) continue;
+        for (const a of t.reimbAlloc || []) {
+          if (!a || !a.txId) continue;
+          const cur = m.get(a.txId) || { amount: 0, last: null, dates: [] };
+          cur.amount += Math.max(0, Number(a.amount) || 0);
+          const d = a.date || t.date;
+          if (!cur.last || d > cur.last) cur.last = d;
+          cur.dates.push(d);
+          m.set(a.txId, cur);
+        }
+      }
+      this.#paid = m;
+      return m;
+    }
+  };
+
+  // src/domain/services/CountedEntries.js
+  var CountedEntries = class _CountedEntries {
+    /**
+     * @param {object} state
+     * @returns {object[]}  the counted transactions (same order)
+     */
+    static list(state) {
+      const txs = state?.transactions || [];
+      const r = new ReimbursementService(state);
+      const out = [];
+      for (const t of txs) {
+        const c = _CountedEntries.counted(t, r);
+        if (c) out.push(c);
+      }
+      return out;
+    }
+    /** Counted copies by id (missing = counts as nothing). */
+    static byId(state) {
+      return new Map(_CountedEntries.list(state).map((t) => [t.id, t]));
+    }
+    /**
+     * How one entry counts, or null when it doesn't.
+     * @param {object} t
+     * @param {ReimbursementService} r
+     */
+    static counted(t, r) {
+      if (!t) return null;
+      if (ReimbursementService.isDebtEntry(t)) return null;
+      if (ReimbursementService.isPayment(t)) {
+        const extra = Number(t.reimbExtra) || 0;
+        if (t.reimbExtraAs !== "income" || extra <= 0) return null;
+        return _CountedEntries.scaled(t, Math.min(extra, Number(t.amount) || 0), 0);
+      }
+      if (ReimbursementService.isTracked(t)) {
+        const paid = r.paidBack(t.id);
+        if (paid > 0) {
+          const full = Number(t.amount) || 0;
+          return _CountedEntries.scaled(t, Math.max(0, full - paid), Math.min(paid, full));
+        }
+      }
+      return t;
+    }
+    /** A copy of `t` worth `amount` (own currency), parts reduced alike. */
+    static scaled(t, amount, paidBack) {
+      const full = Number(t.amount) || 0;
+      const f = full > 0 ? amount / full : 0;
+      const copy = { ...t, amount, _paidBack: paidBack };
+      if (Number.isFinite(t.refAmount)) copy.refAmount = Math.round(t.refAmount * f);
+      if (Number.isFinite(t.acctMinor)) copy.acctMinor = Math.round(t.acctMinor * f);
+      if (Array.isArray(t.splits) && t.splits.length) {
+        let given = 0;
+        copy.splits = t.splits.map((s, i) => {
+          const a = i === t.splits.length - 1 ? amount - given : Math.round((Number(s.amount) || 0) * f);
+          given += a;
+          return { ...s, amount: a, acctMinor: Number.isFinite(s.acctMinor) ? Math.round(s.acctMinor * f) : s.acctMinor };
+        });
+      }
+      return copy;
+    }
+  };
+
   // src/domain/services/BudgetService.js
   var BudgetService = class {
     /** @type {Store} */
@@ -3485,7 +3775,7 @@ var _PocketApp = (() => {
       const state = this.#store.getState();
       const ids = this.#expandedIds(budget);
       let spend = 0;
-      for (const t of state.transactions) {
+      for (const t of CountedEntries.list(state)) {
         if (!this.#inCurrentPeriod(budget, t)) continue;
         for (const slice of this.#categoryAmounts(t)) {
           if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
@@ -3505,7 +3795,7 @@ var _PocketApp = (() => {
       return this.targetCategoryIds(budget).map((cid) => {
         const ids = new Set(this.#cats.descendants(cid));
         let spend = 0;
-        for (const t of state.transactions) {
+        for (const t of CountedEntries.list(state)) {
           if (!this.#inCurrentPeriod(budget, t)) continue;
           for (const slice of this.#categoryAmounts(t)) {
             if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
@@ -3524,7 +3814,8 @@ var _PocketApp = (() => {
     periodTransactions(budget) {
       const state = this.#store.getState();
       const ids = this.#expandedIds(budget);
-      return state.transactions.filter((t) => this.#inCurrentPeriod(budget, t) && this.#categoryAmounts(t).some((s) => ids.has(s.categoryId))).sort((a, b) => b.date.localeCompare(a.date));
+      const counted = CountedEntries.byId(state);
+      return state.transactions.filter((t) => counted.has(t.id) && this.#inCurrentPeriod(budget, t) && this.#categoryAmounts(t).some((s) => ids.has(s.categoryId))).sort((a, b) => b.date.localeCompare(a.date));
     }
     /**
      * Effective budget limit accounting for optional rollover from previous period.
@@ -3555,7 +3846,7 @@ var _PocketApp = (() => {
         return d.getFullYear() === py && d.getMonth() === pm;
       };
       let prevSpent = 0;
-      for (const t of state.transactions) {
+      for (const t of CountedEntries.list(state)) {
         if (!prevMatches(t)) continue;
         for (const slice of this.#categoryAmounts(t)) {
           if (ids.has(slice.categoryId)) {
@@ -11050,7 +11341,11 @@ This replaces your current grouping.`
           "Each <b>Pay</b> button uses the usual flow for that thing, so paying here or in Regulars or Accounts is the same.",
           "New debt: choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to. It\u2019s also an entry in that account, so balances stay right.",
           "A loan from a person is paid back whenever, in any amounts. For a bank or car loan, tick <b>Paid back in monthly instalments</b> \u2014 it then shows what\u2019s due each month and how many are paid.",
-          "Tap <b>Record payment</b> as money comes back or goes out; the bar shows what\u2019s left. <b>Mark as fully paid</b> when it\u2019s settled."
+          "Tap <b>Record payment</b> as money comes back or goes out; the bar shows what\u2019s left. <b>Mark as fully paid</b> when it\u2019s settled.",
+          "Loans and their repayments move your balances but are not income or spending.",
+          "<b>Reimbursements</b>: when you add an expense, turn on <b>Someone will pay me back</b> \u2014 who (a person, company or insurer), how much back, and a claim if several expenses go together. It counts as your spending until paid back.",
+          "When money comes, tap <b>Paid back</b>: tick the items, enter the amount and account, and share it <b>Spread evenly</b>, <b>Oldest first</b> or <b>Per item</b>. Turn on <b>The rest won\u2019t be paid back</b> to close what\u2019s left in the same save. Paid more? Keep the extra for their next item or count it as income.",
+          "Money paid back is not income. The expense keeps its full amount with a badge like \u201CReimbursed 83%\u201D, and your spending for that month counts only what you bore. <b>Won\u2019t be paid back</b> closes an item when nothing will come."
         ]
       },
       categories: {
@@ -11400,7 +11695,7 @@ This replaces your current grouping.`
       const state = this.#store.getState();
       const home = state.user.homeCurrency;
       const byCat = {};
-      state.transactions.filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).forEach((t) => {
+      CountedEntries.list(state).filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).forEach((t) => {
         for (const slice of this.#txs.categoryAmounts(t)) {
           if (!slice.categoryId) continue;
           byCat[slice.categoryId] = (byCat[slice.categoryId] || 0) + this.#fx.convert(slice.amount, slice.currency, home);
@@ -11423,7 +11718,7 @@ This replaces your current grouping.`
         keys.push(DateService.toIso(d));
       }
       const totals = Object.fromEntries(keys.map((k) => [k, 0]));
-      state.transactions.filter((t) => t.type === "expense" && keys.includes(t.date)).forEach((t) => {
+      CountedEntries.list(state).filter((t) => t.type === "expense" && keys.includes(t.date)).forEach((t) => {
         totals[t.date] += this.#fx.fromMinor(
           this.#fx.convert(t.amount, t.currency, home),
           home
@@ -11440,7 +11735,7 @@ This replaces your current grouping.`
     topTransactions(n, rangeDays) {
       const state = this.#store.getState();
       const home = state.user.homeCurrency;
-      return state.transactions.filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).map((t) => ({ tx: t, value: this.#fx.convert(t.amount, t.currency, home) })).sort((a, b) => b.value - a.value).slice(0, n);
+      return CountedEntries.list(state).filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).map((t) => ({ tx: t, value: this.#fx.convert(t.amount, t.currency, home) })).sort((a, b) => b.value - a.value).slice(0, n);
     }
     /**
      * Net-worth time series in the user's home currency.
@@ -11501,7 +11796,7 @@ This replaces your current grouping.`
       const state = this.#store.getState();
       const home = state.user.homeCurrency;
       const byMonth = {};
-      state.transactions.filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).forEach((t) => {
+      CountedEntries.list(state).filter((t) => t.type === "expense" && this.withinRange(t.date, rangeDays)).forEach((t) => {
         const h = this.#hijri.toHijri(t.date);
         const k = `${h.year}-${h.month}`;
         byMonth[k] = (byMonth[k] || 0) + this.#fx.convert(t.amount, t.currency, home);
@@ -11523,6 +11818,8 @@ This replaces your current grouping.`
     #hijri;
     /** @type {TransactionService} */
     #txService;
+    /** @type {{txs: object[], at: number, svc: ReimbursementService}|null} */
+    #reimbCache = null;
     constructor() {
       this.#store = Store.getInstance();
       this.#fx = new CurrencyService();
@@ -11618,7 +11915,9 @@ This replaces your current grouping.`
         displayCurrency = t.currency;
         origLine = t.currency !== home ? `<div class="text-xs text-zinc-500">${this.#fx.formatMoney(this.#fx.convert(t.amount, t.currency, home), home)}</div>` : "";
       }
-      const color = sign === "-" ? "text-rose-500" : sign === "+" ? "text-emerald-500" : "text-zinc-500";
+      const notCounted = ReimbursementService.isPayment(t) || ReimbursementService.isDebtEntry(t);
+      const color = notCounted ? "text-zinc-500" : sign === "-" ? "text-rose-500" : sign === "+" ? "text-emerald-500" : "text-zinc-500";
+      const reimbLine = this.#reimbLine(t);
       const isOwnContrib = isShared && !!currentUserEmail && t.addedBy === currentUserEmail;
       const canDeleteRow = canDelete || isOwnContrib;
       const jsId = Html.js(t.id);
@@ -11690,10 +11989,12 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 truncate">
             ${subline}${t.addedBy ? ` \xB7 by ${this.#esc(t.addedBy)}` : ""}
           </div>
+          ${reimbLine}
         </div>
         <div class="phone-only">
           <div class="text-sm font-medium truncate">${phoneTitle}</div>
           ${phoneSub ? `<div class="text-xs text-zinc-500 truncate">${phoneSub}</div>` : ""}
+          ${reimbLine}
         </div>
       </div>
       <div class="tx-amount text-right">
@@ -11746,6 +12047,35 @@ This replaces your current grouping.`
       <i data-lucide="moon-star" style="width:13px;height:13px"></i>
     </span>`;
     }
+    /**
+     * The reimbursement line under a row: what came back (never what's
+     * missing), or that a payback / loan isn't income or spending.
+     */
+    #reimbLine(t) {
+      const chip = (text, cls = "text-emerald-600") => `<div class="reimb-badge text-[11px] ${cls} truncate">${text}</div>`;
+      if (ReimbursementService.isPayment(t)) {
+        return chip(`Paid back by ${this.#esc(t.reimbBy || "")} \xB7 not income`, "text-zinc-500");
+      }
+      if (ReimbursementService.isDebtEntry(t)) return chip("Loan \xB7 not income or spending", "text-zinc-500");
+      if (!ReimbursementService.isTracked(t)) return "";
+      const st = this.#reimb().status(t);
+      const cur = t.currency;
+      if (st.closed || st.settled) {
+        return st.paid > 0 ? chip(`Reimbursed ${st.pct}% \xB7 ${this.#fx.formatMoney(st.paid, cur)}`) : chip("Reimbursed 0% \xB7 closed", "text-zinc-500");
+      }
+      if (st.paid > 0) return chip(`Paid back ${this.#fx.formatMoney(st.paid, cur)} of ${this.#fx.formatMoney(st.expected, cur)} \xB7 ${st.pct}%`);
+      return chip(`${this.#esc(st.payer)} will pay back ${this.#fx.formatMoney(st.expected, cur)}`, "text-amber-600");
+    }
+    /** One service per burst of rows (a list render), rebuilt when the book changes. */
+    #reimb() {
+      const txs = this.#store.getState().transactions || [];
+      const now = Date.now();
+      const c = this.#reimbCache;
+      if (!c || c.txs !== txs || c.n !== txs.length || now - c.at > 250) {
+        this.#reimbCache = { txs, n: txs.length, at: now, svc: new ReimbursementService(this.#store.getState()) };
+      }
+      return this.#reimbCache.svc;
+    }
     #getAccount(id) {
       return this.#store.getState().accounts.find((a) => a.id === id) || null;
     }
@@ -11773,7 +12103,7 @@ This replaces your current grouping.`
     render() {
       const { state, homeCurrency: home } = this;
       const monthStart = this.#reports.startOfMonth();
-      const monthTx = state.transactions.filter((t) => /* @__PURE__ */ new Date(t.date + "T12:00:00") >= monthStart);
+      const monthTx = CountedEntries.list(state).filter((t) => /* @__PURE__ */ new Date(t.date + "T12:00:00") >= monthStart);
       const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       const counted = state.accounts.filter((a) => AccountService.inTotals(a));
@@ -11993,7 +12323,7 @@ This replaces your current grouping.`
   };
 
   // src/ui/views/TransactionsView.js
-  var TransactionsView = class extends BaseView {
+  var TransactionsView = class _TransactionsView extends BaseView {
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
     /** @type {TransactionService} */
@@ -12012,8 +12342,17 @@ This replaces your current grouping.`
       paymentTypes: [],
       amountMin: "",
       amountMax: "",
+      reimb: "",
+      // '' | 'open' | 'back' | 'payments' | 'all' (TransactionsView.REIMB)
       sort: "date-desc"
     };
+    /** The Reimbursements filter. */
+    static REIMB = Object.freeze([
+      ["open", "To get back"],
+      ["back", "Paid back"],
+      ["all", "All marked to pay back"],
+      ["payments", "Money paid back"]
+    ]);
     #filterOpen = false;
     #multiSelect = false;
     #selectedIds = /* @__PURE__ */ new Set();
@@ -12032,6 +12371,13 @@ This replaces your current grouping.`
      * @param {Set<string>} wanted  expanded set of acceptable category IDs
      * @returns {boolean}
      */
+    static #reimbMatch(mode, t, svc) {
+      if (mode === "payments") return ReimbursementService.isPayment(t);
+      if (!ReimbursementService.isTracked(t)) return false;
+      if (mode === "all") return true;
+      const st = svc.status(t);
+      return mode === "open" ? st.outstanding > 0 : st.paid > 0;
+    }
     #matchesCategory(t, wanted) {
       const ids = Array.isArray(t.splits) && t.splits.length ? t.splits.map((s) => s.categoryId) : [t.categoryId];
       return ids.some((id) => wanted.has(id));
@@ -12088,7 +12434,8 @@ This replaces your current grouping.`
         types: [],
         paymentTypes: [],
         amountMin: "",
-        amountMax: ""
+        amountMax: "",
+        reimb: ""
       });
     }
     // ── BaseView contract ────────────────────────────────────────────────
@@ -12099,8 +12446,10 @@ This replaces your current grouping.`
       const fAmtMin = f.amountMin !== "" ? this.toMinor(parseFloat(f.amountMin), home) : null;
       const fAmtMax = f.amountMax !== "" ? this.toMinor(parseFloat(f.amountMax), home) : null;
       const wantedCats = f.categoryIds.length ? new Set(f.categoryIds.flatMap((id) => this.#categories.descendants(id))) : null;
+      const reimb = f.reimb ? new ReimbursementService(state) : null;
       const filtered = this.#txService.sort(
         state.transactions.filter((t) => {
+          if (reimb && !_TransactionsView.#reimbMatch(f.reimb, t, reimb)) return false;
           if (f.dateFrom && t.date < f.dateFrom) return false;
           if (f.dateTo && t.date > f.dateTo) return false;
           if (!f.dateFrom && !f.dateTo && !this.#withinRange(t.date, f.range)) return false;
@@ -12125,18 +12474,20 @@ This replaces your current grouping.`
       const monthTotals = {};
       const dayNets = {};
       if (groupByDate) {
+        const counted = CountedEntries.byId(state);
         filtered.forEach((t) => {
           (dayGroups[t.date] = dayGroups[t.date] || []).push(t);
           const ym = t.date.slice(0, 7);
           if (!monthTotals[ym]) monthTotals[ym] = { income: 0, expense: 0 };
-          const inHome = this.convert(t.amount, t.currency, home);
+          const c = counted.get(t.id);
+          const inHome = c ? this.convert(c.amount, c.currency, home) : 0;
           if (t.type === "income") monthTotals[ym].income += inHome;
           if (t.type === "expense") monthTotals[ym].expense += inHome;
           const delta = t.type === "income" ? inHome : t.type === "expense" ? -inHome : 0;
           dayNets[t.date] = (dayNets[t.date] || 0) + delta;
         });
       }
-      const activeCount = f.accountIds.length + f.categoryIds.length + f.types.length + f.paymentTypes.length + (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0) + (f.amountMin ? 1 : 0) + (f.amountMax ? 1 : 0) + (f.range !== "30" && !f.dateFrom && !f.dateTo ? 1 : 0);
+      const activeCount = f.accountIds.length + f.categoryIds.length + f.types.length + f.paymentTypes.length + (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0) + (f.amountMin ? 1 : 0) + (f.amountMax ? 1 : 0) + (f.reimb ? 1 : 0) + (f.range !== "30" && !f.dateFrom && !f.dateTo ? 1 : 0);
       return `
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Transactions</h1>
@@ -12179,6 +12530,7 @@ This replaces your current grouping.`
         ...f.paymentTypes.map((v) => `<span class="chip">${capitalise(v)} <button onclick="window.__app.txFilterToggle('paymentTypes','${this.jsArg(v)}')">\xD7</button></span>`),
         f.dateFrom || f.dateTo ? `<span class="chip">${f.dateFrom || "\u2026"} \u2192 ${f.dateTo || "\u2026"} <button onclick="window.__app.txFilterClear('dates')">\xD7</button></span>` : "",
         f.range !== "30" && !f.dateFrom && !f.dateTo ? `<span class="chip">${f.range === "all" ? "All time" : "Last " + f.range + "d"} <button onclick="window.__app.txFilterSet('range','30')">\xD7</button></span>` : "",
+        f.reimb ? `<span class="chip">${this.escapeHtml(_TransactionsView.REIMB.find(([k]) => k === f.reimb)?.[1] || "")} <button onclick="window.__app.txFilterSet('reimb','')">\xD7</button></span>` : "",
         f.amountMin || f.amountMax ? `<span class="chip">${f.amountMin || "0"}\u2013${f.amountMax || "\u221E"} ${cur} <button onclick="window.__app.txFilterClear('amounts')">\xD7</button></span>` : ""
       ].filter(Boolean).join("");
       return `
@@ -12231,6 +12583,13 @@ This replaces your current grouping.`
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Payment method <span class="font-normal opacity-60">(multi)</span></label>
           ${this.#multiChips("paymentTypes", paymentOpts, f.paymentTypes, "\uFF0B Add method\u2026")}
+        </div>
+        <div>
+          <label class="text-xs font-medium text-zinc-500 mb-1 block">Reimbursements</label>
+          <select class="select" onchange="window.__app.txFilterSet('reimb',this.value)">
+            <option value="">Any entry</option>
+            ${_TransactionsView.REIMB.map(([v, l]) => `<option value="${v}" ${f.reimb === v ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
         </div>
         <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Period</label>
@@ -13570,7 +13929,7 @@ This replaces your current grouping.`
     }
     /** The habit's entries between two days (inclusive). */
     entries(h, state, from, to) {
-      return (state.transactions || []).filter((t) => t.date >= from && t.date <= to && _HabitService.matches(h, t));
+      return CountedEntries.list(state).filter((t) => t.date >= from && t.date <= to && _HabitService.matches(h, t));
     }
     /**
      * One month of a habit (the month holding `today`), compared with the one
@@ -13653,7 +14012,7 @@ This replaces your current grouping.`
       const habits = this.all(state);
       const dismissed = new Set((state.user?.dismissedHabitSuggestions || []).map((s) => String(s).toLowerCase()));
       const groups = /* @__PURE__ */ new Map();
-      for (const t of state.transactions || []) {
+      for (const t of CountedEntries.list(state)) {
         if (t.type !== "expense" || !t.payee || t.date < since || t.date > today || t.recurring || t.recurringSourceId) continue;
         if (habits.some((h) => _HabitService.matches(h, t))) continue;
         const key = t.payee.trim().toLowerCase();
@@ -13877,7 +14236,7 @@ This replaces your current grouping.`
         labels.push(d.toLocaleDateString(void 0, { month: "short", day: "numeric" }));
       }
       const expenseByDay = Object.fromEntries(dayKeys.map((k) => [k, 0]));
-      state.transactions.filter((t) => t.type === "expense" && dayKeys.includes(t.date)).forEach((t) => {
+      CountedEntries.list(state).filter((t) => t.type === "expense" && dayKeys.includes(t.date)).forEach((t) => {
         expenseByDay[t.date] += this.fromMinor(this.convert(t.amount, t.currency, home), home);
       });
       const ctx1 = document.getElementById("reportBar");
@@ -14071,10 +14430,13 @@ This replaces your current grouping.`
       const paid = debts.filter((d) => d.status === "paid");
       const lent = active.filter((d) => d.type === "lent");
       const borrowed = active.filter((d) => d.type === "borrowed");
-      const owedToYou = lent.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+      const loansToYou = lent.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
+      const reimb = this.inGuestSpace ? [] : new ReimbursementService(state).groups();
+      const reimbTotal = reimb.reduce((s, g) => s + g.items.reduce((n, r) => n + this.convert(r.outstanding, r.tx.currency, home), 0), 0);
+      const owedToYou = loansToYou + reimbTotal;
       const owed = this.inGuestSpace ? null : window.__app?.owed?.summary?.(today) ?? null;
       const youOwe = owed ? owed.totals.all : borrowed.reduce((s, d) => s + this.convert(this.#remaining(d, state), d.currency, home), 0);
-      const nothing = !active.length && !(owed && (owed.cards.length || owed.bills.length || owed.vendors.length));
+      const nothing = !active.length && !reimb.length && !(owed && (owed.cards.length || owed.bills.length || owed.vendors.length));
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
@@ -14100,7 +14462,7 @@ This replaces your current grouping.`
             <i data-lucide="arrow-up-right" class="text-emerald-500"></i> Owed to you
           </div>
           <div class="text-2xl font-semibold text-emerald-500">${this.formatMoney(owedToYou, home)}</div>
-          <div class="text-xs text-zinc-500 mt-1">${lent.length} active</div>
+          <div class="text-xs text-zinc-500 mt-1">${reimb.length ? [loansToYou > 0 ? `Loans ${this.formatMoney(loansToYou, home)}` : "", `Reimbursements ${this.formatMoney(reimbTotal, home)}`].filter(Boolean).join(" \xB7 ") : `${lent.length} active`}</div>
         </div>
       </div>
 
@@ -14110,6 +14472,7 @@ This replaces your current grouping.`
           ${owed ? this.#section("Bills", "owe-bills", this.#bills(owed.bills, state)) : ""}
           ${owed ? this.#section("Deliveries", "owe-vendors", this.#vendors(owed.vendors)) : ""}
           ${this.#section("Owed to you", "owed-to-you", lent.length ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">${lent.map((d) => this.#debtCard(d, state, today)).join("")}</div>` : "")}
+          ${this.#section("Reimbursements", "owed-reimb", this.#reimbursements(reimb))}
         `}
 
       ${paid.length ? `
@@ -14180,6 +14543,35 @@ This replaces your current grouping.`
         </div>
         <button class="btn btn-primary btn-sm" onclick="window.__app.openModal('settle',{vendor:${this.escapeHtml(JSON.stringify(v.vendor))}})">Pay</button>
       </div>`).join("")}</div>`;
+    }
+    /**
+     * Expenses someone will pay back, grouped by claim or payer. Tapping a
+     * group opens it to record money paid back or close what won't come.
+     */
+    #reimbursements(groups) {
+      if (!groups.length) return "";
+      return `<div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${groups.map((g) => {
+        const pct = g.expected ? Math.round(g.paid / g.expected * 100) : 0;
+        const sub = [
+          g.claim ? this.escapeHtml(g.payer) + (g.claim.ref ? ` \xB7 ref ${this.escapeHtml(g.claim.ref)}` : "") : "",
+          `${g.items.length} item${g.items.length === 1 ? "" : "s"}`,
+          g.paid > 0 ? `${pct}% paid back so far` : "",
+          g.credit > 0 ? `${this.formatMoney(g.credit, g.currency)} credit` : ""
+        ].filter(Boolean).join(" \xB7 ");
+        const key = this.jsArg(g.key);
+        return `
+        <div class="flex items-center gap-3 p-3 owe-reimb">
+          <button class="icon-pill" style="background:#10b98122;color:#10b981" onclick="window.__app.openModal('reimbursement',{key:'${key}'})"><i data-lucide="undo-2"></i></button>
+          <button class="flex-1 min-w-0 text-left" onclick="window.__app.openModal('reimbursement',{key:'${key}'})">
+            <div class="text-sm font-medium truncate">${this.escapeHtml(g.label)}</div>
+            <div class="text-xs text-zinc-500 truncate">${sub}</div>
+          </button>
+          <div class="text-right">
+            <div class="text-sm font-semibold text-emerald-600 whitespace-nowrap">${this.formatMoney(g.outstanding, g.currency)}</div>
+            <button class="btn btn-primary btn-sm mt-1" onclick="window.__app.openModal('reimbursement',{key:'${key}'})">Paid back</button>
+          </div>
+        </div>`;
+      }).join("")}</div>`;
     }
     // ── Private ───────────────────────────────────────────────────────────
     #debtCard(d, state, today = DateService.todayIso()) {
@@ -16039,6 +16431,13 @@ This replaces your current grouping.`
         until: form.elements.recurringUntil?.value || null
       } : null;
       this.#draft.askFirst = !!form.elements?.recurringAsk?.checked;
+      if (form.elements?.reimbOn) {
+        this.#draft.reimbOn = !!form.elements.reimbOn.checked;
+        this.#draft.reimbBy = str("reimbBy");
+        this.#draft.reimbExpectedRaw = str("reimbExpected");
+        this.#draft.claimName = str("claimName");
+        this.#draft.claimRef = str("claimRef");
+      }
     }
     /** Discard the captured draft (used when the modal opens fresh). */
     clearDraft() {
@@ -16257,6 +16656,9 @@ This replaces your current grouping.`
               class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\u2699 Manage</button>
           </div>
         </div>
+
+        ${type === "expense" && !isSharedMode && !sharedBook ? this.#reimbSection(data, state, editing) : ""}
+        ${editing && ReimbursementService.isPayment(editing) ? this.#paybackNote(editing, state) : ""}
 
         <details class="more-options mb-3" ${moreOpen ? "open" : ""}>
           <summary class="flex items-center gap-1.5 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-300">
@@ -16626,6 +17028,74 @@ This replaces your current grouping.`
           <select class="select inline-block w-auto ml-1" name="remindDays">
             ${[0, 1, 2, 3, 5, 7].map((d) => `<option value="${d}" ${(data.remindDays ?? 2) === d ? "selected" : ""}>${d === 0 ? "on the day" : `${d} day${d === 1 ? "" : "s"} before`}</option>`).join("")}
           </select> and on the day</label>`)}
+      </div>`;
+    }
+    /**
+     * "Someone will pay me back": who, how much back (defaults to all of it)
+     * and an optional claim that groups several expenses.
+     */
+    #reimbSection(data, state, editing) {
+      const svc = new ReimbursementService(state);
+      const d = this.#draft;
+      const on = d.reimbOn ?? !!data.reimbBy;
+      const payer = d.reimbBy ?? (data.reimbBy || "");
+      const claim = data.claimId ? svc.claim(data.claimId) : null;
+      const claimName = d.claimName ?? (claim?.name || "");
+      const claimRef = d.claimRef ?? (claim?.ref || "");
+      const expected = d.reimbExpectedRaw ?? (Number(data.reimbExpected) > 0 ? this.#fx.fromMinor(data.reimbExpected, data.currency) : "");
+      const st = editing && editing.reimbBy ? svc.status(editing) : null;
+      const done = st && st.paid > 0 ? `<div class="text-xs text-emerald-600 mb-2">${st.closed || st.settled ? `Reimbursed ${st.pct}%` : `Paid back ${this.#fx.formatMoney(st.paid, editing.currency)} of ${this.#fx.formatMoney(st.expected, editing.currency)} \xB7 ${st.pct}%`}</div>` : "";
+      return `
+      <div class="card-muted p-3 mb-3 reimb-section">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" name="reimbOn" ${on ? "checked" : ""}
+                 onchange="this.closest('.reimb-section').querySelector('[data-reimb-fields]').hidden = !this.checked">
+          <i data-lucide="undo-2" style="width:13px;height:13px"></i>
+          <span class="font-medium">Someone will pay me back</span>
+        </label>
+        <div data-reimb-fields ${on ? "" : "hidden"} class="mt-2">
+          ${done}
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div>
+              <label class="text-xs text-zinc-500">Who pays back</label>
+              <input class="input" name="reimbBy" list="reimbPayers" maxlength="60" value="${this.#esc(payer)}" placeholder="e.g. Company, insurer, Ali">
+              <datalist id="reimbPayers">${svc.payers().map((p) => `<option value="${this.#esc(p)}">`).join("")}</datalist>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">How much back</label>
+              <input class="input" name="reimbExpected" type="number" min="0" step="${CurrencyService.stepFor(data.currency)}" inputmode="decimal"
+                     value="${expected}" placeholder="All of it">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-zinc-500">Claim <span class="text-zinc-400">(optional)</span></label>
+              <input class="input" name="claimName" list="reimbClaims" maxlength="60" value="${this.#esc(claimName)}" placeholder="e.g. Nov hospital claim">
+              <datalist id="reimbClaims">${(state.claims || []).map((c) => `<option value="${this.#esc(c.name)}">`).join("")}</datalist>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">Reference <span class="text-zinc-400">(optional)</span></label>
+              <input class="input" name="claimRef" maxlength="40" value="${this.#esc(claimRef)}" placeholder="Claim no.">
+            </div>
+          </div>
+          ${editing?.reimbClosed ? `<label class="flex items-center gap-2 text-xs mt-2 cursor-pointer"><input type="checkbox" name="reimbClosed" checked> Closed \u2014 nothing more expected (untick to expect the rest)</label>` : ""}
+          <div class="text-xs text-zinc-500 mt-2">It counts as your spending until paid back. Record the money from Debts \u2192 Reimbursements.</div>
+        </div>
+      </div>`;
+    }
+    /** A payback entry: who paid, for what — and that it isn't income. */
+    #paybackNote(tx, state) {
+      const byId = new Map(state.transactions.map((t) => [t.id, t]));
+      const items = (tx.reimbAlloc || []).map((a) => {
+        const t = byId.get(a.txId);
+        return `<li>${this.#esc(t ? t.payee || "Expense" : "Deleted expense")}${t ? ` \xB7 ${_TransactionModal.day(t.date)}` : ""} \u2014 ${this.#fx.formatMoney(a.amount, t?.currency || tx.currency)}</li>`;
+      }).join("");
+      const extra = Number(tx.reimbExtra) > 0 ? `<div class="mt-1">${this.#fx.formatMoney(tx.reimbExtra, tx.currency)} extra \xB7 ${tx.reimbExtraAs === "income" ? "counted as income" : "kept as credit"}</div>` : "";
+      return `
+      <div class="card-muted p-3 mb-3 text-xs text-zinc-600 dark:text-zinc-300">
+        <div class="font-medium text-sm mb-1">Paid back by ${this.#esc(tx.reimbBy || "")} \xB7 not income</div>
+        <ul class="list-disc pl-4">${items}</ul>
+        ${extra}
       </div>`;
     }
     // Category selection is handled by CategoryField + CategoryPickerSheet:
@@ -17167,6 +17637,126 @@ This replaces your current grouping.`
           <button type="submit" class="btn btn-primary"><i data-lucide="send"></i> Send</button>
         </div>
       </form>`;
+    }
+  };
+
+  // src/ui/modals/ReimbursementModal.js
+  var ReimbursementModal = class {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    constructor() {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const svc = new ReimbursementService(state);
+      const g = svc.group(opts.key);
+      const close = `<button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()" aria-label="Close"><i data-lucide="x"></i></button>`;
+      if (!g) {
+        return `<div class="p-5"><div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">Reimbursements</h3>${close}</div>
+        <p class="text-sm text-zinc-500">Nothing left to get back here.</p></div>`;
+      }
+      const cur = g.currency;
+      const step = CurrencyService.stepFor(cur);
+      const accounts = state.accounts.filter((a) => !a.archived && a.type !== "invest");
+      const defAcc = accounts.find((a) => a.currency === cur && a.id === state.user.defaultAccountId) || accounts.find((a) => a.currency === cur) || accounts[0];
+      const cats = new Map((state.categories || []).map((c) => [c.id, c]));
+      const key = Html.js(g.key);
+      const item = (r) => {
+        const t = r.tx;
+        const cat = cats.get(t.categoryId);
+        const title = t.payee || cat?.name || "Expense";
+        const back = r.paid > 0 ? `${this.#fx.formatMoney(r.paid, t.currency)} of ${this.#fx.formatMoney(r.expected, t.currency)} back \xB7 ${r.pct}%` : `${this.#fx.formatMoney(r.expected, t.currency)} to get back`;
+        return `
+        <div class="reimb-item p-3" data-tx="${Html.escape(t.id)}" data-owed="${r.outstanding}" data-currency="${Html.escape(t.currency)}">
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" name="pick" value="${Html.escape(t.id)}" checked class="mt-1"
+                   onchange="window.__app.updatePaybackPreview(this.form)">
+            <span class="flex-1 min-w-0">
+              <span class="block text-sm font-medium truncate">${Html.escape(title)}${cat && t.payee ? ` <span class="text-zinc-400 font-normal">\xB7 ${Html.escape(cat.name)}</span>` : ""}</span>
+              <span class="block text-xs text-zinc-500">${DeliveryPlan.shortDate(t.date)} \xB7 spent ${this.#fx.formatMoney(t.amount, t.currency)} \xB7 ${back}</span>
+            </span>
+            <span class="text-sm font-semibold whitespace-nowrap">${this.#fx.formatMoney(r.outstanding, t.currency)}</span>
+          </label>
+          <div data-per-item style="display:none" class="mt-2 pl-7 flex items-center gap-2 flex-wrap">
+            <input class="input" style="width:8.5rem" type="number" min="0" step="${CurrencyService.stepFor(t.currency)}" inputmode="decimal"
+                   name="part_${Html.escape(t.id)}" placeholder="Paid back"
+                   oninput="window.__app.updatePaybackPreview(this.form)">
+            <label class="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300 cursor-pointer">
+              <input type="checkbox" name="close_${Html.escape(t.id)}"> The rest won't be paid back
+            </label>
+          </div>
+          <div class="reimb-share text-xs text-emerald-600 mt-1 pl-7"></div>
+        </div>`;
+      };
+      const mode = (k, label) => `
+      <label class="cursor-pointer">
+        <input type="radio" name="mode" value="${k}" ${k === "spread" ? "checked" : ""} class="peer sr-only"
+               onchange="window.__app.updatePaybackPreview(this.form)">
+        <span class="btn btn-outline w-full justify-center text-sm peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900">${label}</span>
+      </label>`;
+      const credit = g.credit > 0 ? `
+        <div class="card-muted p-3 mb-3 flex items-center gap-2 text-sm">
+          <i data-lucide="wallet" style="width:15px;height:15px"></i>
+          <span class="flex-1">${this.#fx.formatMoney(g.credit, cur)} credit from ${Html.escape(g.payer)} (paid extra before)</span>
+          <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.useReimbCredit('${key}', this.form)">Use credit</button>
+        </div>` : "";
+      return `
+      <form onsubmit="window.__app.submitPayback(event,'${key}')" class="p-5 reimb-form" data-currency="${Html.escape(cur)}">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">${Html.escape(g.label)}</h3>${close}
+        </div>
+        <div class="text-xs text-zinc-500 mb-3">${g.claim ? `${Html.escape(g.payer)}${g.claim.ref ? ` \xB7 ref ${Html.escape(g.claim.ref)}` : ""} \xB7 ` : ""}${this.#fx.formatMoney(g.outstanding, cur)} to get back \xB7 ${g.items.length} item${g.items.length === 1 ? "" : "s"}</div>
+        ${credit}
+        <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 mb-4">${g.items.map(item).join("")}</div>
+
+        <div class="text-sm font-medium mb-2">Paid back</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Amount received</label>
+            <input class="input" name="amount" type="number" min="0" step="${step}" inputmode="decimal"
+                   oninput="window.__app.updatePaybackPreview(this.form)" placeholder="0">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Date</label>
+            <input class="input" type="date" name="date" value="${DateService.todayIso()}">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">Money went into</label>
+          <select class="select" name="accountId" onchange="window.__app.updatePaybackPreview(this.form)">
+            ${accounts.map((a) => `<option value="${Html.escape(a.id)}" data-currency="${Html.escape(a.currency)}" ${a.id === defAcc?.id ? "selected" : ""}>${Html.escape(a.name)} \xB7 ${Html.escape(a.currency)}</option>`).join("")}
+          </select>
+        </div>
+
+        <div class="text-xs text-zinc-500 mb-1">Share it across the ticked items</div>
+        <div class="grid grid-cols-3 gap-2 mb-3">${mode("spread", "Spread evenly")}${mode("oldest", "Oldest first")}${mode("items", "Per item")}</div>
+
+        <label data-batch-close class="flex items-center gap-2 text-sm mb-3 cursor-pointer">
+          <input type="checkbox" name="closeRest"> The rest won't be paid back
+        </label>
+
+        <div data-extra style="display:none" class="card-muted p-3 mb-3 text-sm">
+          <div class="mb-2 reimb-extra-text"></div>
+          <label class="flex items-center gap-2 mb-1 cursor-pointer"><input type="radio" name="extraAs" value="keep" checked> Keep it for their next item</label>
+          <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="extraAs" value="income"> Count it as income</label>
+        </div>
+
+        <div class="reimb-preview text-xs text-zinc-500 mb-4">Money paid back adds to your account but isn't income. The expense keeps its full amount; your spending counts only what wasn't paid back.</div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <button type="button" class="btn btn-outline" onclick="window.__app.waiveReimbursement('${key}', this.form)" title="Nothing will come for the ticked items">Won't be paid back</button>
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Paid back</button>
+        </div>
+      </form>`;
+    }
+    onOpen() {
+      setTimeout(() => window.__app?.updatePaybackPreview?.(document.querySelector(".reimb-form")), 0);
     }
   };
 
@@ -19670,7 +20260,10 @@ This replaces your current grouping.`
       ["original", "Original amount"],
       ["amount", "Amount"],
       ["addedBy", "Added by"],
-      ["source", "From"]
+      ["source", "From"],
+      ["reimbBy", "Paid back by"],
+      ["paidBack", "Amount paid back"],
+      ["reimbPct", "% reimbursed"]
     ]);
     static DEFAULT_TX_COLUMNS = Object.freeze(["date", "account", "category", "note", "payment", "amount"]);
     static GROUPS = Object.freeze([
@@ -19746,6 +20339,7 @@ This replaces your current grouping.`
     #hijri;
     #accounts;
     #categories;
+    #reimb;
     /**
      * @param {object} state  a book (or a shared space's projection of one)
      * @param {{fx?: CurrencyService, hijri?: HijriCalendarService}} [deps]
@@ -19756,6 +20350,7 @@ This replaces your current grouping.`
       this.#hijri = hijri;
       this.#accounts = new Map((state.accounts || []).map((a) => [a.id, a]));
       this.#categories = new Map((state.categories || []).map((c) => [c.id, c]));
+      this.#reimb = new ReimbursementService(state);
     }
     get homeCurrency() {
       return this.#state.user?.homeCurrency || this.#state.homeCurrency || "USD";
@@ -19820,8 +20415,37 @@ This replaces your current grouping.`
         signedHome: sign * homeAmount,
         addedBy: t.addedBy || "",
         split: part > 0,
-        source: _LedgerEntries.sourceOf(t)
+        source: _LedgerEntries.sourceOf(t),
+        ...this.#counting(t, homeAmount)
       };
+    }
+    /**
+     * How a row counts towards income and spending totals (CountedEntries):
+     * loans, repayments and paybacks count nothing; a paid-back expense counts
+     * what the user bore. Also the reimbursement columns.
+     */
+    #counting(t, homeAmount) {
+      const full = Number(t.amount) || 0;
+      const sign = t.type === "income" ? 1 : t.type === "expense" ? -1 : 0;
+      const out = { countedHome: homeAmount, reimbBy: "", paidBackHome: null, reimbPct: null, kind: "" };
+      if (ReimbursementService.isDebtEntry(t)) {
+        out.countedHome = 0;
+        out.kind = "Loan";
+      } else if (ReimbursementService.isPayment(t)) {
+        const extra = t.reimbExtraAs === "income" ? Math.min(Number(t.reimbExtra) || 0, full) : 0;
+        out.countedHome = full ? Math.round(homeAmount * (extra / full)) : 0;
+        out.reimbBy = t.reimbBy || "";
+        out.kind = "Paid back";
+      } else if (ReimbursementService.isTracked(t)) {
+        const st = this.#reimb.status(t);
+        const f = full ? st.paid / full : 0;
+        out.countedHome = Math.round(homeAmount * (1 - f));
+        out.reimbBy = st.payer;
+        out.paidBackHome = Math.round(homeAmount * f);
+        out.reimbPct = st.pct / 100;
+      }
+      out.countedSigned = sign * out.countedHome;
+      return out;
     }
     /**
      * Where an entry came from: 'Bill' (a repeat, or a payment of one),
@@ -19860,6 +20484,12 @@ This replaces your current grouping.`
         receivedCurrency: into?.currency || null,
         homeAmount: this.#fx.convert(Number(out.amount) || 0, out.currency, this.homeCurrency),
         signedHome: 0,
+        countedHome: 0,
+        countedSigned: 0,
+        reimbBy: "",
+        paidBackHome: null,
+        reimbPct: null,
+        kind: "",
         addedBy: out.addedBy || "",
         split: false
       };
@@ -19981,12 +20611,13 @@ This replaces your current grouping.`
       const rows = entries.map((e) => this.#row(e));
       const amountCol = columns.find((c) => c.key === "amount");
       const sections = this.#group(entries, rows, columns, amountCol);
-      const income = entries.filter((e) => e.type === "income").reduce((n, e) => n + e.homeAmount, 0);
-      const expense = entries.filter((e) => e.type === "expense").reduce((n, e) => n + e.homeAmount, 0);
+      const income = entries.filter((e) => e.type === "income").reduce((n, e) => n + (e.countedHome ?? e.homeAmount), 0);
+      const expense = entries.filter((e) => e.type === "expense").reduce((n, e) => n + (e.countedHome ?? e.homeAmount), 0);
       const transfers = entries.filter((e) => e.type === "transfer").length;
       const fmt = (v) => this.#fx.formatMoney(v, this.home);
       const notes = [`${entries.length.toLocaleString()} entr${entries.length === 1 ? "y" : "ies"} \xB7 Income ${fmt(income)} \xB7 Expense ${fmt(expense)} \xB7 Net ${fmt(income - expense)}`];
       if (transfers) notes.push(`Transfers (${transfers}) are listed but not counted in totals.`);
+      if (entries.some((e) => e.kind || e.paidBackHome)) notes.push("Loans and money paid back are listed but not counted as income; paid-back expenses count what was not paid back.");
       const total = this.format.showTotals && amountCol ? this.#labelled(columns, `Total \xB7 ${entries.length.toLocaleString()} entries`, { amount: income - expense }, true) : null;
       return new ReportTable({
         title: this.title("Transactions"),
@@ -20011,7 +20642,10 @@ This replaces your current grouping.`
         original: { kind: "text", align: "right", weight: 1 },
         amount: { kind: "money", align: "right", weight: 1.1, currency: this.home },
         addedBy: { kind: "text", align: "left", weight: 1.3 },
-        source: { kind: "text", align: "left", weight: 1.1 }
+        source: { kind: "text", align: "left", weight: 1.1 },
+        reimbBy: { kind: "text", align: "left", weight: 1.2 },
+        paidBack: { kind: "money", align: "right", weight: 1.1, currency: this.home },
+        reimbPct: { kind: "percent", align: "right", weight: 0.8 }
       };
       return this.format.columns.map((key) => ({
         key,
@@ -20033,7 +20667,10 @@ This replaces your current grouping.`
         original: foreign ? this.#fx.formatMoney(e.amount, e.currency) : "",
         amount: e.type === "transfer" ? e.homeAmount : e.signedHome,
         addedBy: e.addedBy,
-        source: e.source || "",
+        source: e.kind || e.source || "",
+        reimbBy: e.reimbBy || "",
+        paidBack: e.paidBackHome ?? null,
+        reimbPct: e.reimbPct ?? null,
         _transfer: e.type === "transfer"
       };
     }
@@ -20065,7 +20702,7 @@ This replaces your current grouping.`
       });
       const ordered = [...groups.entries()].sort(([a], [b]) => by === "day" || by === "month" ? a.localeCompare(b) : a.localeCompare(b, void 0, { sensitivity: "base" }));
       return ordered.map(([, g]) => {
-        const net = g.entries.reduce((n, e) => n + e.signedHome, 0);
+        const net = g.entries.reduce((n, e) => n + (e.countedSigned ?? e.signedHome), 0);
         const subtotal = this.format.showTotals && amountCol ? this.#labelled(columns, `Subtotal \xB7 ${g.rows.length}`, { amount: net }, true) : null;
         return { label: g.label, rows: g.rows, subtotal };
       });
@@ -20080,7 +20717,7 @@ This replaces your current grouping.`
   // src/domain/export/reports/CategoryReport.js
   var CategoryReport = class extends BaseReport {
     build() {
-      const entries = this.entries().filter((e) => e.type === "expense" || e.type === "income");
+      const entries = this.entries().filter((e) => (e.type === "expense" || e.type === "income") && e.countedHome > 0);
       const columns = [
         { key: "category", label: "Category", kind: "text", align: "left", weight: 2.6 },
         { key: "count", label: "Entries", kind: "count", align: "right", weight: 0.7 },
@@ -20089,7 +20726,7 @@ This replaces your current grouping.`
       ];
       const sections = [["expense", "Expenses"], ["income", "Income"]].map(([type, label]) => this.#section(entries.filter((e) => e.type === type), label)).filter(Boolean);
       const fx = new CurrencyService();
-      const sum = (t) => entries.filter((e) => e.type === t).reduce((n, e) => n + e.homeAmount, 0);
+      const sum = (t) => entries.filter((e) => e.type === t).reduce((n, e) => n + e.countedHome, 0);
       const income = sum("income"), expense = sum("expense");
       return new ReportTable({
         title: this.title("Spending and income by category"),
@@ -20102,7 +20739,7 @@ This replaces your current grouping.`
     }
     #section(entries, label) {
       if (!entries.length) return null;
-      const total = entries.reduce((n, e) => n + e.homeAmount, 0);
+      const total = entries.reduce((n, e) => n + e.countedHome, 0);
       const mains = /* @__PURE__ */ new Map();
       for (const e of entries) {
         const main = this.ledger.mainCategory(e.categoryId);
@@ -20110,12 +20747,12 @@ This replaces your current grouping.`
         if (!mains.has(mainKey)) mains.set(mainKey, { name: main?.name || "Uncategorised", count: 0, amount: 0, subs: /* @__PURE__ */ new Map() });
         const m = mains.get(mainKey);
         m.count += 1;
-        m.amount += e.homeAmount;
+        m.amount += e.countedHome;
         if (main && e.categoryId && e.categoryId !== main.id) {
           const subName = this.ledger.categoryPath(e.categoryId).split(" / ").pop();
           const s = m.subs.get(e.categoryId) || { name: subName, count: 0, amount: 0 };
           s.count += 1;
-          s.amount += e.homeAmount;
+          s.amount += e.countedHome;
           m.subs.set(e.categoryId, s);
         }
       }
@@ -20135,7 +20772,7 @@ This replaces your current grouping.`
   // src/domain/export/reports/MonthsReport.js
   var MonthsReport = class extends BaseReport {
     build() {
-      const entries = this.entries().filter((e) => e.type === "expense" || e.type === "income");
+      const entries = this.entries().filter((e) => (e.type === "expense" || e.type === "income") && e.countedHome > 0);
       const columns = [
         { key: "month", label: this.format.calendar === "hijri" ? "Hijri month" : "Month", kind: "text", align: "left", weight: 1.6 },
         { key: "count", label: "Entries", kind: "count", align: "right", weight: 0.7 },
@@ -20149,7 +20786,7 @@ This replaces your current grouping.`
         if (!months.has(key)) months.set(key, { month: label, count: 0, income: 0, expense: 0 });
         const m = months.get(key);
         m.count += 1;
-        m[e.type] += e.homeAmount;
+        m[e.type] += e.countedHome;
       }
       const rows = [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, m]) => ({ ...m, net: m.income - m.expense }));
       const total = this.format.showTotals && rows.length ? {
@@ -21482,6 +22119,7 @@ This replaces your current grouping.`
       this.#modal.register("investment", new InvestmentModal());
       this.#modal.register("trade", new TradeModal({ holdings: () => this.#holdings }));
       this.#modal.register("holdingPrice", new HoldingPriceModal({ holdings: () => this.#holdings }));
+      this.#modal.register("reimbursement", new ReimbursementModal());
       this.#modal.register("feedback", new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
       new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
       this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
@@ -22469,6 +23107,21 @@ Leave empty to use your own name.`,
           txAcctMinor = this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * txRate, accForFx.currency);
         }
       }
+      const existingTx = id ? state.transactions.find((x) => x.id === id) : null;
+      let reimb = {};
+      if (existingTx && ReimbursementService.isPayment(existingTx)) {
+        const shared = (existingTx.reimbAlloc || []).reduce((n, a) => n + (Number(a.pay) || 0), 0);
+        if (data.type !== "income") return this.#toast.show("This is money paid back \u2014 it stays as money in");
+        if (minor < shared || currency !== existingTx.currency) {
+          return this.#toast.show(`It\u2019s shared across items as ${this.#fx.formatMoney(shared, existingTx.currency)} \u2014 delete it and record it again to change that`);
+        }
+        const extra = minor - shared;
+        reimb = { reimbExtra: extra, reimbExtraAs: extra > 0 ? existingTx.reimbExtraAs || "keep" : null };
+      } else if (data.type !== "transfer") {
+        const r = this.#reimbFields(fd, { amount: minor, currency, existing: existingTx });
+        if (r.error) return this.#toast.show(r.error);
+        reimb = data.type === "expense" || existingTx?.reimbBy ? r.fields : {};
+      }
       let habitNote = null;
       if (id) {
         let tx = state.transactions.find((x) => x.id === id);
@@ -22507,6 +23160,7 @@ Leave empty to use your own name.`,
             splits,
             recurring,
             ...bill,
+            ...reimb,
             // Clear every transfer-only field so no dangling pair reference remains.
             transferPairId: null,
             transferDir: null,
@@ -22574,6 +23228,7 @@ Leave empty to use your own name.`,
             splits,
             recurring,
             ...bill,
+            ...reimb,
             ...txAcctMinor !== void 0 ? { acctMinor: txAcctMinor } : {}
           });
         }
@@ -22602,6 +23257,7 @@ Leave empty to use your own name.`,
             addedBy: this.#sync.currentUser?.email || null,
             regularItemId: data.regularItemId || null
           });
+          for (const [k, v] of Object.entries(reimb)) if (v != null) created[k] = v;
           habitNote = this.#habitNote(created, state);
           if (data.payee && !splits && data.categoryId) {
             if (!state.merchantCategories) state.merchantCategories = {};
@@ -22887,6 +23543,7 @@ Leave empty to use your own name.`,
     txFilterSet(key, value) {
       const v = this.#views.get("transactions");
       v?.setFilter?.(key, value);
+      if (key === "reimb" && value && v?.filter && !v.filter.dateFrom && !v.filter.dateTo) v.setFilter("range", "all");
       this.#render();
     }
     /**
@@ -23735,6 +24392,228 @@ Leave empty to use your own name.`,
       const st = this.#holdings.stats(h);
       this.#toast.show(st.alertNew ? `${h.name} is up ${st.gainPct}% \u2014 your alert is reached` : "Price saved");
       this.#sync.schedulePush?.();
+    }
+    // ── Reimbursements ────────────────────────────────────────────────────
+    /** Reimbursement state for the current book (read-only helper). */
+    get reimbursements() {
+      return new ReimbursementService(this.#store.getState());
+    }
+    /**
+     * What the Paid back form would save: the share of each ticked item, what
+     * is closed, and any extra. Amounts in `pay` are in the account's currency,
+     * `amount` in each expense's own currency.
+     */
+    #paybackPlan(form, key) {
+      const state = this.#store.getState();
+      const svc = new ReimbursementService(state);
+      const g = svc.group(key);
+      if (!g || !form) return null;
+      const fd = new FormData(form);
+      const picked = new Set(fd.getAll("pick"));
+      const acc = state.accounts.find((a) => a.id === fd.get("accountId"));
+      const payCur = acc?.currency || g.currency;
+      const mode = ["spread", "oldest", "items"].includes(fd.get("mode")) ? fd.get("mode") : "spread";
+      const items = g.items.filter((r) => picked.has(r.tx.id)).map((r) => ({
+        id: r.tx.id,
+        tx: r.tx,
+        owedOwn: r.outstanding,
+        outstanding: r.tx.currency === payCur ? r.outstanding : this.#fx.convert(r.outstanding, r.tx.currency, payCur)
+      }));
+      const perItem = {};
+      let perSum = 0;
+      for (const i of items) {
+        const v = Number(fd.get(`part_${i.id}`));
+        if (v > 0) {
+          perItem[i.id] = this.#fx.toMinor(v, payCur);
+          perSum += perItem[i.id];
+        }
+      }
+      let total = Number(fd.get("amount")) > 0 ? this.#fx.toMinor(Number(fd.get("amount")), payCur) : 0;
+      if (mode === "items") total = Math.max(total, perSum);
+      const { parts, extra } = ReimbursementService.allocate(items, total, mode, perItem);
+      const byId = new Map(items.map((i) => [i.id, i]));
+      const full = parts.map((p) => {
+        const i = byId.get(p.txId);
+        const own = p.amount >= i.outstanding ? i.owedOwn : i.tx.currency === payCur ? p.amount : Math.min(i.owedOwn, this.#fx.convert(p.amount, payCur, i.tx.currency));
+        return { txId: p.txId, pay: p.amount, amount: own };
+      });
+      const closes = /* @__PURE__ */ new Set();
+      for (const i of items) {
+        if (mode === "items" ? fd.get(`close_${i.id}`) : fd.get("closeRest")) closes.add(i.id);
+      }
+      return { g, acc, payCur, mode, items, total, parts: full, extra, closes, extraAs: fd.get("extraAs") === "income" ? "income" : "keep" };
+    }
+    /** Live preview in the Paid back form: each item's share, the extra. */
+    updatePaybackPreview(form) {
+      if (!form) return;
+      const key = (form.getAttribute("onsubmit") || "").match(/submitPayback\(event,'([^']*)'\)/)?.[1];
+      const plan = this.#paybackPlan(form, key ? key.replace(/\\'/g, "'") : "");
+      if (!plan) return;
+      const per = plan.mode === "items";
+      for (const el of form.querySelectorAll("[data-per-item]")) el.style.display = per ? "" : "none";
+      const batch = form.querySelector("[data-batch-close]");
+      if (batch) batch.style.display = per ? "none" : "";
+      const byId = new Map(plan.parts.map((p) => [p.txId, p]));
+      for (const row of form.querySelectorAll(".reimb-item")) {
+        const p = byId.get(row.dataset.tx);
+        const out = row.querySelector(".reimb-share");
+        if (out) out.textContent = p && !per ? `Gets ${this.#fx.formatMoney(p.amount, row.dataset.currency)}` : "";
+      }
+      const ex = form.querySelector("[data-extra]");
+      if (ex) {
+        ex.style.display = plan.extra > 0 ? "" : "none";
+        const t = ex.querySelector(".reimb-extra-text");
+        if (t) t.textContent = `${this.#fx.formatMoney(plan.extra, plan.payCur)} more than the ticked items need.`;
+      }
+    }
+    /** Save a payback: one entry into the account, shared across the items. */
+    submitPayback(event, key) {
+      event.preventDefault();
+      const plan = this.#paybackPlan(event.target, key);
+      if (!plan) return this.#toast.show("Nothing left to get back here");
+      if (!plan.acc) return this.#toast.show("Pick the account the money went into");
+      if (!plan.items.length) return this.#toast.show("Tick the items this money is for");
+      if (!(plan.total > 0)) {
+        return this.#toast.show(plan.closes.size ? "No money in? Use \u201CWon\u2019t be paid back\u201D" : "Enter the amount received");
+      }
+      const state = this.#store.getState();
+      const home = state.user.homeCurrency;
+      const date = new FormData(event.target).get("date") || DateService.todayIso();
+      const g = plan.g;
+      const extra = plan.extra;
+      state.transactions.push({
+        id: IdGenerator.generate("tx"),
+        accountId: plan.acc.id,
+        categoryId: null,
+        amount: plan.total,
+        currency: plan.payCur,
+        exchangeRate: (RATES[plan.payCur] || 1) / (RATES[home] || 1),
+        refAmount: this.#fx.convert(plan.total, plan.payCur, home),
+        payee: g.payer,
+        note: g.claim ? `Paid back \xB7 ${g.claim.name}` : "Paid back",
+        date,
+        hijriDate: this.#hijri.toHijri(date),
+        paymentType: "transfer",
+        recordState: "cleared",
+        type: "income",
+        transferPairId: null,
+        splits: null,
+        tags: [ReimbursementService.TAG],
+        reimbBy: g.payer,
+        claimId: g.claim?.id || null,
+        reimbAlloc: plan.parts.map((p) => ({ txId: p.txId, amount: p.amount, pay: p.pay })),
+        reimbExtra: extra,
+        reimbExtraAs: extra > 0 ? plan.extraAs : null,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        addedBy: this.#sync.currentUser?.email || null
+      });
+      let closed = 0;
+      for (const id of plan.closes) {
+        const t = state.transactions.find((x) => x.id === id);
+        if (t) {
+          t.reimbClosed = true;
+          closed++;
+        }
+      }
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      const tail = extra > 0 ? plan.extraAs === "income" ? ` \xB7 ${this.#fx.formatMoney(extra, plan.payCur)} extra counted as income` : ` \xB7 ${this.#fx.formatMoney(extra, plan.payCur)} kept as credit` : "";
+      this.#toast.show(`${this.#fx.formatMoney(plan.total, plan.payCur)} paid back by ${g.payer}${closed ? ` \xB7 ${closed} closed` : ""}${tail}`);
+      this.#sync.schedulePush?.();
+    }
+    /** Close the ticked items: nothing more will come. They stay your spending. */
+    waiveReimbursement(key, form) {
+      const g = new ReimbursementService(this.#store.getState()).group(key);
+      if (!g) return;
+      const picked = new Set(form ? new FormData(form).getAll("pick") : g.items.map((r) => r.tx.id));
+      const items = g.items.filter((r) => picked.has(r.tx.id));
+      if (!items.length) return this.#toast.show("Tick the items that won\u2019t be paid back");
+      const left = items.reduce((n, r) => n + r.outstanding, 0);
+      if (!window.confirm(`Close ${items.length} item${items.length === 1 ? "" : "s"}? ${this.#fx.formatMoney(left, g.currency)} stays as your own spending.`)) return;
+      for (const r of items) r.tx.reimbClosed = true;
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`Closed \xB7 ${this.#fx.formatMoney(left, g.currency)} counted as your spending`);
+      this.#sync.schedulePush?.();
+    }
+    /** Apply credit kept from an earlier over-payment to the ticked items (spread evenly). */
+    useReimbCredit(key, form) {
+      const state = this.#store.getState();
+      const svc = new ReimbursementService(state);
+      const g = svc.group(key);
+      if (!g) return;
+      const picked = new Set(form ? new FormData(form).getAll("pick") : g.items.map((r) => r.tx.id));
+      let items = g.items.filter((r) => picked.has(r.tx.id));
+      if (!items.length) return this.#toast.show("Tick the items to use the credit on");
+      const today = DateService.todayIso();
+      let used = 0;
+      for (const c of svc.creditEntries(g.payer)) {
+        const payCur = c.tx.currency;
+        const list = items.map((r) => ({
+          id: r.tx.id,
+          tx: r.tx,
+          owedOwn: r.outstanding,
+          outstanding: r.tx.currency === payCur ? r.outstanding : this.#fx.convert(r.outstanding, r.tx.currency, payCur)
+        })).filter((i) => i.outstanding > 0);
+        if (!list.length) break;
+        const { parts } = ReimbursementService.allocate(list, c.left, "spread");
+        const byId = new Map(list.map((i) => [i.id, i]));
+        c.tx.reimbAlloc = c.tx.reimbAlloc || [];
+        for (const p of parts) {
+          const i = byId.get(p.txId);
+          const own = p.amount >= i.outstanding ? i.owedOwn : i.tx.currency === payCur ? p.amount : Math.min(i.owedOwn, this.#fx.convert(p.amount, payCur, i.tx.currency));
+          c.tx.reimbAlloc.push({ txId: p.txId, amount: own, pay: p.amount, date: today });
+          used += p.amount;
+          const r = items.find((x) => x.tx.id === p.txId);
+          r.outstanding -= own;
+        }
+        items = items.filter((r) => r.outstanding > 0);
+      }
+      if (!used) return this.#toast.show("No credit to use");
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`Used ${this.#fx.formatMoney(used, g.currency)} credit from ${g.payer}`);
+      this.#sync.schedulePush?.();
+    }
+    /**
+     * The reimbursement fields from the transaction form, or a toast message.
+     * @returns {{fields: object}|{error: string}}
+     */
+    #reimbFields(fd, { amount, currency, existing }) {
+      const state = this.#store.getState();
+      const on = !!fd.get("reimbOn");
+      const paid = existing ? new ReimbursementService(state).paidBack(existing.id) : 0;
+      if (!on) {
+        if (paid > 0) return { error: "Money was already paid back for this \u2014 remove that payment first" };
+        return { fields: existing?.reimbBy ? { reimbBy: null, reimbExpected: null, reimbClosed: null, claimId: null } : {} };
+      }
+      const payer = String(fd.get("reimbBy") || "").trim().slice(0, 60);
+      if (!payer) return { error: "Who will pay you back?" };
+      let expected = Number(fd.get("reimbExpected")) > 0 ? this.#fx.toMinor(Number(fd.get("reimbExpected")), currency) : amount;
+      if (expected > amount) return { error: "You can\u2019t get back more than you spent" };
+      if (paid > expected) return { error: `${this.#fx.formatMoney(paid, currency)} was already paid back \u2014 expect at least that` };
+      let claimId = null;
+      const claimName = String(fd.get("claimName") || "").trim().slice(0, 60);
+      if (claimName) {
+        if (!Array.isArray(state.claims)) state.claims = [];
+        const ref = String(fd.get("claimRef") || "").trim().slice(0, 40);
+        let c = state.claims.find((x) => x.name.trim().toLowerCase() === claimName.toLowerCase());
+        if (!c) {
+          c = { id: IdGenerator.generate("claim"), name: claimName, ref };
+          state.claims.push(c);
+        } else if (ref && ref !== c.ref) c.ref = ref;
+        claimId = c.id;
+      }
+      return { fields: {
+        reimbBy: payer,
+        reimbExpected: expected === amount ? null : expected,
+        // Only a closed item shows this box; unticking it expects the rest again.
+        reimbClosed: fd.get("reimbClosed") ? true : null,
+        claimId
+      } };
     }
     ackInvestmentAlert(id) {
       const h = this.#holdings.find(id);
