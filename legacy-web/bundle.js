@@ -5714,6 +5714,10 @@ RULES:
     /** @type {PlanService} */
     #plan;
     /** Books of other people who used this device, kept for them out of sight. */
+    /** Whether the app has checked for a session yet (see restoreSession). */
+    #sessionKnown = false;
+    /** A session was found or signed in (true even while its book is still loading). */
+    #sessionUser = false;
     /** @type {ParkedBooks} */
     #parked;
     constructor() {
@@ -5846,10 +5850,22 @@ RULES:
       this.#sharesChannels = [];
       this.#subscribed = false;
     }
+    /** True once the app knows whether someone is signed in. */
+    get sessionKnown() {
+      return this.#sessionKnown;
+    }
+    /** Someone is signed in (or a found session is still being opened). */
+    get hasSession() {
+      return this.#sessionUser || !!this.#user;
+    }
     async restoreSession() {
-      if (!this.#sb) return {};
+      if (!this.#sb) {
+        this.#markSessionKnown(false);
+        return {};
+      }
       this.#sb.auth.onAuthStateChange((event, session) => {
         if (event === "SIGNED_IN" && session?.user) {
+          this.#sessionUser = true;
           if (!this.#user) this.#adoptSession(session.user);
         } else if (event === "SIGNED_OUT" && this.#user) {
           this.#resetToGuest(true, { wipeLocal: this.#explicitSignOut });
@@ -5858,6 +5874,7 @@ RULES:
       try {
         const { data } = await this.#sb.auth.getSession();
         const user = data?.session?.user ?? null;
+        this.#markSessionKnown(!!user);
         if (user) {
           const isFirst = await this.#adoptSession(user);
           return { isFirstSignIn: isFirst };
@@ -5865,6 +5882,7 @@ RULES:
       } catch (e) {
         console.warn("[SyncService] getSession failed:", e);
       }
+      this.#markSessionKnown(false);
       this.#resetToGuest(false);
       return { isFirstSignIn: false, needsSignIn: true };
     }
@@ -5943,9 +5961,17 @@ RULES:
      *           every local record (and the baseline): any unsaved edit still
      *           lives only here and is replayed after the next sign-in.
      */
+    /** The session check finished: tell the app (it may lock or open the book). */
+    #markSessionKnown(found) {
+      const first = !this.#sessionKnown;
+      this.#sessionKnown = true;
+      this.#sessionUser = !!found;
+      if (first) this.#bus.emit("session:known", { found: !!found });
+    }
     #resetToGuest(showSignIn, { wipeLocal = false } = {}) {
       this.#teardownChannels();
       this.#user = null;
+      this.#sessionUser = false;
       this.#loaded = false;
       this.#sharedData = [];
       this.#sharesBase = null;
@@ -14233,6 +14259,35 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/views/LockView.js
+  var LockView = class {
+    /** @param {{opening?: boolean, online?: boolean}} [opts] */
+    render({ opening = false, online = true } = {}) {
+      if (opening) {
+        return `
+        <div class="lock-screen opening min-h-[60vh] grid place-items-center text-center px-6">
+          <div>
+            <div class="mx-auto w-12 h-12 rounded-2xl grid place-items-center bg-zinc-100 dark:bg-zinc-800 animate-pulse"><i data-lucide="wallet"></i></div>
+            <div class="mt-4 text-sm text-zinc-500">Opening your book\u2026</div>
+          </div>
+        </div>`;
+      }
+      return `
+      <div class="lock-screen min-h-[70vh] grid place-items-center text-center px-6">
+        <div class="max-w-sm">
+          <div class="mx-auto w-14 h-14 rounded-2xl grid place-items-center bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"><i data-lucide="lock"></i></div>
+          <h1 class="mt-5 text-2xl font-semibold tracking-tight">Your book is locked</h1>
+          <p class="mt-2 text-sm text-zinc-500">Your sign-in has expired. Sign in with the same Google account to open it \u2014 everything on this phone is kept, including entries that haven\u2019t synced yet.</p>
+          ${online ? "" : '<p class="mt-3 text-sm text-amber-600">You\u2019re offline. Connect to the internet to sign in.</p>'}
+          <button class="btn btn-primary w-full justify-center mt-6 py-3 lock-signin" onclick="window.__app.openModal('auth',{})">
+            <i data-lucide="log-in"></i> Sign in
+          </button>
+          <p class="mt-4 text-xs text-zinc-400">Signing in with a different account keeps this book aside for its owner.</p>
+        </div>
+      </div>`;
+    }
+  };
+
   // src/domain/services/HoldingService.js
   var HoldingService = class _HoldingService {
     /** Metals and their purities, in the order offered. */
@@ -21203,6 +21258,10 @@ This replaces your current grouping.`
     #settingsModal;
     /** @type {HoldingService}       */
     #holdings;
+    /** @type {boolean} — the app has checked for a session (lock decision is final) */
+    #sessionChecked = false;
+    /** @type {LockView} */
+    #lockView = new LockView();
     /** @type {HabitService}         */
     #habits;
     /** @type {SyncService}          */
@@ -21466,10 +21525,18 @@ This replaces your current grouping.`
       this.#bus.on("plan:changed", () => {
         if (this.#modal.active === "settings") this.#modal.refresh();
       });
+      this.#bus.on("session:known", () => {
+        this.#sessionChecked = true;
+        this.#render();
+      });
       this.#render();
-      if (this.#sync.init()) {
+      if (!this.#sync.init()) {
+        this.#sessionChecked = true;
+        this.#render();
+      } else {
         this.#sync.restoreSession().then((result = {}) => {
           const { needsSignIn, isFirstSignIn } = result;
+          this.#sessionChecked = true;
           this.#render();
           this.#nav.renderAuthPill(this.#sync.currentUser);
           if (isFirstSignIn) {
@@ -21585,6 +21652,7 @@ This replaces your current grouping.`
       "currencySetup"
     ]);
     openModal(name, opts = {}) {
+      if (this.#lockState() && name !== "auth") return;
       const space = this.#spaces?.active?.();
       if (space && !space.isHome && _Application.#HOME_ONLY_MODALS.has(name)) {
         this.#toast.show(`Switch to your own space to change that \u2014 you're in ${space.label}`);
@@ -25823,6 +25891,32 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     // ──────────────────────────────────────────────────────────────────────────
     // Private: render
     // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * Whether to keep the book closed: 'locked' when it belongs to a Pocket
+     * account and nobody is signed in (a lapsed sign-in), 'opening' while the
+     * app is still checking. A book made without ever signing in has no owner
+     * and is never locked; a real Sign out clears the book and its owner.
+     * @returns {false|'opening'|'locked'}
+     */
+    #lockState() {
+      if (!this.#store.storedOwner) return false;
+      if (this.#sync.hasSession) return false;
+      return this.#sessionChecked || this.#sync.sessionKnown ? "locked" : "opening";
+    }
+    /** Menus, plan banner and space bar are hidden while the book is closed. */
+    #setChromeHidden(hide) {
+      if (!document.getElementById("pocketLockStyle")) {
+        const st = document.createElement("style");
+        st.id = "pocketLockStyle";
+        st.textContent = ".pocket-locked #sidebarNav,.pocket-locked #bottomNav,.pocket-locked #planBanner,.pocket-locked #spaceBar,.pocket-locked #authPill{display:none !important}";
+        document.head.appendChild(st);
+      }
+      document.body.classList.toggle("pocket-locked", !!hide);
+    }
+    /** True while the book is locked or still opening (for tests and the auth flow). */
+    get locked() {
+      return !!this.#lockState();
+    }
     #render() {
       if (this.#vendorDues?.reconcile()) {
         this.#store.persist();
@@ -25833,6 +25927,14 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       const state = this.#store.getState();
       state._sharedData = this.#sync.sharedData;
       state._currentUserEmail = this.#sync.currentUser?.email || null;
+      const lock = this.#lockState();
+      this.#setChromeHidden(!!lock);
+      if (lock) {
+        const content = document.getElementById("viewContent");
+        if (content) content.innerHTML = this.#lockView.render({ opening: lock === "opening", online: navigator.onLine !== false });
+        lucide?.createIcons?.();
+        return;
+      }
       const route = this.#router.current || "dashboard";
       this.#renderView(route);
       this.#nav.render();

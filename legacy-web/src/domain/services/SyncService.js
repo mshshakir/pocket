@@ -154,6 +154,10 @@ export class SyncService {
   /** The signed-in person's plan: whether the cloud copy may be saved or read. */
   /** @type {PlanService} */ #plan;
   /** Books of other people who used this device, kept for them out of sight. */
+  /** Whether the app has checked for a session yet (see restoreSession). */
+  #sessionKnown = false;
+  /** A session was found or signed in (true even while its book is still loading). */
+  #sessionUser = false;
   /** @type {ParkedBooks} */ #parked;
 
   constructor() {
@@ -307,14 +311,21 @@ export class SyncService {
     this.#subscribed = false;
   }
 
+  /** True once the app knows whether someone is signed in. */
+  get sessionKnown() { return this.#sessionKnown; }
+
+  /** Someone is signed in (or a found session is still being opened). */
+  get hasSession() { return this.#sessionUser || !!this.#user; }
+
   async restoreSession() {
-    if (!this.#sb) return {};
+    if (!this.#sb) { this.#markSessionKnown(false); return {}; }
 
     // Listener for auth changes AFTER initial load: OAuth sign-in completion and
     // explicit/remote sign-out (or failed token refresh). The initial restore is
     // handled by getSession() below.
     this.#sb.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
+        this.#sessionUser = true;
         if (!this.#user) this.#adoptSession(session.user);
       } else if (event === 'SIGNED_OUT' && this.#user) {
         this.#resetToGuest(true, { wipeLocal: this.#explicitSignOut });
@@ -324,6 +335,7 @@ export class SyncService {
     try {
       const { data } = await this.#sb.auth.getSession();
       const user = data?.session?.user ?? null;
+      this.#markSessionKnown(!!user);
       if (user) {
         const isFirst = await this.#adoptSession(user);
         return { isFirstSignIn: isFirst };
@@ -332,6 +344,7 @@ export class SyncService {
       console.warn('[SyncService] getSession failed:', e);
     }
 
+    this.#markSessionKnown(false);
     this.#resetToGuest(false);
     return { isFirstSignIn: false, needsSignIn: true };
   }
@@ -417,9 +430,18 @@ export class SyncService {
    *           every local record (and the baseline): any unsaved edit still
    *           lives only here and is replayed after the next sign-in.
    */
+  /** The session check finished: tell the app (it may lock or open the book). */
+  #markSessionKnown(found) {
+    const first = !this.#sessionKnown;
+    this.#sessionKnown = true;
+    this.#sessionUser = !!found;
+    if (first) this.#bus.emit('session:known', { found: !!found });
+  }
+
   #resetToGuest(showSignIn, { wipeLocal = false } = {}) {
     this.#teardownChannels();
     this.#user = null;
+    this.#sessionUser = false;
     this.#loaded = false;
     this.#sharedData = [];
     this.#sharesBase = null;

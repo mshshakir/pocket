@@ -72,6 +72,7 @@ import { BudgetDetailView }  from './ui/views/BudgetDetailView.js';
 import { CategoriesView }    from './ui/views/CategoriesView.js';
 import { ReportsView }       from './ui/views/ReportsView.js';
 import { DebtsView }         from './ui/views/DebtsView.js';
+import { LockView }          from './ui/views/LockView.js';
 import { InvestmentsView }   from './ui/views/InvestmentsView.js';
 import { InvestmentModal }   from './ui/modals/InvestmentModal.js';
 import { TradeModal }        from './ui/modals/TradeModal.js';
@@ -157,6 +158,9 @@ export class Application {
   /** @type {OwedService}          */ #owed;
   /** @type {SettingsModal}        */ #settingsModal;
   /** @type {HoldingService}       */ #holdings;
+  /** @type {boolean} — the app has checked for a session (lock decision is final) */
+  #sessionChecked = false;
+  /** @type {LockView} */             #lockView = new LockView();
   /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
@@ -451,13 +455,21 @@ export class Application {
       if (this.#modal.active === 'settings') this.#modal.refresh();
     });
 
-    // 8. Initial render (shows locally-cached or seed data while Supabase loads)
+    // The session check decides between the book and the lock screen.
+    this.#bus.on('session:known', () => { this.#sessionChecked = true; this.#render(); });
+
+    // 8. Initial render (shows locally-cached or seed data while Supabase loads;
+    //    a book that belongs to an account waits on "Opening your book…")
     this.#render();
 
     // 9. Init Supabase — restores session, pulls cloud data, then re-renders
-    if (this.#sync.init()) {
+    if (!this.#sync.init()) {
+      this.#sessionChecked = true;
+      this.#render();
+    } else {
       this.#sync.restoreSession().then((result = {}) => {
         const { needsSignIn, isFirstSignIn } = result;
+        this.#sessionChecked = true;
         this.#render();
 
         // Mirror the reference's updateAuthUI() call after pull() completes:
@@ -577,6 +589,7 @@ export class Application {
   ]);
 
   openModal(name, opts = {}) {
+    if (this.#lockState() && name !== 'auth') return; // the book stays closed until sign-in
     const space = this.#spaces?.active?.();
     if (space && !space.isHome && Application.#HOME_ONLY_MODALS.has(name)) {
       this.#toast.show(`Switch to your own space to change that — you're in ${space.label}`);
@@ -4993,6 +5006,33 @@ export class Application {
   // Private: render
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Whether to keep the book closed: 'locked' when it belongs to a Pocket
+   * account and nobody is signed in (a lapsed sign-in), 'opening' while the
+   * app is still checking. A book made without ever signing in has no owner
+   * and is never locked; a real Sign out clears the book and its owner.
+   * @returns {false|'opening'|'locked'}
+   */
+  #lockState() {
+    if (!this.#store.storedOwner) return false;
+    if (this.#sync.hasSession) return false;
+    return this.#sessionChecked || this.#sync.sessionKnown ? 'locked' : 'opening';
+  }
+
+  /** Menus, plan banner and space bar are hidden while the book is closed. */
+  #setChromeHidden(hide) {
+    if (!document.getElementById('pocketLockStyle')) {
+      const st = document.createElement('style');
+      st.id = 'pocketLockStyle';
+      st.textContent = '.pocket-locked #sidebarNav,.pocket-locked #bottomNav,.pocket-locked #planBanner,.pocket-locked #spaceBar,.pocket-locked #authPill{display:none !important}';
+      document.head.appendChild(st);
+    }
+    document.body.classList.toggle('pocket-locked', !!hide);
+  }
+
+  /** True while the book is locked or still opening (for tests and the auth flow). */
+  get locked() { return !!this.#lockState(); }
+
   #render() {
     // A deleted payment reopens its days; keep "paid up to" in step with the payments.
     if (this.#vendorDues?.reconcile()) { this.#store.persist(); this.#sync.schedulePush?.(); }
@@ -5004,6 +5044,14 @@ export class Application {
     const state = this.#store.getState();
     state._sharedData        = this.#sync.sharedData;
     state._currentUserEmail  = this.#sync.currentUser?.email || null;
+    const lock = this.#lockState();
+    this.#setChromeHidden(!!lock);
+    if (lock) {
+      const content = document.getElementById('viewContent');
+      if (content) content.innerHTML = this.#lockView.render({ opening: lock === 'opening', online: navigator.onLine !== false });
+      lucide?.createIcons?.();
+      return;
+    }
     const route = this.#router.current || 'dashboard';
     this.#renderView(route);
     // Navigation.render() reads the active route from the Router itself; passing
