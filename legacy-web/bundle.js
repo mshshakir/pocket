@@ -13255,7 +13255,11 @@ This replaces your current grouping.`
         }).join("");
         const primaryColor = firstItem ? firstItem.color : "";
         const bills = billDays.get(c.iso) || [];
-        const billTags = bills.slice(0, 2).map((o) => `<span class="cal-bill ${o.status}" title="${this.escapeHtml(o.template.payee || "Bill")} \xB7 ${_CalendarView.#BILL_WORD[o.status]}">${this.escapeHtml(o.template.payee || "Bill")}</span>`).join("") + (bills.length > 2 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 2}</span>` : "");
+        const billTags = bills.slice(0, 3).map((o) => {
+          const title = `${this.escapeHtml(o.template.payee || "Bill")} \xB7 ${_CalendarView.#BILL_WORD[o.status]}`;
+          const cat = (state.categories || []).find((c2) => c2.id === o.template.categoryId);
+          return `<span class="cal-bill ${o.status}" title="${title}"><i data-lucide="${Html.icon(cat?.icon, "receipt")}"></i></span>`;
+        }).join("") + (bills.length > 3 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 3}</span>` : "");
         const changed = plans.some((p) => p.stateOn(c.iso) === "changed");
         const paused = !changed && plans.some((p) => p.stateOn(c.iso) === "paused");
         return `
@@ -16431,7 +16435,7 @@ This replaces your current grouping.`
             <div class="text-sm font-medium truncate">${this.#esc(t.payee || "Bill")}</div>
             <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? o.status === "paid" ? "" : " \xB7 last time" : ""}</div>
           </div>
-          <span class="cal-bill ${o.status}" style="font-size:11px;line-height:18px;padding:0 8px;width:auto;height:auto">${word[o.status]}</span>
+          <span class="bill-state ${o.status}">${word[o.status]}</span>
           ${open ? `<button type="button" class="btn btn-primary btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${Html.js(t.id)}',date:'${date}'})">Pay</button>` : ""}
         </div>`;
       }).join("");

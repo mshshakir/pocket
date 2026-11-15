@@ -198,8 +198,12 @@ export class CalendarView extends BaseView {
             }).join('');
             const primaryColor = firstItem ? firstItem.color : '';
             const bills = billDays.get(c.iso) || [];
-            const billTags = bills.slice(0, 2).map((o) => `<span class="cal-bill ${o.status}" title="${this.escapeHtml(o.template.payee || 'Bill')} · ${CalendarView.#BILL_WORD[o.status]}">${this.escapeHtml(o.template.payee || 'Bill')}</span>`).join('')
-              + (bills.length > 2 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 2}</span>` : '');
+            // Desktop: the bill's category icon, green when paid, red when not; phones: a dot.
+            const billTags = bills.slice(0, 3).map((o) => {
+              const title = `${this.escapeHtml(o.template.payee || 'Bill')} · ${CalendarView.#BILL_WORD[o.status]}`;
+              const cat = (state.categories || []).find((c) => c.id === o.template.categoryId);
+              return `<span class="cal-bill ${o.status}" title="${title}"><i data-lucide="${Html.icon(cat?.icon, 'receipt')}"></i></span>`;
+            }).join('') + (bills.length > 3 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 3}</span>` : '');
             const changed = plans.some((p) => p.stateOn(c.iso) === 'changed');
             const paused  = !changed && plans.some((p) => p.stateOn(c.iso) === 'paused');
             return `

@@ -309,10 +309,10 @@ const recent = (d) => addDays(appToday, -d);
   const due = e[1].date;
   const view = w.document.getElementById('viewContent');
   if (due.slice(0, 7) === appToday.slice(0, 7)) {
-    ok('C1 the grid shows it in red with a count', view.querySelector('.cal-bill.overdue')?.textContent === 'Electricity' && /1 bill to pay/.test(view.textContent));
+    ok('C1 the grid shows it in red with a count', view.querySelector('.cal-bill.overdue')?.title.startsWith('Electricity') && /1 bill to pay/.test(view.textContent));
   } else {
     app.shiftCalMonth(-1); await wait(20);
-    ok('C1 the grid shows it in red', view.querySelector('.cal-bill.overdue')?.textContent === 'Electricity');
+    ok('C1 the grid shows it in red', view.querySelector('.cal-bill.overdue')?.title.startsWith('Electricity'));
   }
   app.openModal('dayLogs', { date: due });
   await wait(20);

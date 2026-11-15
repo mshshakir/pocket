@@ -144,7 +144,7 @@ export class DayLogsModal {
             <div class="text-sm font-medium truncate">${this.#esc(t.payee || 'Bill')}</div>
             <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? (o.status === 'paid' ? '' : ' · last time') : ''}</div>
           </div>
-          <span class="cal-bill ${o.status}" style="font-size:11px;line-height:18px;padding:0 8px;width:auto;height:auto">${word[o.status]}</span>
+          <span class="bill-state ${o.status}">${word[o.status]}</span>
           ${open ? `<button type="button" class="btn btn-primary btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${Html.js(t.id)}',date:'${date}'})">Pay</button>` : ''}
         </div>`;
     }).join('');
