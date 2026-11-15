@@ -10,6 +10,8 @@
  *   M  Month report: Gregorian and Hijri months
  *   A  Account report: each account in its own currency, transfers both ways
  *   K  The layout survives any filter change, and both are remembered
+ *   R  Regulars report: bills by date (paid / not paid / coming up), delivery days (paid / delivered / not
+ *      confirmed / not delivered), what's still owed; Habits report by month; the From column
  *   W  CSV (BOM, formula guard) and Excel sheet (frozen header, number cells,
  *      the real writer accepts it)
  *
@@ -237,6 +239,43 @@ const textOf = (table, row) => table.columns.map((c) => cells.text(c, row));
   const xblob = await ctx.writeXlsxFile(data, { columns, stickyRowsCount: headerIndex + 1, sheet: 'Transactions' }).toBlob();
   const head = new Uint8Array(await xblob.arrayBuffer()).slice(0, 2);
   ok('W7 Excel: the library writes a real .xlsx (a zip)', head[0] === 0x50 && head[1] === 0x4B && xblob.size > 2000, String(xblob.size));
+}
+
+{
+  const reg = {
+    user: { homeCurrency: 'INR' },
+    accounts: [{ id: 'a1', name: 'Cash', currency: 'INR' }],
+    categories: [{ id: 'c1', name: 'Home', type: 'expense' }],
+    transactions: [
+      { id: 'b1', type: 'expense', date: '2026-10-05', amount: 180000, currency: 'INR', accountId: 'a1', categoryId: 'c1', payee: 'Electricity', recurring: { rule: 'monthly', interval: 1, until: null }, askFirst: true },
+      { id: 'pay', type: 'expense', date: '2026-11-08', amount: 38400, currency: 'INR', accountId: 'a1', categoryId: 'c1', payee: 'Doodhwala', regularItemId: 'milk', settles: { from: '2026-11-03', to: '2026-11-08', qty: 6 } },
+      { id: 'cf1', type: 'expense', date: '2026-11-02', amount: 2000, currency: 'INR', accountId: 'a1', payee: 'Coffee', regularItemId: 'cof' },
+      { id: 'cf2', type: 'expense', date: '2026-10-20', amount: 2000, currency: 'INR', accountId: 'a1', payee: 'Cafe', note: 'coffee' },
+    ],
+    regularItems: [
+      { id: 'milk', name: 'Milk', vendor: 'Doodhwala', unit: 'L', payLater: true, currency: 'INR', accountId: 'a1', usualQty: 1, usualDays: [0, 1, 2, 3, 4, 5, 6], trackFrom: '2026-11-03', defaultAmount: 6400,
+        confirmed: { '2026-11-10': true, '2026-11-11': true }, marks: { '2026-11-12': 0 } },
+      { id: 'cof', name: 'Coffee', currency: 'INR', accountId: 'a1', defaultAmount: 2000 },
+    ],
+    habits: [{ id: 'h1', name: 'Coffee', words: ['coffee'], itemIds: ['cof'], categoryIds: [], limitCount: 20 }],
+  };
+  const filter = new ExportFilter({ period: 'custom', from: '2026-10-01', to: '2026-11-14' });
+  const t = ReportBuilder.build(reg, filter, new ExportFormat({ report: 'regulars' }), TODAY);
+  const [bills, days] = t.sections;
+  ok('R1 bills: Electricity on 5 Oct paid, 5 Nov not paid yet', bills.label === 'Bills' && bills.rows.map((r) => `${r.date}:${r.status}`).join() === '2026-10-05:Paid,2026-11-05:Not paid yet', bills.rows.map((r) => `${r.date}:${r.status}`).join());
+  const st = (d) => days.rows.find((r) => r.date === d)?.status;
+  ok('R1 deliveries: paid to 8 Nov, 10th delivered not paid, 9th not confirmed, 12th not delivered',
+     st('2026-11-08') === 'Paid' && st('2026-11-10') === 'Delivered · not paid' && st('2026-11-09') === 'Not confirmed · not paid' && st('2026-11-12') === 'Not delivered' && !st('2026-11-02') && !st('2026-11-15'),
+     days.rows.map((r) => `${r.date.slice(8)}:${r.status}`).join(' '));
+  ok('R1 the day shows quantity × price and its amount', days.rows[0].detail === '1 L × ₹64.00' && days.rows[0].amount === 6400, days.rows[0].detail);
+  ok('R1 notes: what\'s unpaid and owed, and unconfirmed days', /Bills not paid yet: 1/.test(t.notes.join()) && /Owed to vendors today: Doodhwala ₹320/.test(t.notes.join()) && /not confirmed/.test(t.notes.join()), t.notes.join(' | '));
+  const h = ReportBuilder.build(reg, filter, new ExportFormat({ report: 'habits' }), TODAY);
+  ok('R2 habits: Coffee in October (word) and November (shortcut), limit shown', h.sections[0].label === 'Coffee' && h.sections[0].rows.length === 2 && h.sections[0].rows.every((r) => r.count === 1 && r.limit === '20 times'), JSON.stringify(h.sections[0]?.rows));
+  const tx = ReportBuilder.build(reg, filter, new ExportFormat({ report: 'transactions', columns: ['date', 'payee', 'source', 'amount'], groupBy: 'source' }), TODAY);
+  const labels = tx.sections.map((sec) => sec.label);
+  ok('R3 the From column and grouping by it', labels.includes('Bills') && labels.includes('Delivery payments') && labels.includes('Shortcuts') && labels.includes('Other entries')
+     && tx.sections.find((x) => x.label === 'Shortcuts').rows[0].source === 'Shortcut', labels.join());
+  ok('R3 the Regulars report writes to CSV', /Electricity/.test(new CsvWriter().text(t)) && /Not delivered/.test(new CsvWriter().text(t)));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -104,7 +104,19 @@ export class LedgerEntries {
       signedHome: sign * homeAmount,
       addedBy: t.addedBy || '',
       split: part > 0,
+      source: LedgerEntries.sourceOf(t),
     };
+  }
+
+  /**
+   * Where an entry came from: 'Bill' (a repeat, or a payment of one),
+   * 'Delivery payment' (paying a vendor for delivered days), 'Shortcut', or ''.
+   */
+  static sourceOf(t) {
+    if (t.settles) return 'Delivery payment';
+    if (t.recurring || t.recurringSourceId) return 'Bill';
+    if (t.regularItemId) return 'Shortcut';
+    return '';
   }
 
   #transferRow(t, pair) {

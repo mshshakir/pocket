@@ -57,6 +57,7 @@ export class TransactionsReport extends BaseReport {
       original: { kind: 'text', align: 'right', weight: 1 },
       amount:   { kind: 'money', align: 'right', weight: 1.1, currency: this.home },
       addedBy:  { kind: 'text', align: 'left', weight: 1.3 },
+      source:   { kind: 'text', align: 'left', weight: 1.1 },
     };
     return this.format.columns.map((key) => ({
       key,
@@ -79,6 +80,7 @@ export class TransactionsReport extends BaseReport {
       original: foreign ? this.#fx.formatMoney(e.amount, e.currency) : '',
       amount: e.type === 'transfer' ? e.homeAmount : e.signedHome,
       addedBy: e.addedBy,
+      source: e.source || '',
       _transfer: e.type === 'transfer',
     };
   }
@@ -95,6 +97,7 @@ export class TransactionsReport extends BaseReport {
           ? { key: '~transfer', label: 'Transfers' }
           : { key: this.ledger.mainCategory(e.categoryId)?.name || 'Uncategorised', label: this.ledger.mainCategory(e.categoryId)?.name || 'Uncategorised' };
         case 'account':  return { key: e.accountName, label: e.accountName };
+        case 'source':   return e.source ? { key: e.source, label: e.source + 's' } : { key: '~other', label: 'Other entries' };
         default:         return { key: '', label: '' };
       }
     };

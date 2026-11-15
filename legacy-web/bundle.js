@@ -17345,7 +17345,9 @@ This replaces your current grouping.`
       ["transactions", "Transactions"],
       ["categories", "By category"],
       ["months", "By month"],
-      ["accounts", "By account"]
+      ["accounts", "By account"],
+      ["regulars", "Regulars"],
+      ["habits", "Habits"]
     ]);
     /** Columns the transactions report can show, in their default order. */
     static TX_COLUMNS = Object.freeze([
@@ -17359,7 +17361,8 @@ This replaces your current grouping.`
       ["payment", "Payment"],
       ["original", "Original amount"],
       ["amount", "Amount"],
-      ["addedBy", "Added by"]
+      ["addedBy", "Added by"],
+      ["source", "From"]
     ]);
     static DEFAULT_TX_COLUMNS = Object.freeze(["date", "account", "category", "note", "payment", "amount"]);
     static GROUPS = Object.freeze([
@@ -17367,7 +17370,8 @@ This replaces your current grouping.`
       ["day", "Day"],
       ["month", "Month"],
       ["category", "Category"],
-      ["account", "Account"]
+      ["account", "Account"],
+      ["source", "From (bill, delivery, shortcut)"]
     ]);
     static ORIENTATIONS = Object.freeze([["auto", "Auto"], ["portrait", "Portrait"], ["landscape", "Landscape"]]);
     static PAPERS = Object.freeze([["a4", "A4"], ["letter", "Letter"]]);
@@ -17428,7 +17432,7 @@ This replaces your current grouping.`
   };
 
   // src/domain/export/LedgerEntries.js
-  var LedgerEntries = class {
+  var LedgerEntries = class _LedgerEntries {
     #state;
     #fx;
     #hijri;
@@ -17507,8 +17511,19 @@ This replaces your current grouping.`
         homeAmount,
         signedHome: sign * homeAmount,
         addedBy: t.addedBy || "",
-        split: part > 0
+        split: part > 0,
+        source: _LedgerEntries.sourceOf(t)
       };
+    }
+    /**
+     * Where an entry came from: 'Bill' (a repeat, or a payment of one),
+     * 'Delivery payment' (paying a vendor for delivered days), 'Shortcut', or ''.
+     */
+    static sourceOf(t) {
+      if (t.settles) return "Delivery payment";
+      if (t.recurring || t.recurringSourceId) return "Bill";
+      if (t.regularItemId) return "Shortcut";
+      return "";
     }
     #transferRow(t, pair) {
       const out = t.transferDir === "in" && pair ? pair : t;
@@ -17687,7 +17702,8 @@ This replaces your current grouping.`
         payment: { kind: "text", align: "left", weight: 0.8 },
         original: { kind: "text", align: "right", weight: 1 },
         amount: { kind: "money", align: "right", weight: 1.1, currency: this.home },
-        addedBy: { kind: "text", align: "left", weight: 1.3 }
+        addedBy: { kind: "text", align: "left", weight: 1.3 },
+        source: { kind: "text", align: "left", weight: 1.1 }
       };
       return this.format.columns.map((key) => ({
         key,
@@ -17709,6 +17725,7 @@ This replaces your current grouping.`
         original: foreign ? this.#fx.formatMoney(e.amount, e.currency) : "",
         amount: e.type === "transfer" ? e.homeAmount : e.signedHome,
         addedBy: e.addedBy,
+        source: e.source || "",
         _transfer: e.type === "transfer"
       };
     }
@@ -17725,6 +17742,8 @@ This replaces your current grouping.`
             return e.type === "transfer" ? { key: "~transfer", label: "Transfers" } : { key: this.ledger.mainCategory(e.categoryId)?.name || "Uncategorised", label: this.ledger.mainCategory(e.categoryId)?.name || "Uncategorised" };
           case "account":
             return { key: e.accountName, label: e.accountName };
+          case "source":
+            return e.source ? { key: e.source, label: e.source + "s" } : { key: "~other", label: "Other entries" };
           default:
             return { key: "", label: "" };
         }
@@ -17898,13 +17917,148 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/export/reports/RegularsReport.js
+  var RegularsReport = class _RegularsReport extends BaseReport {
+    static #BILL_STATUS = Object.freeze({ paid: "Paid", overdue: "Not paid yet", due: "Due today", upcoming: "Coming up", skipped: "Skipped" });
+    static #DAY_STATUS = Object.freeze({ paid: "Paid", owed: "Delivered \xB7 not paid", unconfirmed: "Not confirmed \xB7 not paid", skipped: "Not delivered" });
+    #fx = new CurrencyService();
+    build() {
+      const today = DateService.toIso(this.today);
+      const { from, to } = this.#span(today);
+      const store = { getState: () => this.state };
+      const bills = new BillService({ store, recurring: new RecurringService() });
+      const dues = new VendorDues({ store });
+      const accounts = new Set(this.filter.accountIds);
+      const onAccount = (id) => !accounts.size || accounts.has(id);
+      const columns = [
+        { key: "date", label: "Date", kind: "date", align: "left", weight: 0.9 },
+        { key: "name", label: "Bill / item", kind: "text", align: "left", weight: 1.4 },
+        { key: "detail", label: "Detail", kind: "text", align: "left", weight: 1.4 },
+        { key: "status", label: "Status", kind: "text", align: "left", weight: 1.3 },
+        this.money("amount", `Amount (${this.home})`)
+      ];
+      const conv = (minor, cur) => this.#fx.convert(minor, cur || this.home, this.home);
+      const billRows = bills.occurrences(from, to, today, this.state).filter((o) => onAccount(o.template.accountId)).map((o) => ({
+        date: o.date,
+        name: BillService.nameOf(o.template, this.state),
+        detail: o.template.askFirst ? "Amount changes" : "Same amount",
+        status: _RegularsReport.#BILL_STATUS[o.status] || o.status,
+        amount: conv(o.amount, o.currency),
+        _status: o.status
+      }));
+      const unpaidBills = billRows.filter((r) => r._status === "overdue" || r._status === "due");
+      const dayRows = [];
+      const lastDay = to < today ? to : today;
+      for (const item of dues.items().filter((i) => onAccount(i.accountId))) {
+        const plan = new DeliveryPlan(item);
+        const start = plan.trackFrom && plan.trackFrom > from ? plan.trackFrom : from;
+        for (let d = start, i = 0; d <= lastDay && i < 1500; d = DeliveryPlan.addDays(d, 1), i++) {
+          const status = dues.statusOn(item, d, today);
+          if (!status) continue;
+          const qty = plan.qtyOn(d);
+          const price = plan.priceOn(d);
+          dayRows.push({
+            date: d,
+            name: item.name,
+            detail: qty ? `${plan.qtyLabel(qty)} \xD7 ${this.#fx.formatMoney(price, item.currency || this.home)}` : "\u2014",
+            status: _RegularsReport.#DAY_STATUS[status] || status,
+            amount: qty ? conv(Math.round(qty * price), item.currency) : 0,
+            _status: status
+          });
+        }
+      }
+      dayRows.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+      const subtotal = (rows, label) => this.format.showTotals && rows.length ? { amount: BaseReport.sum(rows.filter((r) => r._status !== "skipped"), "amount"), _strong: true, _label: label, _labelKey: "name" } : null;
+      const sections = [
+        { label: "Bills", rows: billRows, subtotal: subtotal(billRows, `Bills \xB7 ${billRows.length}`) },
+        { label: "Deliveries", rows: dayRows, subtotal: subtotal(dayRows, `Deliveries \xB7 ${dayRows.filter((r) => r._status !== "skipped").length} days`) }
+      ];
+      const fmt = (v) => this.#fx.formatMoney(v, this.home);
+      const notes = [];
+      if (unpaidBills.length) notes.push(`Bills not paid yet: ${unpaidBills.length} \xB7 ${fmt(BaseReport.sum(unpaidBills, "amount"))} (last amounts)`);
+      const owed = dues.byVendor(today).filter((g) => g.amount > 0 && g.lines.some((l) => onAccount(l.item.accountId)));
+      if (owed.length) notes.push(`Owed to vendors today: ${owed.map((g) => `${g.vendor} ${this.#fx.formatMoney(g.amount, g.currency || this.home)}`).join(" \xB7 ")}`);
+      const unconfirmed = dayRows.filter((r) => r._status === "unconfirmed").length;
+      if (unconfirmed) notes.push(`${unconfirmed} delivery day${unconfirmed === 1 ? "" : "s"} not confirmed \u2014 counted as the usual.`);
+      return new ReportTable({
+        title: this.title("Bills and deliveries"),
+        subtitle: this.subtitle(),
+        columns,
+        sections,
+        total: null,
+        notes,
+        fileStem: this.fileStem("regulars")
+      });
+    }
+    /** The period; "all time" starts at the earliest bill or tracked delivery. */
+    #span(today) {
+      const { from, to } = this.filter.range(this.today);
+      const starts = [
+        ...(this.state.transactions || []).filter((t) => t.recurring && !t.recurringSourceId).map((t) => t.date),
+        ...(this.state.regularItems || []).filter((i) => i.payLater === true).map((i) => new DeliveryPlan(i).trackFrom).filter(Boolean)
+      ].filter(Boolean).sort();
+      return { from: from || starts[0] || today, to: to || today };
+    }
+  };
+
+  // src/domain/export/reports/HabitsReport.js
+  var HabitsReport = class extends BaseReport {
+    #fx = new CurrencyService();
+    build() {
+      const today = DateService.toIso(this.today);
+      const { from, to } = this.filter.range(this.today);
+      const habits = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
+      const ledgerById = new Map(this.ledger.all().map((e) => [e.txId, e]));
+      const columns = [
+        { key: "month", label: this.format.calendar === "hijri" ? "Hijri month" : "Month", kind: "text", align: "left", weight: 1.5 },
+        { key: "count", label: "Times", kind: "count", align: "right", weight: 0.7 },
+        this.money("amount", `Amount (${this.home})`),
+        this.money("average", `Average (${this.home})`),
+        { key: "limit", label: "Monthly limit", kind: "text", align: "right", weight: 1 }
+      ];
+      const sections = [];
+      for (const h of habits.all(this.state)) {
+        const list = habits.entries(h, this.state, from || "0000-01-01", to || today);
+        if (!list.length) continue;
+        const months = /* @__PURE__ */ new Map();
+        for (const t of list) {
+          const { key, label } = this.monthOf(ledgerById.get(t.id) ?? t);
+          if (!months.has(key)) months.set(key, { month: label, count: 0, amount: 0 });
+          const m = months.get(key);
+          m.count += 1;
+          m.amount += this.#fx.convert(t.amount, t.currency, this.home);
+        }
+        const limit = [h.limitCount ? `${h.limitCount} times` : "", h.limitAmount ? this.#fx.formatMoney(h.limitAmount, this.home) : ""].filter(Boolean).join(" / ");
+        const rows = [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, m]) => ({ ...m, average: m.count ? Math.round(m.amount / m.count) : 0, limit }));
+        const count = BaseReport.sum(rows, "count"), amount = BaseReport.sum(rows, "amount");
+        sections.push({
+          label: h.name,
+          rows,
+          subtotal: this.format.showTotals ? { month: `Total \xB7 ${h.name}`, count, amount, average: count ? Math.round(amount / count) : 0, _strong: true } : null
+        });
+      }
+      const notes = sections.length ? [] : ["No habit has entries in this period. Set habits up under Reports \u2192 Habits."];
+      return new ReportTable({
+        title: this.title("Habits"),
+        subtitle: this.subtitle(),
+        columns,
+        sections,
+        total: null,
+        notes,
+        fileStem: this.fileStem("habits")
+      });
+    }
+  };
+
   // src/domain/export/ReportBuilder.js
   var ReportBuilder = class _ReportBuilder {
     static #REPORTS = {
       transactions: TransactionsReport,
       categories: CategoryReport,
       months: MonthsReport,
-      accounts: AccountsReport
+      accounts: AccountsReport,
+      regulars: RegularsReport,
+      habits: HabitsReport
     };
     /**
      * @param {object} state   the book (or a shared space's projection)
@@ -18442,7 +18596,7 @@ This replaces your current grouping.`
           </button>
         </div>
 
-        <div class="seg mb-4" style="grid-template-columns:repeat(${ExportFormat.REPORTS.length},minmax(0,1fr))" role="tablist">
+        <div class="seg mb-4" style="grid-template-columns:repeat(${Math.min(3, ExportFormat.REPORTS.length)},minmax(0,1fr))" role="tablist">
           ${ExportFormat.REPORTS.map(([k, l]) => `
             <button type="button" role="tab" aria-selected="${fm.report === k}" class="${fm.report === k ? "on" : ""}"
                     onclick="window.__app.exportSet('format','report','${k}')">${l}</button>`).join("")}
@@ -18524,7 +18678,7 @@ This replaces your current grouping.`
     }
     #layoutSection(fm) {
       const isTx = fm.report === "transactions";
-      const usesCalendar = fm.report === "months" || isTx && fm.groupBy === "month";
+      const usesCalendar = fm.report === "months" || fm.report === "habits" || isTx && fm.groupBy === "month";
       const select = (label, field, list, value) => `
       <div>
         <label class="field-label">${label}</label>

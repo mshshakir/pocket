@@ -12,6 +12,8 @@ export class ExportFormat {
     ['categories', 'By category'],
     ['months', 'By month'],
     ['accounts', 'By account'],
+    ['regulars', 'Regulars'],
+    ['habits', 'Habits'],
   ]);
 
   /** Columns the transactions report can show, in their default order. */
@@ -27,6 +29,7 @@ export class ExportFormat {
     ['original', 'Original amount'],
     ['amount', 'Amount'],
     ['addedBy', 'Added by'],
+    ['source', 'From'],
   ]);
 
   static DEFAULT_TX_COLUMNS = Object.freeze(['date', 'account', 'category', 'note', 'payment', 'amount']);
@@ -37,6 +40,7 @@ export class ExportFormat {
     ['month', 'Month'],
     ['category', 'Category'],
     ['account', 'Account'],
+    ['source', 'From (bill, delivery, shortcut)'],
   ]);
 
   static ORIENTATIONS = Object.freeze([['auto', 'Auto'], ['portrait', 'Portrait'], ['landscape', 'Landscape']]);

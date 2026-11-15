@@ -103,7 +103,7 @@ export class ExportModal {
           </button>
         </div>
 
-        <div class="seg mb-4" style="grid-template-columns:repeat(${ExportFormat.REPORTS.length},minmax(0,1fr))" role="tablist">
+        <div class="seg mb-4" style="grid-template-columns:repeat(${Math.min(3, ExportFormat.REPORTS.length)},minmax(0,1fr))" role="tablist">
           ${ExportFormat.REPORTS.map(([k, l]) => `
             <button type="button" role="tab" aria-selected="${fm.report === k}" class="${fm.report === k ? 'on' : ''}"
                     onclick="window.__app.exportSet('format','report','${k}')">${l}</button>`).join('')}
@@ -193,7 +193,7 @@ export class ExportModal {
 
   #layoutSection(fm) {
     const isTx = fm.report === 'transactions';
-    const usesCalendar = fm.report === 'months' || (isTx && fm.groupBy === 'month');
+    const usesCalendar = fm.report === 'months' || fm.report === 'habits' || (isTx && fm.groupBy === 'month');
     const select = (label, field, list, value) => `
       <div>
         <label class="field-label">${label}</label>

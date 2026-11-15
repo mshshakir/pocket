@@ -6,6 +6,8 @@ import { TransactionsReport } from './reports/TransactionsReport.js';
 import { CategoryReport } from './reports/CategoryReport.js';
 import { MonthsReport } from './reports/MonthsReport.js';
 import { AccountsReport } from './reports/AccountsReport.js';
+import { RegularsReport } from './reports/RegularsReport.js';
+import { HabitsReport } from './reports/HabitsReport.js';
 
 export class ReportBuilder {
   static #REPORTS = {
@@ -13,6 +15,8 @@ export class ReportBuilder {
     categories: CategoryReport,
     months: MonthsReport,
     accounts: AccountsReport,
+    regulars: RegularsReport,
+    habits: HabitsReport,
   };
 
   /**
