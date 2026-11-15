@@ -11,17 +11,20 @@ import { BaseView }               from './BaseView.js';
 import { BudgetService }          from '../../domain/services/BudgetService.js';
 import { DateService }            from '../../domain/services/DateService.js';
 import { BudgetMeter }            from '../components/BudgetMeter.js';
+import { BudgetAdvisor }          from '../../domain/services/BudgetAdvisor.js';
 import { TransactionRowRenderer } from './TransactionRowRenderer.js';
 
 export class BudgetDetailView extends BaseView {
   /** @type {BudgetService} */          #budgets;
   /** @type {BudgetMeter} */            #meter;
+  /** @type {BudgetAdvisor} */          #advisor;
   /** @type {TransactionRowRenderer} */ #rowRenderer;
   /** @type {string|null} */            #budgetId = null;
 
   constructor() {
     super();
     this.#budgets     = new BudgetService();
+    this.#advisor     = new BudgetAdvisor(this.#budgets);
     this.#meter       = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
     this.#rowRenderer = new TransactionRowRenderer();
   }
@@ -73,7 +76,7 @@ export class BudgetDetailView extends BaseView {
             <div class="text-xl font-semibold">${this.escapeHtml(title)}</div>
             <div class="text-xs text-zinc-500">
               <i data-lucide="${period.icon}" style="width:11px;height:11px;display:inline"></i>
-              ${this.escapeHtml(periodLabel)}${b.rollover ? ' · rollover on' : ''}
+              ${this.escapeHtml(periodLabel)}${!b.rollover ? '' : b.rolloverOverspend ? ' · rollover on (incl. overspending)' : ' · rollover on'}
             </div>
           </div>
         </div>
@@ -94,7 +97,10 @@ export class BudgetDetailView extends BaseView {
                 <span class="text-zinc-500 flex-shrink-0">${this.formatMoney(s.spend, b.currency)}</span>
               </div>`).join('')}
           </div>` : ''}
+        ${this.#byPerson(b)}
       </div>
+
+      ${this.inGuestSpace ? '' : this.#history(b, today)}
 
       <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2 px-1">
         ${txs.length} transaction${txs.length === 1 ? '' : 's'} this period
@@ -114,5 +120,63 @@ export class BudgetDetailView extends BaseView {
               </div>
             </div>`).join('')}
     `;
+  }
+
+  // ── Private ───────────────────────────────────────────────────────────
+
+  /** Who spent it, when more than one person entered spending this period. */
+  #byPerson(b) {
+    if (this.inGuestSpace) return '';
+    const rows = this.#budgets.spendByPerson(b);
+    if (rows.length < 2) return '';
+    const me = (this.state._currentUserEmail || '').toLowerCase();
+    const family = this.state.family || [];
+    const name = (key) => {
+      if (!key || key === me) return 'You';
+      const f = family.find((x) => (x.email || '').toLowerCase() === key);
+      return f?.name || key;
+    };
+    // Entries by the owner may or may not carry their email; show one "You".
+    const merged = new Map();
+    for (const r of rows) merged.set(name(r.key), (merged.get(name(r.key)) || 0) + r.spend);
+    if (merged.size < 2) return '';
+    return `
+      <div class="budget-by-person mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 space-y-1.5">
+        <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">By person</div>
+        ${[...merged].sort((x, y) => y[1] - x[1]).map(([who, spend]) => `
+          <div class="flex items-center justify-between text-sm">
+            <span class="truncate">${this.escapeHtml(who)}</span>
+            <span class="text-zinc-500 flex-shrink-0">${this.formatMoney(spend, b.currency)}</span>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  /** The last six periods: spent against the limit, with a small bar each. */
+  #history(b, today) {
+    const rows = this.#advisor.history(b, 6, today);
+    if (!rows.length || rows.every((r) => r.spent === 0)) return '';
+    const avg = rows.reduce((s, r) => s + r.spent, 0) / rows.length;
+    const over = rows.filter((r) => r.limit > 0 && r.spent > r.limit).length;
+    return `
+      <div class="card p-4 mb-4 budget-history">
+        <div class="flex items-baseline justify-between mb-2">
+          <div class="text-xs uppercase tracking-wider text-zinc-500">Before this</div>
+          <div class="text-xs text-zinc-500">Average ${this.formatMoney(Math.round(avg), b.currency)}${over ? ` · over ${over} of ${rows.length}` : ''}</div>
+        </div>
+        <div class="space-y-2">
+          ${rows.map((r) => {
+            const pct = r.limit > 0 ? Math.min(100, Math.round((100 * r.spent) / r.limit)) : 0;
+            const color = r.limit > 0 && r.spent > r.limit ? BudgetMeter.RED : pct >= 80 ? BudgetMeter.AMBER : BudgetMeter.GREEN;
+            return `
+            <div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-zinc-600 dark:text-zinc-300">${this.escapeHtml(r.label)}</span>
+                <span class="${r.spent > r.limit ? 'text-rose-500' : 'text-zinc-500'}">${this.formatMoney(r.spent, b.currency)} / ${this.formatMoney(r.limit, b.currency)}</span>
+              </div>
+              <div class="progress mt-1" style="height:4px"><div style="width:${pct}%; background:${color}"></div></div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
   }
 }

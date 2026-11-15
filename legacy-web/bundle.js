@@ -4107,6 +4107,52 @@ var _PocketApp = (() => {
       });
     }
     /**
+     * Spend between two dates (inclusive) for the budget's categories, in its
+     * currency — for history and suggestions. Plain dates, so a Hijri budget's
+     * past months are measured by their Gregorian days.
+     * @param {object} budget
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to   YYYY-MM-DD
+     * @param {object} [state]
+     */
+    spendBetween(budget, from, to, state = this.#store.getState()) {
+      const ids = this.#expandedIds(budget);
+      let spend = 0;
+      for (const t of CountedEntries.list(state)) {
+        if (t.type !== "expense" || !t.date || t.date < from || t.date > to) continue;
+        for (const slice of this.#categoryAmounts(t)) {
+          if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
+        }
+      }
+      return spend;
+    }
+    /**
+     * This period's spend per person who entered it ("addedBy" email; entries
+     * without one are the book owner's, key null), biggest first.
+     * @param {object} budget
+     * @returns {{key:string|null, spend:number}[]}
+     */
+    spendByPerson(budget) {
+      const ids = this.#expandedIds(budget);
+      const by = /* @__PURE__ */ new Map();
+      for (const t of this.periodTransactions(budget)) {
+        const key = (t.addedBy || "").trim().toLowerCase() || null;
+        for (const slice of this.#categoryAmounts(t)) {
+          if (!ids.has(slice.categoryId)) continue;
+          by.set(key, (by.get(key) || 0) + this.#fx.convert(slice.amount, slice.currency, budget.currency));
+        }
+      }
+      return [...by].map(([key, spend]) => ({ key, spend })).sort((a, b) => b.spend - a.spend);
+    }
+    /**
+     * The category slices of an entry: its split legs, or the whole of it.
+     * @param {object} tx
+     * @returns {{categoryId:string|null, amount:number, currency:string}[]}
+     */
+    slices(tx) {
+      return this.#categoryAmounts(tx);
+    }
+    /**
      * All expense transactions counting toward the budget this period, newest
      * first — used by the budget detail view.
      * @param {object} budget
@@ -4154,8 +4200,27 @@ var _PocketApp = (() => {
           }
         }
       }
-      const leftover = Math.max(0, budget.amount - prevSpent);
-      return { limit: budget.amount + leftover, rollover: leftover };
+      return _BudgetService.carry(budget, prevSpent);
+    }
+    /**
+     * What carries over from last period's spend:
+     *   unspent money, up to `rolloverCap` when one is set; and, with
+     *   `rolloverOverspend`, overspending too (taken off this period, never
+     *   below zero).
+     * @param {object} budget
+     * @param {number} prevSpent  minor units, budget currency
+     * @returns {{limit:number, rollover:number}}
+     */
+    static carry(budget, prevSpent) {
+      const left = budget.amount - prevSpent;
+      let rollover = 0;
+      if (left > 0) {
+        const cap = Number(budget.rolloverCap);
+        rollover = cap > 0 ? Math.min(left, cap) : left;
+      } else if (left < 0 && budget.rolloverOverspend) {
+        rollover = Math.max(left, -budget.amount);
+      }
+      return { limit: budget.amount + rollover, rollover };
     }
     // ── Private helpers ──────────────────────────────────────────────────
     #categoryAmounts(tx) {
@@ -4196,7 +4261,14 @@ var _PocketApp = (() => {
      */
     static periodFields(data) {
       const period = BudgetPeriod.normalize(data.period, data);
-      const out = { period, rollover: period !== "range" && !!data.rollover };
+      const rollover = period !== "range" && !!data.rollover;
+      const cap = Number(data.rolloverCap);
+      const out = {
+        period,
+        rollover,
+        rolloverOverspend: rollover && !!data.rolloverOverspend,
+        rolloverCap: rollover && cap > 0 ? Math.round(cap) : null
+      };
       if (period === "range") {
         out.startDate = data.startDate;
         out.endDate = data.endDate;
@@ -4894,6 +4966,77 @@ var _PocketApp = (() => {
     static #next(iso) {
       const [y, m, d] = iso.split("-").map(Number);
       return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+    }
+  };
+
+  // src/domain/services/BudgetAdvisor.js
+  var BudgetAdvisor = class _BudgetAdvisor {
+    /** @type {{spendBetween:Function, period:Function}} */
+    #budgets;
+    /** @param {{spendBetween:Function, period:Function}} budgets  BudgetService */
+    constructor(budgets) {
+      this.#budgets = budgets;
+    }
+    /**
+     * @param {object} budget
+     * @param {number} [n]
+     * @param {string} [today]
+     */
+    history(budget, n = 6, today) {
+      const now = this.#budgets.period(budget, today);
+      if (!now.repeats) return [];
+      const out = [];
+      let win = now.previous();
+      for (let i = 0; i < n && win; i++) {
+        const p = new BudgetPeriod(budget, { today: win.from });
+        out.push({
+          from: win.from,
+          to: win.to,
+          label: _BudgetAdvisor.#label(now.kind, p, win),
+          spent: this.#budgets.spendBetween(budget, win.from, win.to),
+          limit: budget.amount
+        });
+        win = p.previous();
+      }
+      return out;
+    }
+    /**
+     * @param {{categoryIds:string[], currency:string, period:string, startDate?:string, endDate?:string}} draft
+     * @param {number} [n]
+     * @param {string} [today]
+     * @returns {{amount:number, basis:string}|null}  amount in minor units of draft.currency
+     */
+    suggest(draft, n = 3, today) {
+      const budget = { ...draft, categoryIds: draft.categoryIds || [], amount: 0 };
+      if (!budget.categoryIds.length) return null;
+      const now = this.#budgets.period(budget, today);
+      if (!now.repeats) {
+        const end = BudgetPeriod.addDays(now.today, -1);
+        const daily = this.#budgets.spendBetween(budget, BudgetPeriod.addDays(end, -89), end) / 90;
+        if (daily <= 0) return null;
+        return { amount: _BudgetAdvisor.tidy(daily * now.days), basis: `about ${now.days} days at your usual daily spend` };
+      }
+      const past = this.history(budget, 12, today).filter((h) => h.spent > 0).slice(0, n);
+      if (!past.length) return null;
+      const avg = past.reduce((s, h) => s + h.spent, 0) / past.length;
+      const unit = now.unit;
+      return { amount: _BudgetAdvisor.tidy(avg), basis: `your average over the last ${past.length} ${unit}${past.length === 1 ? "" : "s"}` };
+    }
+    /**
+     * Round up to two significant figures in major units (₹4,630 → ₹4,700;
+     * ₹123 → ₹130), so the suggestion reads like a budget, not a statistic.
+     * @param {number} minor
+     */
+    static tidy(minor) {
+      const major = minor / 100;
+      if (major <= 0) return 0;
+      const step = 10 ** Math.max(0, Math.floor(Math.log10(major)) - 1);
+      return Math.ceil(major / step) * step * 100;
+    }
+    static #label(kind, p, win) {
+      if (kind === "gregorian") return `${p.label} ${win.from.slice(0, 4)}`;
+      if (kind === "hijri") return p.label;
+      return p.label;
     }
   };
 
@@ -11744,7 +11887,9 @@ This replaces your current grouping.`
           "Pick a period: a month, a Hijri month, a week (Monday to Sunday), a year, or <b>set dates</b> for a trip or a few special days.",
           "The thin mark on the bar shows where you\u2019d be if you spent evenly. The line under it says if you\u2019re on track and about how much you can spend each day.",
           "Bills and deliveries still to come in the period show as a lighter part of the bar, so you can see what\u2019s really free.",
-          "<b>Roll over</b>: what you don\u2019t spend is added to the next month, week or year. Not for set dates.",
+          "<b>Roll over</b>: what you don\u2019t spend is added to the next month, week or year. You can also carry overspending (it\u2019s taken off next time) and set the most that carries over. Not for set dates.",
+          "The top card adds up your monthly budgets and shows what you spent this month with no budget. Budgets that need attention come first.",
+          "Tap <b>Suggest</b> in the form to fill the limit from what you usually spend. A budget\u2019s page shows the periods before and, when family add spending, who spent what.",
           "Spending in other currencies is converted to the budget\u2019s currency.",
           "You can share a budget with family members you\u2019ve added."
         ]
@@ -14050,7 +14195,7 @@ This replaces your current grouping.`
       return `
       <div class="flex items-baseline justify-between">
         <div class="${large ? "text-2xl" : "text-lg"} font-semibold">${m(spent)}</div>
-        <div class="text-sm text-zinc-500">/ ${m(limit)}${rollover ? ` <span class="text-emerald-600">(+${m(rollover)})</span>` : ""}</div>
+        <div class="text-sm text-zinc-500">/ ${m(limit)}${rollover > 0 ? ` <span class="text-emerald-600" title="Carried over from last time">(+${m(rollover)})</span>` : rollover < 0 ? ` <span class="text-rose-500" title="Overspending carried over from last time">(\u2212${m(-rollover)})</span>` : ""}</div>
       </div>
       <div class="progress budget-bar mt-2" style="position:relative;display:flex">
         <div style="width:${spentW}%; background:${color}; border-radius:0"></div>
@@ -14116,20 +14261,89 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/BudgetSummary.js
+  var BudgetSummary = class {
+    /** @type {object} */
+    #budgets;
+    /** @type {{convert:Function}} */
+    #fx;
+    /** @type {{find:Function, descendants:Function}} */
+    #cats;
+    /**
+     * @param {{budgets:object, fx:{convert:Function}, categories:{find:Function}}} deps
+     *   budgets: BudgetService (countedCategoryIds, slices, currentSpend, effectiveLimit, period)
+     */
+    constructor({ budgets, fx, categories }) {
+      this.#budgets = budgets;
+      this.#fx = fx;
+      this.#cats = categories;
+    }
+    /**
+     * @param {object} state
+     * @param {{today:string, home:string, spentOf?:(b:object)=>number}} opts
+     * @returns {{monthly:{count:number, limit:number, spent:number}, unbudgeted:{total:number, top:{name:string, amount:number}[]}}}
+     */
+    month(state, { today, home, spentOf = (b) => this.#budgets.currentSpend(b) }) {
+      const monthly = { count: 0, limit: 0, spent: 0 };
+      for (const b of state.budgets || []) {
+        if (b.period !== "gregorian" && b.period !== "hijri") continue;
+        monthly.count++;
+        monthly.limit += this.#fx.convert(this.#budgets.effectiveLimit(b).limit, b.currency, home);
+        monthly.spent += this.#fx.convert(spentOf(b), b.currency, home);
+      }
+      const covered = /* @__PURE__ */ new Set();
+      for (const b of state.budgets || []) for (const id of this.#budgets.countedCategoryIds(b)) covered.add(id);
+      const ym = today.slice(0, 7);
+      const by = /* @__PURE__ */ new Map();
+      for (const t of CountedEntries.list(state)) {
+        if (t.type !== "expense" || !t.date || t.date.slice(0, 7) !== ym) continue;
+        for (const s of this.#budgets.slices(t)) {
+          if (s.categoryId && covered.has(s.categoryId)) continue;
+          const top = this.#topOf(s.categoryId);
+          by.set(top, (by.get(top) || 0) + this.#fx.convert(s.amount, s.currency, home));
+        }
+      }
+      const list = [...by].map(([id, amount]) => ({ name: id ? this.#cats.find(id)?.name || "Other" : "No category", amount })).filter((x) => x.amount > 0).sort((a, b) => b.amount - a.amount);
+      return { monthly, unbudgeted: { total: list.reduce((s, x) => s + x.amount, 0), top: list.slice(0, 3) } };
+    }
+    /**
+     * @param {{spent:number, limit:number, due:number, period:{status:string}, paceState:string}} c
+     * @returns {number}
+     */
+    static rank({ spent, limit, due, period, paceState }) {
+      if (period.status === "ended") return 5;
+      if (period.status === "upcoming") return 4;
+      if (limit > 0 && spent >= limit) return 0;
+      if (limit > 0 && spent + due > limit) return 1;
+      if (paceState === "ahead") return 2;
+      return 3;
+    }
+    /** The main category an id sits under (itself when it is one). */
+    #topOf(id) {
+      let c = id ? this.#cats.find(id) : null;
+      for (let i = 0; c?.parentId && i < 5; i++) c = this.#cats.find(c.parentId) || null;
+      return c?.id || id || null;
+    }
+  };
+
   // src/ui/views/BudgetsView.js
   var BudgetsView = class extends BaseView {
     /** @type {BudgetService} */
     #budgets;
     /** @type {BudgetMeter} */
     #meter;
+    /** @type {BudgetSummary} */
+    #summary;
     constructor() {
       super();
       this.#budgets = new BudgetService();
+      this.#summary = new BudgetSummary({ budgets: this.#budgets, fx: new CurrencyService(), categories: new CategoryService() });
       this.#meter = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
     }
     render() {
       const state = this.state;
       const todayIso = DateService.todayIso();
+      const models = state.budgets.map((b, i) => ({ ...this.#model(b, todayIso), i })).sort((a, b) => a.rank - b.rank || b.used - a.used || a.i - b.i);
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
@@ -14142,25 +14356,60 @@ This replaces your current grouping.`
         </button>`}
       </div>
 
+      ${state.budgets.length && !this.inGuestSpace ? this.#summaryCard(state, todayIso, models) : ""}
+
       ${state.budgets.length === 0 ? `<div class="card p-10 text-center">${this.inGuestSpace ? this.emptyState("No budgets shared with you", "They haven\u2019t shared any budgets from this space.") : this.emptyState("No budgets yet", "Set a monthly limit per category to stay on track.")}</div>` : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            ${state.budgets.map((b) => this.#budgetCard(b, todayIso)).join("")}
+            ${models.map((m) => this.#budgetCard(m)).join("")}
           </div>`}
     `;
     }
     // ── Private ───────────────────────────────────────────────────────────
-    #budgetCard(b, todayIso) {
-      const targetIds = this.#budgets.targetCategoryIds(b);
-      const cats = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
-      const firstCat = cats[0];
+    /** Everything a card needs, worked out once (also used for sorting). */
+    #model(b, todayIso) {
       const period = this.#budgets.period(b, todayIso);
       const spent = this.spendFor(b, () => this.#budgets.currentSpend(b));
       const eff = this.#budgets.effectiveLimit(b);
       const due = this.dueFor(b, todayIso);
+      const pace = new BudgetPace({ limit: eff.limit, spent, due: due.total, period });
+      const rank = BudgetSummary.rank({ spent, limit: eff.limit, due: due.total, period, paceState: pace.state });
+      return { b, period, spent, eff, due, rank, used: eff.limit > 0 ? spent / eff.limit : 0 };
+    }
+    /** Monthly budgets added up, and this month's spending no budget covers. */
+    #summaryCard(state, todayIso, models) {
+      const home = state.user.homeCurrency;
+      const spentOf = new Map(models.map((m2) => [m2.b, m2.spent]));
+      const sum = this.#summary.month(state, { today: todayIso, home, spentOf: (b) => spentOf.get(b) ?? 0 });
+      const m = (v) => this.formatMoney(v, home);
+      const { monthly, unbudgeted } = sum;
+      const pct = monthly.limit > 0 ? Math.min(100, Math.round(100 * monthly.spent / monthly.limit)) : 0;
+      const top = unbudgeted.top.map((x) => `${this.escapeHtml(x.name)} ${m(x.amount)}`).join(" \xB7 ");
+      return `
+      <div class="card p-4 mb-4 budget-summary">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <div class="text-xs text-zinc-500">Monthly budgets${monthly.count ? ` (${monthly.count})` : ""}</div>
+            ${monthly.count ? `
+              <div class="text-lg font-semibold mt-0.5">${m(monthly.spent)} <span class="text-sm font-normal text-zinc-500">of ${m(monthly.limit)}</span></div>
+              <div class="progress mt-1.5"><div style="width:${pct}%; background:${pct >= 100 ? BudgetMeter.RED : pct >= 80 ? BudgetMeter.AMBER : BudgetMeter.GREEN}"></div></div>` : '<div class="text-sm text-zinc-500 mt-1">None yet</div>'}
+          </div>
+          <div class="budget-unbudgeted">
+            <div class="text-xs text-zinc-500">Spent with no budget this month</div>
+            <div class="text-lg font-semibold mt-0.5">${m(unbudgeted.total)}</div>
+            ${top ? `<div class="text-xs text-zinc-500 mt-1 truncate" title="${top}">${top}</div>` : ""}
+          </div>
+        </div>
+      </div>`;
+    }
+    #budgetCard({ b, period, spent, eff, due }) {
+      const targetIds = this.#budgets.targetCategoryIds(b);
+      const cats = targetIds.map((id) => this.state.categories.find((c) => c.id === id)).filter(Boolean);
+      const firstCat = cats[0];
       const multi = targetIds.length > 1;
       const hasSubs = !multi && this.state.categories.some((c) => c.parentId === firstCat?.id);
       const title = cats.length ? cats.map((c) => this.escapeHtml(c.name)).join(", ") : "Category";
       const split = multi ? this.#budgets.spendByCategory(b) : [];
       const periodLabel = `<span class="inline-flex items-center gap-1"><i data-lucide="${period.icon}" style="width:11px;height:11px"></i> ${this.escapeHtml(period.label)}</span>`;
+      const rollWord = !b.rollover ? "" : b.rolloverOverspend ? " \xB7 rollover on (incl. overspending)" : " \xB7 rollover on";
       return `
       <div class="card p-5 cursor-pointer hover:shadow-md transition-shadow" onclick="window.__app.openBudgetDetail('${b.id}')">
         <div class="flex items-start gap-3">
@@ -14181,7 +14430,7 @@ This replaces your current grouping.`
                 <i data-lucide="pencil"></i>
               </button>`}
             </div>
-            <div class="text-xs text-zinc-500">${periodLabel}${b.rollover ? " \xB7 rollover on" : ""}</div>
+            <div class="text-xs text-zinc-500">${periodLabel}${rollWord}</div>
           </div>
         </div>
         <div class="mt-4">
@@ -14208,6 +14457,8 @@ This replaces your current grouping.`
     #budgets;
     /** @type {BudgetMeter} */
     #meter;
+    /** @type {BudgetAdvisor} */
+    #advisor;
     /** @type {TransactionRowRenderer} */
     #rowRenderer;
     /** @type {string|null} */
@@ -14215,6 +14466,7 @@ This replaces your current grouping.`
     constructor() {
       super();
       this.#budgets = new BudgetService();
+      this.#advisor = new BudgetAdvisor(this.#budgets);
       this.#meter = new BudgetMeter({ money: (v, c) => this.formatMoney(v, c), escape: (x) => this.escapeHtml(x) });
       this.#rowRenderer = new TransactionRowRenderer();
     }
@@ -14266,7 +14518,7 @@ This replaces your current grouping.`
             <div class="text-xl font-semibold">${this.escapeHtml(title)}</div>
             <div class="text-xs text-zinc-500">
               <i data-lucide="${period.icon}" style="width:11px;height:11px;display:inline"></i>
-              ${this.escapeHtml(periodLabel)}${b.rollover ? " \xB7 rollover on" : ""}
+              ${this.escapeHtml(periodLabel)}${!b.rollover ? "" : b.rolloverOverspend ? " \xB7 rollover on (incl. overspending)" : " \xB7 rollover on"}
             </div>
           </div>
         </div>
@@ -14287,7 +14539,10 @@ This replaces your current grouping.`
                 <span class="text-zinc-500 flex-shrink-0">${this.formatMoney(s.spend, b.currency)}</span>
               </div>`).join("")}
           </div>` : ""}
+        ${this.#byPerson(b)}
       </div>
+
+      ${this.inGuestSpace ? "" : this.#history(b, today)}
 
       <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2 px-1">
         ${txs.length} transaction${txs.length === 1 ? "" : "s"} this period
@@ -14305,6 +14560,60 @@ This replaces your current grouping.`
               </div>
             </div>`).join("")}
     `;
+    }
+    // ── Private ───────────────────────────────────────────────────────────
+    /** Who spent it, when more than one person entered spending this period. */
+    #byPerson(b) {
+      if (this.inGuestSpace) return "";
+      const rows = this.#budgets.spendByPerson(b);
+      if (rows.length < 2) return "";
+      const me = (this.state._currentUserEmail || "").toLowerCase();
+      const family = this.state.family || [];
+      const name = (key) => {
+        if (!key || key === me) return "You";
+        const f = family.find((x) => (x.email || "").toLowerCase() === key);
+        return f?.name || key;
+      };
+      const merged = /* @__PURE__ */ new Map();
+      for (const r of rows) merged.set(name(r.key), (merged.get(name(r.key)) || 0) + r.spend);
+      if (merged.size < 2) return "";
+      return `
+      <div class="budget-by-person mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 space-y-1.5">
+        <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">By person</div>
+        ${[...merged].sort((x, y) => y[1] - x[1]).map(([who, spend]) => `
+          <div class="flex items-center justify-between text-sm">
+            <span class="truncate">${this.escapeHtml(who)}</span>
+            <span class="text-zinc-500 flex-shrink-0">${this.formatMoney(spend, b.currency)}</span>
+          </div>`).join("")}
+      </div>`;
+    }
+    /** The last six periods: spent against the limit, with a small bar each. */
+    #history(b, today) {
+      const rows = this.#advisor.history(b, 6, today);
+      if (!rows.length || rows.every((r) => r.spent === 0)) return "";
+      const avg = rows.reduce((s, r) => s + r.spent, 0) / rows.length;
+      const over = rows.filter((r) => r.limit > 0 && r.spent > r.limit).length;
+      return `
+      <div class="card p-4 mb-4 budget-history">
+        <div class="flex items-baseline justify-between mb-2">
+          <div class="text-xs uppercase tracking-wider text-zinc-500">Before this</div>
+          <div class="text-xs text-zinc-500">Average ${this.formatMoney(Math.round(avg), b.currency)}${over ? ` \xB7 over ${over} of ${rows.length}` : ""}</div>
+        </div>
+        <div class="space-y-2">
+          ${rows.map((r) => {
+        const pct = r.limit > 0 ? Math.min(100, Math.round(100 * r.spent / r.limit)) : 0;
+        const color = r.limit > 0 && r.spent > r.limit ? BudgetMeter.RED : pct >= 80 ? BudgetMeter.AMBER : BudgetMeter.GREEN;
+        return `
+            <div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-zinc-600 dark:text-zinc-300">${this.escapeHtml(r.label)}</span>
+                <span class="${r.spent > r.limit ? "text-rose-500" : "text-zinc-500"}">${this.formatMoney(r.spent, b.currency)} / ${this.formatMoney(r.limit, b.currency)}</span>
+              </div>
+              <div class="progress mt-1" style="height:4px"><div style="width:${pct}%; background:${color}"></div></div>
+            </div>`;
+      }).join("")}
+        </div>
+      </div>`;
     }
   };
 
@@ -18671,9 +18980,13 @@ This replaces your current grouping.`
           </div>
         </div>
 
+        <div id="budgetSuggest" class="text-xs text-zinc-500 -mt-1 mb-2 hidden"></div>
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Limit</label>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-zinc-500">Limit</label>
+              <button type="button" class="text-xs text-emerald-600 underline underline-offset-2" onclick="window.__app.suggestBudgetLimit(this.form)">Suggest</button>
+            </div>
             <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(b.currency)}" required value="${amount}">
           </div>
           <div>
@@ -18686,10 +18999,22 @@ This replaces your current grouping.`
 
         <div class="mb-4 ${kind === "range" ? "hidden" : ""}" id="budgetRollover">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" name="rollover" ${b.rollover ? "checked" : ""}>
+            <input type="checkbox" name="rollover" ${b.rollover ? "checked" : ""}
+                   onchange="document.getElementById('budgetRolloverMore').classList.toggle('hidden', !this.checked)">
             <span>Roll over what's left to the next period</span>
           </label>
           <div class="text-xs text-zinc-500 mt-1">What you don't spend is added to the next month, week or year.</div>
+          <div id="budgetRolloverMore" class="mt-2 pl-6 space-y-2 ${b.rollover ? "" : "hidden"}">
+            <label class="flex items-start gap-2 text-sm cursor-pointer">
+              <input type="checkbox" name="rolloverOverspend" class="mt-0.5" ${b.rolloverOverspend ? "checked" : ""}>
+              <span>Carry overspending too<span class="block text-xs text-zinc-500">If you go over, the extra is taken off the next period.</span></span>
+            </label>
+            <div>
+              <label class="text-xs text-zinc-500">Carry over at most (optional)</label>
+              <input class="input" name="rolloverCap" type="number" min="0" step="${CurrencyService.stepFor(b.currency)}"
+                     placeholder="No limit" value="${b.rolloverCap ? this.#fx.fromMinor(b.rolloverCap, b.currency) : ""}">
+            </div>
+          </div>
         </div>
 
         <div class="flex items-center gap-2">
@@ -25820,7 +26145,14 @@ Leave empty to use your own name.`,
         categoryId: categoryIds[0],
         amount: minor,
         currency: data.currency,
-        ...BudgetService.periodFields({ period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover })
+        ...BudgetService.periodFields({
+          period,
+          startDate: data.startDate,
+          endDate: data.endDate,
+          rollover: !!data.rollover,
+          rolloverOverspend: !!data.rolloverOverspend,
+          rolloverCap: data.rolloverCap ? this.#fx.toMinor(data.rolloverCap, data.currency) : null
+        })
       };
       if (id) this.#budgets.update(id, payload);
       else this.#budgets.create(payload);
@@ -25828,6 +26160,29 @@ Leave empty to use your own name.`,
       this.#render();
       this.#toast.show(id ? "Budget updated" : "Budget added");
       this.#sync.schedulePush?.();
+    }
+    /**
+     * Fill the budget form's limit from what was usually spent (BudgetAdvisor),
+     * for the categories and period picked so far.
+     * @param {HTMLFormElement} form
+     */
+    suggestBudgetLimit(form) {
+      const fd = new FormData(form);
+      const categoryIds = fd.getAll("categoryIds").filter(Boolean);
+      const note = form.querySelector("#budgetSuggest");
+      const say = (text) => {
+        if (note) {
+          note.textContent = text;
+          note.classList.remove("hidden");
+        }
+      };
+      if (!categoryIds.length) return say("Pick categories first.");
+      const currency = fd.get("currency") || this.#store.getState().user.homeCurrency;
+      const draft = { categoryIds, currency, period: fd.get("period"), startDate: fd.get("startDate"), endDate: fd.get("endDate") };
+      const tip = new BudgetAdvisor(this.#budgets).suggest(draft);
+      if (!tip) return say("No spending in these categories yet to go on.");
+      form.querySelector('[name="amount"]').value = this.#fx.fromMinor(tip.amount, currency);
+      say(`Suggested from ${tip.basis}. Change it if you like.`);
     }
     deleteBudget(id) {
       if (!confirm("Delete this budget?")) return;

@@ -160,6 +160,53 @@ export class BudgetService {
   }
 
   /**
+   * Spend between two dates (inclusive) for the budget's categories, in its
+   * currency — for history and suggestions. Plain dates, so a Hijri budget's
+   * past months are measured by their Gregorian days.
+   * @param {object} budget
+   * @param {string} from YYYY-MM-DD
+   * @param {string} to   YYYY-MM-DD
+   * @param {object} [state]
+   */
+  spendBetween(budget, from, to, state = this.#store.getState()) {
+    const ids = this.#expandedIds(budget);
+    let spend = 0;
+    for (const t of CountedEntries.list(state)) {
+      if (t.type !== 'expense' || !t.date || t.date < from || t.date > to) continue;
+      for (const slice of this.#categoryAmounts(t)) {
+        if (ids.has(slice.categoryId)) spend += this.#fx.convert(slice.amount, slice.currency, budget.currency);
+      }
+    }
+    return spend;
+  }
+
+  /**
+   * This period's spend per person who entered it ("addedBy" email; entries
+   * without one are the book owner's, key null), biggest first.
+   * @param {object} budget
+   * @returns {{key:string|null, spend:number}[]}
+   */
+  spendByPerson(budget) {
+    const ids = this.#expandedIds(budget);
+    const by = new Map();
+    for (const t of this.periodTransactions(budget)) {
+      const key = (t.addedBy || '').trim().toLowerCase() || null;
+      for (const slice of this.#categoryAmounts(t)) {
+        if (!ids.has(slice.categoryId)) continue;
+        by.set(key, (by.get(key) || 0) + this.#fx.convert(slice.amount, slice.currency, budget.currency));
+      }
+    }
+    return [...by].map(([key, spend]) => ({ key, spend })).sort((a, b) => b.spend - a.spend);
+  }
+
+  /**
+   * The category slices of an entry: its split legs, or the whole of it.
+   * @param {object} tx
+   * @returns {{categoryId:string|null, amount:number, currency:string}[]}
+   */
+  slices(tx) { return this.#categoryAmounts(tx); }
+
+  /**
    * All expense transactions counting toward the budget this period, newest
    * first — used by the budget detail view.
    * @param {object} budget
@@ -216,8 +263,28 @@ export class BudgetService {
       }
     }
 
-    const leftover = Math.max(0, budget.amount - prevSpent);
-    return { limit: budget.amount + leftover, rollover: leftover };
+    return BudgetService.carry(budget, prevSpent);
+  }
+
+  /**
+   * What carries over from last period's spend:
+   *   unspent money, up to `rolloverCap` when one is set; and, with
+   *   `rolloverOverspend`, overspending too (taken off this period, never
+   *   below zero).
+   * @param {object} budget
+   * @param {number} prevSpent  minor units, budget currency
+   * @returns {{limit:number, rollover:number}}
+   */
+  static carry(budget, prevSpent) {
+    const left = budget.amount - prevSpent;
+    let rollover = 0;
+    if (left > 0) {
+      const cap = Number(budget.rolloverCap);
+      rollover = cap > 0 ? Math.min(left, cap) : left;
+    } else if (left < 0 && budget.rolloverOverspend) {
+      rollover = Math.max(left, -budget.amount);
+    }
+    return { limit: budget.amount + rollover, rollover };
   }
 
   // ── Private helpers ──────────────────────────────────────────────────
@@ -264,7 +331,13 @@ export class BudgetService {
    */
   static periodFields(data) {
     const period = BudgetPeriod.normalize(data.period, data);
-    const out = { period, rollover: period !== 'range' && !!data.rollover };
+    const rollover = period !== 'range' && !!data.rollover;
+    const cap = Number(data.rolloverCap);
+    const out = {
+      period, rollover,
+      rolloverOverspend: rollover && !!data.rolloverOverspend,
+      rolloverCap: rollover && cap > 0 ? Math.round(cap) : null,
+    };
     if (period === 'range') { out.startDate = data.startDate; out.endDate = data.endDate; }
     return out;
   }

@@ -49,7 +49,8 @@ export class BudgetMeter {
     return `
       <div class="flex items-baseline justify-between">
         <div class="${large ? 'text-2xl' : 'text-lg'} font-semibold">${m(spent)}</div>
-        <div class="text-sm text-zinc-500">/ ${m(limit)}${rollover ? ` <span class="text-emerald-600">(+${m(rollover)})</span>` : ''}</div>
+        <div class="text-sm text-zinc-500">/ ${m(limit)}${rollover > 0 ? ` <span class="text-emerald-600" title="Carried over from last time">(+${m(rollover)})</span>`
+          : rollover < 0 ? ` <span class="text-rose-500" title="Overspending carried over from last time">(−${m(-rollover)})</span>` : ''}</div>
       </div>
       <div class="progress budget-bar mt-2" style="position:relative;display:flex">
         <div style="width:${spentW}%; background:${color}; border-radius:0"></div>

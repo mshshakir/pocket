@@ -95,9 +95,13 @@ export class BudgetModal {
           </div>
         </div>
 
+        <div id="budgetSuggest" class="text-xs text-zinc-500 -mt-1 mb-2 hidden"></div>
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <label class="text-xs text-zinc-500">Limit</label>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-zinc-500">Limit</label>
+              <button type="button" class="text-xs text-emerald-600 underline underline-offset-2" onclick="window.__app.suggestBudgetLimit(this.form)">Suggest</button>
+            </div>
             <input class="input" name="amount" type="number" step="${CurrencyService.stepFor(b.currency)}" required value="${amount}">
           </div>
           <div>
@@ -110,10 +114,22 @@ export class BudgetModal {
 
         <div class="mb-4 ${kind === 'range' ? 'hidden' : ''}" id="budgetRollover">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" name="rollover" ${b.rollover?'checked':''}>
+            <input type="checkbox" name="rollover" ${b.rollover?'checked':''}
+                   onchange="document.getElementById('budgetRolloverMore').classList.toggle('hidden', !this.checked)">
             <span>Roll over what's left to the next period</span>
           </label>
           <div class="text-xs text-zinc-500 mt-1">What you don't spend is added to the next month, week or year.</div>
+          <div id="budgetRolloverMore" class="mt-2 pl-6 space-y-2 ${b.rollover ? '' : 'hidden'}">
+            <label class="flex items-start gap-2 text-sm cursor-pointer">
+              <input type="checkbox" name="rolloverOverspend" class="mt-0.5" ${b.rolloverOverspend ? 'checked' : ''}>
+              <span>Carry overspending too<span class="block text-xs text-zinc-500">If you go over, the extra is taken off the next period.</span></span>
+            </label>
+            <div>
+              <label class="text-xs text-zinc-500">Carry over at most (optional)</label>
+              <input class="input" name="rolloverCap" type="number" min="0" step="${CurrencyService.stepFor(b.currency)}"
+                     placeholder="No limit" value="${b.rolloverCap ? this.#fx.fromMinor(b.rolloverCap, b.currency) : ''}">
+            </div>
+          </div>
         </div>
 
         <div class="flex items-center gap-2">

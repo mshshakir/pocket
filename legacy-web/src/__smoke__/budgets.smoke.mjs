@@ -15,12 +15,23 @@
  *   A2  a week budget counts only this week; a set-dates budget only its dates
  *   A3  the form offers five periods; set dates need valid dates; editing back to a month drops them
  *   A4  rollover over a week uses last week
+ *   R1  carry over: unspent up to a cap; overspending only when asked, never below zero
+ *   V1  history: the six periods before, newest first; a suggestion from the average, rounded up tidily
+ *   V2  set dates: no history; the suggestion scales the usual daily spend
+ *   S1  ranking: over, going over, faster than planned, the rest, not started, ended
+ *   B1  in the app: the top card adds up monthly budgets and shows spending with no budget
+ *   B2  the card that is over its limit comes first
+ *   B3  the budget page shows the periods before and who spent it
+ *   B4  Suggest fills the limit from past spending
+ *   B5  rollover options are saved; overspending carried shows as a minus
  *
  * Run: node src/__smoke__/budgets.smoke.mjs
  */
 import { BudgetPeriod } from '../domain/services/BudgetPeriod.js';
 import { BudgetPace } from '../domain/services/BudgetPace.js';
 import { BudgetOutlook } from '../domain/services/BudgetOutlook.js';
+import { BudgetAdvisor } from '../domain/services/BudgetAdvisor.js';
+import { BudgetSummary } from '../domain/services/BudgetSummary.js';
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
 
@@ -133,6 +144,42 @@ const P = (budget, today) => new BudgetPeriod(budget, { today });
   ok('O3 nothing still to come once the dates are over', ended.total === 0 && ended.items.length === 0);
   const none = new BudgetOutlook({ budgets: fakeBudgets, fx }).stillDue({ period: 'week', currency: 'INR' }, TODAY);
   ok('O1 works without bills or deliveries', none.total === 0);
+}
+
+// ── R, V, S: rollover, history, ranking ─────────────────────────────────
+{
+  // BudgetService.carry is static; reach it through the bundle-free module.
+  const { BudgetService } = await import('../domain/services/BudgetService.js').catch(() => ({}));
+  if (BudgetService?.carry) {
+    const c = (b, prev) => BudgetService.carry({ amount: 10000, ...b }, prev);
+    ok('R1 unspent 4,000 carries in full', c({}, 6000).rollover === 4000 && c({}, 6000).limit === 14000);
+    ok('R1 a cap of 1,500 limits it', c({ rolloverCap: 1500 }, 6000).rollover === 1500);
+    ok('R1 overspending carries only when asked', c({}, 13000).rollover === 0 && c({ rolloverOverspend: true }, 13000).rollover === -3000 && c({ rolloverOverspend: true }, 13000).limit === 7000);
+    ok('R1 never below zero', c({ rolloverOverspend: true }, 50000).limit === 0);
+  } else {
+    ok('R1 BudgetService loads outside the app', false);
+  }
+}
+{
+  const spendBy = { '2026-10': 400000, '2026-09': 300000, '2026-08': 0, '2026-07': 500000 };
+  const fake = {
+    period: (b, today) => new BudgetPeriod(b, { today }),
+    spendBetween: (b, from, to) => (b.period === 'range' ? (to.slice(0, 7) === '2026-11' || true ? 900000 : 0) : (spendBy[from.slice(0, 7)] || 0)),
+  };
+  const a = new BudgetAdvisor(fake);
+  const h = a.history({ period: 'gregorian', categoryIds: ['c'], amount: 350000 }, 6, '2026-11-15');
+  ok('V1 six months before, newest first, labelled', h.length === 6 && h[0].label === 'October 2026' && h[0].spent === 400000 && h[5].label === 'May 2026' && h[0].limit === 350000, h.map((x) => x.label).join());
+  const sg = a.suggest({ period: 'gregorian', categoryIds: ['c'], currency: 'INR' }, 3, '2026-11-15');
+  ok('V1 average of the last 3 with spending (Oct, Sep, Jul = 4,000) → ₹4,000; months with nothing are left out', sg && sg.amount === 400000 && /3 months/.test(sg.basis), JSON.stringify(sg));
+  ok('V1 tidy rounding up', BudgetAdvisor.tidy(463000) === 470000 && BudgetAdvisor.tidy(12300) === 13000 && BudgetAdvisor.tidy(5) === 100);
+  ok('V1 nothing picked, nothing suggested', a.suggest({ period: 'gregorian', categoryIds: [] }) === null);
+  const r = a.suggest({ period: 'range', startDate: '2026-12-01', endDate: '2026-12-10', categoryIds: ['c'], currency: 'INR' }, 3, '2026-11-15');
+  ok('V2 set dates: 9,000 over 90 days = 100 a day × 10 days → ₹1,000', r && r.amount === 100000 && a.history({ period: 'range', startDate: '2026-12-01', endDate: '2026-12-10' }, 6, '2026-11-15').length === 0, JSON.stringify(r));
+
+  const act = { status: 'active' };
+  const rk = (x) => BudgetSummary.rank({ spent: 0, limit: 1000, due: 0, period: act, paceState: 'on-track', ...x });
+  ok('S1 order', rk({ spent: 1000 }) === 0 && rk({ spent: 500, due: 600 }) === 1 && rk({ paceState: 'ahead' }) === 2 && rk({}) === 3
+    && rk({ period: { status: 'upcoming' } }) === 4 && rk({ period: { status: 'ended' }, spent: 5000 }) === 5);
 }
 
 // ── in the app ──────────────────────────────────────────────────────────
@@ -251,6 +298,69 @@ const month = new BudgetPeriod({ period: 'gregorian' }, { today });
   app.submitBudget({ preventDefault() {}, target: f2 }, b.id);
   const b2 = app.store.getState().budgets[0];
   ok('A3 F1 back to a year drops the dates', b2.period === 'year' && !('startDate' in b2) && !('endDate' in b2), JSON.stringify(b2));
+}
+
+{
+  const lastMonth = new BudgetPeriod({ period: 'gregorian' }, { today: addDays(month.from, -1) });
+  const w = boot({
+    family: [{ id: 'fm1', email: 'wife@example.com', name: 'Sakina', initials: 'S', color: '#f00', permissions: [] }],
+    transactions: [
+      tx('f1', today, 50000, 'c1'),                                         // Food: over its 400
+      tx('f2', today, 2500, 'c1', { addedBy: 'wife@example.com' }),
+      tx('h1', today, 30000, 'c2'),                                         // Home: no budget
+      tx('lm', lastMonth.from, 120000, 'c1'),                               // last month's food
+    ],
+    budgets: [
+      { id: 'bA', categoryIds: ['c2'], categoryId: 'c2', amount: 0, currency: 'INR', period: 'year', rollover: false },
+      { id: 'bF', categoryIds: ['c1'], categoryId: 'c1', amount: 40000, currency: 'INR', period: 'gregorian', rollover: false },
+    ].slice(1),
+  });
+  await wait(100);
+  const app = w.__app;
+  app.navigate('budgets');
+  await wait(30);
+  const v = w.document.querySelector('#viewContent');
+  const sum = v.querySelector('.budget-summary')?.textContent.replace(/\s+/g, ' ') || '';
+  ok('B1 monthly budgets: ₹525 of ₹400', /Monthly budgets \(1\)/.test(sum) && /₹\s?525/.test(sum) && /of ₹\s?400/.test(sum), sum);
+  ok('B1 Home has no budget: ₹300 spent with no budget, named', /Spent with no budget this month ₹\s?300/.test(sum) && /Home ₹\s?300/.test(sum), sum);
+
+  // B2: add a calm budget first in the list; the over one still comes first.
+  app.store.getState().budgets.unshift({ id: 'bH', categoryIds: ['c2'], categoryId: 'c2', amount: 10000000, currency: 'INR', period: 'year', rollover: false });
+  app.navigate('budgets');
+  await wait(30);
+  const order = [...v.querySelectorAll('[onclick^="window.__app.openBudgetDetail"]')].map((el) => el.getAttribute('onclick').match(/'(b\w+)'/)[1]);
+  ok('B2 the over-limit Food budget is shown before the calm Home one', order[0] === 'bF' && order.includes('bH'), order.join());
+
+  app.openBudgetDetail('bF');
+  await wait(30);
+  const page = v.textContent.replace(/\s+/g, ' ');
+  ok('B3 periods before: last month ₹1,200 of ₹400', !!v.querySelector('.budget-history') && /₹\s?1,200(\.00)? \/ ₹\s?400/.test(page), page.slice(0, 400));
+  ok('B3 by person: You ₹500, Sakina ₹25', /By person You ₹\s?500(\.00)? Sakina ₹\s?25/.test(page), (v.querySelector('.budget-by-person')?.textContent || '').replace(/\s+/g, ' '));
+
+  app.openModal('budget');
+  await wait(20);
+  const f = w.document.querySelector('form');
+  const pick = (form, id) => { form.querySelectorAll('[name="categoryIds"]').forEach((i) => i.remove()); const inp = w.document.createElement('input'); inp.type = 'hidden'; inp.name = 'categoryIds'; inp.value = id; form.appendChild(inp); };
+  app.suggestBudgetLimit(f);
+  ok('B4 asks for categories first', /Pick categories first/.test(f.querySelector('#budgetSuggest').textContent));
+  pick(f, 'c1');
+  app.suggestBudgetLimit(f);
+  ok('B4 fills ₹1,200 from last month', Number(f.querySelector('[name="amount"]').value) === 1200 && /average over the last 1 month/.test(f.querySelector('#budgetSuggest').textContent), `${f.querySelector('[name="amount"]').value} ${f.querySelector('#budgetSuggest').textContent}`);
+
+  // B5: save Food with rollover incl. overspending: last month 1,200 of 400 → −400 (not below zero)
+  app.openModal('budget', { id: 'bF' });
+  await wait(20);
+  const f2 = w.document.querySelector('form');
+  f2.querySelector('[name="rollover"]').checked = true;
+  f2.querySelector('[name="rolloverOverspend"]').checked = true;
+  f2.querySelector('[name="rolloverCap"]').value = '100';
+  app.submitBudget({ preventDefault() {}, target: f2 }, 'bF');
+  const bF = app.store.getState().budgets.find((b) => b.id === 'bF');
+  ok('B5 saved: rollover with overspending, cap ₹100', bF.rollover === true && bF.rolloverOverspend === true && bF.rolloverCap === 10000, JSON.stringify(bF));
+  app.navigate('budgets');
+  await wait(30);
+  const card = [...v.querySelectorAll('.card')].find((c) => /incl\. overspending/.test(c.textContent))?.textContent.replace(/\s+/g, ' ') || '';
+  ok('B5 the card shows the limit taken to zero, (−₹400)', /\/ ₹\s?0(\.00)? \(−₹\s?400/.test(card), card.slice(0, 200));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

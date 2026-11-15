@@ -35,6 +35,7 @@ import { DeliveryPlan }        from './domain/services/DeliveryPlan.js';
 import { VendorDues }          from './domain/services/VendorDues.js';
 import { BudgetOutlook }       from './domain/services/BudgetOutlook.js';
 import { BudgetPeriod }        from './domain/services/BudgetPeriod.js';
+import { BudgetAdvisor }       from './domain/services/BudgetAdvisor.js';
 import { ReceiptScanService }  from './domain/services/ReceiptScanService.js';
 import { SyncService }         from './domain/services/SyncService.js';
 import { ThemeService }        from './domain/services/ThemeService.js';
@@ -3571,13 +3572,36 @@ export class Application {
     // is kept in sync with the first selection for backward compatibility.
     const payload = {
       categoryIds, categoryId: categoryIds[0], amount: minor, currency: data.currency,
-      ...BudgetService.periodFields({ period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover }),
+      ...BudgetService.periodFields({
+        period, startDate: data.startDate, endDate: data.endDate, rollover: !!data.rollover,
+        rolloverOverspend: !!data.rolloverOverspend,
+        rolloverCap: data.rolloverCap ? this.#fx.toMinor(data.rolloverCap, data.currency) : null,
+      }),
     };
     if (id) this.#budgets.update(id, payload);
     else    this.#budgets.create(payload);
     this.closeModal(); this.#render();
     this.#toast.show(id ? 'Budget updated' : 'Budget added');
     this.#sync.schedulePush?.();
+  }
+
+  /**
+   * Fill the budget form's limit from what was usually spent (BudgetAdvisor),
+   * for the categories and period picked so far.
+   * @param {HTMLFormElement} form
+   */
+  suggestBudgetLimit(form) {
+    const fd = new FormData(form);
+    const categoryIds = fd.getAll('categoryIds').filter(Boolean);
+    const note = form.querySelector('#budgetSuggest');
+    const say = (text) => { if (note) { note.textContent = text; note.classList.remove('hidden'); } };
+    if (!categoryIds.length) return say('Pick categories first.');
+    const currency = fd.get('currency') || this.#store.getState().user.homeCurrency;
+    const draft = { categoryIds, currency, period: fd.get('period'), startDate: fd.get('startDate'), endDate: fd.get('endDate') };
+    const tip = new BudgetAdvisor(this.#budgets).suggest(draft);
+    if (!tip) return say('No spending in these categories yet to go on.');
+    form.querySelector('[name="amount"]').value = this.#fx.fromMinor(tip.amount, currency);
+    say(`Suggested from ${tip.basis}. Change it if you like.`);
   }
 
   deleteBudget(id) {
