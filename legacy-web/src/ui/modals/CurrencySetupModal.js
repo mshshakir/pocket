@@ -107,8 +107,9 @@ export class CurrencySetupModal {
         </div>
         <h2 class="text-xl font-semibold mb-1">Start clean?</h2>
         <p class="text-sm text-zinc-500 mb-5">
-          Pocket opened with sample accounts, transactions and budgets so you could look around.
-          Remove them and start with an empty book, or keep them for now.
+          Pocket opened with a sample household — accounts, six months of entries, budgets, bills,
+          deliveries, debts, reimbursements and investments — so you could see everything it does.
+          Remove it and start with an empty book, or keep it for now.
         </p>
 
         <button class="btn btn-primary w-full mb-2" onclick="window.__app.chooseSampleData(false)">

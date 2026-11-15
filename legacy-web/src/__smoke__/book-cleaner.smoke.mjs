@@ -27,7 +27,8 @@ console.log('\nbook cleaner suite');
   ok('seed accounts are all marked sample', seed.accounts.length > 0 && seed.accounts.every(BookCleaner.isSample));
   ok('seed transactions are all marked sample', seed.transactions.length > 0 && seed.transactions.every(BookCleaner.isSample));
   ok('seed budgets are all marked sample', seed.budgets.length > 0 && seed.budgets.every(BookCleaner.isSample));
-  ok('default categories are not sample', seed.categories.length > 0 && !seed.categories.some(BookCleaner.isSample));
+  ok('default categories are not sample; the sample\'s extra ones are', seed.categories.length > 0
+    && seed.categories.filter((c) => !BookCleaner.isSample(c)).length === 12 && seed.categories.some(BookCleaner.isSample));
   ok('transactions still point at seed accounts',
     seed.transactions.every((t) => seed.accounts.some((a) => a.id === t.accountId)));
   ok('a fresh seed has sample data', BookCleaner.hasSample(seed));
@@ -51,7 +52,9 @@ console.log('\nbook cleaner suite');
   ok('sample account the user writes into is kept', book.accounts.some((a) => a.id === used.id));
   ok('other sample accounts removed', book.accounts.length === 2 && removed.accounts === before.accounts.length - 2);
   ok('user account kept', book.accounts.some((a) => a.id === 'acc_mine'));
-  ok('categories untouched', book.categories.length === before.categories.length);
+  ok('default categories kept; sample ones nothing of the user\'s uses are removed',
+    book.categories.length === before.categories.filter((c) => !BookCleaner.isSample(c)).length + book.categories.filter(BookCleaner.isSample).length
+    && book.categories.filter((c) => !BookCleaner.isSample(c)).length === before.categories.filter((c) => !BookCleaner.isSample(c)).length);
   ok('default account pointing at a removed account is cleared', book.user.defaultAccountId === '');
   ok('no sample left except the kept account', BookCleaner.hasSample(book) === true);
 

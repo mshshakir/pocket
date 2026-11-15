@@ -1014,8 +1014,21 @@ var _PocketApp = (() => {
   // src/domain/services/BookCleaner.js
   var BookCleaner = class _BookCleaner {
     static #FLAG = "sample";
-    /** Lists that SeedFactory fills with sample records. */
-    static #SAMPLE_LISTS = Object.freeze(["transactions", "budgets", "accounts"]);
+    /** Lists that SeedFactory (SampleBook) fills with sample records. */
+    static #SAMPLE_LISTS = Object.freeze([
+      "transactions",
+      "budgets",
+      "accounts",
+      "debts",
+      "regularItems",
+      "holdings",
+      "claims",
+      "habits",
+      "accountGroups",
+      "categories"
+    ]);
+    /** Sample lists removed outright (accounts, groups and categories follow their own rules). */
+    static #PLAIN_LISTS = Object.freeze(["transactions", "budgets", "debts", "regularItems", "holdings", "claims", "habits"]);
     /** Lists that hold the user's entries; a reset empties all of them. */
     static #ENTRY_LISTS = Object.freeze([
       "transactions",
@@ -1043,19 +1056,36 @@ var _PocketApp = (() => {
       return _BookCleaner.#SAMPLE_LISTS.some((list) => _BookCleaner.#list(state, list).some(_BookCleaner.isSample));
     }
     /**
-     * Remove every sample transaction and budget, and each sample account that
-     * holds no entry of the user's own (an account the user has started using
-     * is kept, so none of their transactions is orphaned).
-     * @returns {{transactions:number, budgets:number, accounts:number}} counts removed
+     * Remove every sample record — entries, budgets, debts, regulars,
+     * investments, claims and habits — plus each sample account, group and
+     * category that nothing of the user's own still uses (so none of their
+     * entries is orphaned). Payee suggestions pointing at a removed category go too.
+     * @returns {Record<string, number>} counts removed per list
      */
     static removeSample(state) {
-      const removed = {
-        transactions: _BookCleaner.#drop(state, "transactions", _BookCleaner.isSample),
-        budgets: _BookCleaner.#drop(state, "budgets", _BookCleaner.isSample),
-        accounts: 0
-      };
-      const inUse = new Set(_BookCleaner.#list(state, "transactions").map((t) => t.accountId));
-      removed.accounts = _BookCleaner.#drop(state, "accounts", (a) => _BookCleaner.isSample(a) && !inUse.has(a.id));
+      const removed = {};
+      for (const list of _BookCleaner.#PLAIN_LISTS) removed[list] = _BookCleaner.#drop(state, list, _BookCleaner.isSample);
+      const txs = _BookCleaner.#list(state, "transactions");
+      const accountsInUse = /* @__PURE__ */ new Set([
+        ...txs.map((t) => t.accountId),
+        ..._BookCleaner.#list(state, "regularItems").map((i) => i.accountId),
+        ..._BookCleaner.#list(state, "holdings").map((h) => h.accountId)
+      ]);
+      removed.accounts = _BookCleaner.#drop(state, "accounts", (a) => _BookCleaner.isSample(a) && !accountsInUse.has(a.id));
+      const groupsInUse = new Set(_BookCleaner.#list(state, "accounts").map((a) => a.groupId).filter(Boolean));
+      removed.accountGroups = _BookCleaner.#drop(state, "accountGroups", (g) => _BookCleaner.isSample(g) && !groupsInUse.has(g.id));
+      const catsInUse = new Set([
+        ...txs.flatMap((t) => [t.categoryId, ...Array.isArray(t.splits) ? t.splits.map((x) => x.categoryId) : []]),
+        ..._BookCleaner.#list(state, "budgets").flatMap((b) => [b.categoryId, ...b.categoryIds || []]),
+        ..._BookCleaner.#list(state, "regularItems").map((i) => i.categoryId),
+        ..._BookCleaner.#list(state, "habits").flatMap((h) => h.categoryIds || []),
+        ..._BookCleaner.#list(state, "categories").filter((c) => !_BookCleaner.isSample(c)).map((c) => c.parentId)
+      ].filter(Boolean));
+      removed.categories = _BookCleaner.#drop(state, "categories", (c) => _BookCleaner.isSample(c) && !catsInUse.has(c.id));
+      const cats = new Set(_BookCleaner.#list(state, "categories").map((c) => c.id));
+      if (state.merchantCategories && typeof state.merchantCategories === "object") {
+        for (const [k, id] of Object.entries(state.merchantCategories)) if (!cats.has(id)) delete state.merchantCategories[k];
+      }
       _BookCleaner.#clearDanglingDefaults(state);
       return removed;
     }
@@ -1094,6 +1124,566 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/data/SampleBook.js
+  var SampleBook = class _SampleBook {
+    static DAYS = 180;
+    /** @type {string} */
+    #today;
+    /** @type {() => number} */
+    #rand;
+    /** @type {object[]} */
+    #cats = [];
+    /** @type {object[]} */
+    #tx = [];
+    /** @type {Record<string, object>} */
+    #acc = {};
+    /** @type {Record<string, string>} */
+    #merchant = {};
+    /** @param {string} [today] YYYY-MM-DD */
+    constructor(today = DateService.todayIso()) {
+      this.#today = today;
+      this.#rand = _SampleBook.#seeded(20261115);
+    }
+    /** The whole book, ready for the Store. */
+    build() {
+      this.#categories();
+      this.#accounts();
+      const groups = this.#groups();
+      this.#income();
+      this.#everyday();
+      this.#repeats();
+      this.#bills();
+      const regularItems = this.#regulars();
+      const debts = this.#debts();
+      const claims = this.#reimbursements();
+      const holdings = this.#investments();
+      this.#transfers();
+      this.#balances();
+      const budgets = this.#budgets();
+      const habits = this.#habits();
+      const s = (list) => list.map((x) => BookCleaner.markSample(x));
+      return {
+        user: _SampleBook.#user(),
+        accounts: s(Object.values(this.#acc)),
+        accountGroups: s(groups),
+        categories: this.#cats,
+        transactions: s(this.#tx),
+        budgets: s(budgets),
+        debts: s(debts),
+        regularItems: s(regularItems),
+        holdings: s(holdings),
+        claims: s(claims),
+        habits: s(habits),
+        merchantCategories: { ...this.#merchant },
+        family: []
+      };
+    }
+    // ── Categories ──────────────────────────────────────────────────────
+    #categories() {
+      const uid = (p) => IdGenerator.generate(p);
+      this.#cats = DEFAULT_CATEGORIES.map((c) => ({ id: uid("cat"), parentId: null, budgetLimit: null, ...c }));
+      const sub = (parent, name, icon, color) => {
+        const c = BookCleaner.markSample({ id: uid("cat"), name, icon, color, type: this.#find(parent).type, parentId: this.#find(parent).id, budgetLimit: null });
+        this.#cats.push(c);
+      };
+      sub("Food & Drink", "Groceries", "shopping-basket", "#f59e0b");
+      sub("Food & Drink", "Eating out", "utensils-crossed", "#fb923c");
+      sub("Food & Drink", "Milk & paper", "milk", "#fbbf24");
+      sub("Transport", "Fuel", "fuel", "#2563eb");
+      sub("Transport", "Cabs & autos", "car-taxi-front", "#60a5fa");
+      sub("Bills", "Electricity", "zap", "#0e7490");
+      sub("Bills", "Internet & phone", "wifi", "#06b6d4");
+      sub("Housing", "Rent", "key-round", "#a16207");
+      sub("Health", "Medicines", "pill", "#f87171");
+      sub("Entertainment", "Subscriptions", "tv", "#a78bfa");
+      sub("Entertainment", "Gym", "dumbbell", "#84cc16");
+      const top = (name, icon, color, type) => this.#cats.push(BookCleaner.markSample({ id: uid("cat"), name, icon, color, type, parentId: null, budgetLimit: null }));
+      top("Travel", "plane", "#0ea5e9", "expense");
+      top("Dividends", "coins", "#16a34a", "income");
+    }
+    #find(name) {
+      return this.#cats.find((c) => c.name === name);
+    }
+    #cat(name) {
+      return this.#find(name)?.id ?? null;
+    }
+    // ── Accounts ────────────────────────────────────────────────────────
+    #accounts() {
+      const a = (key, x) => {
+        this.#acc[key] = { id: IdGenerator.generate("acc"), archived: false, openingBalance: 0, balance: 0, ...x };
+      };
+      a("bank", { name: "HDFC Bank", type: "bank", currency: "INR", color: "#0ea5e9", icon: "landmark" });
+      a("cash", { name: "Cash", type: "cash", currency: "INR", color: "#22c55e", icon: "wallet", lowBalance: 2e5 });
+      a("card", { name: "HDFC Credit Card", type: "card", currency: "INR", color: "#a855f7", icon: "credit-card", creditLimit: 15e6, statementDay: 5, dueDay: 25 });
+      a("save", { name: "SBI Savings", type: "savings", currency: "INR", color: "#14b8a6", icon: "vault" });
+      a("inv", { name: "Investments", type: "invest", currency: "INR", color: "#eab308", icon: "trending-up" });
+      a("petty", { name: "Office petty cash", type: "cash", currency: "INR", color: "#94a3b8", icon: "wallet", excludeFromTotals: true });
+    }
+    #groups() {
+      const everyday = { id: IdGenerator.generate("grp"), name: "Everyday", color: "#0ea5e9" };
+      const savings = { id: IdGenerator.generate("grp"), name: "Savings & investments", color: "#14b8a6" };
+      for (const k of ["bank", "cash", "card", "petty"]) this.#acc[k].groupId = everyday.id;
+      for (const k of ["save", "inv"]) this.#acc[k].groupId = savings.id;
+      return [everyday, savings];
+    }
+    /** Opening balances that land each account where the story needs it today. */
+    #balances() {
+      const target = { bank: 8435e3, cash: 124e3, save: 215e5, petty: 5e5 };
+      for (const [key, want] of Object.entries(target)) {
+        const acc = this.#acc[key];
+        acc.openingBalance = want - this.#delta(acc.id);
+        acc.balance = want;
+      }
+      for (const key of ["card", "inv"]) this.#acc[key].balance = this.#delta(this.#acc[key].id);
+    }
+    #delta(accountId) {
+      let d = 0;
+      for (const t of this.#tx) {
+        if (t.accountId !== accountId) continue;
+        if (t.type === "income" || t.type === "transfer" && t.transferDir === "in") d += t.amount;
+        else d -= t.amount;
+      }
+      return d;
+    }
+    // ── Entries ─────────────────────────────────────────────────────────
+    #add(x) {
+      const t = {
+        id: x.id || IdGenerator.generate("tx"),
+        accountId: this.#acc[x.acc || "bank"].id,
+        categoryId: x.cat ? this.#cat(x.cat) : null,
+        amount: x.amount,
+        currency: "INR",
+        exchangeRate: 1,
+        refAmount: x.amount,
+        payee: x.payee || "",
+        note: x.note || "",
+        date: x.date,
+        paymentType: x.pay || "upi",
+        recordState: "cleared",
+        type: x.type || "expense",
+        transferPairId: null,
+        tags: x.tags || []
+      };
+      for (const k of Object.keys(x)) if (!["acc", "cat", "pay", "type", "id"].includes(k) && !(k in t)) t[k] = x[k];
+      if (x.payee && t.categoryId && t.type !== "transfer") this.#merchant[x.payee.toLowerCase()] = t.categoryId;
+      this.#tx.push(t);
+      return t;
+    }
+    #transfer(from, to, amount, date, note, extraIn = {}) {
+      const out = this.#add({ acc: from, amount, date, type: "transfer", transferDir: "out", note, pay: "transfer" });
+      const inn = this.#add({ acc: to, amount, date, type: "transfer", transferDir: "in", note, pay: "transfer", ...extraIn });
+      out.transferPairId = inn.id;
+      inn.transferPairId = out.id;
+      return { out, inn };
+    }
+    /** Every date in the window, oldest first, except the future. */
+    *#days() {
+      for (let i = _SampleBook.DAYS; i >= 0; i--) yield this.#ago(i);
+    }
+    #income() {
+      for (const d of this.#monthly(1)) this.#add({ id: `${this.#salaryId}__${d}`, recurringSourceId: this.#salaryId, acc: "bank", type: "income", cat: "Salary", amount: 95e5, payee: "Acme Technologies", note: "Monthly salary", date: d, pay: "transfer" });
+      for (const back of [130, 62]) this.#add({ acc: "bank", type: "income", cat: "Freelance", amount: 18e5 + this.#int(0, 6) * 1e5, payee: "Design client", note: "Logo and brand kit", date: this.#ago(back), pay: "transfer" });
+    }
+    #everyday() {
+      const monthStart = this.#today.slice(0, 8) + "01";
+      for (const d of this.#days()) {
+        const wd = _SampleBook.#weekday(d);
+        const thisMonth = d >= monthStart;
+        if (wd === 6) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Groceries", payee: this.#pick(["BigBasket", "DMart", "Reliance Fresh"]), amount: this.#money(1800, 4200), date: d, note: "Weekly groceries" });
+        if (this.#rand() < 0.36) this.#add({ acc: this.#pick(["bank", "card"]), cat: "Eating out", payee: this.#pick(["Swiggy", "Swiggy", "Zomato"]), amount: this.#money(280, 820), date: d });
+        if (wd !== 0 && this.#rand() < 0.55) this.#add({ acc: "cash", cat: "Food & Drink", payee: "Chai", amount: 2e3, date: d, pay: "cash", regularItemId: this.#chaiId });
+        if (this.#rand() < 0.22) this.#add({ acc: this.#pick(["cash", "bank"]), cat: "Cabs & autos", payee: this.#pick(["Uber", "Ola", "Auto"]), amount: this.#money(90, 520), date: d, pay: "cash" });
+        if (d.slice(8) === "08" || d.slice(8) === "22") this.#add({ acc: "card", cat: "Fuel", payee: "Indian Oil", amount: this.#money(1800, 2600), date: d, pay: "card" });
+        if (this.#rand() < (thisMonth ? 0.16 : 0.06)) this.#add({ acc: "card", cat: "Shopping", payee: this.#pick(["Amazon", "Myntra", "Decathlon"]), amount: this.#money(700, 3200), date: d, pay: "card" });
+        if (this.#rand() < 0.04) this.#add({ acc: "bank", cat: "Medicines", payee: "Apollo Pharmacy", amount: this.#money(240, 1100), date: d });
+        if (d.slice(8) === "12") this.#transfer("bank", "cash", 15e4, d, "ATM withdrawal");
+      }
+      this.#add({ acc: "bank", cat: "Education", payee: "Coursera", amount: 399900, date: this.#ago(70), note: "Data course, 3 months" });
+      this.#add({ acc: "bank", cat: "Education", payee: "Crossword", amount: 128e3, date: this.#ago(18), note: "Two books" });
+      this.#add({ acc: "petty", cat: "Food & Drink", payee: "Office snacks", amount: 64e3, date: this.#ago(6), pay: "cash" });
+    }
+    // ── Repeats and bills ───────────────────────────────────────────────
+    get #salaryId() {
+      return this.#ids.salary;
+    }
+    get #chaiId() {
+      return this.#ids.chai;
+    }
+    #ids = { salary: IdGenerator.generate("tx"), chai: IdGenerator.generate("ri"), auto: IdGenerator.generate("ri") };
+    /** Every month's day `day` in the window up to today. */
+    #monthly(day) {
+      const out = [];
+      const start = this.#ago(_SampleBook.DAYS);
+      let [y, m] = start.split("-").map(Number);
+      for (let i = 0; i < 8; i++) {
+        const d = `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        if (d >= start && d <= this.#today) out.push(d);
+        m++;
+        if (m > 12) {
+          m = 1;
+          y++;
+        }
+      }
+      return out;
+    }
+    /** A repeat: its first entry is the template, later months are its copies. */
+    #repeat(x, day) {
+      const dates = this.#monthly(day);
+      if (!dates.length) return null;
+      const tpl = this.#add({ ...x, date: dates[0], recurring: { rule: "monthly", interval: 1, until: null, skipped: [] } });
+      for (const d of dates.slice(1)) {
+        if (x.pauses && x.pauses.some((p) => d >= p.from && (!p.to || d <= p.to))) continue;
+        const copy = this.#add({ ...x, id: `${tpl.id}__${d}`, recurringSourceId: tpl.id, date: d });
+        delete copy.pauses;
+      }
+      return tpl;
+    }
+    #repeats() {
+      const salaries = this.#tx.filter((t) => t.recurringSourceId === this.#salaryId).sort((a, b) => a.date.localeCompare(b.date));
+      if (salaries.length) {
+        const first = salaries[0];
+        first.id = this.#salaryId;
+        delete first.recurringSourceId;
+        first.recurring = { rule: "monthly", interval: 1, until: null, skipped: [] };
+      }
+      this.#repeat({ acc: "bank", cat: "Rent", payee: "Landlord \u2014 Mr. Kapoor", amount: 28e5, note: "Flat rent", pay: "transfer" }, 5);
+      this.#repeat({ acc: "bank", cat: "Internet & phone", payee: "Airtel Fiber", amount: 99900, note: "Broadband" }, 7);
+      this.#repeat({ acc: "card", cat: "Subscriptions", payee: "Netflix", amount: 64900, pay: "card" }, 15);
+      const monthStart = this.#today.slice(0, 8) + "01";
+      const monthEnd = _SampleBook.#monthEnd(this.#today);
+      this.#repeat({ acc: "bank", cat: "Gym", payee: "Cult.fit", amount: 15e4, note: "Gym membership", pauses: [{ from: monthStart, to: monthEnd }] }, 3);
+    }
+    /** Electricity: a bill that asks first; past months paid, this month's due in a few days. */
+    #bills() {
+      const due = _SampleBook.#dayOf(_SampleBook.#addDays(this.#today, 4));
+      const dates = this.#monthly(due).filter((d) => d < this.#today);
+      if (!dates.length) return;
+      const bill = { acc: "bank", cat: "Electricity", payee: "Tata Power", note: "Electricity bill" };
+      const tpl = this.#add({
+        ...bill,
+        amount: this.#money(1400, 2400),
+        date: dates[0],
+        recurring: { rule: "monthly", interval: 1, until: null, skipped: [] },
+        askFirst: true,
+        remindDays: 2,
+        remindTo: "all"
+      });
+      for (const d of dates.slice(1)) {
+        const paidOn = _SampleBook.#addDays(d, this.#int(0, 2));
+        this.#add({ ...bill, id: `${tpl.id}__${d}`, recurringSourceId: tpl.id, amount: this.#money(1500, 2900), date: paidOn > this.#today ? d : paidOn });
+      }
+    }
+    #regulars() {
+      const trackFrom = this.#ago(75);
+      const lastMonthEnd = _SampleBook.#addDays(this.#today.slice(0, 8) + "01", -1);
+      const milk = {
+        id: IdGenerator.generate("ri"),
+        name: "Milk",
+        vendor: "Ramesh doodhwala",
+        unit: "L",
+        icon: "milk",
+        color: "#f59e0b",
+        accountId: this.#acc.cash.id,
+        categoryId: this.#cat("Milk & paper"),
+        currency: "INR",
+        defaultAmount: 6800,
+        payLater: true,
+        usualQty: 1,
+        usualDays: [0, 1, 2, 3, 4, 5, 6],
+        trackFrom,
+        marks: {},
+        pauses: [],
+        confirmed: {},
+        checkinTo: "all",
+        checkinMinute: 480
+      };
+      const paper = {
+        id: IdGenerator.generate("ri"),
+        name: "Newspaper",
+        vendor: "Sharma news agency",
+        unit: "",
+        icon: "newspaper",
+        color: "#64748b",
+        accountId: this.#acc.cash.id,
+        categoryId: this.#cat("Milk & paper"),
+        currency: "INR",
+        defaultAmount: 1e3,
+        payLater: true,
+        usualQty: 1,
+        usualDays: [1, 2, 3, 4, 5, 6],
+        trackFrom,
+        marks: {},
+        pauses: [],
+        confirmed: {}
+      };
+      milk.marks[_SampleBook.#addDays(lastMonthEnd, -9)] = 2;
+      const away = _SampleBook.#addDays(lastMonthEnd, -20);
+      milk.pauses.push({ from: away, to: _SampleBook.#addDays(away, 2) });
+      for (const item of [milk, paper]) {
+        for (let d = trackFrom; d < _SampleBook.#addDays(this.#today, -1); d = _SampleBook.#addDays(d, 1)) item.confirmed[d] = true;
+      }
+      for (const item of [milk, paper]) {
+        let from = trackFrom;
+        for (let end = _SampleBook.#monthEnd(trackFrom); end <= lastMonthEnd; end = _SampleBook.#monthEnd(_SampleBook.#addDays(end, 1))) {
+          const amount = this.#deliveryCost(item, from, end);
+          if (amount > 0) this.#add({ acc: "cash", cat: "Milk & paper", payee: item.vendor, amount, date: _SampleBook.#addDays(end, 2) > this.#today ? end : _SampleBook.#addDays(end, 2), pay: "cash", regularItemId: item.id, settles: { from, to: end, qty: this.#deliveryQty(item, from, end) }, note: `${item.name} ${DateRangeText.range(from, end)}` });
+          from = _SampleBook.#addDays(end, 1);
+        }
+        item.paidTo = lastMonthEnd >= trackFrom ? lastMonthEnd : null;
+      }
+      const chai = { id: this.#ids.chai, name: "Chai", icon: "coffee", color: "#a16207", currency: "INR", accountId: this.#acc.cash.id, categoryId: this.#cat("Food & Drink"), defaultAmount: 2e3 };
+      const auto = { id: this.#ids.auto, name: "Auto", icon: "car-taxi-front", color: "#facc15", currency: "INR", accountId: this.#acc.cash.id, categoryId: this.#cat("Cabs & autos"), defaultAmount: 6e3 };
+      return [milk, paper, chai, auto];
+    }
+    #deliveryQty(item, from, to) {
+      let q = 0;
+      for (let d = from; d <= to; d = _SampleBook.#addDays(d, 1)) q += this.#qtyOn(item, d);
+      return q;
+    }
+    #deliveryCost(item, from, to) {
+      return Math.round(this.#deliveryQty(item, from, to) * item.defaultAmount);
+    }
+    #qtyOn(item, d) {
+      if (d < item.trackFrom) return 0;
+      if (item.marks[d] != null) return item.marks[d];
+      if (item.pauses.some((p) => d >= p.from && d <= p.to)) return 0;
+      return item.usualDays.includes(_SampleBook.#weekday(d)) ? item.usualQty : 0;
+    }
+    // ── Debts ───────────────────────────────────────────────────────────
+    #debts() {
+      const lent = {
+        id: IdGenerator.generate("dbt"),
+        type: "lent",
+        counterparty: "Imran",
+        principal: 15e5,
+        currency: "INR",
+        accountId: this.#acc.bank.id,
+        dateTaken: this.#ago(58),
+        dueDate: _SampleBook.#addDays(this.#today, 30),
+        note: "For his bike repair",
+        status: "active"
+      };
+      const t1 = this.#add({ acc: "bank", amount: lent.principal, date: lent.dateTaken, payee: "Imran", note: "Lent to Imran \u2014 for his bike repair", tags: ["debt"], debtId: lent.id, debtRole: "initial", pay: "transfer" });
+      lent.initialTxId = t1.id;
+      this.#add({ acc: "bank", type: "income", amount: 5e5, date: this.#ago(21), payee: "Imran", note: "Repayment from Imran", tags: ["debt-payment"], debtId: lent.id, debtRole: "payment", pay: "upi" });
+      const taken = this.#ago(200);
+      const loan = {
+        id: IdGenerator.generate("dbt"),
+        type: "borrowed",
+        counterparty: "Mustafa bhai",
+        principal: 12e6,
+        currency: "INR",
+        accountId: this.#acc.bank.id,
+        dateTaken: taken,
+        dueDate: null,
+        note: "Interest-free, towards the car",
+        status: "active",
+        instalmentAmount: 1e6,
+        instalmentDay: 10,
+        instalmentCount: 12
+      };
+      const t2 = this.#add({ acc: "bank", type: "income", amount: loan.principal, date: taken, payee: loan.counterparty, note: "Borrowed from Mustafa bhai \u2014 interest-free, towards the car", tags: ["debt"], debtId: loan.id, debtRole: "initial", pay: "transfer" });
+      this.#add({ acc: "bank", cat: "Transport", amount: 42e6, date: taken, payee: "Maruti Suzuki", note: "New car", pay: "transfer" });
+      loan.initialTxId = t2.id;
+      const due = [];
+      for (let d = taken; d <= this.#today; d = _SampleBook.#addDays(d, 1)) if (d > taken && d.slice(8) === "10") due.push(d);
+      due.slice(0, Math.max(0, due.length - 1)).forEach((d) => {
+        this.#add({ acc: "bank", amount: loan.instalmentAmount, date: d, payee: loan.counterparty, note: "Payment to Mustafa bhai \u2014 instalment", tags: ["debt-payment"], debtId: loan.id, debtRole: "payment", pay: "transfer" });
+      });
+      return [lent, loan];
+    }
+    // ── Reimbursements ──────────────────────────────────────────────────
+    #reimbursements() {
+      const trip = { id: IdGenerator.generate("clm"), name: "Pune client visit", ref: "EXP-2291" };
+      const health = { id: IdGenerator.generate("clm"), name: "Clinic visit", ref: "CL-4471" };
+      const hotel = this.#add({ acc: "card", cat: "Travel", payee: "Lemon Tree Hotel", amount: 84e4, date: this.#ago(34), pay: "card", note: "Two nights", reimbBy: "Acme Technologies", claimId: trip.id });
+      this.#add({ acc: "card", cat: "Travel", payee: "IndiGo", amount: 62e4, date: this.#ago(36), pay: "card", note: "Flight to Pune", reimbBy: "Acme Technologies", claimId: trip.id });
+      this.#add({
+        acc: "bank",
+        type: "income",
+        amount: 84e4,
+        date: this.#ago(9),
+        payee: "Acme Technologies",
+        note: "Expense claim EXP-2291 (part)",
+        tags: ["reimbursement"],
+        reimbBy: "Acme Technologies",
+        claimId: trip.id,
+        reimbAlloc: [{ txId: hotel.id, amount: 84e4, pay: 84e4 }],
+        pay: "transfer"
+      });
+      this.#add({ acc: "bank", cat: "Health", payee: "City Clinic", amount: 32e4, date: this.#ago(12), note: "Consultation and tests", reimbBy: "Star Health", reimbExpected: 28e4, claimId: health.id });
+      const dinner = this.#add({ acc: "card", cat: "Eating out", payee: "Barbeque Nation", amount: 24e4, date: this.#ago(26), pay: "card", note: "Dinner with Imran \u2014 half is his", reimbBy: "Imran", reimbExpected: 12e4 });
+      this.#add({
+        acc: "bank",
+        type: "income",
+        amount: 12e4,
+        date: this.#ago(24),
+        payee: "Imran",
+        note: "His half of dinner",
+        tags: ["reimbursement"],
+        reimbBy: "Imran",
+        reimbAlloc: [{ txId: dinner.id, amount: 12e4, pay: 12e4 }],
+        pay: "upi"
+      });
+      return [trip, health];
+    }
+    // ── Investments ─────────────────────────────────────────────────────
+    #investments() {
+      const h = (x) => ({ id: IdGenerator.generate("hld"), accountId: this.#acc.inv.id, currency: "INR", archived: false, ...x });
+      const price = (list) => list.map(([back, p]) => ({ date: this.#ago(back), price: p }));
+      const gold = h({
+        kind: "gold",
+        purity: "24k",
+        name: "24k gold coins",
+        unit: "g",
+        openingQty: 10,
+        openingCost: 62e5,
+        prices: price([[120, 72e4], [60, 745e3], [20, 762e3], [2, 778e3]]),
+        alert: { gainPct: 20 }
+      });
+      const silver = h({
+        kind: "silver",
+        purity: "999",
+        name: "Silver bar",
+        unit: "g",
+        prices: price([[90, 8800], [30, 9400], [3, 9700]])
+      });
+      const tcs = h({ kind: "shares", code: "TCS", name: "Tata Consultancy Services", unit: "shares", prices: price([[100, 395e3], [40, 412e3], [1, 426e3]]) });
+      const infy = h({ kind: "shares", code: "INFY", name: "Infosys", unit: "shares", prices: price([[80, 148e3], [1, 156500]]), alert: { targetPrice: 16e4 } });
+      const buy = (hold, back, qty, unit, charges = 0) => this.#transfer(
+        "bank",
+        "inv",
+        Math.round(qty * unit) + charges,
+        this.#ago(back),
+        `Buy ${qty}${hold.unit === "g" ? " g" : " shares"} \xB7 ${hold.name}`,
+        { holdingId: hold.id, qty, unitPrice: unit }
+      );
+      const sell = (hold, back, qty, unit, charges = 0) => {
+        const { out } = this.#transfer("inv", "bank", Math.round(qty * unit) - charges, this.#ago(back), `Sell ${qty}${hold.unit === "g" ? " g" : " shares"} \xB7 ${hold.name}`);
+        Object.assign(out, { holdingId: hold.id, qty: -qty, unitPrice: unit });
+      };
+      buy(gold, 58, 5, 745e3);
+      buy(silver, 88, 500, 8800);
+      sell(silver, 28, 100, 9900);
+      buy(tcs, 98, 10, 395e3, 2e3);
+      buy(infy, 79, 15, 148e3, 1500);
+      this.#add({ acc: "bank", type: "income", cat: "Dividends", amount: 25e3, date: this.#ago(33), payee: "TCS", note: "Dividend \xB7 Tata Consultancy Services", holdingId: tcs.id, pay: "transfer" });
+      return [gold, silver, tcs, infy];
+    }
+    // ── Transfers ───────────────────────────────────────────────────────
+    #transfers() {
+      for (const d of this.#monthly(2)) this.#transfer("bank", "save", 1e6, d, "Monthly savings");
+      const card = this.#acc.card.id;
+      const statements = this.#monthly(5);
+      let prev = this.#ago(_SampleBook.DAYS + 1);
+      for (const st of statements) {
+        const bill = this.#tx.filter((t) => t.accountId === card && t.type === "expense" && t.date > prev && t.date <= st).reduce((s, t) => s + t.amount, 0);
+        const payOn = _SampleBook.#addDays(st, 15);
+        if (bill > 0 && payOn < this.#today) this.#transfer("bank", "card", bill, payOn, "Credit card bill");
+        prev = st;
+      }
+    }
+    // ── Budgets and habits ──────────────────────────────────────────────
+    #budgets() {
+      const b = (cats, amount, period, x = {}) => ({
+        id: IdGenerator.generate("bg"),
+        categoryIds: cats.map((c) => this.#cat(c)),
+        categoryId: this.#cat(cats[0]),
+        amount,
+        currency: "INR",
+        period,
+        rollover: false,
+        alerts: true,
+        ...x
+      });
+      const tripStart = _SampleBook.#addDays(this.#today, 12);
+      return [
+        b(["Food & Drink"], 18e5, "gregorian"),
+        b(["Shopping"], 6e5, "gregorian"),
+        b(["Transport"], 9e5, "gregorian", { rollover: true, rolloverCap: 3e5 }),
+        b(["Bills"], 65e4, "gregorian"),
+        b(["Eating out"], 22e4, "week"),
+        b(["Education"], 25e5, "year"),
+        b(["Health"], 4e5, "hijri"),
+        b(["Travel"], 4e6, "range", { startDate: tripStart, endDate: _SampleBook.#addDays(tripStart, 5) })
+      ];
+    }
+    #habits() {
+      return [
+        { id: IdGenerator.generate("hb"), name: "Food delivery", icon: "bike", color: "#f97316", words: ["swiggy", "zomato"], categoryIds: [], itemIds: [], limitCount: 10 },
+        { id: IdGenerator.generate("hb"), name: "Cabs & autos", icon: "car-taxi-front", color: "#3b82f6", words: [], categoryIds: [this.#cat("Cabs & autos")], itemIds: [this.#ids.auto], limitAmount: 25e4 }
+      ];
+    }
+    // ── Settings ────────────────────────────────────────────────────────
+    static #user() {
+      return {
+        homeCurrency: "INR",
+        defaultCurrency: "INR",
+        theme: "system",
+        showHijri: true,
+        calendarMode: "both",
+        dateFormat: "auto",
+        defaultAccountId: "",
+        defaultPaymentType: "upi",
+        geminiApiKey: "",
+        supabaseUrl: "",
+        supabaseKey: "",
+        customPaymentTypes: [],
+        hiddenPaymentTypes: [],
+        collapsedAccountGroups: [],
+        collapsedCategories: []
+      };
+    }
+    // ── Small helpers ───────────────────────────────────────────────────
+    #ago(n) {
+      return _SampleBook.#addDays(this.#today, -n);
+    }
+    #int(lo, hi) {
+      return lo + Math.floor(this.#rand() * (hi - lo + 1));
+    }
+    /** Whole rupees between lo and hi, in paise. */
+    #money(lo, hi) {
+      return this.#int(lo, hi) * 100;
+    }
+    #pick(list) {
+      return list[Math.floor(this.#rand() * list.length)];
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+    static #weekday(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    }
+    static #dayOf(iso) {
+      return Math.min(28, Number(iso.slice(8, 10)));
+    }
+    static #monthEnd(iso) {
+      const [y, m] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    }
+    /** A small fixed-seed generator (mulberry32), so the sample is the same each time. */
+    static #seeded(seed) {
+      let a = seed >>> 0;
+      return () => {
+        a = a + 1831565813 >>> 0;
+        let t = a;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+  };
+  var DateRangeText = class _DateRangeText {
+    static #M = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    static range(from, to) {
+      const [, fm, fd] = from.split("-").map(Number);
+      const [, tm, td] = to.split("-").map(Number);
+      return fm === tm ? `${fd}\u2013${td} ${_DateRangeText.#M[tm - 1]}` : `${fd} ${_DateRangeText.#M[fm - 1]} \u2013 ${td} ${_DateRangeText.#M[tm - 1]}`;
+    }
+  };
+
   // src/data/seed.js
   var SeedFactory = class {
     /**
@@ -1101,121 +1691,7 @@ var _PocketApp = (() => {
      * @returns {object}
      */
     static create() {
-      const uid = (prefix) => IdGenerator.generate(prefix);
-      const cats = DEFAULT_CATEGORIES.map((c) => ({
-        id: uid("cat"),
-        parentId: null,
-        budgetLimit: null,
-        ...c
-      }));
-      const catBy = (name) => cats.find((c) => c.name === name).id;
-      const accounts = [
-        { id: uid("acc"), name: "Main Checking", type: "bank", currency: "USD", balance: 25e4, color: "#0ea5e9", icon: "landmark", archived: false },
-        { id: uid("acc"), name: "Cash Wallet", type: "cash", currency: "USD", balance: 15e3, color: "#22c55e", icon: "wallet", archived: false },
-        { id: uid("acc"), name: "Visa Platinum", type: "card", currency: "USD", balance: -42e3, color: "#a855f7", icon: "credit-card", archived: false },
-        { id: uid("acc"), name: "High-Yield Save", type: "savings", currency: "USD", balance: 124e4, color: "#14b8a6", icon: "landmark", archived: false }
-      ];
-      const today = /* @__PURE__ */ new Date();
-      const daysAgo = (n) => {
-        const d = new Date(today);
-        d.setDate(d.getDate() - n);
-        return DateService.toIso(d);
-      };
-      const expenseSamples = [
-        ["Whole Foods Market", "Food & Drink", 4732, ""],
-        ["Starbucks", "Food & Drink", 587, "Latte + croissant"],
-        ["Uber", "Transport", 1825, "Ride to airport"],
-        ["Shell", "Transport", 4210, "Gas fill-up"],
-        ["Netflix", "Entertainment", 1599, "Monthly subscription"],
-        ["Spotify", "Entertainment", 999, ""],
-        ["Amazon", "Shopping", 6745, "USB-C cables"],
-        ["Walgreens", "Health", 1234, "Vitamins"],
-        ["Trader Joe's", "Food & Drink", 5921, "Weekly groceries"],
-        ["Chipotle", "Food & Drink", 1525, ""],
-        ["Electric Co.", "Bills", 8230, "May power bill"],
-        ["Internet Provider", "Bills", 7500, ""],
-        ["Cinema", "Entertainment", 2800, "Movie + popcorn"],
-        ["Bookstore", "Shopping", 2700, "Two paperbacks"],
-        ["Rent Payment", "Housing", 18e4, "May rent"],
-        ["Pharmacy", "Health", 1899, ""],
-        ["Coffee Bar", "Food & Drink", 475, ""],
-        ["Lyft", "Transport", 1145, ""],
-        ["Coursera", "Education", 4900, "Course renewal"],
-        ["H&M", "Shopping", 3299, "T-shirts"]
-      ];
-      const transactions = expenseSamples.map((s, i) => ({
-        id: uid("tx"),
-        accountId: accounts[i % 3].id,
-        categoryId: catBy(s[1]),
-        amount: s[2],
-        currency: "USD",
-        exchangeRate: 1,
-        refAmount: s[2],
-        payee: s[0],
-        note: s[3],
-        date: daysAgo(Math.floor(Math.random() * 45)),
-        paymentType: "card",
-        recordState: "cleared",
-        type: "expense",
-        transferPairId: null,
-        tags: []
-      }));
-      ["Salary", "Freelance"].forEach((cat, i) => {
-        transactions.push({
-          id: uid("tx"),
-          accountId: accounts[0].id,
-          categoryId: catBy(cat),
-          amount: cat === "Salary" ? 58e4 : 12e4,
-          currency: "USD",
-          exchangeRate: 1,
-          refAmount: cat === "Salary" ? 58e4 : 12e4,
-          payee: cat === "Salary" ? "Acme Corp" : "Side project",
-          note: cat === "Salary" ? "Monthly payroll" : "Design contract",
-          date: daysAgo(i * 15 + 3),
-          paymentType: "transfer",
-          recordState: "cleared",
-          type: "income",
-          transferPairId: null,
-          tags: []
-        });
-      });
-      const budgets = [
-        { id: uid("bg"), categoryId: catBy("Food & Drink"), amount: 6e4, currency: "USD", period: "gregorian", rollover: false },
-        { id: uid("bg"), categoryId: catBy("Transport"), amount: 2e4, currency: "USD", period: "gregorian", rollover: false },
-        { id: uid("bg"), categoryId: catBy("Shopping"), amount: 25e3, currency: "USD", period: "gregorian", rollover: false },
-        { id: uid("bg"), categoryId: catBy("Entertainment"), amount: 1e4, currency: "USD", period: "gregorian", rollover: false }
-      ];
-      const sample = (list) => list.map((item) => BookCleaner.markSample(item));
-      return {
-        user: {
-          homeCurrency: "USD",
-          defaultCurrency: "USD",
-          theme: "system",
-          showHijri: true,
-          calendarMode: "both",
-          dateFormat: "auto",
-          // Pre-selected on every new entry form. '' = fall back to the first
-          // account (AccountService.defaultId resolves it).
-          defaultAccountId: "",
-          defaultPaymentType: "card",
-          geminiApiKey: "",
-          supabaseUrl: "",
-          supabaseKey: "",
-          customPaymentTypes: [],
-          hiddenPaymentTypes: [],
-          collapsedAccountGroups: [],
-          collapsedCategories: []
-        },
-        accounts: sample(accounts),
-        categories: cats,
-        transactions: sample(transactions),
-        budgets: sample(budgets),
-        merchantCategories: {},
-        debts: [],
-        regularItems: [],
-        accountGroups: [],
-        family: []
-      };
+      return new SampleBook().build();
     }
   };
 
@@ -21118,8 +21594,9 @@ This replaces your current grouping.`
         </div>
         <h2 class="text-xl font-semibold mb-1">Start clean?</h2>
         <p class="text-sm text-zinc-500 mb-5">
-          Pocket opened with sample accounts, transactions and budgets so you could look around.
-          Remove them and start with an empty book, or keep them for now.
+          Pocket opened with a sample household \u2014 accounts, six months of entries, budgets, bills,
+          deliveries, debts, reimbursements and investments \u2014 so you could see everything it does.
+          Remove it and start with an empty book, or keep it for now.
         </p>
 
         <button class="btn btn-primary w-full mb-2" onclick="window.__app.chooseSampleData(false)">
@@ -27331,7 +27808,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         this.#toast.show("No sample data left");
         return;
       }
-      if (!confirm("Remove the sample accounts, transactions and budgets? Your own entries are kept.")) return;
+      if (!confirm("Remove all the sample data (accounts, entries, budgets, bills, debts, investments)? Your own entries are kept.")) return;
       this.#clearSampleData();
       this.#toast.show("Sample data removed");
       this.#render();

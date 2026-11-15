@@ -13,8 +13,13 @@
 export class BookCleaner {
   static #FLAG = 'sample';
 
-  /** Lists that SeedFactory fills with sample records. */
-  static #SAMPLE_LISTS = Object.freeze(['transactions', 'budgets', 'accounts']);
+  /** Lists that SeedFactory (SampleBook) fills with sample records. */
+  static #SAMPLE_LISTS = Object.freeze([
+    'transactions', 'budgets', 'accounts', 'debts', 'regularItems', 'holdings', 'claims', 'habits', 'accountGroups', 'categories',
+  ]);
+
+  /** Sample lists removed outright (accounts, groups and categories follow their own rules). */
+  static #PLAIN_LISTS = Object.freeze(['transactions', 'budgets', 'debts', 'regularItems', 'holdings', 'claims', 'habits']);
 
   /** Lists that hold the user's entries; a reset empties all of them. */
   static #ENTRY_LISTS = Object.freeze([
@@ -42,19 +47,40 @@ export class BookCleaner {
   }
 
   /**
-   * Remove every sample transaction and budget, and each sample account that
-   * holds no entry of the user's own (an account the user has started using
-   * is kept, so none of their transactions is orphaned).
-   * @returns {{transactions:number, budgets:number, accounts:number}} counts removed
+   * Remove every sample record — entries, budgets, debts, regulars,
+   * investments, claims and habits — plus each sample account, group and
+   * category that nothing of the user's own still uses (so none of their
+   * entries is orphaned). Payee suggestions pointing at a removed category go too.
+   * @returns {Record<string, number>} counts removed per list
    */
   static removeSample(state) {
-    const removed = {
-      transactions: BookCleaner.#drop(state, 'transactions', BookCleaner.isSample),
-      budgets:      BookCleaner.#drop(state, 'budgets', BookCleaner.isSample),
-      accounts:     0,
-    };
-    const inUse = new Set(BookCleaner.#list(state, 'transactions').map((t) => t.accountId));
-    removed.accounts = BookCleaner.#drop(state, 'accounts', (a) => BookCleaner.isSample(a) && !inUse.has(a.id));
+    const removed = {};
+    for (const list of BookCleaner.#PLAIN_LISTS) removed[list] = BookCleaner.#drop(state, list, BookCleaner.isSample);
+
+    const txs = BookCleaner.#list(state, 'transactions');
+    const accountsInUse = new Set([
+      ...txs.map((t) => t.accountId),
+      ...BookCleaner.#list(state, 'regularItems').map((i) => i.accountId),
+      ...BookCleaner.#list(state, 'holdings').map((h) => h.accountId),
+    ]);
+    removed.accounts = BookCleaner.#drop(state, 'accounts', (a) => BookCleaner.isSample(a) && !accountsInUse.has(a.id));
+
+    const groupsInUse = new Set(BookCleaner.#list(state, 'accounts').map((a) => a.groupId).filter(Boolean));
+    removed.accountGroups = BookCleaner.#drop(state, 'accountGroups', (g) => BookCleaner.isSample(g) && !groupsInUse.has(g.id));
+
+    const catsInUse = new Set([
+      ...txs.flatMap((t) => [t.categoryId, ...(Array.isArray(t.splits) ? t.splits.map((x) => x.categoryId) : [])]),
+      ...BookCleaner.#list(state, 'budgets').flatMap((b) => [b.categoryId, ...(b.categoryIds || [])]),
+      ...BookCleaner.#list(state, 'regularItems').map((i) => i.categoryId),
+      ...BookCleaner.#list(state, 'habits').flatMap((h) => h.categoryIds || []),
+      ...BookCleaner.#list(state, 'categories').filter((c) => !BookCleaner.isSample(c)).map((c) => c.parentId),
+    ].filter(Boolean));
+    removed.categories = BookCleaner.#drop(state, 'categories', (c) => BookCleaner.isSample(c) && !catsInUse.has(c.id));
+
+    const cats = new Set(BookCleaner.#list(state, 'categories').map((c) => c.id));
+    if (state.merchantCategories && typeof state.merchantCategories === 'object') {
+      for (const [k, id] of Object.entries(state.merchantCategories)) if (!cats.has(id)) delete state.merchantCategories[k];
+    }
     BookCleaner.#clearDanglingDefaults(state);
     return removed;
   }

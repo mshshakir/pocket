@@ -4713,7 +4713,7 @@ export class Application {
       this.#toast.show('No sample data left');
       return;
     }
-    if (!confirm('Remove the sample accounts, transactions and budgets? Your own entries are kept.')) return;
+    if (!confirm('Remove all the sample data (accounts, entries, budgets, bills, debts, investments)? Your own entries are kept.')) return;
     this.#clearSampleData();
     this.#toast.show('Sample data removed');
     this.#render();
