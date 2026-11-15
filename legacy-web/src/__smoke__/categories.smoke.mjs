@@ -14,7 +14,8 @@
  *   A2  merging shows a toast with Undo; Undo brings it back
  *   A3  renaming to a name that's taken offers a merge
  *   A4  Delete on a used category opens "move and delete"; an unused one just goes
- *   A6  the picker offers Keep …, other categories and + New category…; both work with Undo
+ *   A6  three cards: Keep one / Move into another / New category; panels switch; both work with Undo
+ *   A7  with many categories, Move into another has a search box that filters the list
  *   A5  Categories → Merge: tick several, other types greyed, merge them into one, Undo
  *
  * Run: node src/__smoke__/categories.smoke.mjs
@@ -162,6 +163,20 @@ function boot(answers = {}) {
   return window;
 }
 const ids = (w) => w.__app.store.getState().categories.map((c) => c.id);
+/** Tap a card (and a row in it) in the merge window, as a person would. */
+const choose = (w, ids, choice, value = '') => {
+  const f = w.document.querySelector('form.category-merge-form');
+  f.querySelector(`input[name="choice"][value="${choice}"]`).checked = true;
+  const field = { keep: 'keepId', other: 'otherId' }[choice];
+  if (field && value) f.querySelector(`input[name="${field}"][value="${value}"]`).checked = true;
+  if (choice === 'new') f.querySelector('[name="newName"]').value = value;
+  w.__app.previewCategoryMerge(ids);
+  return f;
+};
+const cards  = (w) => [...w.document.querySelectorAll('input[name="choice"]')].map((i) => i.value).join();
+const rows   = (w, field) => [...w.document.querySelectorAll(`input[name="${field}"]`)].map((i) => i.value).join();
+const panel  = (w, key) => w.document.querySelector(`[data-merge-panel="${key}"]`);
+const preview = (w) => w.document.getElementById('categoryMergePreview').textContent;
 const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent || w.document.body.textContent;
 
 {
@@ -174,14 +189,12 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   ok('A1 a new category has no Merge button', (app.openModal('category'), !w.document.querySelector('.category-merge-btn')));
   app.openCategoryMerge('groc');
   await wait(20);
-  const opts = [...w.document.querySelectorAll('select[name="into"] option')].map((o) => o.value).filter(Boolean);
-  ok('A1 picker offers Food, Fuel and + New (no Keep with one ticked)', opts.join() === 'food,fuel,__new' && !w.document.querySelector('optgroup[label^="Keep"]'), opts.join());
-  app.previewCategoryMerge('groc', 'food');
-  const prev = w.document.getElementById('categoryMergePreview').textContent;
+  ok('A1 two cards with one ticked: Move into another, New category (no Keep)', cards(w) === 'other,new', cards(w));
+  ok('A1 Move into another is open and lists Food and Fuel; asks to tap one', rows(w, 'otherId') === 'food,fuel' && panel(w, 'other').style.display === '' && panel(w, 'new').style.display === 'none' && /Tap a category/.test(preview(w)), rows(w, 'otherId'));
+  const f = choose(w, 'groc', 'other', 'food');
+  const prev = preview(w);
   ok('A1 preview: entries, Fruit moves, vegetables joins', /Moves 3 entries to Food/.test(prev) && /Fruit moves under Food/.test(prev) && /vegetables joins/.test(prev), prev);
 
-  const f = w.document.querySelector('form');
-  f.querySelector('[name="into"]').value = 'food';
   app.mergeCategory({ preventDefault() {}, target: f }, 'groc');
   await wait(20);
   ok('A2 Grocery is gone and its entry is in Food', !ids(w).includes('groc') && w.__app.store.getState().transactions.find((t) => t.id === 't1').categoryId === 'food');
@@ -228,9 +241,8 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   const app = w.__app;
   app.deleteCategory('fuel');
   await wait(20);
-  ok('A4 deleting used Fuel opens "Delete Fuel" with a picker', /Delete Fuel/.test(w.document.body.textContent) && w.document.querySelector('select[name="into"]') && ids(w).includes('fuel'));
-  const f = w.document.querySelector('form');
-  f.querySelector('[name="into"]').value = 'food';
+  ok('A4 deleting used Fuel opens "Delete Fuel" with the choices', /Delete Fuel/.test(w.document.body.textContent) && cards(w) === 'other,new' && ids(w).includes('fuel'));
+  const f = choose(w, 'fuel', 'other', 'food');
   app.mergeCategory({ preventDefault() {}, target: f }, 'fuel');
   await wait(20);
   ok('A4 Move and delete: Fuel gone, its entries in Food', !ids(w).includes('fuel') && w.__app.store.getState().transactions.find((t) => t.id === 't4').categoryId === 'food');
@@ -259,11 +271,9 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   ok('A5 2 selected', /2 selected/.test(view().querySelector('.category-pick-bar').textContent));
   app.mergePickedCategories();
   await wait(20);
-  ok('A5 picker titled "Merge 2 categories", offers Food', /Merge 2 categories/.test(w.document.body.textContent) && [...w.document.querySelectorAll('select[name="into"] optgroup[label="Or move into"] option')].map((o) => o.value).join() === 'food');
-  app.previewCategoryMerge('groc,fuel', 'food');
-  ok('A5 preview counts both', /Moves 4 entries/.test(w.document.getElementById('categoryMergePreview').textContent), w.document.getElementById('categoryMergePreview').textContent);
-  const f = w.document.querySelector('form');
-  f.querySelector('[name="into"]').value = 'food';
+  ok('A5 titled "Merge 2 categories"; Move into another lists Food', /Merge 2 categories/.test(w.document.body.textContent) && rows(w, 'otherId') === 'food');
+  const f = choose(w, 'groc,fuel', 'other', 'food');
+  ok('A5 preview counts both', /Moves 4 entries/.test(preview(w)), preview(w));
   app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
   await wait(20);
   ok('A5 both gone, ticking ends, toast says 2 categories', !ids(w).includes('groc') && !ids(w).includes('fuel') && !view().querySelector('.category-pick-bar') && /2 categories merged into Food · 4 entries moved/.test(toastText(w)), toastText(w));
@@ -281,14 +291,11 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   const app = w.__app;
   app.openCategoryMerge(['groc', 'fuel']);
   await wait(20);
-  const sel = w.document.querySelector('select[name="into"]');
-  const groups = [...sel.querySelectorAll('optgroup')].map((g) => g.label + ':' + [...g.querySelectorAll('option')].map((o) => o.value).join('|'));
-  ok('A6 Keep Grocery / Keep Fuel, then Food, then + New', groups.join(' ; ') === 'Keep one of these:groc|fuel ; Or move into:food' && sel.querySelector('option[value="__new"]'), groups.join(' ; '));
-  app.previewCategoryMerge('groc,fuel', 'fuel');
-  const kp = w.document.getElementById('categoryMergePreview').textContent;
+  ok('A6 three cards, Keep open first with Grocery and Fuel; asks which', cards(w) === 'keep,other,new' && rows(w, 'keepId') === 'groc,fuel' && panel(w, 'keep').style.display === '' && /Tap the one to keep/.test(preview(w)), cards(w));
+  ok('A6 Move into another lists Food', rows(w, 'otherId') === 'food');
+  let f = choose(w, 'groc,fuel', 'keep', 'fuel');
+  const kp = preview(w);
   ok('A6 Keep Fuel: removes Grocery, moves its 1 entry, its subs move under Fuel', /Removes Grocery\./.test(kp) && /Moves 1 entry to Fuel/.test(kp) && /vegetables and Fruit move under Fuel/.test(kp), kp);
-  let f = w.document.querySelector('form');
-  sel.value = 'fuel';
   app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
   await wait(20);
   ok('A6 Keep Fuel: Grocery gone, Fuel stays with its entries', !ids(w).includes('groc') && ids(w).includes('fuel') && w.__app.store.getState().transactions.find((t) => t.id === 't1').categoryId === 'fuel' && /Grocery merged into Fuel · 1 entry moved/.test(toastText(w)), toastText(w));
@@ -298,16 +305,12 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
 
   app.openCategoryMerge(['groc', 'fuel']);
   await wait(20);
-  f = w.document.querySelector('form');
-  f.querySelector('[name="into"]').value = '__new';
-  app.previewCategoryMerge('groc,fuel', '__new');
-  ok('A6 + New shows the name box and asks for a name', w.document.getElementById('categoryMergeNew').style.display === '' && /Type a name/.test(w.document.getElementById('categoryMergePreview').textContent));
-  f.querySelector('[name="newName"]').value = 'food';
-  app.previewCategoryMerge('groc,fuel', '__new');
-  ok('A6 a taken name is caught', /Food already exists/.test(w.document.getElementById('categoryMergePreview').textContent));
-  f.querySelector('[name="newName"]').value = 'Household';
-  app.previewCategoryMerge('groc,fuel', '__new');
-  const np = w.document.getElementById('categoryMergePreview').textContent;
+  f = choose(w, 'groc,fuel', 'new', '');
+  ok('A6 New category shows the name box (others hidden) and asks for a name', panel(w, 'new').style.display === '' && panel(w, 'keep').style.display === 'none' && /Type a name/.test(preview(w)));
+  choose(w, 'groc,fuel', 'new', 'food');
+  ok('A6 a taken name is caught', /Food already exists/.test(preview(w)));
+  choose(w, 'groc,fuel', 'new', 'Household');
+  const np = preview(w);
   ok('A6 preview: makes Household, removes both, moves 3 entries', /Makes a new category Household/.test(np) && /Removes Grocery and Fuel/.test(np) && /Moves 3 entries to Household/.test(np), np);
   app.mergeCategory({ preventDefault() {}, target: f }, 'groc,fuel');
   await wait(20);
@@ -316,6 +319,21 @@ const toastText = (w) => w.document.querySelector('.toast, #toast')?.textContent
   w.document.querySelector('.toast-action').click();
   await wait(20);
   ok('A6 Undo removes Household and brings both back', !w.__app.store.getState().categories.some((c) => c.name === 'Household') && ids(w).includes('groc') && ids(w).includes('fuel'));
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  const st = app.store.getState();
+  for (const n of ['Rent', 'Power', 'Water', 'Phone', 'Internet', 'Gym']) st.categories.push({ id: n.toLowerCase(), name: n, type: 'expense', parentId: null, color: '#000', icon: 'tag' });
+  app.openCategoryMerge('fuel');
+  await wait(20);
+  const box = panel(w, 'other').querySelector('input[type="search"]');
+  ok('A7 a search box appears when the list is long', !!box);
+  app.filterCategoryMerge('wa');
+  const visible = [...panel(w, 'other').querySelectorAll('.merge-row')].filter((r) => r.style.display !== 'none').map((r) => r.textContent.trim());
+  ok('A7 typing "wa" leaves only Water', visible.length === 1 && /Water/.test(visible[0]), visible.join('|'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

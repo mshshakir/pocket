@@ -21,7 +21,7 @@ import { SuggestionService }    from '../../domain/services/SuggestionService.js
 export class CalendarView extends BaseView {
   /** @type {HijriCalendarService} */  #hijri;
   /** @type {string|null} */           #focus = null;   // ISO date of focused month
-  /** @type {string} */                #tab   = 'bills'; // 'bills' | 'deliveries' | 'grid'
+  /** @type {string} */                #tab   = 'grid';  // 'grid' = Calendar (opens first) | 'bills' | 'deliveries' | 'shortcuts'
 
   constructor() {
     super();
@@ -64,7 +64,7 @@ export class CalendarView extends BaseView {
     return `
       <div class="flex items-center justify-between mb-4 gap-2">
         <div class="min-w-0">
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regulars</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regulars${this.helpButton('calendar')}</h1>${this.helpHint('calendar')}
           <div class="text-xs text-zinc-500 mt-0.5">Bills, deliveries and what you buy often</div>
         </div>
         <div class="flex gap-2 flex-shrink-0">
@@ -89,7 +89,7 @@ export class CalendarView extends BaseView {
       </div>
 
       <div class="flex gap-1 sm:gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto">
-        ${[['bills', 'Bills'], ['deliveries', 'Deliveries'], ['shortcuts', 'Shortcuts'], ['grid', 'Calendar']].map(([k, l]) => `
+        ${[['grid', 'Calendar'], ['bills', 'Bills'], ['deliveries', 'Deliveries'], ['shortcuts', 'Shortcuts']].map(([k, l]) => `
         <button onclick="window.__app.setCalTab('${k}')"
                 class="px-3 py-2 text-sm ${this.#tab === k ? 'border-b-2 border-zinc-900 dark:border-white font-medium' : 'text-zinc-500'}">${l}</button>`).join('')}
       </div>

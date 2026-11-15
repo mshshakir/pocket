@@ -10891,6 +10891,110 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/HelpGuide.js
+  var HelpGuide = class _HelpGuide {
+    static #SEEN_KEY = "pocket.helpSeen";
+    /** @type {Record<string, {title:string, intro:string, points:string[]}>} */
+    static #PAGES = Object.freeze({
+      calendar: {
+        title: "Regulars",
+        intro: "Everything that repeats, in one place.",
+        points: [
+          "<b>Calendar</b> \u2014 each day at a glance: bills due, deliveries, and what you logged. Tap a day for details.",
+          "<b>Bills</b> \u2014 repeating payments like rent or subscriptions. A bill that asks first (like electricity) waits for you to enter the amount. Pay, Edit or Stop from here.",
+          "<b>Deliveries</b> \u2014 things you pay for later, like milk or the newspaper. Mark the days, pause when you\u2019re away, and pay the vendor what\u2019s owed.",
+          "<b>Shortcuts</b> \u2014 one-tap entries for things you buy often. They show as chips when you add an expense.",
+          "Tap <b>Add</b> to make any of these."
+        ]
+      },
+      budgets: {
+        title: "Budgets",
+        intro: "Set a limit for what you spend, and see how much is left.",
+        points: [
+          "A budget covers one or more categories. A budget on a main category includes all its sub-categories.",
+          "Pick a Gregorian or a Hijri month for it.",
+          "<b>Roll over</b>: what you don\u2019t spend this month is added to next month\u2019s.",
+          "Spending in other currencies is converted to the budget\u2019s currency.",
+          "You can share a budget with family members you\u2019ve added."
+        ]
+      },
+      debts: {
+        title: "Debts",
+        intro: "Keep track of money you lent or borrowed.",
+        points: [
+          "Choose <b>I lent</b> or <b>I borrowed</b>, the person, and the account the money came from or went to.",
+          "Each debt and payment is also an entry in that account, so your balances stay right.",
+          "Tap <b>Record payment</b> as money comes back or goes out; the bar shows what\u2019s left.",
+          "Use <b>Mark as fully paid</b> when it\u2019s settled.",
+          "At the top: what you owe and what\u2019s owed to you, in your home currency."
+        ]
+      },
+      categories: {
+        title: "Categories",
+        intro: "Categories group your entries for budgets and reports.",
+        points: [
+          "Two levels: main categories, and sub-categories inside them. Expense, income and transfer categories are kept apart.",
+          "Tap a category to rename it, change its colour or icon, or move it under another one.",
+          "<b>Merge</b>: tick several and move them into one \u2014 keep one of them, pick another, or make a new one. You can undo straight after.",
+          "<b>Delete</b>: if a category is still in use, you choose where its entries go first."
+        ]
+      }
+    });
+    /** @param {string} page */
+    static has(page) {
+      return Object.hasOwn(_HelpGuide.#PAGES, page);
+    }
+    /** @param {string} page */
+    static guide(page) {
+      return _HelpGuide.#PAGES[page] ?? null;
+    }
+    /** The ? button to put after a page title. */
+    static button(page) {
+      if (!_HelpGuide.has(page)) return "";
+      return `<button type="button" class="help-btn inline-flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 align-middle ml-1"
+                    style="width:28px;height:28px" onclick="window.__app.openHelp('${page}')" title="How this page works" aria-label="How this page works">
+              <i data-lucide="circle-help" style="width:18px;height:18px"></i>
+            </button>`;
+    }
+    /** A one-line nudge under the title until the guide is opened or closed. */
+    static hint(page) {
+      if (!_HelpGuide.has(page) || _HelpGuide.seen(page)) return "";
+      return `<div class="help-hint flex items-center gap-2 text-xs text-zinc-500 mt-1">
+              <span>New here? Tap <b>?</b> for a quick guide.</span>
+              <button type="button" class="underline" onclick="window.__app.dismissHelpHint('${page}')">Got it</button>
+            </div>`;
+    }
+    /** The guide's content, for the help window. */
+    static body(page) {
+      const g = _HelpGuide.guide(page);
+      if (!g) return "";
+      return `<p class="text-sm text-zinc-500 mb-3">${Html.escape(g.intro)}</p>
+            <ul class="space-y-2 text-sm list-disc pl-5">${g.points.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+    }
+    /** @param {string} page */
+    static seen(page) {
+      return _HelpGuide.#readSeen().includes(page);
+    }
+    /** @param {string} page */
+    static markSeen(page) {
+      const list = _HelpGuide.#readSeen();
+      if (list.includes(page)) return;
+      list.push(page);
+      try {
+        localStorage.setItem(_HelpGuide.#SEEN_KEY, JSON.stringify(list));
+      } catch {
+      }
+    }
+    static #readSeen() {
+      try {
+        const v = JSON.parse(localStorage.getItem(_HelpGuide.#SEEN_KEY) || "[]");
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    }
+  };
+
   // src/ui/views/BaseView.js
   var BaseView = class {
     /** @type {Store} */
@@ -11041,6 +11145,14 @@ This replaces your current grouping.`
      * @param {string|any} s
      * @returns {string}
      */
+    /** ? button for a page title (see HelpGuide). */
+    helpButton(page) {
+      return HelpGuide.button(page);
+    }
+    /** One-time "Tap ? for a quick guide" line under a page title. */
+    helpHint(page) {
+      return HelpGuide.hint(page);
+    }
     escapeHtml(s) {
       return Html.escape(s);
     }
@@ -12725,7 +12837,7 @@ This replaces your current grouping.`
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets${this.helpButton("budgets")}</h1>${this.helpHint("budgets")}
           <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Shared with you \xB7 spend counted ${this.escapeHtml(this.space?.scopeNote ? "across all their accounts" : "")}` : "Gregorian-month or Hijri-month tracking"}</div>
         </div>
         ${this.inGuestSpace ? "" : `
@@ -12966,7 +13078,7 @@ This replaces your current grouping.`
       const anyCollapsed = collapsibleParents.some((p) => collapsed.has(p.id));
       return `
       <div class="flex items-center justify-between mb-6 gap-2">
-        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Categories</h1>
+        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Categories${this.helpButton("categories")}</h1>${this.helpHint("categories")}
         <div class="flex items-center gap-2">
           ${collapsibleParents.length ? `
             ${anyExpanded ? `<button class="btn btn-ghost text-sm" onclick="window.__app.collapseAllCategories()" title="Collapse every parent"><i data-lucide="chevrons-down-up" style="width:14px;height:14px"></i><span class="hidden md:inline ml-1">Collapse all</span></button>` : ""}
@@ -13565,7 +13677,7 @@ This replaces your current grouping.`
       return `
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts${this.helpButton("debts")}</h1>${this.helpHint("debts")}
           <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace ? `Debts on the accounts shared with you \xB7 ${this.escapeHtml(this.space.label)}` : "Track loans, repayments and IOUs \xB7 all linked to your accounts"}</div>
         </div>
         ${this.inGuestSpace ? "" : `
@@ -13796,8 +13908,8 @@ This replaces your current grouping.`
     #focus = null;
     // ISO date of focused month
     /** @type {string} */
-    #tab = "bills";
-    // 'bills' | 'deliveries' | 'grid'
+    #tab = "grid";
+    // 'grid' = Calendar (opens first) | 'bills' | 'deliveries' | 'shortcuts'
     constructor() {
       super();
       this.#hijri = new HijriCalendarService();
@@ -13843,7 +13955,7 @@ This replaces your current grouping.`
       return `
       <div class="flex items-center justify-between mb-4 gap-2">
         <div class="min-w-0">
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regulars</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regulars${this.helpButton("calendar")}</h1>${this.helpHint("calendar")}
           <div class="text-xs text-zinc-500 mt-0.5">Bills, deliveries and what you buy often</div>
         </div>
         <div class="flex gap-2 flex-shrink-0">
@@ -13868,7 +13980,7 @@ This replaces your current grouping.`
       </div>
 
       <div class="flex gap-1 sm:gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto">
-        ${[["bills", "Bills"], ["deliveries", "Deliveries"], ["shortcuts", "Shortcuts"], ["grid", "Calendar"]].map(([k, l]) => `
+        ${[["grid", "Calendar"], ["bills", "Bills"], ["deliveries", "Deliveries"], ["shortcuts", "Shortcuts"]].map(([k, l]) => `
         <button onclick="window.__app.setCalTab('${k}')"
                 class="px-3 py-2 text-sm ${this.#tab === k ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${l}</button>`).join("")}
       </div>
@@ -15605,17 +15717,30 @@ This replaces your current grouping.`
 
   // src/ui/modals/CategoryMergeModal.js
   var CategoryMergeModal = class _CategoryMergeModal {
-    /** The "+ New category…" choice in the picker. */
-    static NEW = "__new";
+    /** Card keys, also the value of the form's `choice` radio. */
+    static KEEP = "keep";
+    static OTHER = "other";
+    static NEW = "new";
     /** @type {() => import('../../domain/services/CategoryService.js').CategoryService} */
     #categories;
     /** @param {{categories: () => object}} deps */
     constructor({ categories }) {
       this.#categories = categories;
     }
-    /** The picked ids from opts, existing ones only. */
+    /** The picked ids from opts. */
     static idsOf(opts = {}) {
       return Array.isArray(opts.ids) ? opts.ids : opts.id ? [opts.id] : [];
+    }
+    /**
+     * What the form currently says: the card picked and the category or name.
+     * @param {HTMLFormElement} form
+     * @returns {{choice:string, intoId:string, newName:string}}
+     */
+    static readForm(form) {
+      const fd = new FormData(form);
+      const choice = String(fd.get("choice") || "");
+      const intoId = choice === _CategoryMergeModal.KEEP ? String(fd.get("keepId") || "") : choice === _CategoryMergeModal.OTHER ? String(fd.get("otherId") || "") : "";
+      return { choice, intoId, newName: String(fd.get("newName") || "") };
     }
     render(opts = {}) {
       const cats = this.#categories();
@@ -15632,34 +15757,57 @@ This replaces your current grouping.`
       if (new Set(srcs.map((c) => c.type)).size > 1) {
         return `<div class="p-5">${head(title)}<p class="text-sm text-zinc-500">Pick categories of one type \u2014 all expense, or all income.</p></div>`;
       }
-      const targets = cats.mergeTargetsMany(ids);
       const keep = cats.mergeKeepOptions(ids);
-      const into = [...targets, ...keep].find((t) => t.id === opts.into)?.id || "";
+      const others = cats.mergeTargetsMany(ids);
       const list = one ? "" : `<div class="flex flex-wrap gap-1 mb-3">${srcs.map((c) => `<span class="chip">${Html.escape(cats.fullName(c.id))}</span>`).join("")}</div>`;
-      const intro = del ? `${name} is still in use. Pick where its entries should go \u2014 then it's deleted.` : one ? `Everything in ${name} moves to the category you pick, then ${name} is removed. The category you pick keeps its name, colour and limit.` : `Keep one of them, move them all into another category, or make a new one. Everything moves there and the rest are removed.`;
-      const opt = (t, label) => `<option value="${t.id}" ${t.id === into ? "selected" : ""}>${label}</option>`;
+      const intro = del ? `${name} is still in use. Choose where its entries go \u2014 then it's deleted.` : "Choose where everything goes:";
+      const refresh = `window.__app.previewCategoryMerge('${idsArg}')`;
+      const cards = [
+        keep.length && { key: _CategoryMergeModal.KEEP, icon: "circle-check", label: "Keep one of these" },
+        others.length && { key: _CategoryMergeModal.OTHER, icon: "folder-input", label: "Move into another" },
+        { key: _CategoryMergeModal.NEW, icon: "circle-plus", label: "New category" }
+      ].filter(Boolean);
+      const first = cards[0].key;
+      const shown = (key) => key === first ? "" : 'style="display:none"';
       return `
-      <form onsubmit="window.__app.mergeCategory(event,'${idsArg}','${del ? "delete" : "merge"}')" class="p-5">
+      <form onsubmit="window.__app.mergeCategory(event,'${idsArg}')" class="p-5 category-merge-form">
         ${head(title)}
         ${list}
-        <p class="text-sm text-zinc-500 mb-4">${intro}</p>
+        <p class="text-sm text-zinc-500 mb-3">${intro}</p>
 
-        <div class="mb-3">
-          <label class="text-xs text-zinc-500">Move to</label>
-          <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${idsArg}', this.value)">
-            <option value="">\u2014 Pick a category \u2014</option>
-            ${keep.length ? `<optgroup label="Keep one of these">${keep.map((t) => opt(t, `Keep ${Html.escape(cats.fullName(t.id))}`)).join("")}</optgroup>` : ""}
-            ${targets.length ? `<optgroup label="${keep.length ? "Or move into" : "Move into"}">${targets.map((t) => opt(t, Html.escape(cats.fullName(t.id)))).join("")}</optgroup>` : ""}
-            <option value="${_CategoryMergeModal.NEW}">+ New category\u2026</option>
-          </select>
+        <div class="grid gap-2 mb-4" style="grid-template-columns:repeat(${cards.length},minmax(0,1fr))">
+          ${cards.map((c) => `
+            <label class="cursor-pointer">
+              <input type="radio" name="choice" value="${c.key}" class="peer sr-only" ${c.key === first ? "checked" : ""} onchange="${refresh}">
+              <span class="merge-card flex flex-col items-center justify-center gap-1 text-center rounded-xl border-2 border-zinc-200 dark:border-zinc-800 px-2 py-3 text-sm font-medium h-full
+                           peer-checked:border-zinc-900 peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:border-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900">
+                <i data-lucide="${c.icon}"></i>${c.label}
+              </span>
+            </label>`).join("")}
         </div>
 
-        <div id="categoryMergeNew" class="mb-3" style="display:none">
-          <label class="text-xs text-zinc-500">New category name</label>
-          <input class="input" name="newName" autocomplete="off" oninput="window.__app.previewCategoryMerge('${idsArg}', '${_CategoryMergeModal.NEW}')">
+        ${keep.length ? `
+        <div data-merge-panel="${_CategoryMergeModal.KEEP}" class="mb-3" ${shown(_CategoryMergeModal.KEEP)}>
+          <div class="text-xs text-zinc-500 mb-1">Which one stays? The others move into it.</div>
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
+            ${keep.map((c) => this.#row("keepId", c, cats, refresh)).join("")}
+          </div>
+        </div>` : ""}
+
+        ${others.length ? `
+        <div data-merge-panel="${_CategoryMergeModal.OTHER}" class="mb-3" ${shown(_CategoryMergeModal.OTHER)}>
+          ${others.length > 6 ? `<input class="input mb-2" type="search" placeholder="Search categories" autocomplete="off" oninput="window.__app.filterCategoryMerge(this.value)">` : ""}
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 overflow-y-auto" style="max-height:240px">
+            ${others.map((c) => this.#row("otherId", c, cats, refresh)).join("")}
+          </div>
+        </div>` : ""}
+
+        <div data-merge-panel="${_CategoryMergeModal.NEW}" class="mb-3" ${shown(_CategoryMergeModal.NEW)}>
+          <label class="text-xs text-zinc-500">Name of the new category</label>
+          <input class="input" name="newName" autocomplete="off" placeholder="e.g. Household" oninput="${refresh}">
         </div>
 
-        <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(ids, into) : ""}</div>
+        <div id="categoryMergePreview" class="text-sm mb-4"></div>
 
         <div class="flex items-center gap-2">
           <div class="flex-1"></div>
@@ -15671,16 +15819,15 @@ This replaces your current grouping.`
       </form>`;
     }
     /**
-     * The plain-words line under the picker, e.g.
-     * "Moves 42 entries and 2 regulars to Food. Sub-category Snacks moves under Food."
+     * The plain-words line under the choices, e.g.
+     * "Removes Grocery. Moves 42 entries to Food. Sub-category Snacks moves under Food."
      * @param {string[]} ids
-     * @param {string} intoId  a category id, or CategoryMergeModal.NEW
-     * @param {string} [newName]  the name typed for a new category
+     * @param {{choice:string, intoId:string, newName:string}} pick  from readForm()
      * @returns {string} HTML
      */
-    previewText(ids, intoId, newName = "") {
-      const plan = this.#plan(ids, intoId, newName);
-      if (plan.note !== void 0) return `<div class="text-zinc-500">${Html.escape(plan.note)}</div>`;
+    previewText(ids, pick) {
+      const plan = this.#plan(ids, pick);
+      if (plan.note !== void 0) return plan.note ? `<div class="text-zinc-500">${Html.escape(plan.note)}</div>` : "";
       const p = plan.summary;
       const parts = [
         _CategoryMergeModal.#count(p.entries, "entry", "entries"),
@@ -15697,15 +15844,23 @@ This replaces your current grouping.`
       if (p.mergedSubs.length) lines.push(`${_CategoryMergeModal.#subs(p.mergedSubs)} ${p.mergedSubs.length === 1 ? "joins the one" : "join the ones"} with the same name.`);
       return lines.map((l) => `<div>${l}</div>`).join("") + `<div class="text-xs text-zinc-500 mt-1">You can undo this straight after.</div>`;
     }
+    // ── Private ──────────────────────────────────────────────────────────
+    #row(field, c, cats, refresh) {
+      return `
+      <label class="merge-row flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900" data-name="${Html.escape(cats.fullName(c.id).toLowerCase())}">
+        <input type="radio" name="${field}" value="${c.id}" onchange="${refresh}">
+        <span class="icon-pill" style="background:${Html.color(c.color)}22;color:${Html.color(c.color)};width:28px;height:28px"><i data-lucide="${Html.icon(c.icon, "tag")}" style="width:14px;height:14px"></i></span>
+        <span class="flex-1 text-sm">${Html.escape(cats.fullName(c.id))}</span>
+      </label>`;
+    }
     /**
-     * Work out what the picked choice means: keep one of the ticked, another
-     * category, or a new one.
+     * Work out what the picked choice means.
      * @returns {{note?:string, summary?:object, label?:string, shortName?:string, isNew?:boolean, removed?:string[]}}
      */
-    #plan(ids, intoId, newName) {
+    #plan(ids, { choice, intoId, newName }) {
       const cats = this.#categories();
       const name = (id) => cats.find(id)?.name || "";
-      if (intoId === _CategoryMergeModal.NEW) {
+      if (choice === _CategoryMergeModal.NEW) {
         if (!(newName || "").trim()) return { note: "Type a name for the new category." };
         const d = cats.draftMergeTarget(ids, newName);
         if (!d.ok) return { note: d.reason };
@@ -15720,13 +15875,19 @@ This replaces your current grouping.`
           removed: ids.map(name)
         };
       }
-      if (!cats.find(intoId)) return { note: "" };
-      const from = ids.includes(intoId) ? ids.filter((id) => id !== intoId) : ids;
+      if (!intoId || !cats.find(intoId)) {
+        return { note: choice === _CategoryMergeModal.KEEP ? "Tap the one to keep." : choice === _CategoryMergeModal.OTHER ? "Tap a category." : "" };
+      }
+      const from = choice === _CategoryMergeModal.KEEP ? ids.filter((id) => id !== intoId) : ids;
       const summary = cats.mergePreviewMany(from, intoId);
       if (!summary) return { note: "That one won't work \u2014 pick another." };
-      return { summary, label: cats.fullName(intoId), shortName: name(intoId), removed: from.length > 1 || ids.includes(intoId) ? from.map(name) : [] };
+      return {
+        summary,
+        label: cats.fullName(intoId),
+        shortName: name(intoId),
+        removed: from.length > 1 || choice === _CategoryMergeModal.KEEP ? from.map(name) : []
+      };
     }
-    // ── Private ──────────────────────────────────────────────────────────
     static #count(n, one, many) {
       return n ? `${n} ${n === 1 ? one : many}` : "";
     }
@@ -15736,6 +15897,24 @@ This replaces your current grouping.`
     static #subs(names) {
       const list = names.map((n) => Html.escape(n));
       return names.length === 1 ? `Sub-category ${list[0]}` : `Sub-categories ${_CategoryMergeModal.#join(list)}`;
+    }
+  };
+
+  // src/ui/modals/HelpModal.js
+  var HelpModal = class {
+    render(opts = {}) {
+      const g = HelpGuide.guide(opts.page);
+      return `
+      <div class="p-5 help-sheet">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg font-semibold flex items-center gap-2"><i data-lucide="circle-help"></i> ${Html.escape(g ? g.title : "Help")}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        ${g ? HelpGuide.body(opts.page) : '<p class="text-sm text-zinc-500">No guide for this page yet.</p>'}
+        <div class="flex justify-end mt-5">
+          <button type="button" class="btn btn-primary" onclick="window.__app.closeModal()">Got it</button>
+        </div>
+      </div>`;
     }
   };
 
@@ -19791,6 +19970,7 @@ This replaces your current grouping.`
       this.#modal.register("transaction", this.#txModal);
       this.#modal.register("account", new AccountModal());
       this.#modal.register("category", new CategoryModal());
+      this.#modal.register("help", new HelpModal());
       this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
       this.#modal.register("budget", new BudgetModal());
       this.#modal.register("settings", new SettingsModal());
@@ -19864,6 +20044,7 @@ This replaces your current grouping.`
       if (id === "__add") return this.openModal("transaction", {});
       if (id === "__more") return this.#openMoreMenu();
       if (id !== "categories") this.#views.get("categories")?.clearPicking?.();
+      if (id === "calendar" && this.#router.current !== "calendar") this.#views.get("calendar")?.setTab?.("grid");
       this.#router.navigate(id);
       this.#render();
     }
@@ -21977,6 +22158,19 @@ Leave empty to use your own name.`,
       this.#render();
     }
     // ──────────────────────────────────────────────────────────────────────────
+    // Page help (the ? by a page title)
+    // ──────────────────────────────────────────────────────────────────────────
+    /** @param {string} page  a HelpGuide key: calendar, budgets, debts, categories */
+    openHelp(page) {
+      HelpGuide.markSeen(page);
+      this.#render();
+      this.openModal("help", { page });
+    }
+    dismissHelpHint(page) {
+      HelpGuide.markSeen(page);
+      this.#render();
+    }
+    // ──────────────────────────────────────────────────────────────────────────
     // Category CRUD
     // ──────────────────────────────────────────────────────────────────────────
     submitCategory(event, id) {
@@ -22020,7 +22214,9 @@ Leave empty to use your own name.`,
      * @param {'merge'|'delete'} [mode='merge']
      */
     openCategoryMerge(ids, mode = "merge") {
-      this.openModal("categoryMerge", { ids: _Application.#idList(ids), mode });
+      const list = _Application.#idList(ids);
+      this.openModal("categoryMerge", { ids: list, mode });
+      this.previewCategoryMerge(list);
     }
     /** Categories → Merge: turn ticking on or off. */
     toggleCategoryPicking() {
@@ -22037,24 +22233,36 @@ Leave empty to use your own name.`,
       if (!ids.length) return this.#toast.show("Tick at least one category");
       this.openCategoryMerge(ids);
     }
-    /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
-    previewCategoryMerge(ids, intoId) {
-      const isNew = intoId === CategoryMergeModal.NEW;
-      const box = document.getElementById("categoryMergeNew");
-      const input = box?.querySelector('input[name="newName"]');
-      if (box) box.style.display = isNew ? "" : "none";
-      if (isNew && input && document.activeElement !== input && !input.value) input.focus();
+    /**
+     * The merge window changed: show the picked card's panel and refresh the
+     * "Moves 42 entries to Food" line.
+     */
+    previewCategoryMerge(ids) {
+      const form = document.querySelector("form.category-merge-form");
+      if (!form) return;
+      const pick = CategoryMergeModal.readForm(form);
+      for (const panel of form.querySelectorAll("[data-merge-panel]")) {
+        const on = panel.dataset.mergePanel === pick.choice;
+        if (on && panel.style.display === "none" && pick.choice === CategoryMergeModal.NEW) setTimeout(() => panel.querySelector("input")?.focus(), 0);
+        panel.style.display = on ? "" : "none";
+      }
       const el = document.getElementById("categoryMergePreview");
-      if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(_Application.#idList(ids), intoId, input?.value || "") : "";
+      if (el) el.innerHTML = this.#categoryMergeModal.previewText(_Application.#idList(ids), pick);
+    }
+    /** Search box in "Move into another": hide rows that don't match. */
+    filterCategoryMerge(q) {
+      const needle = String(q || "").trim().toLowerCase();
+      for (const row of document.querySelectorAll('[data-merge-panel="other"] .merge-row')) {
+        row.style.display = !needle || row.dataset.name.includes(needle) ? "" : "none";
+      }
     }
     mergeCategory(event, ids) {
       event.preventDefault();
-      const fd = new FormData(event.target);
-      const intoId = String(fd.get("into") || "");
-      if (!intoId) return this.#toast.show("Pick a category to move it to");
       const list = _Application.#idList(ids);
-      if (intoId === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, String(fd.get("newName") || ""));
-      this.#runCategoryMerge(list.filter((id) => id !== intoId), intoId);
+      const { choice, intoId, newName } = CategoryMergeModal.readForm(event.target);
+      if (choice === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, newName);
+      if (!intoId) return this.#toast.show(choice === CategoryMergeModal.KEEP ? "Tap the one to keep" : "Pick a category to move it to");
+      this.#runCategoryMerge(choice === CategoryMergeModal.KEEP ? list.filter((id) => id !== intoId) : list, intoId);
     }
     /** '<id>,<id>' from an onclick, or an array → array of ids */
     static #idList(ids) {

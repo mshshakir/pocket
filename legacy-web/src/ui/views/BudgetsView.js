@@ -27,7 +27,7 @@ export class BudgetsView extends BaseView {
     return `
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Budgets${this.helpButton('budgets')}</h1>${this.helpHint('budgets')}
           <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace
              ? `Shared with you · spend counted ${this.escapeHtml(this.space?.scopeNote ? 'across all their accounts' : '')}`
              : 'Gregorian-month or Hijri-month tracking'}</div>

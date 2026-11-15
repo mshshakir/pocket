@@ -23,7 +23,7 @@ export class DebtsView extends BaseView {
     return `
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts</h1>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Debts${this.helpButton('debts')}</h1>${this.helpHint('debts')}
           <div class="text-xs text-zinc-500 mt-0.5">${this.inGuestSpace
              ? `Debts on the accounts shared with you · ${this.escapeHtml(this.space.label)}`
              : 'Track loans, repayments and IOUs · all linked to your accounts'}</div>

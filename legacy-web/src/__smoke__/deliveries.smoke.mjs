@@ -370,7 +370,7 @@ function boot(extraTx = []) {
   await wait(10);
   let m = app.vendorDues.items()[0];
   ok('U1 paid: nothing owed, paid up to today', app.vendorDues.due(m) === null && m.paidTo === today);
-  app.setCalTab('dues'); app.navigate('calendar');
+  app.navigate('calendar'); app.setCalTab('dues');
   await wait(30);
   ok('U1 the Dues card offers Undo on the last payment', /undoPayment\(/.test(w.document.getElementById('viewContent').innerHTML));
   await app.undoPayment('Doodhwala');

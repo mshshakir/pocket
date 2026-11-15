@@ -80,6 +80,8 @@ import { TransactionModal } from './ui/modals/TransactionModal.js';
 import { AccountModal }     from './ui/modals/AccountModal.js';
 import { CategoryModal }    from './ui/modals/CategoryModal.js';
 import { CategoryMergeModal } from './ui/modals/CategoryMergeModal.js';
+import { HelpModal }        from './ui/modals/HelpModal.js';
+import { HelpGuide }        from './ui/components/HelpGuide.js';
 import { BudgetModal }      from './ui/modals/BudgetModal.js';
 import { SettingsModal }    from './ui/modals/SettingsModal.js';
 import { CsvModal }         from './ui/modals/CsvModal.js';
@@ -371,6 +373,7 @@ export class Application {
     this.#modal.register('transaction',  this.#txModal);
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
+    this.#modal.register('help',         new HelpModal());
     this.#modal.register('categoryMerge', this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
     this.#modal.register('budget',       new BudgetModal());
     this.#modal.register('settings',     new SettingsModal());
@@ -476,6 +479,9 @@ export class Application {
     if (id === '__add')  return this.openModal('transaction', {});
     if (id === '__more') return this.#openMoreMenu();
     if (id !== 'categories') this.#views.get('categories')?.clearPicking?.(); // leaving ends merge ticking
+    // Regulars always opens on its Calendar tab; links that want another tab
+    // navigate first and then call setCalTab.
+    if (id === 'calendar' && this.#router.current !== 'calendar') this.#views.get('calendar')?.setTab?.('grid');
     this.#router.navigate(id);
     this.#render();
   }
@@ -2729,6 +2735,22 @@ export class Application {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Page help (the ? by a page title)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** @param {string} page  a HelpGuide key: calendar, budgets, debts, categories */
+  openHelp(page) {
+    HelpGuide.markSeen(page);
+    this.#render();                       // drops the one-time hint
+    this.openModal('help', { page });
+  }
+
+  dismissHelpHint(page) {
+    HelpGuide.markSeen(page);
+    this.#render();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Category CRUD
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -2777,7 +2799,9 @@ export class Application {
    * @param {'merge'|'delete'} [mode='merge']
    */
   openCategoryMerge(ids, mode = 'merge') {
-    this.openModal('categoryMerge', { ids: Application.#idList(ids), mode });
+    const list = Application.#idList(ids);
+    this.openModal('categoryMerge', { ids: list, mode });
+    this.previewCategoryMerge(list);
   }
 
   /** Categories → Merge: turn ticking on or off. */
@@ -2798,26 +2822,39 @@ export class Application {
     this.openCategoryMerge(ids);
   }
 
-  /** Refresh the "Moves 42 entries to Food" line as the picker changes. */
-  previewCategoryMerge(ids, intoId) {
-    const isNew = intoId === CategoryMergeModal.NEW;
-    const box   = document.getElementById('categoryMergeNew');
-    const input = box?.querySelector('input[name="newName"]');
-    if (box) box.style.display = isNew ? '' : 'none';
-    if (isNew && input && document.activeElement !== input && !input.value) input.focus();
+  /**
+   * The merge window changed: show the picked card's panel and refresh the
+   * "Moves 42 entries to Food" line.
+   */
+  previewCategoryMerge(ids) {
+    const form = document.querySelector('form.category-merge-form');
+    if (!form) return;
+    const pick = CategoryMergeModal.readForm(form);
+    for (const panel of form.querySelectorAll('[data-merge-panel]')) {
+      const on = panel.dataset.mergePanel === pick.choice;
+      if (on && panel.style.display === 'none' && pick.choice === CategoryMergeModal.NEW) setTimeout(() => panel.querySelector('input')?.focus(), 0);
+      panel.style.display = on ? '' : 'none';
+    }
     const el = document.getElementById('categoryMergePreview');
-    if (el) el.innerHTML = intoId ? this.#categoryMergeModal.previewText(Application.#idList(ids), intoId, input?.value || '') : '';
+    if (el) el.innerHTML = this.#categoryMergeModal.previewText(Application.#idList(ids), pick);
+  }
+
+  /** Search box in "Move into another": hide rows that don't match. */
+  filterCategoryMerge(q) {
+    const needle = String(q || '').trim().toLowerCase();
+    for (const row of document.querySelectorAll('[data-merge-panel="other"] .merge-row')) {
+      row.style.display = !needle || row.dataset.name.includes(needle) ? '' : 'none';
+    }
   }
 
   mergeCategory(event, ids) {
     event.preventDefault();
-    const fd     = new FormData(event.target);
-    const intoId = String(fd.get('into') || '');
-    if (!intoId) return this.#toast.show('Pick a category to move it to');
     const list = Application.#idList(ids);
-    if (intoId === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, String(fd.get('newName') || ''));
+    const { choice, intoId, newName } = CategoryMergeModal.readForm(event.target);
+    if (choice === CategoryMergeModal.NEW) return this.#runCategoryMerge(list, null, newName);
+    if (!intoId) return this.#toast.show(choice === CategoryMergeModal.KEEP ? 'Tap the one to keep' : 'Pick a category to move it to');
     // "Keep X": the other ticked ones go into X.
-    this.#runCategoryMerge(list.filter((id) => id !== intoId), intoId);
+    this.#runCategoryMerge(choice === CategoryMergeModal.KEEP ? list.filter((id) => id !== intoId) : list, intoId);
   }
 
   /** '<id>,<id>' from an onclick, or an array → array of ids */

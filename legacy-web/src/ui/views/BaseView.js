@@ -11,6 +11,7 @@
  * Every view receives the same service dependencies via constructor injection
  * rather than accessing global singletons directly — this keeps views testable.
  */
+import { HelpGuide } from '../components/HelpGuide.js';
 import { Store }               from '../../core/Store.js';
 import { Html }                from '../../core/Html.js';
 import { CurrencyService }     from '../../domain/services/CurrencyService.js';
@@ -182,6 +183,12 @@ export class BaseView {
    * @param {string|any} s
    * @returns {string}
    */
+  /** ? button for a page title (see HelpGuide). */
+  helpButton(page) { return HelpGuide.button(page); }
+
+  /** One-time "Tap ? for a quick guide" line under a page title. */
+  helpHint(page) { return HelpGuide.hint(page); }
+
   escapeHtml(s) {
     return Html.escape(s);
   }

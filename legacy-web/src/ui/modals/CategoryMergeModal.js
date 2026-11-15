@@ -2,17 +2,24 @@
  * CategoryMergeModal — move one or more categories into another one.
  *
  * Ways in:
- *   mode 'merge'  — Categories → Merge (pick several), or Edit category → Merge into…
+ *   mode 'merge'  — Categories → Merge (pick several), or Edit category → Merge
  *   mode 'delete' — Delete on a category that's still used: its entries need
  *                   somewhere to go, so it's the same merge, worded as a delete.
  *
- * opts: { ids?: string[], id?: string, mode?: 'merge'|'delete', into?: string }
+ * The choice is three cards, not a dropdown, so every option is in sight:
+ *   Keep one of these  — a ticked category takes the rest (2+ ticked only)
+ *   Move into another  — search + list of other categories
+ *   New category       — type a name
+ *
+ * opts: { ids?: string[], id?: string, mode?: 'merge'|'delete' }
  */
 import { Html } from '../../core/Html.js';
 
 export class CategoryMergeModal {
-  /** The "+ New category…" choice in the picker. */
-  static NEW = '__new';
+  /** Card keys, also the value of the form's `choice` radio. */
+  static KEEP  = 'keep';
+  static OTHER = 'other';
+  static NEW   = 'new';
 
   /** @type {() => import('../../domain/services/CategoryService.js').CategoryService} */
   #categories;
@@ -22,9 +29,22 @@ export class CategoryMergeModal {
     this.#categories = categories;
   }
 
-  /** The picked ids from opts, existing ones only. */
+  /** The picked ids from opts. */
   static idsOf(opts = {}) {
     return Array.isArray(opts.ids) ? opts.ids : (opts.id ? [opts.id] : []);
+  }
+
+  /**
+   * What the form currently says: the card picked and the category or name.
+   * @param {HTMLFormElement} form
+   * @returns {{choice:string, intoId:string, newName:string}}
+   */
+  static readForm(form) {
+    const fd     = new FormData(form);
+    const choice = String(fd.get('choice') || '');
+    const intoId = choice === CategoryMergeModal.KEEP ? String(fd.get('keepId') || '')
+      : choice === CategoryMergeModal.OTHER ? String(fd.get('otherId') || '') : '';
+    return { choice, intoId, newName: String(fd.get('newName') || '') };
   }
 
   render(opts = {}) {
@@ -34,49 +54,69 @@ export class CategoryMergeModal {
     const head  = (title) => `<div class="flex items-center justify-between mb-3"><h3 class="text-lg font-semibold">${title}</h3>${close}</div>`;
     if (!srcs.length) return `<div class="p-5">${head('Category not found')}</div>`;
 
-    const del     = opts.mode === 'delete';
-    const ids     = srcs.map((c) => c.id);
-    const idsArg  = ids.join(',');
-    const one     = srcs.length === 1;
-    const name    = one ? Html.escape(srcs[0].name) : `${srcs.length} categories`;
-    const title   = del ? `Delete ${name}` : `Merge ${name}`;
+    const del    = opts.mode === 'delete';
+    const ids    = srcs.map((c) => c.id);
+    const idsArg = ids.join(',');
+    const one    = srcs.length === 1;
+    const name   = one ? Html.escape(srcs[0].name) : `${srcs.length} categories`;
+    const title  = del ? `Delete ${name}` : `Merge ${name}`;
 
     if (new Set(srcs.map((c) => c.type)).size > 1) {
       return `<div class="p-5">${head(title)}<p class="text-sm text-zinc-500">Pick categories of one type — all expense, or all income.</p></div>`;
     }
-    const targets = cats.mergeTargetsMany(ids);
     const keep    = cats.mergeKeepOptions(ids);
-    const into    = [...targets, ...keep].find((t) => t.id === opts.into)?.id || '';
+    const others  = cats.mergeTargetsMany(ids);
     const list    = one ? '' : `<div class="flex flex-wrap gap-1 mb-3">${srcs.map((c) => `<span class="chip">${Html.escape(cats.fullName(c.id))}</span>`).join('')}</div>`;
-    const intro   = del
-      ? `${name} is still in use. Pick where its entries should go — then it's deleted.`
-      : one
-        ? `Everything in ${name} moves to the category you pick, then ${name} is removed. The category you pick keeps its name, colour and limit.`
-        : `Keep one of them, move them all into another category, or make a new one. Everything moves there and the rest are removed.`;
-    const opt = (t, label) => `<option value="${t.id}" ${t.id === into ? 'selected' : ''}>${label}</option>`;
+    const intro   = del ? `${name} is still in use. Choose where its entries go — then it's deleted.` : 'Choose where everything goes:';
+    const refresh = `window.__app.previewCategoryMerge('${idsArg}')`;
+
+    const cards = [
+      keep.length   && { key: CategoryMergeModal.KEEP,  icon: 'circle-check', label: 'Keep one of these' },
+      others.length && { key: CategoryMergeModal.OTHER, icon: 'folder-input', label: 'Move into another' },
+      { key: CategoryMergeModal.NEW, icon: 'circle-plus', label: 'New category' },
+    ].filter(Boolean);
+    const first = cards[0].key;
+    const shown = (key) => (key === first ? '' : 'style="display:none"');
 
     return `
-      <form onsubmit="window.__app.mergeCategory(event,'${idsArg}','${del ? 'delete' : 'merge'}')" class="p-5">
+      <form onsubmit="window.__app.mergeCategory(event,'${idsArg}')" class="p-5 category-merge-form">
         ${head(title)}
         ${list}
-        <p class="text-sm text-zinc-500 mb-4">${intro}</p>
+        <p class="text-sm text-zinc-500 mb-3">${intro}</p>
 
-        <div class="mb-3">
-          <label class="text-xs text-zinc-500">Move to</label>
-          <select class="select" name="into" required onchange="window.__app.previewCategoryMerge('${idsArg}', this.value)">
-            <option value="">— Pick a category —</option>
-            ${keep.length ? `<optgroup label="Keep one of these">${keep.map((t) => opt(t, `Keep ${Html.escape(cats.fullName(t.id))}`)).join('')}</optgroup>` : ''}
-            ${targets.length ? `<optgroup label="${keep.length ? 'Or move into' : 'Move into'}">${targets.map((t) => opt(t, Html.escape(cats.fullName(t.id)))).join('')}</optgroup>` : ''}
-            <option value="${CategoryMergeModal.NEW}">+ New category…</option>
-          </select>
+        <div class="grid gap-2 mb-4" style="grid-template-columns:repeat(${cards.length},minmax(0,1fr))">
+          ${cards.map((c) => `
+            <label class="cursor-pointer">
+              <input type="radio" name="choice" value="${c.key}" class="peer sr-only" ${c.key === first ? 'checked' : ''} onchange="${refresh}">
+              <span class="merge-card flex flex-col items-center justify-center gap-1 text-center rounded-xl border-2 border-zinc-200 dark:border-zinc-800 px-2 py-3 text-sm font-medium h-full
+                           peer-checked:border-zinc-900 peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:border-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900">
+                <i data-lucide="${c.icon}"></i>${c.label}
+              </span>
+            </label>`).join('')}
         </div>
 
-        <div id="categoryMergeNew" class="mb-3" style="display:none">
-          <label class="text-xs text-zinc-500">New category name</label>
-          <input class="input" name="newName" autocomplete="off" oninput="window.__app.previewCategoryMerge('${idsArg}', '${CategoryMergeModal.NEW}')">
+        ${keep.length ? `
+        <div data-merge-panel="${CategoryMergeModal.KEEP}" class="mb-3" ${shown(CategoryMergeModal.KEEP)}>
+          <div class="text-xs text-zinc-500 mb-1">Which one stays? The others move into it.</div>
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
+            ${keep.map((c) => this.#row('keepId', c, cats, refresh)).join('')}
+          </div>
+        </div>` : ''}
+
+        ${others.length ? `
+        <div data-merge-panel="${CategoryMergeModal.OTHER}" class="mb-3" ${shown(CategoryMergeModal.OTHER)}>
+          ${others.length > 6 ? `<input class="input mb-2" type="search" placeholder="Search categories" autocomplete="off" oninput="window.__app.filterCategoryMerge(this.value)">` : ''}
+          <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 overflow-y-auto" style="max-height:240px">
+            ${others.map((c) => this.#row('otherId', c, cats, refresh)).join('')}
+          </div>
+        </div>` : ''}
+
+        <div data-merge-panel="${CategoryMergeModal.NEW}" class="mb-3" ${shown(CategoryMergeModal.NEW)}>
+          <label class="text-xs text-zinc-500">Name of the new category</label>
+          <input class="input" name="newName" autocomplete="off" placeholder="e.g. Household" oninput="${refresh}">
         </div>
 
-        <div id="categoryMergePreview" class="text-sm mb-4">${into ? this.previewText(ids, into) : ''}</div>
+        <div id="categoryMergePreview" class="text-sm mb-4"></div>
 
         <div class="flex items-center gap-2">
           <div class="flex-1"></div>
@@ -89,16 +129,15 @@ export class CategoryMergeModal {
   }
 
   /**
-   * The plain-words line under the picker, e.g.
-   * "Moves 42 entries and 2 regulars to Food. Sub-category Snacks moves under Food."
+   * The plain-words line under the choices, e.g.
+   * "Removes Grocery. Moves 42 entries to Food. Sub-category Snacks moves under Food."
    * @param {string[]} ids
-   * @param {string} intoId  a category id, or CategoryMergeModal.NEW
-   * @param {string} [newName]  the name typed for a new category
+   * @param {{choice:string, intoId:string, newName:string}} pick  from readForm()
    * @returns {string} HTML
    */
-  previewText(ids, intoId, newName = '') {
-    const plan = this.#plan(ids, intoId, newName);
-    if (plan.note !== undefined) return `<div class="text-zinc-500">${Html.escape(plan.note)}</div>`;
+  previewText(ids, pick) {
+    const plan = this.#plan(ids, pick);
+    if (plan.note !== undefined) return plan.note ? `<div class="text-zinc-500">${Html.escape(plan.note)}</div>` : '';
     const p = plan.summary;
     const parts = [
       CategoryMergeModal.#count(p.entries, 'entry', 'entries'),
@@ -117,15 +156,25 @@ export class CategoryMergeModal {
       `<div class="text-xs text-zinc-500 mt-1">You can undo this straight after.</div>`;
   }
 
+  // ── Private ──────────────────────────────────────────────────────────
+
+  #row(field, c, cats, refresh) {
+    return `
+      <label class="merge-row flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900" data-name="${Html.escape(cats.fullName(c.id).toLowerCase())}">
+        <input type="radio" name="${field}" value="${c.id}" onchange="${refresh}">
+        <span class="icon-pill" style="background:${Html.color(c.color)}22;color:${Html.color(c.color)};width:28px;height:28px"><i data-lucide="${Html.icon(c.icon, 'tag')}" style="width:14px;height:14px"></i></span>
+        <span class="flex-1 text-sm">${Html.escape(cats.fullName(c.id))}</span>
+      </label>`;
+  }
+
   /**
-   * Work out what the picked choice means: keep one of the ticked, another
-   * category, or a new one.
+   * Work out what the picked choice means.
    * @returns {{note?:string, summary?:object, label?:string, shortName?:string, isNew?:boolean, removed?:string[]}}
    */
-  #plan(ids, intoId, newName) {
+  #plan(ids, { choice, intoId, newName }) {
     const cats = this.#categories();
     const name = (id) => cats.find(id)?.name || '';
-    if (intoId === CategoryMergeModal.NEW) {
+    if (choice === CategoryMergeModal.NEW) {
       if (!(newName || '').trim()) return { note: 'Type a name for the new category.' };
       const d = cats.draftMergeTarget(ids, newName);
       if (!d.ok) return { note: d.reason };
@@ -135,14 +184,15 @@ export class CategoryMergeModal {
       return { summary, isNew: true, shortName: d.category.name,
         label: parent ? `${parent} / ${d.category.name}` : d.category.name, removed: ids.map(name) };
     }
-    if (!cats.find(intoId)) return { note: '' };
-    const from    = ids.includes(intoId) ? ids.filter((id) => id !== intoId) : ids;
+    if (!intoId || !cats.find(intoId)) {
+      return { note: choice === CategoryMergeModal.KEEP ? 'Tap the one to keep.' : choice === CategoryMergeModal.OTHER ? 'Tap a category.' : '' };
+    }
+    const from    = choice === CategoryMergeModal.KEEP ? ids.filter((id) => id !== intoId) : ids;
     const summary = cats.mergePreviewMany(from, intoId);
     if (!summary) return { note: 'That one won\'t work — pick another.' };
-    return { summary, label: cats.fullName(intoId), shortName: name(intoId), removed: from.length > 1 || ids.includes(intoId) ? from.map(name) : [] };
+    return { summary, label: cats.fullName(intoId), shortName: name(intoId),
+      removed: (from.length > 1 || choice === CategoryMergeModal.KEEP) ? from.map(name) : [] };
   }
-
-  // ── Private ──────────────────────────────────────────────────────────
 
   static #count(n, one, many) { return n ? `${n} ${n === 1 ? one : many}` : ''; }
 
