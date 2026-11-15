@@ -13154,13 +13154,13 @@ This replaces your current grouping.`
       ).join("")}
       </div>
 
-      <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
-        ${[["bills", "Bills"], ["deliveries", "Deliveries"], ["grid", "Calendar"]].map(([k, l]) => `
+      <div class="flex gap-1 sm:gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto">
+        ${[["bills", "Bills"], ["deliveries", "Deliveries"], ["shortcuts", "Shortcuts"], ["grid", "Calendar"]].map(([k, l]) => `
         <button onclick="window.__app.setCalTab('${k}')"
                 class="px-3 py-2 text-sm ${this.#tab === k ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${l}</button>`).join("")}
       </div>
 
-      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "deliveries" ? this.#suggest(state, "delivery") + this.#renderDeliveries(state) : this.#suggest(state, "bill") + this.#renderBills(state)}
+      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "shortcuts" ? this.#renderShortcuts(state) : this.#tab === "deliveries" ? this.#suggest(state, "delivery") + this.#renderDeliveries(state) : this.#suggest(state, "bill") + this.#renderBills(state)}
     `;
     }
     // ── Sub-views ─────────────────────────────────────────────────────────
@@ -13278,6 +13278,39 @@ This replaces your current grouping.`
      * (or "asks each time" with last time's). Due "ask me" bills come first
      * with Pay; each has Edit and Stop.
      */
+    /** Shortcuts (coffee ₹20): what they fill, how often this month, Edit (and Delete inside). */
+    #renderShortcuts(state) {
+      const items = (state.regularItems || []).filter((i) => i.payLater !== true);
+      const add = this.inGuestSpace ? "" : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('regularItem',{payLater:false})"><i data-lucide="plus"></i> Add a shortcut</button>`;
+      if (!items.length) {
+        return `
+        <div class="card p-8 text-center">
+          ${this.emptyState("No shortcuts yet", "Things you buy often \u2014 coffee, the bus, an auto. One tap in Add fills the amount and category.")}
+          <div class="regular-example mt-4"><i data-lucide="coffee"></i> Coffee \xB7 \u20B920 \xB7 one tap</div>
+          ${add}
+        </div>`;
+      }
+      const month = DateService.todayIso().slice(0, 7);
+      const logs = window.__app?.regularLogs?.all?.() || state.transactions || [];
+      const rows = items.map((it) => {
+        const color = Html.color(it.color);
+        const n = logs.filter((t) => t.regularItemId === it.id && String(t.date || "").startsWith(month)).length;
+        const shared = !!it.sharedOwnerId;
+        return `
+        <div class="flex items-center gap-3 p-3">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:32px;height:32px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="font-medium truncate">${this.escapeHtml(it.name)}</div>
+            <div class="text-xs text-zinc-500">${this.formatMoney(it.defaultAmount || 0, it.currency)} \xB7 ${n} time${n === 1 ? "" : "s"} this month${shared ? " \xB7 on a shared account" : ""}</div>
+          </div>
+          ${this.inGuestSpace ? "" : `<button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('regularItem',{id:'${Html.js(it.id)}'})">Edit</button>`}
+        </div>`;
+      }).join("");
+      return `
+      <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${rows}</div>
+      <p class="text-xs text-zinc-500 mt-3">Shortcuts appear at the top of a new expense. Edit one to change or delete it; entries already logged stay. A bill that comes once a month is better added as a bill.</p>
+      ${add}`;
+    }
     /** "Looks like a monthly bill — make it one?" / "Delivered most days? Track it." */
     #suggest(state, kind) {
       if (this.inGuestSpace) return "";
@@ -14583,6 +14616,7 @@ This replaces your current grouping.`
         `You've logged this ${sg.count} times lately`
       )).join("")}
         ${chip('<i data-lucide="plus"></i>', "window.__app.closeModal();window.__app.openModal('regularItem',{payLater:false})", "add", "New shortcut")}
+        ${list.length ? chip('<i data-lucide="pencil"></i>', "window.__app.closeModal();window.__app.navigate('calendar');window.__app.setCalTab('shortcuts')", "add", "Edit or delete shortcuts") : ""}
       </div>`;
     }
     /** "every month", "every 2 weeks". */

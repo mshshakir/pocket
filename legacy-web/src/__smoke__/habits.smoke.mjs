@@ -14,6 +14,7 @@
  *   A3  a suggestion can be tracked or dismissed; deleting has Undo
  *   G1  a payee paid about monthly for 3 months is offered as a bill (not if it already repeats)
  *   G2  a payee on 8+ of the last 14 days is offered as a delivery
+ *   M1  shortcuts can be found, edited and deleted (Regulars → Shortcuts; a pencil chip in Add)
  *   G3  in the app: "Make it a bill" turns the last payment into a monthly repeat; No thanks is remembered
  *
  * Run: node src/__smoke__/habits.smoke.mjs
@@ -267,6 +268,26 @@ const recent = (d) => addDays(appToday, -d);
   w2.__app.dismissSuggestion('delivery', 'Paperwala');
   await wait(20);
   ok('G3 No thanks is remembered', !/Paperwala on 8/.test(w2.document.getElementById('viewContent').textContent) && w2.__app.store.getState().user.dismissedSuggestions.includes('delivery:paperwala'));
+}
+
+{
+  const w = boot();
+  await wait(100);
+  const app = w.__app;
+  app.openModal('transaction');
+  await wait(20);
+  ok('M1 the Add form has a pencil chip to manage shortcuts', /setCalTab\('shortcuts'\)/.test(w.document.querySelector('.shortcut-row').innerHTML));
+  app.closeModal();
+  app.navigate('calendar');
+  app.setCalTab('shortcuts');
+  await wait(20);
+  const view = w.document.getElementById('viewContent');
+  ok('M1 Regulars → Shortcuts lists Coffee with Edit', /Coffee/.test(view.textContent) && /regularItem',\{id:'ri_coffee'\}/.test(view.innerHTML));
+  app.openModal('regularItem', { id: 'ri_coffee' });
+  await wait(10);
+  app.deleteRegularItem('ri_coffee');
+  await wait(20);
+  ok('M1 deleting it removes it from the list and from Add', !app.store.getState().regularItems.length && /No shortcuts yet/.test(view.textContent));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

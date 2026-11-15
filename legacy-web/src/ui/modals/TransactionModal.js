@@ -893,6 +893,7 @@ export class TransactionModal {
           `${this.#esc(sg.payee)} <span>${this.#fx.formatMoney(sg.amount, sg.currency)}</span>`,
           `window.__app.useSuggestedShortcut(${i})`, 'suggested', `You've logged this ${sg.count} times lately`)).join('')}
         ${chip('<i data-lucide="plus"></i>', "window.__app.closeModal();window.__app.openModal('regularItem',{payLater:false})", 'add', 'New shortcut')}
+        ${list.length ? chip('<i data-lucide="pencil"></i>', "window.__app.closeModal();window.__app.navigate('calendar');window.__app.setCalTab('shortcuts')", 'add', 'Edit or delete shortcuts') : ''}
       </div>`;
   }
 
