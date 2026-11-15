@@ -280,6 +280,24 @@ function boot(extraTx = []) {
   ok('B3 the Repeat section offers "Amount changes — ask me each time" and who gets reminded',
      !!tf.querySelector('[name=recurringAsk]') && !!tf.querySelector('[name=remindTo]') && !!tf.querySelector('[name=remindDays]'));
 
+  // B5 From / To, and Stop repeating from a copy
+  app.openModal('transaction', { id: 'tx_rent' });
+  await wait(30);
+  let rf = w.document.querySelector('[name=recurringUntil]')?.form;
+  ok('B5 the repeat reads "Every 1 month · From · To"', !!rf.querySelector('[name=recurringFrom]') && rf.querySelector('[name=recurringFrom]').value === start
+     && rf.querySelector('[name=recurringRule]').value === 'monthly' && /From is this entry's date/.test(rf.textContent));
+  const copy = app.store.getState().transactions.find((t) => t.recurringSourceId === 'tx_rent');
+  app.closeModal();
+  app.openModal('transaction', { id: copy.id });
+  await wait(30);
+  const body = w.document.body.innerHTML;
+  ok('B5 a copy says it repeats, from when, and offers Stop repeating', /Repeats every month/.test(w.document.body.textContent) && /no end date/.test(w.document.body.textContent) && /stopRepeating\('tx_rent'\)/.test(body) && !w.document.querySelector('[name=recurringEnabled]'));
+  app.stopRepeating('tx_rent');
+  const rent = app.store.getState().transactions.find((t) => t.id === 'tx_rent');
+  ok('B5 Stop repeating sets To = today; Undo shown', rent.recurring.until === today && w.document.querySelector('#toast .toast-action')?.textContent === 'Undo');
+  w.document.querySelector('#toast .toast-action').click();
+  ok('B5 Undo: repeats again (no end date)', app.store.getState().transactions.find((t) => t.id === 'tx_rent').recurring.until === null);
+
   // B4 the item form's check-in settings
   app.openModal('regularItem', { id: 'ri_milk' });
   await wait(20);

@@ -3556,6 +3556,32 @@ export class Application {
     this.#toast.show(`${t.payee || 'Bill'} paid · ${this.#fx.formatMoney(amount, t.currency)}`);
   }
 
+  /**
+   * Stops a repeat after today: its To date becomes today, so no more copies
+   * are made (nor bills asked for). Copies already made stay. Undo restores it.
+   */
+  stopRepeating(templateId) {
+    const t = this.#store.getState().transactions.find((x) => x.id === templateId);
+    if (!t?.recurring) return;
+    const name = t.payee || t.description || 'this entry';
+    const today = DateService.todayIso();
+    if (!confirm(`Stop repeating "${name}" after today?\n\nNothing new is added from tomorrow. Entries already made stay; delete any you don't want.`)) return;
+    const before = t.recurring.until ?? null;
+    t.recurring = { ...t.recurring, until: today };
+    this.#store.flush();
+    this.#sync.schedulePush?.();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(`"${name}" stops after today`, { action: { label: 'Undo', run: () => {
+      t.recurring = { ...t.recurring, until: before };
+      this.#store.flush();
+      this.#sync.schedulePush?.();
+      this.#recurring.process();
+      this.#render();
+      this.#toast.show(`"${name}" repeats again`);
+    } } });
+  }
+
   skipBill(templateId, occurrence) {
     const t = this.#store.getState().transactions.find((x) => x.id === templateId);
     if (!t?.recurring) return;

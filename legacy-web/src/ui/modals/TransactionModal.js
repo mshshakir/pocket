@@ -426,7 +426,7 @@ export class TransactionModal {
         <div class="mb-3">
           <label class="field-label" for="txDate">Date</label>
           <input id="txDate" class="input" type="date" name="date" value="${data.date}"
-                 oninput="window.__app.updateHijriPreview(this.value)">
+                 oninput="window.__app.updateHijriPreview(this.value); const f=this.form.querySelector('[name=recurringFrom]'); if (f) f.value=this.value">
           <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
         </div>
 
@@ -788,7 +788,25 @@ export class TransactionModal {
   }
 
   #recurringSection(data) {
+    // A copy made by a repeat: say so, and offer to stop the repeat it came from.
+    if (data.recurringSourceId) {
+      const src = Store.getInstance().getState().transactions.find((t) => t.id === data.recurringSourceId);
+      if (src?.recurring) {
+        const until = src.recurring.until;
+        return `
+      <div class="card-muted p-3 mb-3 flex items-center gap-3 text-sm">
+        <i data-lucide="repeat" style="width:14px;height:14px"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium">Repeats ${Html.escape(TransactionModal.everyLabel(src.recurring))}</div>
+          <div class="text-xs text-zinc-500">From ${Html.escape(TransactionModal.day(src.date))}${until ? ` to ${Html.escape(TransactionModal.day(until))}` : ' · no end date'}</div>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="window.__app.stopRepeating('${Html.escape(src.id)}')">Stop repeating</button>
+      </div>`;
+      }
+    }
     const hasRecurring = !!data.recurring;
+    const rule = data.recurring?.rule || 'monthly';
+    const units = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' };
     return `
       <div class="card-muted p-3 mb-3">
         <label class="flex items-center gap-2 text-sm cursor-pointer ${hasRecurring ? 'mb-2' : ''}">
@@ -798,16 +816,26 @@ export class TransactionModal {
           <span class="font-medium">Repeat automatically</span>
         </label>
         <div id="recurringFields" class="${hasRecurring ? '' : 'hidden'}">
-          <div class="grid grid-cols-3 gap-2 mb-1">
-            <select class="select" name="recurringRule">
-              ${['daily','weekly','monthly','yearly'].map((r) => `<option value="${r}" ${data.recurring?.rule===r?'selected':''}>${r}</option>`).join('')}
+          <div class="flex items-center gap-2 mb-2 text-sm">
+            <span class="text-zinc-500">Every</span>
+            <input class="input" style="width:4.5rem" type="number" name="recurringInterval" min="1" step="1"
+                   value="${data.recurring?.interval || 1}" aria-label="How many">
+            <select class="select flex-1" name="recurringRule">
+              ${Object.entries(units).map(([r, u]) => `<option value="${r}" ${rule === r ? 'selected' : ''}>${u}${(data.recurring?.interval || 1) > 1 ? 's' : ''}</option>`).join('')}
             </select>
-            <input class="input" type="number" name="recurringInterval" min="1" step="1"
-                   value="${data.recurring?.interval || 1}" title="Every N units">
-            <input class="input" type="date" name="recurringUntil"
-                   value="${data.recurring?.until || ''}" title="Until (optional)">
           </div>
-          <div class="text-xs text-zinc-500 mb-2">Interval + optional end date.</div>
+          <div class="grid grid-cols-2 gap-2 mb-1">
+            <div>
+              <label class="text-xs text-zinc-500">From</label>
+              <input class="input" type="date" name="recurringFrom" value="${data.date || ''}" readonly tabindex="-1"
+                     title="The entry's date" style="opacity:.75">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-500">To</label>
+              <input class="input" type="date" name="recurringUntil" value="${data.recurring?.until || ''}" min="${data.date || ''}">
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500 mb-2">From is this entry's date. Leave To empty to keep going; set it to stop.</div>
           ${this.#billFields(data)}
         </div>
       </div>`;
@@ -839,6 +867,19 @@ export class TransactionModal {
 
   // Category selection is handled by CategoryField + CategoryPickerSheet:
   // a two-step parent → subcategory sheet rather than one long dropdown.
+
+  /** "every month", "every 2 weeks". */
+  static everyLabel(r) {
+    const n = Math.max(1, Number(r?.interval) || 1);
+    const u = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' }[r?.rule] || 'month';
+    return n === 1 ? `every ${u}` : `every ${n} ${u}s`;
+  }
+
+  /** "3 Nov 2026". */
+  static day(iso) {
+    const [y, m, d] = String(iso).split('-').map(Number);
+    return `${d} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1] || ''} ${y}`;
+  }
 
   #esc(s) {
     return (s || '').toString().replace(
