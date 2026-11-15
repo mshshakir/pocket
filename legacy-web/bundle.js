@@ -17151,11 +17151,12 @@ This replaces your current grouping.`
               <datalist id="reimbPayers">${svc.payers().map((p) => `<option value="${this.#esc(p)}">`).join("")}</datalist>
             </div>
             <div>
-              <label class="text-xs text-zinc-500">How much back</label>
+              <label class="text-xs text-zinc-500">Amount they'll pay (${this.#esc(data.currency)})</label>
               <input class="input" name="reimbExpected" type="number" min="0" step="${CurrencyService.stepFor(data.currency)}" inputmode="decimal"
-                     value="${expected}" placeholder="All of it">
+                     value="${expected}" placeholder="Full amount">
             </div>
           </div>
+          <div class="text-xs text-zinc-500 -mt-1 mb-2">An amount, not a %. Leave it empty if they'll pay it all. Fill it only if they'll pay part \u2014 e.g. the insurer pays \u20B927,000 of a \u20B930,000 bill.</div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="text-xs text-zinc-500">Claim <span class="text-zinc-400">(optional)</span></label>
@@ -17730,7 +17731,7 @@ This replaces your current grouping.`
   };
 
   // src/ui/modals/ReimbursementModal.js
-  var ReimbursementModal = class {
+  var ReimbursementModal = class _ReimbursementModal {
     /** @type {Store} */
     #store;
     /** @type {CurrencyService} */
@@ -17799,6 +17800,17 @@ This replaces your current grouping.`
           <h3 class="text-lg font-semibold">${Html.escape(g.label)}</h3>${close}
         </div>
         <div class="text-xs text-zinc-500 mb-3">${g.claim ? `${Html.escape(g.payer)}${g.claim.ref ? ` \xB7 ref ${Html.escape(g.claim.ref)}` : ""} \xB7 ` : ""}${this.#fx.formatMoney(g.outstanding, cur)} to get back \xB7 ${g.items.length} item${g.items.length === 1 ? "" : "s"}</div>
+        <details class="reimb-help card-muted p-3 mb-3 text-xs text-zinc-600 dark:text-zinc-300" ${_ReimbursementModal.#firstTime() ? "open" : ""}>
+          <summary class="font-medium text-sm cursor-pointer flex items-center gap-1.5"><i data-lucide="circle-help" style="width:14px;height:14px"></i> How to record money paid back</summary>
+          <ol class="list-decimal pl-4 mt-2 space-y-1">
+            <li><b>Tick</b> the items this money is for (all are ticked).</li>
+            <li>Enter the <b>amount received</b>, the account it went into and the date.</li>
+            <li>Choose how to share it: <b>Spread evenly</b> gives each item the same share of what it's owed; <b>Oldest first</b> fills the oldest first; <b>Per item</b> lets you type each one.</li>
+            <li>Nothing more coming for the rest? Turn on <b>The rest won't be paid back</b>.</li>
+            <li>Tap <b>Paid back</b>. It's added to your account but not counted as income.</li>
+          </ol>
+          <div class="mt-2">Nothing will come at all? Tick the items and tap <b>Won't be paid back</b> \u2014 they stay as your own spending.</div>
+        </details>
         ${credit}
         <div class="card divide-y divide-zinc-100 dark:divide-zinc-800 mb-4">${g.items.map(item).join("")}</div>
 
@@ -17843,6 +17855,17 @@ This replaces your current grouping.`
           <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Paid back</button>
         </div>
       </form>`;
+    }
+    /** Open the steps the first time on this device; folded after that (tap to open). */
+    static #firstTime() {
+      try {
+        const k = "pocket.reimbHelpSeen";
+        if (window.localStorage.getItem(k)) return false;
+        window.localStorage.setItem(k, "1");
+        return true;
+      } catch {
+        return true;
+      }
     }
     onOpen() {
       setTimeout(() => window.__app?.updatePaybackPreview?.(document.querySelector(".reimb-form")), 0);

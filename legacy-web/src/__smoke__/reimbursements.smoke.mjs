@@ -126,10 +126,12 @@ const dash = () => {
   const n = (sel) => Number((view().querySelector(sel)?.textContent || '').replace(/[^0-9.]/g, ''));
   return { income: n('.text-emerald-500.text-2xl, .text-2xl.text-emerald-500'), expense: n('.text-2xl.text-rose-500') };
 };
+let amountHint = '';
 async function addExpense(amount, extra) {
   app.openModal('transaction');
   await wait(10);
   const f = w.document.getElementById('txForm');
+  amountHint = f.querySelector('.reimb-section')?.textContent || '';
   fill(f, { amount: String(amount), categoryId: 'med', date: TODAY, accountId: 'bank', ...extra });
   await app.submitTx({ preventDefault() {}, target: f }, '');
   await wait(10);
@@ -140,6 +142,7 @@ const payForm = () => w.document.querySelector('form.reimb-form');
 {
   const e = await addExpense(12000, { reimbOn: true, reimbBy: 'Company' });
   ok('A1 saved with who pays back; expects all of it', e.reimbBy === 'Company' && !e.reimbExpected && e.amount === 1200000, JSON.stringify(e));
+  ok('A1 the form says it\'s an amount, not a % (Full amount when empty)', /An amount, not a %/.test(amountHint) && /Amount they'll pay/.test(amountHint));
   ok('A1 counts in full until paid back (Dashboard spending ₹12,000)', dash().expense === 12000, JSON.stringify(dash()));
 
   app.navigate('debts');
@@ -150,6 +153,7 @@ const payForm = () => w.document.querySelector('form.reimb-form');
   app.openModal('reimbursement', { key });
   await wait(10);
   let f = payForm();
+  ok('A2 the window explains the steps (open the first time)', f.querySelector('.reimb-help')?.open === true && /How to record money paid back/.test(f.textContent) && /Won't be paid back/.test(f.querySelector('.reimb-help').textContent));
   ok('A2 Spread evenly is the default; three ways to share', f.querySelector('[name="mode"]:checked')?.value === 'spread' && f.querySelectorAll('[name="mode"]').length === 3);
   fill(f, { mode: 'items', [`part_${e.id}`]: '10000', [`close_${e.id}`]: true, accountId: 'bank' });
   app.updatePaybackPreview(f);
@@ -177,6 +181,11 @@ const payForm = () => w.document.querySelector('form.reimb-form');
   const b = await addExpense(5000, { reimbOn: true, reimbBy: 'Star Health', claimName: 'nov hospital' });
   ok('A4 both in one claim (matched by name), with its reference', a.claimId && a.claimId === b.claimId && st().claims.find((c) => c.id === a.claimId)?.ref === 'CL-77');
   const key = ReimbursementService.groupKey(a);
+  app.navigate('debts');
+  app.openModal('reimbursement', { key: ReimbursementService.groupKey(a) });
+  await wait(10);
+  ok('A4 second time the steps are folded (tap to open)', payForm().querySelector('.reimb-help')?.open === false);
+  app.closeModal();
   app.navigate('debts');
   ok('A4 listed as the claim, by Star Health, ref shown', /Nov hospital/.test(view().querySelector('.owed-reimb')?.textContent || '') && /CL-77/.test(view().querySelector('.owed-reimb').textContent));
   app.openModal('reimbursement', { key });

@@ -942,11 +942,12 @@ export class TransactionModal {
               <datalist id="reimbPayers">${svc.payers().map((p) => `<option value="${this.#esc(p)}">`).join('')}</datalist>
             </div>
             <div>
-              <label class="text-xs text-zinc-500">How much back</label>
+              <label class="text-xs text-zinc-500">Amount they'll pay (${this.#esc(data.currency)})</label>
               <input class="input" name="reimbExpected" type="number" min="0" step="${CurrencyService.stepFor(data.currency)}" inputmode="decimal"
-                     value="${expected}" placeholder="All of it">
+                     value="${expected}" placeholder="Full amount">
             </div>
           </div>
+          <div class="text-xs text-zinc-500 -mt-1 mb-2">An amount, not a %. Leave it empty if they'll pay it all. Fill it only if they'll pay part — e.g. the insurer pays ₹27,000 of a ₹30,000 bill.</div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="text-xs text-zinc-500">Claim <span class="text-zinc-400">(optional)</span></label>
