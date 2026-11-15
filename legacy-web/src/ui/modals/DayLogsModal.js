@@ -12,6 +12,7 @@
  */
 import { DeliveryPlan } from '../../domain/services/DeliveryPlan.js';
 import { Html }         from '../../core/Html.js';
+import { DateService }  from '../../domain/services/DateService.js';
 
 export class DayLogsModal {
   #store;
@@ -38,6 +39,7 @@ export class DayLogsModal {
     const logs = this.#regularLogs
       ? this.#regularLogs.onDate(date)
       : (s.transactions || []).filter(t => t.regularItemId && t.date === date);
+    const billsHtml = this.#bills(date, s);
     const hijriStr = (() => {
       if (!s.user?.showHijri) return '';   // Hijri off in Settings
       try { return this.#hijriService.format(date); } catch { return ''; }
@@ -89,11 +91,12 @@ export class DayLogsModal {
           </button>
         </div>
 
+        ${billsHtml}
         ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx, flash) : ''}
 
         ${logs.length > 0
           ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ''}${logRows}</div>`
-          : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
+          : deliveries.length || billsHtml ? '' : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
         ${items.length > 0 ? `
         <div class="text-sm font-semibold mb-3">Add entry</div>
@@ -120,11 +123,38 @@ export class DayLogsModal {
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet — add a delivery or a shortcut under Regulars → Add.</p>`}
+        </form>` : deliveries.length || billsHtml ? '' : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet — add a delivery or a shortcut under Regulars → Add.</p>`}
       </div>`;
   }
 
   /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
+  /** Bills falling on this day: paid (green) or still to pay (red), with Pay. */
+  #bills(date, s) {
+    const svc = window.__app?.bills;
+    if (!svc) return '';
+    const list = svc.occurrences(date, date, DateService.todayIso(), s).filter((o) => o.status !== 'skipped');
+    if (!list.length) return '';
+    const word = { paid: 'Paid', overdue: 'Not paid yet', due: 'Due today', upcoming: 'Coming up' };
+    const rows = list.map((o) => {
+      const t = o.template;
+      const open = o.status === 'overdue' || o.status === 'due';
+      return `
+        <div class="flex items-center justify-between gap-2 p-3 card mb-2">
+          <div class="min-w-0">
+            <div class="text-sm font-medium truncate">${this.#esc(t.payee || 'Bill')}</div>
+            <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? (o.status === 'paid' ? '' : ' · last time') : ''}</div>
+          </div>
+          <span class="cal-bill ${o.status}" style="font-size:11px;line-height:18px;padding:0 8px;width:auto;height:auto">${word[o.status]}</span>
+          ${open ? `<button type="button" class="btn btn-primary btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${Html.js(t.id)}',date:'${date}'})">Pay</button>` : ''}
+        </div>`;
+    }).join('');
+    return `
+      <div class="mb-4">
+        <div class="text-sm font-semibold mb-2">Bills</div>
+        ${rows}
+      </div>`;
+  }
+
   #deliveries(list, date, s, ctx, flash) {
     const rows = list.map((item) => {
       const plan = new DeliveryPlan(item);

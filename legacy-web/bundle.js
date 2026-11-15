@@ -13078,7 +13078,7 @@ This replaces your current grouping.`
   };
 
   // src/ui/views/CalendarView.js
-  var CalendarView = class extends BaseView {
+  var CalendarView = class _CalendarView extends BaseView {
     /** @type {HijriCalendarService} */
     #hijri;
     /** @type {string|null} */
@@ -13093,6 +13093,7 @@ This replaces your current grouping.`
     }
     // ── Public API ────────────────────────────────────────────────────────
     /** Old tab names still work: dues/items → deliveries, summary → calendar. */
+    static #BILL_WORD = Object.freeze({ paid: "paid", overdue: "not paid yet", due: "due today", upcoming: "coming up", skipped: "skipped" });
     setTab(tab) {
       this.#tab = { dues: "deliveries", items: "deliveries", summary: "grid" }[tab] ?? tab;
     }
@@ -13204,6 +13205,17 @@ This replaces your current grouping.`
         monthSpent = this.#logsForMonth(year, monthIdx, state).reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       }
       while (cells.length % 7 !== 0) cells.push(null);
+      const days = cells.filter(Boolean);
+      const billSvc = window.__app?.bills;
+      const billDays = /* @__PURE__ */ new Map();
+      if (billSvc && days.length) {
+        for (const o of billSvc.occurrences(days[0].iso, days[days.length - 1].iso, todayStr, state)) {
+          if (o.status === "skipped") continue;
+          if (!billDays.has(o.date)) billDays.set(o.date, []);
+          billDays.get(o.date).push(o);
+        }
+      }
+      const unpaid = [...billDays.values()].flat().filter((o) => o.status === "overdue" || o.status === "due").length;
       const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
       const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr).reduce((sum, c) => sum + plans.reduce((t, p) => t + this.convert(Math.round(p.qtyOn(c.iso) * p.priceOn(c.iso)), p.item.currency || home, home), 0), 0) : 0;
       return `
@@ -13218,9 +13230,10 @@ This replaces your current grouping.`
           </button>
           <button class="btn btn-ghost text-xs" onclick="window.__app.resetCalFocus()">Today</button>
         </div>
-        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? "Hijri month" : "month"}${plans.length ? ` \xB7 ${this.formatMoney(deliveryCost, home)} delivered` : ""}</div>
+        <div class="text-sm text-zinc-500 hidden sm:block">${unpaid ? `<span class="text-rose-600 font-medium">${unpaid} bill${unpaid === 1 ? "" : "s"} to pay</span> \xB7 ` : ""}${this.formatMoney(monthSpent, home)} this ${isHijri ? "Hijri month" : "month"}${plans.length ? ` \xB7 ${this.formatMoney(deliveryCost, home)} delivered` : ""}</div>
       </div>
 
+      ${unpaid ? `<div class="sm:hidden text-sm text-rose-600 font-medium mb-2">${unpaid} bill${unpaid === 1 ? "" : "s"} to pay \u2014 tap a red dot</div>` : ""}
       <div class="card p-2 md:p-3">
         <div class="grid grid-cols-7 gap-0.5 md:gap-1 mb-1">
           ${dayNames.map((n) => `<div class="text-xs text-zinc-500 text-center font-medium py-1">${n}</div>`).join("")}
@@ -13241,6 +13254,8 @@ This replaces your current grouping.`
           return it ? `<span class="icon-pill" title="${this.escapeHtml(it.name)}" style="background:${Html.color(it.color)}22;color:${Html.color(it.color)};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>` : "";
         }).join("");
         const primaryColor = firstItem ? firstItem.color : "";
+        const bills = billDays.get(c.iso) || [];
+        const billTags = bills.slice(0, 2).map((o) => `<span class="cal-bill ${o.status}" title="${this.escapeHtml(o.template.payee || "Bill")} \xB7 ${_CalendarView.#BILL_WORD[o.status]}">${this.escapeHtml(o.template.payee || "Bill")}</span>`).join("") + (bills.length > 2 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 2}</span>` : "");
         const changed = plans.some((p) => p.stateOn(c.iso) === "changed");
         const paused = !changed && plans.some((p) => p.stateOn(c.iso) === "paused");
         return `
@@ -13257,13 +13272,21 @@ This replaces your current grouping.`
                     <div class="hidden md:flex gap-1 flex-wrap justify-center items-center">${icons}${logs.length > 3 ? `<span class="text-[10px] text-zinc-500">+${logs.length - 3}</span>` : ""}</div>
                   </div>
                 ` : '<div class="flex-1"></div>'}
+                ${bills.length ? `<div class="cal-bills">${billTags}</div>` : ""}
                 ${total > 0 ? `<div class="text-[9px] text-zinc-500 truncate text-center">${this.formatMoney(total, home)}</div>` : ""}
               </button>`;
       }).join("")}
         </div>
       </div>
 
-      ${(state.regularItems || []).length === 0 ? `
+      ${billDays.size ? `
+      <div class="flex flex-wrap gap-3 mt-2 text-[11px] text-zinc-500">
+        <span><span class="cal-key paid"></span>Paid</span>
+        <span><span class="cal-key overdue"></span>Not paid yet</span>
+        <span><span class="cal-key upcoming"></span>Coming up</span>
+      </div>` : ""}
+
+      ${(state.regularItems || []).length === 0 && !billDays.size ? `
         <div class="card p-6 mt-4 text-center">
           ${this.inGuestSpace ? this.emptyState("Nothing shared with you here", "Deliveries and shortcuts follow the accounts they\u2019re on.") : this.emptyState("Nothing on the calendar yet", "Deliveries (milk, paper) and things you log with shortcuts show here day by day.")}
           ${this.inGuestSpace ? "" : `
@@ -16307,6 +16330,7 @@ This replaces your current grouping.`
       const deliveries = ctx.items;
       const items = all.filter((i) => i.payLater !== true);
       const logs = this.#regularLogs ? this.#regularLogs.onDate(date) : (s.transactions || []).filter((t) => t.regularItemId && t.date === date);
+      const billsHtml = this.#bills(date, s);
       const hijriStr = (() => {
         if (!s.user?.showHijri) return "";
         try {
@@ -16357,9 +16381,10 @@ This replaces your current grouping.`
           </button>
         </div>
 
+        ${billsHtml}
         ${deliveries.length ? this.#deliveries(deliveries, date, s, ctx, flash) : ""}
 
-        ${logs.length > 0 ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ""}${logRows}</div>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
+        ${logs.length > 0 ? `<div class="mb-4">${deliveries.length ? '<div class="text-sm font-semibold mb-2">Entries</div>' : ""}${logRows}</div>` : deliveries.length || billsHtml ? "" : `<p class="text-sm text-zinc-500 mb-4">No entries for this day.</p>`}
 
         ${items.length > 0 ? `
         <div class="text-sm font-semibold mb-3">Add entry</div>
@@ -16386,10 +16411,36 @@ This replaces your current grouping.`
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet \u2014 add a delivery or a shortcut under Regulars \u2192 Add.</p>`}
+        </form>` : deliveries.length || billsHtml ? "" : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet \u2014 add a delivery or a shortcut under Regulars \u2192 Add.</p>`}
       </div>`;
     }
     /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
+    /** Bills falling on this day: paid (green) or still to pay (red), with Pay. */
+    #bills(date, s) {
+      const svc = window.__app?.bills;
+      if (!svc) return "";
+      const list = svc.occurrences(date, date, DateService.todayIso(), s).filter((o) => o.status !== "skipped");
+      if (!list.length) return "";
+      const word = { paid: "Paid", overdue: "Not paid yet", due: "Due today", upcoming: "Coming up" };
+      const rows = list.map((o) => {
+        const t = o.template;
+        const open = o.status === "overdue" || o.status === "due";
+        return `
+        <div class="flex items-center justify-between gap-2 p-3 card mb-2">
+          <div class="min-w-0">
+            <div class="text-sm font-medium truncate">${this.#esc(t.payee || "Bill")}</div>
+            <div class="text-xs text-zinc-500">${this.#currencyService.formatMoney(o.amount, o.currency || s.user.homeCurrency)}${t.askFirst ? o.status === "paid" ? "" : " \xB7 last time" : ""}</div>
+          </div>
+          <span class="cal-bill ${o.status}" style="font-size:11px;line-height:18px;padding:0 8px;width:auto;height:auto">${word[o.status]}</span>
+          ${open ? `<button type="button" class="btn btn-primary btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${Html.js(t.id)}',date:'${date}'})">Pay</button>` : ""}
+        </div>`;
+      }).join("");
+      return `
+      <div class="mb-4">
+        <div class="text-sm font-semibold mb-2">Bills</div>
+        ${rows}
+      </div>`;
+    }
     #deliveries(list, date, s, ctx, flash) {
       const rows = list.map((item) => {
         const plan = new DeliveryPlan(item);
@@ -16779,6 +16830,42 @@ This replaces your current grouping.`
       for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
       for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
       return until && next > until ? null : next;
+    }
+    /**
+     * Every repeat's dates between two days (inclusive), with where each stands,
+     * for the calendar: [{ template, date, status, amount, currency }].
+     *   paid      the first date (the entry itself) or a copy made for that date
+     *   skipped   skipped on purpose
+     *   overdue   a bill ("ask me") whose date has passed without a payment
+     *   due       a bill due today
+     *   upcoming  still ahead
+     * Ordinary repeats are copied on their date, so past ones are paid (a
+     * deleted copy reads as skipped).
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to   YYYY-MM-DD
+     * @param {string} today YYYY-MM-DD
+     */
+    occurrences(from, to, today, state = this.#store.getState()) {
+      const byId = new Map((state.transactions || []).map((t) => [t.id, t]));
+      const out = [];
+      for (const t of this.allRepeats(state)) {
+        const { rule, interval = 1, until } = t.recurring;
+        if (!rule) continue;
+        const anchor = Number(t.date.slice(8, 10)) || 1;
+        const skipped = new Set(t.recurring.skipped || []);
+        let d = t.date;
+        for (let i = 0; i < 2e3 && d <= to && (!until || d <= until); i++) {
+          if (d >= from) {
+            const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
+            const status = copy ? "paid" : skipped.has(d) ? "skipped" : d > today ? "upcoming" : t.askFirst === true ? d === today ? "due" : "overdue" : d === today ? "due" : "skipped";
+            out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
+          }
+          const next = this.#recurring.stepDate(d, rule, interval, anchor);
+          if (!next || next <= d) break;
+          d = next;
+        }
+      }
+      return out.sort((a, b) => a.date.localeCompare(b.date));
     }
     /** What was paid last time (the template's amount before any payment). */
     lastAmount(template) {

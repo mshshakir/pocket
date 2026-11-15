@@ -75,6 +75,45 @@ export class BillService {
     return until && next > until ? null : next;
   }
 
+  /**
+   * Every repeat's dates between two days (inclusive), with where each stands,
+   * for the calendar: [{ template, date, status, amount, currency }].
+   *   paid      the first date (the entry itself) or a copy made for that date
+   *   skipped   skipped on purpose
+   *   overdue   a bill ("ask me") whose date has passed without a payment
+   *   due       a bill due today
+   *   upcoming  still ahead
+   * Ordinary repeats are copied on their date, so past ones are paid (a
+   * deleted copy reads as skipped).
+   * @param {string} from YYYY-MM-DD
+   * @param {string} to   YYYY-MM-DD
+   * @param {string} today YYYY-MM-DD
+   */
+  occurrences(from, to, today, state = this.#store.getState()) {
+    const byId = new Map((state.transactions || []).map((t) => [t.id, t]));
+    const out = [];
+    for (const t of this.allRepeats(state)) {
+      const { rule, interval = 1, until } = t.recurring;
+      if (!rule) continue;
+      const anchor = Number(t.date.slice(8, 10)) || 1;
+      const skipped = new Set(t.recurring.skipped || []);
+      let d = t.date;
+      for (let i = 0; i < 2000 && d <= to && (!until || d <= until); i++) {
+        if (d >= from) {
+          const copy = d === t.date ? t : byId.get(`${t.id}__${d}`);
+          const status = copy ? 'paid' : skipped.has(d) ? 'skipped'
+            : d > today ? 'upcoming' : t.askFirst === true ? (d === today ? 'due' : 'overdue')
+            : d === today ? 'due' : 'skipped'; // an ordinary repeat whose copy was deleted
+          out.push({ template: t, date: d, status, amount: copy ? copy.amount : this.lastAmount(t), currency: t.currency });
+        }
+        const next = this.#recurring.stepDate(d, rule, interval, anchor);
+        if (!next || next <= d) break;
+        d = next;
+      }
+    }
+    return out.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
   /** What was paid last time (the template's amount before any payment). */
   lastAmount(template) {
     const paid = (this.#store.getState().transactions || [])

@@ -30,6 +30,8 @@ export class CalendarView extends BaseView {
   // ── Public API ────────────────────────────────────────────────────────
 
   /** Old tab names still work: dues/items → deliveries, summary → calendar. */
+  static #BILL_WORD = Object.freeze({ paid: 'paid', overdue: 'not paid yet', due: 'due today', upcoming: 'coming up', skipped: 'skipped' });
+
   setTab(tab)   { this.#tab = ({ dues: 'deliveries', items: 'deliveries', summary: 'grid' })[tab] ?? tab; }
   shiftMonth(delta) {
     this.#ensureFocus();
@@ -143,6 +145,17 @@ export class CalendarView extends BaseView {
         .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
     }
     while (cells.length % 7 !== 0) cells.push(null);
+    const days = cells.filter(Boolean);
+    const billSvc = window.__app?.bills;
+    const billDays = new Map();
+    if (billSvc && days.length) {
+      for (const o of billSvc.occurrences(days[0].iso, days[days.length - 1].iso, todayStr, state)) {
+        if (o.status === 'skipped') continue;
+        if (!billDays.has(o.date)) billDays.set(o.date, []);
+        billDays.get(o.date).push(o);
+      }
+    }
+    const unpaid = [...billDays.values()].flat().filter((o) => o.status === 'overdue' || o.status === 'due').length;
     const plans = this.#tracked(state).map((it) => new DeliveryPlan(it));
     const deliveryCost = plans.length ? cells.filter((c) => c && c.iso <= todayStr)
       .reduce((sum, c) => sum + plans.reduce((t, p) => t + this.convert(Math.round(p.qtyOn(c.iso) * p.priceOn(c.iso)), p.item.currency || home, home), 0), 0) : 0;
@@ -159,9 +172,10 @@ export class CalendarView extends BaseView {
           </button>
           <button class="btn btn-ghost text-xs" onclick="window.__app.resetCalFocus()">Today</button>
         </div>
-        <div class="text-sm text-zinc-500 hidden sm:block">${this.formatMoney(monthSpent, home)} this ${isHijri ? 'Hijri month' : 'month'}${plans.length ? ` · ${this.formatMoney(deliveryCost, home)} delivered` : ''}</div>
+        <div class="text-sm text-zinc-500 hidden sm:block">${unpaid ? `<span class="text-rose-600 font-medium">${unpaid} bill${unpaid === 1 ? '' : 's'} to pay</span> · ` : ''}${this.formatMoney(monthSpent, home)} this ${isHijri ? 'Hijri month' : 'month'}${plans.length ? ` · ${this.formatMoney(deliveryCost, home)} delivered` : ''}</div>
       </div>
 
+      ${unpaid ? `<div class="sm:hidden text-sm text-rose-600 font-medium mb-2">${unpaid} bill${unpaid === 1 ? '' : 's'} to pay — tap a red dot</div>` : ''}
       <div class="card p-2 md:p-3">
         <div class="grid grid-cols-7 gap-0.5 md:gap-1 mb-1">
           ${dayNames.map((n) => `<div class="text-xs text-zinc-500 text-center font-medium py-1">${n}</div>`).join('')}
@@ -183,6 +197,9 @@ export class CalendarView extends BaseView {
               return it ? `<span class="icon-pill" title="${this.escapeHtml(it.name)}" style="background:${Html.color(it.color)}22;color:${Html.color(it.color)};width:28px;height:28px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>` : '';
             }).join('');
             const primaryColor = firstItem ? firstItem.color : '';
+            const bills = billDays.get(c.iso) || [];
+            const billTags = bills.slice(0, 2).map((o) => `<span class="cal-bill ${o.status}" title="${this.escapeHtml(o.template.payee || 'Bill')} · ${CalendarView.#BILL_WORD[o.status]}">${this.escapeHtml(o.template.payee || 'Bill')}</span>`).join('')
+              + (bills.length > 2 ? `<span class="text-[9px] text-zinc-500">+${bills.length - 2}</span>` : '');
             const changed = plans.some((p) => p.stateOn(c.iso) === 'changed');
             const paused  = !changed && plans.some((p) => p.stateOn(c.iso) === 'paused');
             return `
@@ -199,13 +216,21 @@ export class CalendarView extends BaseView {
                     <div class="hidden md:flex gap-1 flex-wrap justify-center items-center">${icons}${logs.length > 3 ? `<span class="text-[10px] text-zinc-500">+${logs.length - 3}</span>` : ''}</div>
                   </div>
                 ` : '<div class="flex-1"></div>'}
+                ${bills.length ? `<div class="cal-bills">${billTags}</div>` : ''}
                 ${total > 0 ? `<div class="text-[9px] text-zinc-500 truncate text-center">${this.formatMoney(total, home)}</div>` : ''}
               </button>`;
           }).join('')}
         </div>
       </div>
 
-      ${(state.regularItems || []).length === 0 ? `
+      ${billDays.size ? `
+      <div class="flex flex-wrap gap-3 mt-2 text-[11px] text-zinc-500">
+        <span><span class="cal-key paid"></span>Paid</span>
+        <span><span class="cal-key overdue"></span>Not paid yet</span>
+        <span><span class="cal-key upcoming"></span>Coming up</span>
+      </div>` : ''}
+
+      ${(state.regularItems || []).length === 0 && !billDays.size ? `
         <div class="card p-6 mt-4 text-center">
           ${this.inGuestSpace
              ? this.emptyState('Nothing shared with you here', 'Deliveries and shortcuts follow the accounts they\u2019re on.')

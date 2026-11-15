@@ -15,6 +15,7 @@
  *   G1  a payee paid about monthly for 3 months is offered as a bill (not if it already repeats)
  *   G2  a payee on 8+ of the last 14 days is offered as a delivery
  *   M1  shortcuts can be found, edited and deleted (Regulars → Shortcuts; a pencil chip in Add)
+ *   C1  bills on the calendar: paid green, not paid red, coming up dashed; the day window has Pay
  *   G3  in the app: "Make it a bill" turns the last payment into a monthly repeat; No thanks is remembered
  *
  * Run: node src/__smoke__/habits.smoke.mjs
@@ -288,6 +289,41 @@ const recent = (d) => addDays(appToday, -d);
   app.deleteRegularItem('ri_coffee');
   await wait(20);
   ok('M1 deleting it removes it from the list and from Add', !app.store.getState().regularItems.length && /No shortcuts yet/.test(view.textContent));
+}
+
+{
+  const first = addDays(appToday, -40);
+  const rent = { ...tx(first, 'Electricity', 180000), recurring: { rule: 'monthly', interval: 1, until: null }, askFirst: true };
+  const net = { ...tx(addDays(appToday, -31), 'Broadband', 99900), recurring: { rule: 'monthly', interval: 1, until: null } };
+  const w = boot([rent, net]);
+  await wait(100);
+  const app = w.__app;
+  const occ = app.bills.occurrences(addDays(appToday, -45), addDays(appToday, 45), appToday);
+  const e = occ.filter((o) => o.template.id === rent.id);
+  ok('C1 the first date is paid, the next one is not paid yet, later ones are coming up',
+     e[0].status === 'paid' && e[1].status === 'overdue' && e.slice(2).every((o) => o.status === 'upcoming'), e.map((o) => `${o.date}:${o.status}`).join(' '));
+  ok('C1 an ordinary repeat is paid once copied', occ.filter((o) => o.template.id === net.id && o.date <= appToday).every((o) => o.status === 'paid'));
+  app.navigate('calendar');
+  app.setCalTab('grid');
+  await wait(20);
+  const due = e[1].date;
+  const view = w.document.getElementById('viewContent');
+  if (due.slice(0, 7) === appToday.slice(0, 7)) {
+    ok('C1 the grid shows it in red with a count', view.querySelector('.cal-bill.overdue')?.textContent === 'Electricity' && /1 bill to pay/.test(view.textContent));
+  } else {
+    app.shiftCalMonth(-1); await wait(20);
+    ok('C1 the grid shows it in red', view.querySelector('.cal-bill.overdue')?.textContent === 'Electricity');
+  }
+  app.openModal('dayLogs', { date: due });
+  await wait(20);
+  ok('C1 the day window lists the bill with Pay', /Electricity/.test(w.document.body.textContent) && /Not paid yet/.test(w.document.body.textContent) && /openModal\('payBill'/.test(w.document.body.innerHTML));
+  app.openModal('payBill', { templateId: rent.id, date: due });
+  await wait(20);
+  const pf = w.document.querySelector('form');
+  pf.querySelector('[name="amount"]').value = '1950';
+  app.submitBill({ preventDefault() {}, target: pf }, rent.id, due);
+  await wait(20);
+  ok('C1 once paid it turns green', app.bills.occurrences(due, due, appToday).at(0).status === 'paid');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
