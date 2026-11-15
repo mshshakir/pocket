@@ -143,6 +143,8 @@ export class TransactionService {
       // absent, AccountService.recompute() freezes it at the live rate.
       acctMinor:      Number.isFinite(data.acctMinor) ? data.acctMinor : undefined,
       recurring:      data.recurring      || null,
+      // Logged from a shortcut: counted with that item on the calendar and in Habits.
+      ...(data.regularItemId ? { regularItemId: data.regularItemId } : {}),
       // A recurring bill whose amount changes waits to be paid (BillService), and who is reminded on Telegram.
       ...(data.recurring && data.askFirst ? {
         askFirst: true, remindTo: data.remindTo || 'all', remindEmail: data.remindEmail || null, remindDays: data.remindDays ?? 2,

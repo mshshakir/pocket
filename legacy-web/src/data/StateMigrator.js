@@ -53,6 +53,7 @@ export class StateMigrator {
     if (!Array.isArray(state.budgets))       state.budgets = [];
     if (!Array.isArray(state.debts))         state.debts = [];
     if (!Array.isArray(state.regularItems))  state.regularItems = [];
+    if (!Array.isArray(state.habits))        state.habits = [];
     // A regular item on an account someone shared carries the owner alongside
     // the account id — AccountRef keeps the two apart. Back-filled so items
     // created before shared accounts were supported read cleanly.

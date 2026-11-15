@@ -63,11 +63,12 @@ export class RegularItemModal {
       icon:          'coffee',
       color:         ITEM_COLORS[0],
       payLater:      opts.payLater === true,
+      ...(opts.preset || {}),   // a suggestion: name, price, account, category
     };
 
     const amountVal = editing
       ? this.#fx.fromMinor(editing.defaultAmount, editing.currency)
-      : 0;
+      : (data.defaultAmount ? this.#fx.fromMinor(data.defaultAmount, data.currency) : 0);
 
     // The <select> value encodes which book the account lives in, so submit can
     // tell a shared account apart from a local one with the same-shaped id.

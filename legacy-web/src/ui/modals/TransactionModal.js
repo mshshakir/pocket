@@ -17,6 +17,7 @@ import { CURRENCIES, ACCOUNT_TYPES } from '../../data/constants.js';
 import { DateService }              from '../../domain/services/DateService.js';
 import { Html }                     from '../../core/Html.js';
 import { NotifyField }              from '../components/NotifyField.js';
+import { ShortcutService }          from '../../domain/services/ShortcutService.js';
 
 /** Payment methods available by default. */
 const DEFAULT_PAYMENT_TYPES = ['card', 'cash', 'bank-transfer', 'cheque', 'crypto', 'other'];
@@ -221,7 +222,7 @@ export class TransactionModal {
     }
 
     const data    = editing
-      ? { ...editing }
+      ? { ...editing, ...(opts.preset || {}) }   // "make it a bill" opens the last payment set to repeat
       : sharedEditTx
         ? { ...sharedEditTx }
         : (prefill ? { ...prefill } : {
@@ -394,6 +395,8 @@ export class TransactionModal {
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join('')}
         </div>
+        ${!editing && !sharedEditTx && !isSharedMode && type === 'expense' ? this.#shortcuts(state, data) : ''}
+        ${data.regularItemId && !editing ? `<input type="hidden" name="regularItemId" value="${this.#esc(data.regularItemId)}">` : ''}
         ${sharedBook ? `
         <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
           Transfers aren't available here — a transfer is two linked rows, and a
@@ -870,6 +873,28 @@ export class TransactionModal {
 
   // Category selection is handled by CategoryField + CategoryPickerSheet:
   // a two-step parent → subcategory sheet rather than one long dropdown.
+
+  /**
+   * One-tap starts: your shortcuts (coffee ₹20…) and, lighter, payees you
+   * log often that have none yet. Tapping one fills this entry.
+   */
+  #shortcuts(state, data) {
+    const list = ShortcutService.list(state);
+    const suggest = ShortcutService.suggestions(state, DateService.todayIso());
+    if (!list.length && !suggest.length) return '';
+    const chip = (label, onclick, cls, title = '') =>
+      `<button type="button" class="shortcut-chip ${cls}" title="${this.#esc(title)}" onclick="${onclick}">${label}</button>`;
+    return `
+      <div class="shortcut-row mb-3" aria-label="Shortcuts">
+        ${list.map((it) => chip(
+          `<i data-lucide="${Html.icon(it.icon)}" style="color:${Html.color(it.color)}"></i>${this.#esc(it.name)} <span>${this.#fx.formatMoney(it.defaultAmount || 0, it.currency)}</span>`,
+          `window.__app.useShortcut('${Html.js(it.id)}')`, data.regularItemId === it.id ? 'on' : '')).join('')}
+        ${suggest.map((sg, i) => chip(
+          `${this.#esc(sg.payee)} <span>${this.#fx.formatMoney(sg.amount, sg.currency)}</span>`,
+          `window.__app.useSuggestedShortcut(${i})`, 'suggested', `You've logged this ${sg.count} times lately`)).join('')}
+        ${chip('<i data-lucide="plus"></i>', "window.__app.closeModal();window.__app.openModal('regularItem',{payLater:false})", 'add', 'New shortcut')}
+      </div>`;
+  }
 
   /** "every month", "every 2 weeks". */
   static everyLabel(r) {

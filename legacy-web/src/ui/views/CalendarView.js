@@ -15,6 +15,7 @@ import { HijriCalendarService } from '../../domain/services/HijriCalendarService
 import { DateService }          from '../../domain/services/DateService.js';
 import { DeliveryPlan }         from '../../domain/services/DeliveryPlan.js';
 import { Html }                 from '../../core/Html.js';
+import { SuggestionService }    from '../../domain/services/SuggestionService.js';
 
 export class CalendarView extends BaseView {
   /** @type {HijriCalendarService} */  #hijri;
@@ -90,8 +91,8 @@ export class CalendarView extends BaseView {
       </div>
 
       ${this.#tab === 'grid' ? this.#renderGrid(state)
-        : this.#tab === 'deliveries' ? this.#renderDeliveries(state)
-        : this.#renderBills(state)}
+        : this.#tab === 'deliveries' ? this.#suggest(state, 'delivery') + this.#renderDeliveries(state)
+        : this.#suggest(state, 'bill') + this.#renderBills(state)}
     `;
   }
 
@@ -221,6 +222,26 @@ export class CalendarView extends BaseView {
    * (or "asks each time" with last time's). Due "ask me" bills come first
    * with Pay; each has Edit and Stop.
    */
+  /** "Looks like a monthly bill — make it one?" / "Delivered most days? Track it." */
+  #suggest(state, kind) {
+    if (this.inGuestSpace) return '';
+    const today = DateService.todayIso();
+    const list = kind === 'bill' ? SuggestionService.bills(state, today) : SuggestionService.deliveries(state, today);
+    return list.map((g) => {
+      const payee = Html.escape(JSON.stringify(g.payee));
+      const text = kind === 'bill'
+        ? `You've paid <b>${this.escapeHtml(g.payee)}</b> once a month for ${g.count} months${g.changes ? ' (the amount changes)' : ` (${this.formatMoney(g.amount, g.last.currency)})`}. Make it a monthly bill?`
+        : `<b>${this.escapeHtml(g.payee)}</b> on ${g.days} of the last 14 days. Delivered most days? Track it and pay once a month.`;
+      return `
+        <div class="habit-suggest">
+          <i data-lucide="sparkles"></i>
+          <div class="flex-1 min-w-0 text-sm">${text}</div>
+          <button class="btn btn-primary btn-sm" onclick="window.__app.acceptSuggestion('${kind}',${payee})">${kind === 'bill' ? 'Make it a bill' : 'Track it'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.__app.dismissSuggestion('${kind}',${payee})">No thanks</button>
+        </div>`;
+    }).join('');
+  }
+
   #renderBills(state) {
     const bills = window.__app?.bills;
     const today = DateService.todayIso();

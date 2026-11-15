@@ -93,6 +93,10 @@ import { PauseDeliveriesModal } from './ui/modals/PauseDeliveriesModal.js';
 import { NotifyField }          from './ui/components/NotifyField.js';
 import { PayBillModal }         from './ui/modals/PayBillModal.js';
 import { AddRegularModal }      from './ui/modals/AddRegularModal.js';
+import { ShortcutService }      from './domain/services/ShortcutService.js';
+import { HabitService }         from './domain/services/HabitService.js';
+import { SuggestionService }    from './domain/services/SuggestionService.js';
+import { HabitModal }           from './ui/modals/HabitModal.js';
 import { BillService }          from './domain/services/BillService.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
@@ -136,6 +140,7 @@ export class Application {
   /** @type {RegularLogService}    */ #regularLogs;
   /** @type {VendorDues}           */ #vendorDues;
   /** @type {BillService}          */ #bills;
+  /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
   /** @type {PaymentTypeService}   */ #paymentTypeService;
@@ -218,6 +223,7 @@ export class Application {
     this.#budgets     = new BudgetService();
     this.#recurring   = new RecurringService();
     this.#bills       = new BillService({ store: this.#store, recurring: this.#recurring });
+    this.#habits      = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
     this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
     this.#sync        = new SyncService();
@@ -379,6 +385,7 @@ export class Application {
     this.#modal.register('pauseDeliveries', new PauseDeliveriesModal());
     this.#modal.register('payBill',      new PayBillModal({ bills: () => this.#bills }));
     this.#modal.register('addRegular',   new AddRegularModal());
+    this.#modal.register('habit',        new HabitModal({ habits: () => this.#habits }));
     this.#modal.register('currencySetup',this.#currencySetupModal);
 
     // 7. Subscribe to events
@@ -526,7 +533,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular',
+    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -594,6 +601,8 @@ export class Application {
   get vendorDues() { return this.#vendorDues; }
   /** Recurring bills that wait to be paid (amount changes). */
   get bills() { return this.#bills; }
+  /** Habits followed in Reports. */
+  get habits() { return this.#habits; }
   /** The signed-in email, for "who gets the Telegram message". */
   currentUserEmail() { return this.#sync.currentUser?.email || null; }
 
@@ -1381,6 +1390,7 @@ export class Application {
       }
     }
 
+    let habitNote = null;
     if (id) {
       // Edit existing
       let tx = state.transactions.find((x) => x.id === id);
@@ -1481,7 +1491,7 @@ export class Application {
         // New simple/split tx → TransactionService.create (pushes, applies
         // balances, persists+notifies). recordState/tags/transferPairId defaults
         // are supplied by the service.
-        this.#transactions.create({
+        const created = this.#transactions.create({
           accountId: data.accountId,
           categoryId: splits ? null : (data.categoryId || null),
           amount: minor, currency, exchangeRate: exchRate, refAmount: refAmt,
@@ -1490,7 +1500,9 @@ export class Application {
           splits, recurring, ...bill,
           acctMinor: txAcctMinor,
           addedBy: this.#sync.currentUser?.email || null,
+          regularItemId: data.regularItemId || null,
         });
+        habitNote = this.#habitNote(created, state);
         if (data.payee && !splits && data.categoryId) {
           if (!state.merchantCategories) state.merchantCategories = {};
           state.merchantCategories[data.payee.toLowerCase()] = data.categoryId;
@@ -1502,7 +1514,7 @@ export class Application {
     this.#store.flush();  // flush() = persist + emit state:changed (persist() was silent)
     this.closeModal();
     this.#render();
-    this.#toast.show(id ? 'Transaction updated' : 'Transaction added');
+    this.#toast.show(id ? 'Transaction updated' : habitNote ? `Added · ${habitNote}` : 'Transaction added');
     this.#sync.schedulePush?.();
   }
 
@@ -3533,6 +3545,37 @@ export class Application {
     this.#toast.show(`Paid ${group.vendor} · up to ${DeliveryPlan.shortDate(to)}`);
   }
 
+  /** A shortcut tapped in the Add form: the entry filled in from it (still editable). */
+  useShortcut(itemId) {
+    const state = this.#store.getState();
+    const it = ShortcutService.list(state).find((i) => i.id === itemId);
+    if (!it) return;
+    const p = ShortcutService.prefill(it, state.accounts);
+    this.#txModal.clearDraft();
+    this.#modal.open('transaction', { preset: { ...p, type: 'expense', amount: this.#fx.fromMinor(p.amount, it.currency || state.user.homeCurrency) } });
+  }
+
+  /** A suggested shortcut (a payee logged often) tapped: fill the entry, and offer to keep it as a shortcut. */
+  useSuggestedShortcut(index) {
+    const state = this.#store.getState();
+    const sg = ShortcutService.suggestions(state, DateService.todayIso())[index];
+    if (!sg) return;
+    this.#txModal.clearDraft();
+    this.#modal.open('transaction', { preset: {
+      type: 'expense', payee: sg.payee, amount: this.#fx.fromMinor(sg.amount, sg.currency), currency: sg.currency,
+      categoryId: sg.categoryId || '', accountId: sg.accountId,
+    } });
+    this.#toast.show(`Filled from ${sg.payee}`, { action: { label: 'Keep as shortcut', run: () => {
+      const s = this.#store.getState();
+      if (!Array.isArray(s.regularItems)) s.regularItems = [];
+      s.regularItems.push({ id: IdGenerator.generate('ri'), name: sg.payee, defaultAmount: sg.amount, currency: sg.currency,
+        accountId: sg.accountId || null, sharedOwnerId: null, categoryId: sg.categoryId || null, icon: 'zap', color: '#6366f1', payLater: false, frequency: 'monthly' });
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+      this.#toast.show(`${sg.payee} saved as a shortcut`);
+    } } });
+  }
+
   /** "What do you want to track?" → the right form, already set up for it. */
   startRegular(kind) {
     this.closeModal();
@@ -3760,6 +3803,118 @@ export class Application {
     const v = this.#getOrCreateView('calendar');
     v.shiftMonth?.(delta);
     this.#render();
+  }
+
+  // ── Habits (Reports) ────────────────────────────────────────────────────
+
+  setReportTab(tab) {
+    const v = this.#getOrCreateView('reports');
+    v.setTab?.(tab);
+    this.#render();
+  }
+
+  /** A short "3rd coffee this month · 2 left" note, only near or over a limit. */
+  #habitNote(tx, state) {
+    if (!tx || tx.type !== 'expense') return null;
+    const home = state.user.homeCurrency;
+    try {
+      return this.#habits.noteFor(tx, state, DateService.todayIso(), home, (m) => this.#fx.formatMoney(m, home));
+    } catch { return null; }
+  }
+
+  submitHabit(event, id, implicitItemId) {
+    event.preventDefault();
+    const fd = new FormData(event.target);
+    const state = this.#store.getState();
+    const name = String(fd.get('name') || '').trim().slice(0, 60);
+    if (!name) return this.#toast.show('Give the habit a name');
+    const words = String(fd.get('words') || '').split(',').map((w) => w.trim()).filter(Boolean).slice(0, 20);
+    const itemIds = fd.getAll('itemIds').map(String);
+    if (implicitItemId && !itemIds.includes(implicitItemId)) itemIds.push(implicitItemId);
+    const categoryIds = fd.getAll('categoryIds').map(String);
+    if (!words.length && !itemIds.length && !categoryIds.length) {
+      return this.#toast.show('Add a word, a shortcut or a category to match');
+    }
+    const home = state.user.homeCurrency;
+    const icon = String(fd.get('icon') || 'tag');
+    const iconAt = Math.max(0, HabitService.ICONS.indexOf(icon));
+    const limitCount = Math.max(0, Math.floor(Number(fd.get('limitCount')) || 0)) || null;
+    const amt = Number(fd.get('limitAmount')) || 0;
+    const limitAmount = amt > 0 ? this.#fx.toMinor(amt, home) : null;
+    if (!Array.isArray(state.habits)) state.habits = [];
+    const existing = id ? state.habits.find((h) => h.id === id) : null;
+    const fields = { name, words, itemIds, categoryIds, icon, color: existing?.color || HabitService.COLORS[iconAt % HabitService.COLORS.length], limitCount, limitAmount };
+    if (existing) Object.assign(existing, fields);
+    else state.habits.push({ id: IdGenerator.generate('hab'), createdAt: new Date().toISOString(), ...fields });
+    this.#store.flush();
+    this.closeModal();
+    this.#render();
+    this.#toast.show(existing ? 'Habit updated' : 'Habit added');
+    this.#sync.schedulePush?.();
+  }
+
+  deleteHabit(id) {
+    const state = this.#store.getState();
+    const list = Array.isArray(state.habits) ? state.habits : [];
+    const at = list.findIndex((h) => h.id === id);
+    if (at < 0) return;
+    const [gone] = list.splice(at, 1);
+    this.#store.flush();
+    this.closeModal();
+    this.#render();
+    this.#sync.schedulePush?.();
+    this.#toast.show(`Stopped following ${gone.name}`, { action: { label: 'Undo', run: () => {
+      const s = this.#store.getState();
+      if (!Array.isArray(s.habits)) s.habits = [];
+      s.habits.splice(Math.min(at, s.habits.length), 0, gone);
+      this.#store.flush(); this.#render(); this.#sync.schedulePush?.();
+    } } });
+  }
+
+  trackSuggestedHabit(payee) {
+    this.openModal('habit', { preset: { name: String(payee).slice(0, 60), words: [String(payee)] } });
+  }
+
+  dismissHabitSuggestion(payee) {
+    const state = this.#store.getState();
+    const list = state.user.dismissedHabitSuggestions ||= [];
+    if (!list.includes(payee)) list.push(String(payee).slice(0, 80));
+    this.#store.flush();
+    this.#render();
+    this.#sync.schedulePush?.();
+  }
+
+  // ── Suggestions (Regulars) ──────────────────────────────────────────────
+
+  /** One tap: open the form already filled in; nothing is saved until Save. */
+  acceptSuggestion(kind, payee) {
+    const state = this.#store.getState();
+    const today = DateService.todayIso();
+    const key = SuggestionService.dismissKey(kind, payee);
+    if (kind === 'bill') {
+      const g = SuggestionService.bills(state, today).find((x) => SuggestionService.dismissKey('bill', x.payee) === key);
+      if (!g) return;
+      this.openModal('transaction', { id: g.last.id, preset: {
+        recurring: { rule: 'monthly', interval: 1, until: null }, ...(g.changes ? { askFirst: true } : {}),
+      } });
+      return;
+    }
+    const g = SuggestionService.deliveries(state, today).find((x) => SuggestionService.dismissKey('delivery', x.payee) === key);
+    if (!g) return;
+    this.openModal('regularItem', { payLater: true, preset: {
+      name: g.payee.slice(0, 60), defaultAmount: g.amount, currency: g.currency,
+      accountId: g.accountId || state.accounts[0]?.id || '', categoryId: g.categoryId || '',
+    } });
+  }
+
+  dismissSuggestion(kind, payee) {
+    const state = this.#store.getState();
+    const list = state.user.dismissedSuggestions ||= [];
+    const key = SuggestionService.dismissKey(kind, payee);
+    if (!list.includes(key)) list.push(key.slice(0, 90));
+    this.#store.flush();
+    this.#render();
+    this.#sync.schedulePush?.();
   }
 
   setCalTab(tab) {

@@ -1904,6 +1904,7 @@ var _PocketApp = (() => {
       if (!Array.isArray(state.budgets)) state.budgets = [];
       if (!Array.isArray(state.debts)) state.debts = [];
       if (!Array.isArray(state.regularItems)) state.regularItems = [];
+      if (!Array.isArray(state.habits)) state.habits = [];
       for (const it of state.regularItems) {
         if (typeof it.sharedOwnerId === "undefined") it.sharedOwnerId = null;
       }
@@ -2814,6 +2815,8 @@ var _PocketApp = (() => {
         // absent, AccountService.recompute() freezes it at the live rate.
         acctMinor: Number.isFinite(data.acctMinor) ? data.acctMinor : void 0,
         recurring: data.recurring || null,
+        // Logged from a shortcut: counted with that item on the calendar and in Habits.
+        ...data.regularItemId ? { regularItemId: data.regularItemId } : {},
         // A recurring bill whose amount changes waits to be paid (BillService), and who is reminded on Telegram.
         ...data.recurring && data.askFirst ? {
           askFirst: true,
@@ -12363,6 +12366,151 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/HabitService.js
+  var HabitService = class _HabitService {
+    static ICONS = Object.freeze(["coffee", "utensils", "bus", "car", "cigarette", "shopping-bag", "pizza", "beer", "gamepad-2", "film", "zap", "tag"]);
+    static COLORS = Object.freeze(["#f97316", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899", "#ef4444", "#f59e0b", "#06b6d4", "#6366f1"]);
+    /** @type {(minor: number, from: string, to: string) => number} */
+    #convert;
+    /** @param {{convert: (minor: number, from: string, to: string) => number}} deps */
+    constructor({ convert }) {
+      this.#convert = convert;
+    }
+    /** Saved habits plus one for each shortcut no saved habit covers. */
+    all(state) {
+      const saved = (Array.isArray(state.habits) ? state.habits : []).filter((h) => h && h.id && h.name);
+      const covered = new Set(saved.flatMap((h) => h.itemIds || []));
+      const fromShortcuts = (state.regularItems || []).filter((i) => i.payLater !== true && !covered.has(i.id)).map((i) => ({ id: `item:${i.id}`, name: i.name, icon: i.icon || "zap", color: i.color || "#6366f1", words: [i.name], categoryIds: [], itemIds: [i.id], implicit: true }));
+      return [...saved, ...fromShortcuts];
+    }
+    /** Does this entry count towards the habit? */
+    static matches(h, t) {
+      if (!t || t.type !== "expense") return false;
+      if (t.regularItemId && (h.itemIds || []).includes(t.regularItemId)) return true;
+      if (t.categoryId && (h.categoryIds || []).includes(t.categoryId)) return true;
+      const text = ` ${[t.payee, t.note, t.description].filter(Boolean).join(" ").toLowerCase()} `;
+      return (h.words || []).some((w) => {
+        const word = String(w || "").trim().toLowerCase();
+        if (word.length < 2) return false;
+        const re = new RegExp(`(^|[^\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
+        return re.test(text);
+      });
+    }
+    /** The habit's entries between two days (inclusive). */
+    entries(h, state, from, to) {
+      return (state.transactions || []).filter((t) => t.date >= from && t.date <= to && _HabitService.matches(h, t));
+    }
+    /**
+     * One month of a habit (the month holding `today`), compared with the one
+     * before, with six months of trend, the days it happened, the weekdays,
+     * and the yearly pace (last 90 days × 365/90).
+     */
+    stats(h, state, today, home) {
+      const month = today.slice(0, 7);
+      const start = `${month}-01`;
+      const prevStart = _HabitService.#monthStart(start, -1);
+      const prevEnd = _HabitService.#addDays(start, -1);
+      const sum = (list) => list.reduce((s, t) => s + this.#convert(t.amount, t.currency, home), 0);
+      const now = this.entries(h, state, start, today);
+      const dayOfMonth = Number(today.slice(8, 10));
+      const prevSameDay = _HabitService.#addDays(prevStart, Math.min(dayOfMonth, _HabitService.#daysIn(prevStart)) - 1);
+      const prevPart = this.entries(h, state, prevStart, prevSameDay);
+      const prevAll = this.entries(h, state, prevStart, prevEnd);
+      const trend = [];
+      for (let i = 5; i >= 0; i--) {
+        const s = _HabitService.#monthStart(start, -i);
+        const e = i === 0 ? today : _HabitService.#addDays(_HabitService.#monthStart(start, -i + 1), -1);
+        const list = this.entries(h, state, s, e);
+        trend.push({ month: s.slice(0, 7), count: list.length, amount: sum(list) });
+      }
+      const last90 = this.entries(h, state, _HabitService.#addDays(today, -89), today);
+      const weekdays = [0, 0, 0, 0, 0, 0, 0];
+      for (const t of this.entries(h, state, _HabitService.#addDays(today, -89), today)) weekdays[(/* @__PURE__ */ new Date(`${t.date}T00:00:00Z`)).getUTCDay()]++;
+      const amount = sum(now), prev = sum(prevPart);
+      return {
+        count: now.length,
+        amount,
+        average: now.length ? Math.round(amount / now.length) : 0,
+        prevCount: prevPart.length,
+        prevAmount: prev,
+        prevMonthCount: prevAll.length,
+        prevMonthAmount: sum(prevAll),
+        change: prev > 0 ? Math.round((amount - prev) / prev * 100) : null,
+        days: [...new Set(now.map((t) => t.date))].sort(),
+        trend,
+        weekdays,
+        yearly: Math.round(sum(last90) * 365 / 90),
+        limit: this.#limit(h, now.length, amount)
+      };
+    }
+    /** null, or { state: 'ok'|'near'|'over', countLeft, amountLeft, text }. */
+    #limit(h, count, amount) {
+      const lc = Number(h.limitCount) || 0, la = Number(h.limitAmount) || 0;
+      if (!lc && !la) return null;
+      const countUse = lc ? count / lc : 0, amountUse = la ? amount / la : 0;
+      const use = Math.max(countUse, amountUse);
+      return {
+        state: use > 1 ? "over" : use >= 0.8 ? "near" : "ok",
+        countLeft: lc ? lc - count : null,
+        amountLeft: la ? la - amount : null,
+        use
+      };
+    }
+    /**
+     * After an entry is saved: a short note for each habit with a limit that
+     * this entry brings near or over its limit, e.g. "7th Swiggy this month · 1 left".
+     * @returns {string|null}
+     */
+    noteFor(t, state, today, home, money) {
+      for (const h of this.all(state)) {
+        if (!(Number(h.limitCount) || Number(h.limitAmount)) || !_HabitService.matches(h, t)) continue;
+        const st = this.stats(h, state, today, home);
+        if (!st.limit || st.limit.state === "ok") continue;
+        const nth = _HabitService.ordinal(st.count);
+        const left = st.limit.countLeft != null ? st.limit.countLeft > 0 ? `${st.limit.countLeft} left` : st.limit.countLeft === 0 ? "that's your limit" : `${-st.limit.countLeft} over your limit` : st.limit.amountLeft > 0 ? `${money(st.limit.amountLeft)} left` : `${money(-st.limit.amountLeft)} over your limit`;
+        return `${nth} ${h.name} this month \xB7 ${left}`;
+      }
+      return null;
+    }
+    /**
+     * Payees logged often (5+ times in 60 days) that no habit covers: suggestions.
+     * @returns {{payee: string, count: number, amount: number}[]}
+     */
+    suggestions(state, today, home) {
+      const since = _HabitService.#addDays(today, -59);
+      const habits = this.all(state);
+      const dismissed = new Set((state.user?.dismissedHabitSuggestions || []).map((s) => String(s).toLowerCase()));
+      const groups = /* @__PURE__ */ new Map();
+      for (const t of state.transactions || []) {
+        if (t.type !== "expense" || !t.payee || t.date < since || t.date > today || t.recurring || t.recurringSourceId) continue;
+        if (habits.some((h) => _HabitService.matches(h, t))) continue;
+        const key = t.payee.trim().toLowerCase();
+        if (!key || dismissed.has(key)) continue;
+        const g = groups.get(key) || { payee: t.payee.trim(), count: 0, amount: 0 };
+        g.count++;
+        g.amount += this.#convert(t.amount, t.currency, home);
+        groups.set(key, g);
+      }
+      return [...groups.values()].filter((g) => g.count >= 5).sort((a, b) => b.count - a.count).slice(0, 3);
+    }
+    static ordinal(n) {
+      const s = ["th", "st", "nd", "rd"], v = n % 100;
+      return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+    static #monthStart(iso, deltaMonths) {
+      const [y, m] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1 + deltaMonths, 1)).toISOString().slice(0, 10);
+    }
+    static #daysIn(iso) {
+      const [y, m] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m, 0)).getUTCDate();
+    }
+  };
+
   // src/ui/views/ReportsView.js
   var ReportsView = class extends BaseView {
     /** @type {ReportService} */
@@ -12371,6 +12519,8 @@ This replaces your current grouping.`
     #hijri;
     /** @type {string} */
     #range = "30";
+    /** @type {'overview'|'habits'} */
+    #tab = "overview";
     // Chart instances — destroyed before each re-draw
     #charts = { bar: null, donut: null, nw: null };
     constructor() {
@@ -12381,6 +12531,9 @@ This replaces your current grouping.`
     // ── Public API ────────────────────────────────────────────────────────
     setRange(r) {
       this.#range = r;
+    }
+    setTab(t) {
+      this.#tab = t === "habits" ? "habits" : "overview";
     }
     get range() {
       return this.#range;
@@ -12408,6 +12561,12 @@ This replaces your current grouping.`
         </div>
       </div>
 
+      <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
+        ${[["overview", "Overview"], ["habits", "Habits"]].map(([k, l]) => `
+        <button onclick="window.__app.setReportTab('${k}')"
+                class="px-3 py-2 text-sm ${this.#tab === k ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${l}</button>`).join("")}
+      </div>
+      ${this.#tab === "habits" ? this.#renderHabits() : `
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="card p-5">
           <h3 class="font-semibold mb-3">Daily spending</h3>
@@ -12447,10 +12606,89 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 mb-3">Spending grouped by Hijri month over the selected range</div>
           <div id="hijriMonthBreakdown"></div>
         </div>` : ""}
+      `}
     `;
     }
     onAfterRender() {
-      this.#drawCharts();
+      if (this.#tab === "overview") this.#drawCharts();
+    }
+    // ── Habits ────────────────────────────────────────────────────────────
+    #renderHabits() {
+      const svc = window.__app?.habits;
+      if (!svc) return "";
+      const state = this.state, home = this.homeCurrency, today = DateService.todayIso();
+      const habits = svc.all(state);
+      const suggestions = this.inGuestSpace ? [] : svc.suggestions(state, today, home);
+      const sugg = suggestions.map((g) => `
+      <div class="habit-suggest">
+        <i data-lucide="sparkles"></i>
+        <div class="flex-1 min-w-0 text-sm">You logged <b>${this.escapeHtml(g.payee)}</b> ${g.count} times in the last 60 days (${this.formatMoney(g.amount, home)}). Track it as a habit?</div>
+        <button class="btn btn-primary btn-sm" onclick="window.__app.trackSuggestedHabit(${Html.escape(JSON.stringify(g.payee))})">Track</button>
+        <button class="btn btn-ghost btn-sm" onclick="window.__app.dismissHabitSuggestion(${Html.escape(JSON.stringify(g.payee))})">No thanks</button>
+      </div>`).join("");
+      if (!habits.length) {
+        return `${sugg}
+        <div class="card p-8 text-center">
+          ${this.emptyState("No habits yet", "Follow one small, repeated spend \u2014 coffee, Swiggy, autos \u2014 across all your entries, however you logged them.")}
+          <div class="regular-example mt-4"><i data-lucide="coffee"></i> Coffee \xB7 26 times \xB7 \u20B9520 this month</div>
+          ${this.inGuestSpace ? "" : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('habit')"><i data-lucide="plus"></i> Add a habit</button>`}
+        </div>`;
+      }
+      return `
+      ${sugg}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        ${habits.map((h) => this.#habitCard(h, svc.stats(h, state, today, home), home, today)).join("")}
+      </div>
+      ${this.inGuestSpace ? "" : `<button class="btn btn-outline mt-4" onclick="window.__app.openModal('habit')"><i data-lucide="plus"></i> New habit</button>`}
+      <p class="text-xs text-zinc-500 mt-3">Compared with the same days of last month. Each shortcut counts as a habit by itself until you set one up.</p>`;
+    }
+    #habitCard(h, st, home, today) {
+      const color = Html.color(h.color, "#6366f1");
+      const change = st.change == null ? "" : `<span class="habit-change ${st.change > 0 ? "up" : "down"}">${st.change > 0 ? "\u25B2" : "\u25BC"} ${Math.abs(st.change)}%</span>`;
+      const maxTrend = Math.max(1, ...st.trend.map((m2) => m2.amount));
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const maxWd = Math.max(1, ...st.weekdays);
+      const limit = st.limit;
+      const limitBar = limit ? `
+      <div class="habit-limit ${limit.state}">
+        <div class="habit-limit-bar"><span style="width:${Math.min(100, Math.round(limit.use * 100))}%"></span></div>
+        <div class="text-[11px] mt-1">${limit.countLeft != null ? `${st.count} of ${h.limitCount} times` : `${this.formatMoney(st.amount, home)} of ${this.formatMoney(h.limitAmount, home)}`}
+          \xB7 ${limit.state === "over" ? "over the limit" : limit.countLeft != null ? `${Math.max(0, limit.countLeft)} left` : `${this.formatMoney(Math.max(0, limit.amountLeft), home)} left`}</div>
+      </div>` : "";
+      const [y, m] = today.split("-").map(Number);
+      const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+      const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const happened = new Set(st.days);
+      const cells = [...Array(first).fill(""), ...Array.from({ length: dim }, (_, i) => {
+        const iso = `${today.slice(0, 7)}-${String(i + 1).padStart(2, "0")}`;
+        return `<span class="${happened.has(iso) ? "on" : ""} ${iso === today ? "today" : ""}" title="${i + 1}" style="${happened.has(iso) ? `background:${color}` : ""}"></span>`;
+      })].map((c) => c || '<span class="blank"></span>').join("");
+      return `
+      <div class="card p-4">
+        <div class="flex items-start gap-3">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:36px;height:36px"><i data-lucide="${Html.icon(h.icon, "tag")}" style="width:17px;height:17px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold truncate">${this.escapeHtml(h.name)}</div>
+            <div class="text-sm"><b>${st.count}</b> time${st.count === 1 ? "" : "s"} \xB7 <b>${this.formatMoney(st.amount, home)}</b>${st.count ? ` \xB7 about ${this.formatMoney(st.average, home)} each` : ""} ${change}</div>
+            <div class="text-xs text-zinc-500">this month \xB7 last month ${st.prevMonthCount} times, ${this.formatMoney(st.prevMonthAmount, home)}</div>
+          </div>
+          ${this.inGuestSpace ? "" : `<button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('habit',{id:${Html.escape(JSON.stringify(h.id))}})">Edit</button>`}
+        </div>
+        ${limitBar}
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <div class="text-[11px] text-zinc-500 mb-1">Days this month</div>
+            <div class="habit-days">${cells}</div>
+          </div>
+          <div>
+            <div class="text-[11px] text-zinc-500 mb-1">Last 6 months</div>
+            <div class="habit-trend">${st.trend.map((t) => `<div title="${t.count} times \xB7 ${this.formatMoney(t.amount, home)}"><span style="height:${Math.max(3, Math.round(t.amount / maxTrend * 44))}px;background:${color}"></span><small>${months[Number(t.month.slice(5)) - 1][0]}</small></div>`).join("")}</div>
+            <div class="text-[11px] text-zinc-500 mt-2 mb-1">Which days (90 days)</div>
+            <div class="habit-trend weekdays">${st.weekdays.map((n, i) => `<div title="${n}"><span style="height:${Math.max(2, Math.round(n / maxWd * 22))}px;background:${color}99"></span><small>${"SMTWTFS"[i]}</small></div>`).join("")}</div>
+          </div>
+        </div>
+        ${st.yearly ? `<div class="text-xs text-zinc-500 mt-3"><i data-lucide="trending-up" style="width:12px;height:12px;display:inline"></i> At this rate, about <b>${this.formatMoney(st.yearly, home)}</b> a year.</div>` : ""}
+      </div>`;
     }
     // ── Private ───────────────────────────────────────────────────────────
     #drawCharts() {
@@ -12717,6 +12955,128 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/SuggestionService.js
+  var SuggestionService = class _SuggestionService {
+    static BILL_MIN = 3;
+    static BILL_GAP = Object.freeze([25, 35]);
+    static BILL_LOOKBACK = 130;
+    static DAILY_WINDOW = 14;
+    static DAILY_MIN = 8;
+    /**
+     * @param {object} state
+     * @param {string} today YYYY-MM-DD
+     * @returns {{kind:'bill', payee:string, last:object, amount:number, changes:boolean, count:number}[]}
+     */
+    static bills(state, today) {
+      const since = _SuggestionService.#addDays(today, -_SuggestionService.BILL_LOOKBACK);
+      const repeating = _SuggestionService.#repeatingPayees(state);
+      const out = [];
+      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
+        if (repeating.has(key) || _SuggestionService.#dismissed(state, "bill", key)) continue;
+        const months = _SuggestionService.#monthlyRun(list);
+        if (months.length < _SuggestionService.BILL_MIN) continue;
+        const last = months[months.length - 1];
+        if (_SuggestionService.#daysBetween(last.date, today) > _SuggestionService.BILL_GAP[1] + 5) continue;
+        out.push({
+          kind: "bill",
+          payee: last.payee.trim(),
+          last,
+          amount: last.amount,
+          count: months.length,
+          changes: new Set(months.map((t) => t.amount)).size > 1
+        });
+      }
+      return out.sort((a, b) => b.count - a.count).slice(0, 2);
+    }
+    /**
+     * @param {object} state
+     * @param {string} today YYYY-MM-DD
+     * @returns {{kind:'delivery', payee:string, amount:number, currency:string, accountId:string, categoryId:string|null, days:number}[]}
+     */
+    static deliveries(state, today) {
+      const since = _SuggestionService.#addDays(today, -(_SuggestionService.DAILY_WINDOW - 1));
+      const have = new Set((state.regularItems || []).filter((i) => i.payLater === true).map((i) => _SuggestionService.#key(i.name)));
+      const out = [];
+      for (const [key, list] of _SuggestionService.#byPayee(state, since, today)) {
+        if (have.has(key) || _SuggestionService.#dismissed(state, "delivery", key)) continue;
+        const days = new Set(list.map((t) => t.date)).size;
+        if (days < _SuggestionService.DAILY_MIN) continue;
+        const last = list[list.length - 1];
+        out.push({
+          kind: "delivery",
+          payee: last.payee.trim(),
+          days,
+          amount: _SuggestionService.#mode(list.map((t) => t.amount)),
+          currency: _SuggestionService.#mode(list.map((t) => t.currency)),
+          accountId: _SuggestionService.#mode(list.map((t) => t.accountId)),
+          categoryId: _SuggestionService.#mode(list.map((t) => t.categoryId).filter(Boolean)) ?? null
+        });
+      }
+      return out.sort((a, b) => b.days - a.days).slice(0, 2);
+    }
+    /** The dismissal key for a suggestion. */
+    static dismissKey(kind, payee) {
+      return `${kind}:${_SuggestionService.#key(payee)}`;
+    }
+    // ── helpers ──────────────────────────────────────────────────────────────
+    /** Plain expenses (not repeats, not from shortcuts or vendor payments), by payee, oldest first. */
+    static #byPayee(state, since, today) {
+      const groups = /* @__PURE__ */ new Map();
+      for (const t of state.transactions || []) {
+        if (t.type !== "expense" || !t.payee || t.date < since || t.date > today) continue;
+        if (t.recurring || t.recurringSourceId || t.regularItemId || t.settles || t.billOf) continue;
+        const key = _SuggestionService.#key(t.payee);
+        if (!key) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+      }
+      for (const list of groups.values()) list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      return groups;
+    }
+    /** Payees that already repeat (a template, or a copy of one). */
+    static #repeatingPayees(state) {
+      return new Set((state.transactions || []).filter((t) => t.payee && (t.recurring || t.recurringSourceId)).map((t) => _SuggestionService.#key(t.payee)));
+    }
+    /** The longest run ending at the latest entry where each is 25–35 days after the one before (one per month). */
+    static #monthlyRun(list) {
+      const [lo, hi] = _SuggestionService.BILL_GAP;
+      const run = [list[list.length - 1]];
+      for (let i = list.length - 2; i >= 0; i--) {
+        const gap = _SuggestionService.#daysBetween(list[i].date, run[0].date);
+        if (gap < lo) continue;
+        if (gap > hi) break;
+        run.unshift(list[i]);
+      }
+      return run;
+    }
+    static #dismissed(state, kind, key) {
+      return (state.user?.dismissedSuggestions || []).includes(`${kind}:${key}`);
+    }
+    static #key(s) {
+      return String(s || "").trim().toLowerCase();
+    }
+    static #mode(values) {
+      const counts = /* @__PURE__ */ new Map();
+      let best = null, bestN = 0;
+      for (const v of values) {
+        const n = (counts.get(v) || 0) + 1;
+        counts.set(v, n);
+        if (n >= bestN) {
+          best = v;
+          bestN = n;
+        }
+      }
+      return best;
+    }
+    static #daysBetween(a, b) {
+      return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+  };
+
   // src/ui/views/CalendarView.js
   var CalendarView = class extends BaseView {
     /** @type {HijriCalendarService} */
@@ -12800,7 +13160,7 @@ This replaces your current grouping.`
                 class="px-3 py-2 text-sm ${this.#tab === k ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${l}</button>`).join("")}
       </div>
 
-      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "deliveries" ? this.#renderDeliveries(state) : this.#renderBills(state)}
+      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "deliveries" ? this.#suggest(state, "delivery") + this.#renderDeliveries(state) : this.#suggest(state, "bill") + this.#renderBills(state)}
     `;
     }
     // ── Sub-views ─────────────────────────────────────────────────────────
@@ -12918,6 +13278,23 @@ This replaces your current grouping.`
      * (or "asks each time" with last time's). Due "ask me" bills come first
      * with Pay; each has Edit and Stop.
      */
+    /** "Looks like a monthly bill — make it one?" / "Delivered most days? Track it." */
+    #suggest(state, kind) {
+      if (this.inGuestSpace) return "";
+      const today = DateService.todayIso();
+      const list = kind === "bill" ? SuggestionService.bills(state, today) : SuggestionService.deliveries(state, today);
+      return list.map((g) => {
+        const payee = Html.escape(JSON.stringify(g.payee));
+        const text = kind === "bill" ? `You've paid <b>${this.escapeHtml(g.payee)}</b> once a month for ${g.count} months${g.changes ? " (the amount changes)" : ` (${this.formatMoney(g.amount, g.last.currency)})`}. Make it a monthly bill?` : `<b>${this.escapeHtml(g.payee)}</b> on ${g.days} of the last 14 days. Delivered most days? Track it and pay once a month.`;
+        return `
+        <div class="habit-suggest">
+          <i data-lucide="sparkles"></i>
+          <div class="flex-1 min-w-0 text-sm">${text}</div>
+          <button class="btn btn-primary btn-sm" onclick="window.__app.acceptSuggestion('${kind}',${payee})">${kind === "bill" ? "Make it a bill" : "Track it"}</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.__app.dismissSuggestion('${kind}',${payee})">No thanks</button>
+        </div>`;
+      }).join("");
+    }
     #renderBills(state) {
       const bills = window.__app?.bills;
       const today = DateService.todayIso();
@@ -13439,6 +13816,72 @@ This replaces your current grouping.`
     }
   };
 
+  // src/domain/services/ShortcutService.js
+  var ShortcutService = class _ShortcutService {
+    static SUGGEST_DAYS = 60;
+    static SUGGEST_MIN = 4;
+    static SUGGEST_MAX = 3;
+    /** Shortcuts of this book (regular items that aren't deliveries, on your own accounts). */
+    static list(state) {
+      return (state.regularItems || []).filter((i) => i.payLater !== true && !i.sharedOwnerId);
+    }
+    /**
+     * Payees logged often lately without a shortcut: [{ payee, amount, currency, categoryId, accountId, count }].
+     * @param {object} state
+     * @param {string} today YYYY-MM-DD
+     */
+    static suggestions(state, today) {
+      const since = _ShortcutService.#addDays(today, -_ShortcutService.SUGGEST_DAYS);
+      const have = new Set(_ShortcutService.list(state).map((i) => String(i.name).trim().toLowerCase()));
+      const groups = /* @__PURE__ */ new Map();
+      for (const t of state.transactions || []) {
+        if (t.type !== "expense" || !t.payee || t.date < since || t.date > today || t.recurringSourceId || t.recurring || t.regularItemId) continue;
+        const key = String(t.payee).trim().toLowerCase();
+        if (!key || have.has(key)) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+      }
+      return [...groups.values()].filter((list) => list.length >= _ShortcutService.SUGGEST_MIN).map((list) => ({
+        payee: list[list.length - 1].payee.trim(),
+        amount: _ShortcutService.#mode(list.map((t) => t.amount)),
+        currency: _ShortcutService.#mode(list.map((t) => t.currency)),
+        categoryId: _ShortcutService.#mode(list.map((t) => t.categoryId).filter(Boolean)) ?? null,
+        accountId: _ShortcutService.#mode(list.map((t) => t.accountId)),
+        count: list.length
+      })).sort((a, b) => b.count - a.count).slice(0, _ShortcutService.SUGGEST_MAX);
+    }
+    /** What a shortcut fills into a new entry. */
+    static prefill(item, accounts) {
+      const own = (accounts || []).some((a) => a.id === item.accountId);
+      return {
+        payee: item.name,
+        amount: item.defaultAmount || 0,
+        currency: item.currency,
+        categoryId: item.categoryId || "",
+        ...own ? { accountId: item.accountId } : {},
+        regularItemId: item.id
+      };
+    }
+    /** The most common value (ties: the latest). */
+    static #mode(values) {
+      const counts = /* @__PURE__ */ new Map();
+      let best = null, bestN = 0;
+      for (const v of values) {
+        const n = (counts.get(v) || 0) + 1;
+        counts.set(v, n);
+        if (n >= bestN) {
+          best = v;
+          bestN = n;
+        }
+      }
+      return best;
+    }
+    static #addDays(iso, n) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+    }
+  };
+
   // src/ui/modals/TransactionModal.js
   var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class _TransactionModal {
@@ -13601,7 +14044,7 @@ This replaces your current grouping.`
         const outLeg = state.transactions.find((t) => t.id === editing.transferPairId);
         if (outLeg) editing = outLeg;
       }
-      const data = editing ? { ...editing } : sharedEditTx ? { ...sharedEditTx } : prefill ? { ...prefill } : {
+      const data = editing ? { ...editing, ...opts.preset || {} } : sharedEditTx ? { ...sharedEditTx } : prefill ? { ...prefill } : {
         type: "expense",
         amount: 0,
         currency: state.user.defaultCurrency || state.user.homeCurrency,
@@ -13693,6 +14136,8 @@ This replaces your current grouping.`
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </button>`).join("")}
         </div>
+        ${!editing && !sharedEditTx && !isSharedMode && type === "expense" ? this.#shortcuts(state, data) : ""}
+        ${data.regularItemId && !editing ? `<input type="hidden" name="regularItemId" value="${this.#esc(data.regularItemId)}">` : ""}
         ${sharedBook ? `
         <div class="text-[11px] text-zinc-500 -mt-2 mb-3">
           Transfers aren't available here \u2014 a transfer is two linked rows, and a
@@ -14115,6 +14560,31 @@ This replaces your current grouping.`
     }
     // Category selection is handled by CategoryField + CategoryPickerSheet:
     // a two-step parent → subcategory sheet rather than one long dropdown.
+    /**
+     * One-tap starts: your shortcuts (coffee ₹20…) and, lighter, payees you
+     * log often that have none yet. Tapping one fills this entry.
+     */
+    #shortcuts(state, data) {
+      const list = ShortcutService.list(state);
+      const suggest = ShortcutService.suggestions(state, DateService.todayIso());
+      if (!list.length && !suggest.length) return "";
+      const chip = (label, onclick, cls, title = "") => `<button type="button" class="shortcut-chip ${cls}" title="${this.#esc(title)}" onclick="${onclick}">${label}</button>`;
+      return `
+      <div class="shortcut-row mb-3" aria-label="Shortcuts">
+        ${list.map((it) => chip(
+        `<i data-lucide="${Html.icon(it.icon)}" style="color:${Html.color(it.color)}"></i>${this.#esc(it.name)} <span>${this.#fx.formatMoney(it.defaultAmount || 0, it.currency)}</span>`,
+        `window.__app.useShortcut('${Html.js(it.id)}')`,
+        data.regularItemId === it.id ? "on" : ""
+      )).join("")}
+        ${suggest.map((sg, i) => chip(
+        `${this.#esc(sg.payee)} <span>${this.#fx.formatMoney(sg.amount, sg.currency)}</span>`,
+        `window.__app.useSuggestedShortcut(${i})`,
+        "suggested",
+        `You've logged this ${sg.count} times lately`
+      )).join("")}
+        ${chip('<i data-lucide="plus"></i>', "window.__app.closeModal();window.__app.openModal('regularItem',{payLater:false})", "add", "New shortcut")}
+      </div>`;
+    }
     /** "every month", "every 2 weeks". */
     static everyLabel(r) {
       const n = Math.max(1, Number(r?.interval) || 1);
@@ -15528,9 +15998,11 @@ This replaces your current grouping.`
         categoryId: "",
         icon: "coffee",
         color: ITEM_COLORS[0],
-        payLater: opts.payLater === true
+        payLater: opts.payLater === true,
+        ...opts.preset || {}
+        // a suggestion: name, price, account, category
       };
-      const amountVal = editing ? this.#fx.fromMinor(editing.defaultAmount, editing.currency) : 0;
+      const amountVal = editing ? this.#fx.fromMinor(editing.defaultAmount, editing.currency) : data.defaultAmount ? this.#fx.fromMinor(data.defaultAmount, data.currency) : 0;
       const accRef = AccountRef.fromRecord(data);
       const accValue = accRef.toValue();
       const shares = (state._sharedData || []).filter((s) => (s.accounts || []).some((a) => (s.permission || {})[a.id] !== "view"));
@@ -16136,6 +16608,80 @@ This replaces your current grouping.`
             </button>`).join("")}
         </div>
       </div>`;
+    }
+  };
+
+  // src/ui/modals/HabitModal.js
+  var HabitModal = class {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    /** @type {() => HabitService} */
+    #habits;
+    constructor({ habits }) {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+      this.#habits = habits;
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const home = state.user.homeCurrency;
+      const existing = opts.id ? this.#habits().all(state).find((h2) => h2.id === opts.id) : null;
+      const h = existing ?? { name: opts.preset?.name ?? "", words: opts.preset?.words ?? [], categoryIds: [], itemIds: [], icon: "tag", color: HabitService.COLORS[0] };
+      const cats = (state.categories || []).filter((c) => c.type === "expense");
+      const mains = cats.filter((c) => !c.parentId);
+      const shortcuts = (state.regularItems || []).filter((i) => i.payLater !== true);
+      const id = Html.escape(existing && !existing.implicit ? existing.id : "");
+      const catOption = (c, depth) => `
+      <label class="check"><input type="checkbox" name="categoryIds" value="${Html.escape(c.id)}" ${(h.categoryIds || []).includes(c.id) ? "checked" : ""}>${depth ? "\u2014 " : ""}${Html.escape(c.name)}</label>`;
+      return `
+      <form class="p-5" style="min-width:320px;max-width:480px" onsubmit="window.__app.submitHabit(event,'${id}','${Html.escape(existing?.implicit ? existing.itemIds[0] : "")}')">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">${existing ? "Edit habit" : "New habit"}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <p class="text-xs text-zinc-500 mb-4">Follow one small, repeated spend across all your entries \u2014 however they were added.</p>
+
+        <label class="text-xs text-zinc-500">Name</label>
+        <input class="input mb-3" name="name" required maxlength="40" placeholder="e.g. Coffee, Swiggy, Autos" value="${Html.escape(h.name)}">
+
+        <label class="text-xs text-zinc-500">Words in the payee or note (comma between them)</label>
+        <input class="input mb-1" name="words" maxlength="200" placeholder="e.g. coffee, chai, starbucks" value="${Html.escape((h.words || []).join(", "))}">
+        <div class="text-[11px] text-zinc-500 mb-3">Whole words; capitals don't matter.</div>
+
+        ${shortcuts.length ? `
+        <label class="text-xs text-zinc-500 block mb-1">Entries from these shortcuts</label>
+        <div class="checks mb-3">${shortcuts.map((i) => `<label class="check"><input type="checkbox" name="itemIds" value="${Html.escape(i.id)}" ${(h.itemIds || []).includes(i.id) ? "checked" : ""}>${Html.escape(i.name)}</label>`).join("")}</div>` : ""}
+
+        <details class="mb-3" ${(h.categoryIds || []).length ? "open" : ""}>
+          <summary class="text-xs text-zinc-500 cursor-pointer">Or everything in a category</summary>
+          <div class="checks mt-2" style="max-height:10rem;overflow:auto">
+            ${mains.map((m) => catOption(m, 0) + cats.filter((c) => c.parentId === m.id).map((c) => catOption(c, 1)).join("")).join("")}
+          </div>
+        </details>
+
+        <label class="text-xs text-zinc-500 block mb-1">Limit per month (optional)</label>
+        <div class="grid grid-cols-2 gap-3 mb-1">
+          <div class="flex items-center gap-2"><input class="input" type="number" min="0" step="1" name="limitCount" placeholder="\u2014" value="${h.limitCount || ""}"><span class="text-xs text-zinc-500">times</span></div>
+          <div class="flex items-center gap-2"><span class="text-xs text-zinc-500">${Html.escape(home)}</span><input class="input" type="number" min="0" step="${CurrencyService.stepFor(home)}" name="limitAmount" placeholder="\u2014" value="${h.limitAmount ? this.#fx.fromMinor(h.limitAmount, home) : ""}"></div>
+        </div>
+        <div class="text-[11px] text-zinc-500 mb-3">You'll see a note when an entry brings it near or over.</div>
+
+        <label class="text-xs text-zinc-500 block mb-1">Icon</label>
+        <div class="flex flex-wrap gap-2 mb-4">
+          ${HabitService.ICONS.map((ic, i) => `
+            <label class="cursor-pointer"><input type="radio" name="icon" value="${ic}" class="sr-only" ${h.icon === ic || !h.icon && i === 0 ? "checked" : ""}>
+              <span class="habit-icon-pick" style="color:${HabitService.COLORS[i % HabitService.COLORS.length]}"><i data-lucide="${ic}"></i></span></label>`).join("")}
+        </div>
+
+        <div class="flex gap-2">
+          ${existing && !existing.implicit ? `<button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.deleteHabit('${id}')"><i data-lucide="trash-2"></i></button>` : ""}
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" type="submit"><i data-lucide="check"></i> Save</button>
+        </div>
+      </form>`;
     }
   };
 
@@ -17980,6 +18526,8 @@ This replaces your current grouping.`
     #vendorDues;
     /** @type {BillService}          */
     #bills;
+    /** @type {HabitService}         */
+    #habits;
     /** @type {SyncService}          */
     #sync;
     /** @type {ThemeService}         */
@@ -18083,6 +18631,7 @@ This replaces your current grouping.`
       this.#budgets = new BudgetService();
       this.#recurring = new RecurringService();
       this.#bills = new BillService({ store: this.#store, recurring: this.#recurring });
+      this.#habits = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
       this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
       this.#sync = new SyncService();
@@ -18207,6 +18756,7 @@ This replaces your current grouping.`
       this.#modal.register("pauseDeliveries", new PauseDeliveriesModal());
       this.#modal.register("payBill", new PayBillModal({ bills: () => this.#bills }));
       this.#modal.register("addRegular", new AddRegularModal());
+      this.#modal.register("habit", new HabitModal({ habits: () => this.#habits }));
       this.#modal.register("currencySetup", this.#currencySetupModal);
       this.#bus.on("route:changed", ({ route }) => this.#renderView(route));
       this.#bus.on("toast", ({ message }) => this.#toast.show(message));
@@ -18328,6 +18878,7 @@ This replaces your current grouping.`
       "pauseDeliveries",
       "payBill",
       "addRegular",
+      "habit",
       "csv",
       "reconcile",
       "family",
@@ -18394,6 +18945,10 @@ This replaces your current grouping.`
     /** Recurring bills that wait to be paid (amount changes). */
     get bills() {
       return this.#bills;
+    }
+    /** Habits followed in Reports. */
+    get habits() {
+      return this.#habits;
     }
     /** The signed-in email, for "who gets the Telegram message". */
     currentUserEmail() {
@@ -19134,6 +19689,7 @@ Leave empty to use your own name.`,
           txAcctMinor = this.#fx.toMinor(this.#fx.fromMinor(minor, currency) * txRate, accForFx.currency);
         }
       }
+      let habitNote = null;
       if (id) {
         let tx = state.transactions.find((x) => x.id === id);
         if (!tx) return;
@@ -19247,7 +19803,7 @@ Leave empty to use your own name.`,
             ...this.#buildTransferPair(data, { minor, currency, exchRate, refAmt, xfer, state })
           );
         } else {
-          this.#transactions.create({
+          const created = this.#transactions.create({
             accountId: data.accountId,
             categoryId: splits ? null : data.categoryId || null,
             amount: minor,
@@ -19263,8 +19819,10 @@ Leave empty to use your own name.`,
             recurring,
             ...bill,
             acctMinor: txAcctMinor,
-            addedBy: this.#sync.currentUser?.email || null
+            addedBy: this.#sync.currentUser?.email || null,
+            regularItemId: data.regularItemId || null
           });
+          habitNote = this.#habitNote(created, state);
           if (data.payee && !splits && data.categoryId) {
             if (!state.merchantCategories) state.merchantCategories = {};
             state.merchantCategories[data.payee.toLowerCase()] = data.categoryId;
@@ -19275,7 +19833,7 @@ Leave empty to use your own name.`,
       this.#store.flush();
       this.closeModal();
       this.#render();
-      this.#toast.show(id ? "Transaction updated" : "Transaction added");
+      this.#toast.show(id ? "Transaction updated" : habitNote ? `Added \xB7 ${habitNote}` : "Transaction added");
       this.#sync.schedulePush?.();
     }
     /**
@@ -21135,6 +21693,50 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       this.#render();
       this.#toast.show(`Paid ${group.vendor} \xB7 up to ${DeliveryPlan.shortDate(to)}`);
     }
+    /** A shortcut tapped in the Add form: the entry filled in from it (still editable). */
+    useShortcut(itemId) {
+      const state = this.#store.getState();
+      const it = ShortcutService.list(state).find((i) => i.id === itemId);
+      if (!it) return;
+      const p = ShortcutService.prefill(it, state.accounts);
+      this.#txModal.clearDraft();
+      this.#modal.open("transaction", { preset: { ...p, type: "expense", amount: this.#fx.fromMinor(p.amount, it.currency || state.user.homeCurrency) } });
+    }
+    /** A suggested shortcut (a payee logged often) tapped: fill the entry, and offer to keep it as a shortcut. */
+    useSuggestedShortcut(index) {
+      const state = this.#store.getState();
+      const sg = ShortcutService.suggestions(state, DateService.todayIso())[index];
+      if (!sg) return;
+      this.#txModal.clearDraft();
+      this.#modal.open("transaction", { preset: {
+        type: "expense",
+        payee: sg.payee,
+        amount: this.#fx.fromMinor(sg.amount, sg.currency),
+        currency: sg.currency,
+        categoryId: sg.categoryId || "",
+        accountId: sg.accountId
+      } });
+      this.#toast.show(`Filled from ${sg.payee}`, { action: { label: "Keep as shortcut", run: () => {
+        const s = this.#store.getState();
+        if (!Array.isArray(s.regularItems)) s.regularItems = [];
+        s.regularItems.push({
+          id: IdGenerator.generate("ri"),
+          name: sg.payee,
+          defaultAmount: sg.amount,
+          currency: sg.currency,
+          accountId: sg.accountId || null,
+          sharedOwnerId: null,
+          categoryId: sg.categoryId || null,
+          icon: "zap",
+          color: "#6366f1",
+          payLater: false,
+          frequency: "monthly"
+        });
+        this.#store.persist();
+        this.#sync.schedulePush?.();
+        this.#toast.show(`${sg.payee} saved as a shortcut`);
+      } } });
+    }
     /** "What do you want to track?" → the right form, already set up for it. */
     startRegular(kind) {
       this.closeModal();
@@ -21353,6 +21955,116 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       const v = this.#getOrCreateView("calendar");
       v.shiftMonth?.(delta);
       this.#render();
+    }
+    // ── Habits (Reports) ────────────────────────────────────────────────────
+    setReportTab(tab) {
+      const v = this.#getOrCreateView("reports");
+      v.setTab?.(tab);
+      this.#render();
+    }
+    /** A short "3rd coffee this month · 2 left" note, only near or over a limit. */
+    #habitNote(tx, state) {
+      if (!tx || tx.type !== "expense") return null;
+      const home = state.user.homeCurrency;
+      try {
+        return this.#habits.noteFor(tx, state, DateService.todayIso(), home, (m) => this.#fx.formatMoney(m, home));
+      } catch {
+        return null;
+      }
+    }
+    submitHabit(event, id, implicitItemId) {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const state = this.#store.getState();
+      const name = String(fd.get("name") || "").trim().slice(0, 60);
+      if (!name) return this.#toast.show("Give the habit a name");
+      const words = String(fd.get("words") || "").split(",").map((w) => w.trim()).filter(Boolean).slice(0, 20);
+      const itemIds = fd.getAll("itemIds").map(String);
+      if (implicitItemId && !itemIds.includes(implicitItemId)) itemIds.push(implicitItemId);
+      const categoryIds = fd.getAll("categoryIds").map(String);
+      if (!words.length && !itemIds.length && !categoryIds.length) {
+        return this.#toast.show("Add a word, a shortcut or a category to match");
+      }
+      const home = state.user.homeCurrency;
+      const icon = String(fd.get("icon") || "tag");
+      const iconAt = Math.max(0, HabitService.ICONS.indexOf(icon));
+      const limitCount = Math.max(0, Math.floor(Number(fd.get("limitCount")) || 0)) || null;
+      const amt = Number(fd.get("limitAmount")) || 0;
+      const limitAmount = amt > 0 ? this.#fx.toMinor(amt, home) : null;
+      if (!Array.isArray(state.habits)) state.habits = [];
+      const existing = id ? state.habits.find((h) => h.id === id) : null;
+      const fields = { name, words, itemIds, categoryIds, icon, color: existing?.color || HabitService.COLORS[iconAt % HabitService.COLORS.length], limitCount, limitAmount };
+      if (existing) Object.assign(existing, fields);
+      else state.habits.push({ id: IdGenerator.generate("hab"), createdAt: (/* @__PURE__ */ new Date()).toISOString(), ...fields });
+      this.#store.flush();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(existing ? "Habit updated" : "Habit added");
+      this.#sync.schedulePush?.();
+    }
+    deleteHabit(id) {
+      const state = this.#store.getState();
+      const list = Array.isArray(state.habits) ? state.habits : [];
+      const at = list.findIndex((h) => h.id === id);
+      if (at < 0) return;
+      const [gone] = list.splice(at, 1);
+      this.#store.flush();
+      this.closeModal();
+      this.#render();
+      this.#sync.schedulePush?.();
+      this.#toast.show(`Stopped following ${gone.name}`, { action: { label: "Undo", run: () => {
+        const s = this.#store.getState();
+        if (!Array.isArray(s.habits)) s.habits = [];
+        s.habits.splice(Math.min(at, s.habits.length), 0, gone);
+        this.#store.flush();
+        this.#render();
+        this.#sync.schedulePush?.();
+      } } });
+    }
+    trackSuggestedHabit(payee) {
+      this.openModal("habit", { preset: { name: String(payee).slice(0, 60), words: [String(payee)] } });
+    }
+    dismissHabitSuggestion(payee) {
+      const state = this.#store.getState();
+      const list = state.user.dismissedHabitSuggestions ||= [];
+      if (!list.includes(payee)) list.push(String(payee).slice(0, 80));
+      this.#store.flush();
+      this.#render();
+      this.#sync.schedulePush?.();
+    }
+    // ── Suggestions (Regulars) ──────────────────────────────────────────────
+    /** One tap: open the form already filled in; nothing is saved until Save. */
+    acceptSuggestion(kind, payee) {
+      const state = this.#store.getState();
+      const today = DateService.todayIso();
+      const key = SuggestionService.dismissKey(kind, payee);
+      if (kind === "bill") {
+        const g2 = SuggestionService.bills(state, today).find((x) => SuggestionService.dismissKey("bill", x.payee) === key);
+        if (!g2) return;
+        this.openModal("transaction", { id: g2.last.id, preset: {
+          recurring: { rule: "monthly", interval: 1, until: null },
+          ...g2.changes ? { askFirst: true } : {}
+        } });
+        return;
+      }
+      const g = SuggestionService.deliveries(state, today).find((x) => SuggestionService.dismissKey("delivery", x.payee) === key);
+      if (!g) return;
+      this.openModal("regularItem", { payLater: true, preset: {
+        name: g.payee.slice(0, 60),
+        defaultAmount: g.amount,
+        currency: g.currency,
+        accountId: g.accountId || state.accounts[0]?.id || "",
+        categoryId: g.categoryId || ""
+      } });
+    }
+    dismissSuggestion(kind, payee) {
+      const state = this.#store.getState();
+      const list = state.user.dismissedSuggestions ||= [];
+      const key = SuggestionService.dismissKey(kind, payee);
+      if (!list.includes(key)) list.push(key.slice(0, 90));
+      this.#store.flush();
+      this.#render();
+      this.#sync.schedulePush?.();
     }
     setCalTab(tab) {
       const v = this.#getOrCreateView("calendar");

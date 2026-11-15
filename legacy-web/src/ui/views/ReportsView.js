@@ -9,11 +9,14 @@ import { BaseView }          from './BaseView.js';
 import { ReportService }     from '../../domain/services/ReportService.js';
 import { HijriCalendarService } from '../../domain/services/HijriCalendarService.js';
 import { DateService }          from '../../domain/services/DateService.js';
+import { HabitService }         from '../../domain/services/HabitService.js';
+import { Html }                 from '../../core/Html.js';
 
 export class ReportsView extends BaseView {
   /** @type {ReportService} */         #reports;
   /** @type {HijriCalendarService} */  #hijri;
   /** @type {string} */                #range = '30';
+  /** @type {'overview'|'habits'} */    #tab = 'overview';
 
   // Chart instances — destroyed before each re-draw
   #charts = { bar: null, donut: null, nw: null };
@@ -27,6 +30,7 @@ export class ReportsView extends BaseView {
   // ── Public API ────────────────────────────────────────────────────────
 
   setRange(r) { this.#range = r; }
+  setTab(t)   { this.#tab = t === 'habits' ? 'habits' : 'overview'; }
   get range()  { return this.#range; }
 
   // ── BaseView contract ─────────────────────────────────────────────────
@@ -53,6 +57,12 @@ export class ReportsView extends BaseView {
         </div>
       </div>
 
+      <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
+        ${[['overview', 'Overview'], ['habits', 'Habits']].map(([k, l]) => `
+        <button onclick="window.__app.setReportTab('${k}')"
+                class="px-3 py-2 text-sm ${this.#tab === k ? 'border-b-2 border-zinc-900 dark:border-white font-medium' : 'text-zinc-500'}">${l}</button>`).join('')}
+      </div>
+      ${this.#tab === 'habits' ? this.#renderHabits() : `
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="card p-5">
           <h3 class="font-semibold mb-3">Daily spending</h3>
@@ -92,11 +102,94 @@ export class ReportsView extends BaseView {
           <div class="text-xs text-zinc-500 mb-3">Spending grouped by Hijri month over the selected range</div>
           <div id="hijriMonthBreakdown"></div>
         </div>` : ''}
+      `}
     `;
   }
 
   onAfterRender() {
-    this.#drawCharts();
+    if (this.#tab === 'overview') this.#drawCharts();
+  }
+
+  // ── Habits ────────────────────────────────────────────────────────────
+
+  #renderHabits() {
+    const svc = window.__app?.habits;
+    if (!svc) return '';
+    const state = this.state, home = this.homeCurrency, today = DateService.todayIso();
+    const habits = svc.all(state);
+    const suggestions = this.inGuestSpace ? [] : svc.suggestions(state, today, home);
+    const sugg = suggestions.map((g) => `
+      <div class="habit-suggest">
+        <i data-lucide="sparkles"></i>
+        <div class="flex-1 min-w-0 text-sm">You logged <b>${this.escapeHtml(g.payee)}</b> ${g.count} times in the last 60 days (${this.formatMoney(g.amount, home)}). Track it as a habit?</div>
+        <button class="btn btn-primary btn-sm" onclick="window.__app.trackSuggestedHabit(${Html.escape(JSON.stringify(g.payee))})">Track</button>
+        <button class="btn btn-ghost btn-sm" onclick="window.__app.dismissHabitSuggestion(${Html.escape(JSON.stringify(g.payee))})">No thanks</button>
+      </div>`).join('');
+    if (!habits.length) {
+      return `${sugg}
+        <div class="card p-8 text-center">
+          ${this.emptyState('No habits yet', 'Follow one small, repeated spend — coffee, Swiggy, autos — across all your entries, however you logged them.')}
+          <div class="regular-example mt-4"><i data-lucide="coffee"></i> Coffee · 26 times · ₹520 this month</div>
+          ${this.inGuestSpace ? '' : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('habit')"><i data-lucide="plus"></i> Add a habit</button>`}
+        </div>`;
+    }
+    return `
+      ${sugg}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        ${habits.map((h) => this.#habitCard(h, svc.stats(h, state, today, home), home, today)).join('')}
+      </div>
+      ${this.inGuestSpace ? '' : `<button class="btn btn-outline mt-4" onclick="window.__app.openModal('habit')"><i data-lucide="plus"></i> New habit</button>`}
+      <p class="text-xs text-zinc-500 mt-3">Compared with the same days of last month. Each shortcut counts as a habit by itself until you set one up.</p>`;
+  }
+
+  #habitCard(h, st, home, today) {
+    const color = Html.color(h.color, '#6366f1');
+    const change = st.change == null ? '' : `<span class="habit-change ${st.change > 0 ? 'up' : 'down'}">${st.change > 0 ? '▲' : '▼'} ${Math.abs(st.change)}%</span>`;
+    const maxTrend = Math.max(1, ...st.trend.map((m) => m.amount));
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const maxWd = Math.max(1, ...st.weekdays);
+    const limit = st.limit;
+    const limitBar = limit ? `
+      <div class="habit-limit ${limit.state}">
+        <div class="habit-limit-bar"><span style="width:${Math.min(100, Math.round(limit.use * 100))}%"></span></div>
+        <div class="text-[11px] mt-1">${limit.countLeft != null ? `${st.count} of ${h.limitCount} times` : `${this.formatMoney(st.amount, home)} of ${this.formatMoney(h.limitAmount, home)}`}
+          · ${limit.state === 'over' ? 'over the limit' : limit.countLeft != null ? `${Math.max(0, limit.countLeft)} left` : `${this.formatMoney(Math.max(0, limit.amountLeft), home)} left`}</div>
+      </div>` : '';
+    // the month's days as a small grid with a dot where it happened
+    const [y, m] = today.split('-').map(Number);
+    const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const happened = new Set(st.days);
+    const cells = [...Array(first).fill(''), ...Array.from({ length: dim }, (_, i) => {
+      const iso = `${today.slice(0, 7)}-${String(i + 1).padStart(2, '0')}`;
+      return `<span class="${happened.has(iso) ? 'on' : ''} ${iso === today ? 'today' : ''}" title="${i + 1}" style="${happened.has(iso) ? `background:${color}` : ''}"></span>`;
+    })].map((c) => c || '<span class="blank"></span>').join('');
+    return `
+      <div class="card p-4">
+        <div class="flex items-start gap-3">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:36px;height:36px"><i data-lucide="${Html.icon(h.icon, 'tag')}" style="width:17px;height:17px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold truncate">${this.escapeHtml(h.name)}</div>
+            <div class="text-sm"><b>${st.count}</b> time${st.count === 1 ? '' : 's'} · <b>${this.formatMoney(st.amount, home)}</b>${st.count ? ` · about ${this.formatMoney(st.average, home)} each` : ''} ${change}</div>
+            <div class="text-xs text-zinc-500">this month · last month ${st.prevMonthCount} times, ${this.formatMoney(st.prevMonthAmount, home)}</div>
+          </div>
+          ${this.inGuestSpace ? '' : `<button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('habit',{id:${Html.escape(JSON.stringify(h.id))}})">Edit</button>`}
+        </div>
+        ${limitBar}
+        <div class="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <div class="text-[11px] text-zinc-500 mb-1">Days this month</div>
+            <div class="habit-days">${cells}</div>
+          </div>
+          <div>
+            <div class="text-[11px] text-zinc-500 mb-1">Last 6 months</div>
+            <div class="habit-trend">${st.trend.map((t) => `<div title="${t.count} times · ${this.formatMoney(t.amount, home)}"><span style="height:${Math.max(3, Math.round(t.amount / maxTrend * 44))}px;background:${color}"></span><small>${months[Number(t.month.slice(5)) - 1][0]}</small></div>`).join('')}</div>
+            <div class="text-[11px] text-zinc-500 mt-2 mb-1">Which days (90 days)</div>
+            <div class="habit-trend weekdays">${st.weekdays.map((n, i) => `<div title="${n}"><span style="height:${Math.max(2, Math.round(n / maxWd * 22))}px;background:${color}99"></span><small>${'SMTWTFS'[i]}</small></div>`).join('')}</div>
+          </div>
+        </div>
+        ${st.yearly ? `<div class="text-xs text-zinc-500 mt-3"><i data-lucide="trending-up" style="width:12px;height:12px;display:inline"></i> At this rate, about <b>${this.formatMoney(st.yearly, home)}</b> a year.</div>` : ''}
+      </div>`;
   }
 
   // ── Private ───────────────────────────────────────────────────────────
