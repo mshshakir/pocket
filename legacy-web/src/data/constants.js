@@ -142,7 +142,7 @@ export const NAV_ITEMS = Object.freeze([
   { id: 'accounts',     label: 'Accounts',          icon: 'wallet'            },
   { id: 'budgets',      label: 'Budgets',           icon: 'target'            },
   { id: 'debts',        label: 'Debts',             icon: 'hand-coins'        },
-  { id: 'calendar',     label: 'Regular Purchases', icon: 'shopping-basket'   },
+  { id: 'calendar',     label: 'Regulars',          icon: 'repeat'            },
   { id: 'categories',   label: 'Categories',        icon: 'tags'              },
   { id: 'reports',      label: 'Reports',           icon: 'pie-chart'         },
   { id: 'family',       label: 'Family',            icon: 'users'             },
@@ -152,7 +152,7 @@ export const MOBILE_TABS = Object.freeze([
   { id: 'dashboard',    label: 'Home',      icon: 'home'            },
   { id: 'transactions', label: 'Activity',  icon: 'list'            },
   { id: '__add',        label: 'Add',       icon: 'plus-circle'     },
-  { id: 'calendar',     label: 'Purchases', icon: 'shopping-basket' },
+  { id: 'calendar',     label: 'Regulars',  icon: 'repeat' },
   { id: '__more',       label: 'More',      icon: 'menu'            },
 ]);
 

@@ -120,7 +120,7 @@ export class DayLogsModal {
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+        </form>` : deliveries.length ? '' : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet — add a delivery or a shortcut under Regulars → Add.</p>`}
       </div>`;
   }
 

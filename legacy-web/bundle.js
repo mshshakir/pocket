@@ -920,7 +920,7 @@ var _PocketApp = (() => {
     { id: "accounts", label: "Accounts", icon: "wallet" },
     { id: "budgets", label: "Budgets", icon: "target" },
     { id: "debts", label: "Debts", icon: "hand-coins" },
-    { id: "calendar", label: "Regular Purchases", icon: "shopping-basket" },
+    { id: "calendar", label: "Regulars", icon: "repeat" },
     { id: "categories", label: "Categories", icon: "tags" },
     { id: "reports", label: "Reports", icon: "pie-chart" },
     { id: "family", label: "Family", icon: "users" }
@@ -929,7 +929,7 @@ var _PocketApp = (() => {
     { id: "dashboard", label: "Home", icon: "home" },
     { id: "transactions", label: "Activity", icon: "list" },
     { id: "__add", label: "Add", icon: "plus-circle" },
-    { id: "calendar", label: "Purchases", icon: "shopping-basket" },
+    { id: "calendar", label: "Regulars", icon: "repeat" },
     { id: "__more", label: "More", icon: "menu" }
   ]);
   var TX_SORT_OPTIONS = Object.freeze([
@@ -12725,15 +12725,16 @@ This replaces your current grouping.`
     #focus = null;
     // ISO date of focused month
     /** @type {string} */
-    #tab = "grid";
-    // 'grid' | 'dues' | 'summary' | 'items'
+    #tab = "bills";
+    // 'bills' | 'deliveries' | 'grid'
     constructor() {
       super();
       this.#hijri = new HijriCalendarService();
     }
     // ── Public API ────────────────────────────────────────────────────────
+    /** Old tab names still work: dues/items → deliveries, summary → calendar. */
     setTab(tab) {
-      this.#tab = tab;
+      this.#tab = { dues: "deliveries", items: "deliveries", summary: "grid" }[tab] ?? tab;
     }
     shiftMonth(delta) {
       this.#ensureFocus();
@@ -12769,24 +12770,24 @@ This replaces your current grouping.`
       return `
       <div class="flex items-center justify-between mb-4 gap-2">
         <div class="min-w-0">
-          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regular Purchases</h1>
-          <div class="text-xs text-zinc-500 mt-0.5">${items.length} item${items.length === 1 ? "" : "s"} \xB7 entries flow into your ledger</div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Regulars</h1>
+          <div class="text-xs text-zinc-500 mt-0.5">Bills, deliveries and what you buy often</div>
         </div>
         <div class="flex gap-2 flex-shrink-0">
-          <div class="hidden md:flex card p-1 gap-0.5 text-xs">
+          <div class="${this.#tab === "grid" ? "hidden md:flex" : "hidden"} card p-1 gap-0.5 text-xs">
             ${[["gregorian", "Greg"], ["both", "Both"], ["hijri", "Hijri"]].map(
         ([k, l]) => `<button onclick="window.__app.setCalendarMode('${k}')"
                        class="px-2 py-1 rounded ${mode === k ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "text-zinc-500"}">${l}</button>`
       ).join("")}
           </div>
           ${this.inGuestSpace ? "" : `
-          <button class="btn btn-outline" onclick="window.__app.openModal('regularItem')">
-            <i data-lucide="plus"></i> <span class="hidden sm:inline">Item</span>
+          <button class="btn btn-primary" onclick="window.__app.openModal('addRegular')">
+            <i data-lucide="plus"></i> <span class="hidden sm:inline">Add</span>
           </button>`}
         </div>
       </div>
 
-      <div class="md:hidden flex gap-1 mb-3 card p-1 text-xs">
+      <div class="${this.#tab === "grid" ? "md:hidden flex" : "hidden"} gap-1 mb-3 card p-1 text-xs">
         ${[["gregorian", "Gregorian only"], ["both", "Show both"], ["hijri", "Hijri only"]].map(
         ([k, l]) => `<button onclick="window.__app.setCalendarMode('${k}')"
                    class="flex-1 px-2 py-1.5 rounded ${mode === k ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "text-zinc-500"}">${l}</button>`
@@ -12794,17 +12795,12 @@ This replaces your current grouping.`
       </div>
 
       <div class="flex gap-2 mb-4 border-b border-zinc-200 dark:border-zinc-800">
-        <button onclick="window.__app.setCalTab('grid')"
-                class="px-3 py-2 text-sm ${this.#tab === "grid" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Calendar</button>
-        ${!this.inGuestSpace && this.#tracked(state).length ? `<button onclick="window.__app.setCalTab('dues')"
-                class="px-3 py-2 text-sm ${this.#tab === "dues" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Dues</button>` : ""}
-        <button onclick="window.__app.setCalTab('summary')"
-                class="px-3 py-2 text-sm ${this.#tab === "summary" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${this.#tracked(state).length && !this.inGuestSpace ? "Summary" : "Monthly summary"}</button>
-        <button onclick="window.__app.setCalTab('items')"
-                class="px-3 py-2 text-sm ${this.#tab === "items" ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">Items</button>
+        ${[["bills", "Bills"], ["deliveries", "Deliveries"], ["grid", "Calendar"]].map(([k, l]) => `
+        <button onclick="window.__app.setCalTab('${k}')"
+                class="px-3 py-2 text-sm ${this.#tab === k ? "border-b-2 border-zinc-900 dark:border-white font-medium" : "text-zinc-500"}">${l}</button>`).join("")}
       </div>
 
-      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "dues" && !this.inGuestSpace ? this.#renderDues(state) : this.#tab === "summary" ? this.#renderSummary(state) : this.#renderItems(state)}
+      ${this.#tab === "grid" ? this.#renderGrid(state) : this.#tab === "deliveries" ? this.#renderDeliveries(state) : this.#renderBills(state)}
     `;
     }
     // ── Sub-views ─────────────────────────────────────────────────────────
@@ -12909,7 +12905,7 @@ This replaces your current grouping.`
 
       ${(state.regularItems || []).length === 0 ? `
         <div class="card p-6 mt-4 text-center">
-          ${this.inGuestSpace ? this.emptyState("No regular items shared with you", "Regular purchases follow the accounts they\u2019re on.") : this.emptyState("No regular items yet", 'Define an item like "Morning coffee" or "Bus pass" and start logging.')}
+          ${this.inGuestSpace ? this.emptyState("Nothing shared with you here", "Deliveries and shortcuts follow the accounts they\u2019re on.") : this.emptyState("Nothing on the calendar yet", "Deliveries (milk, paper) and things you log with shortcuts show here day by day.")}
           ${this.inGuestSpace ? "" : `
           <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
             <i data-lucide="plus"></i> Add item
@@ -12917,112 +12913,107 @@ This replaces your current grouping.`
         </div>` : ""}
     `;
     }
-    #renderSummary(state) {
-      const home = this.homeCurrency;
-      const isHijri = this.#calMode() === "hijri";
-      let logs, headerLabel;
-      if (isHijri) {
-        const h = this.#hijri.toHijri(this.#focus);
-        logs = this.#logsForHijriMonth(h.year, h.month, state);
-        headerLabel = `${this.#hijri.monthsLong[h.month]} ${h.year} H`;
-      } else {
-        const focus = /* @__PURE__ */ new Date(this.#focus + "T12:00:00");
-        logs = this.#logsForMonth(focus.getFullYear(), focus.getMonth(), state);
-        headerLabel = focus.toLocaleDateString(void 0, { month: "long", year: "numeric" });
-      }
-      const byItem = {};
-      logs.forEach((t) => {
-        const it = (state.regularItems || []).find((i) => i.id === t.regularItemId);
-        if (!it) return;
-        byItem[t.regularItemId] = byItem[t.regularItemId] || { item: it, count: 0, qty: 0, total: 0 };
-        byItem[t.regularItemId].count += 1;
-        byItem[t.regularItemId].qty += Number(t.qty || 1);
-        byItem[t.regularItemId].total += this.convert(t.amount, t.currency, home);
-      });
-      const rows = Object.values(byItem).sort((a, b) => b.total - a.total);
-      const totalSpent = rows.reduce((s, r) => s + r.total, 0);
-      const totalCount = logs.length;
-      return `
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-1">
-          <button class="btn btn-ghost" onclick="window.__app.shiftCalMonth(-1)"><i data-lucide="chevron-left"></i></button>
-          <div class="font-semibold px-1">${this.escapeHtml(headerLabel)}</div>
-          <button class="btn btn-ghost" onclick="window.__app.shiftCalMonth(1)"><i data-lucide="chevron-right"></i></button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-3 gap-2 md:gap-3 mb-4">
-        <div class="card p-3 md:p-4"><div class="text-xs text-zinc-500">Total spent</div><div class="text-lg md:text-xl font-semibold">${this.formatMoney(totalSpent, home)}</div></div>
-        <div class="card p-3 md:p-4"><div class="text-xs text-zinc-500">Purchases</div><div class="text-lg md:text-xl font-semibold">${totalCount}</div></div>
-        <div class="card p-3 md:p-4"><div class="text-xs text-zinc-500">Avg / purchase</div><div class="text-lg md:text-xl font-semibold">${this.formatMoney(totalCount > 0 ? totalSpent / totalCount : 0, home)}</div></div>
-      </div>
-
-      ${rows.length === 0 ? `<div class="card p-6 text-center">${this.emptyState("No purchases this month", "Pick a date on the calendar and log items.")}</div>` : `<div class="card p-5">
-             <h3 class="font-semibold mb-3">Item breakdown</h3>
-             <div class="overflow-x-auto">
-               <table class="w-full text-sm min-w-[420px]">
-                 <thead class="text-zinc-500 text-xs uppercase tracking-wider">
-                   <tr><th class="text-left py-2">Item</th><th class="text-right py-2">Count</th><th class="text-right py-2">Qty</th><th class="text-right py-2">Total</th><th class="text-right py-2">Avg</th></tr>
-                 </thead>
-                 <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
-                   ${rows.map((r) => `
-                     <tr>
-                       <td class="py-2">
-                         <div class="flex items-center gap-2">
-                           <span class="icon-pill" style="background:${r.item.color}22;color:${r.item.color};width:24px;height:24px">
-                             <i data-lucide="${r.item.icon}" style="width:13px;height:13px"></i>
-                           </span>
-                           <span class="truncate">${this.escapeHtml(r.item.name)}</span>
-                         </div>
-                       </td>
-                       <td class="text-right py-2">${r.count}</td>
-                       <td class="text-right py-2">${r.qty}</td>
-                       <td class="text-right py-2 font-medium">${this.formatMoney(r.total, home)}</td>
-                       <td class="text-right py-2 text-zinc-500">${this.formatMoney(r.total / r.count, home)}</td>
-                     </tr>`).join("")}
-                 </tbody>
-               </table>
-             </div>
-           </div>`}
-    `;
-    }
-    #renderItems(state) {
-      const items = state.regularItems || [];
-      if (!items.length) {
+    /**
+     * Every repeating entry: what it is, how often, when next, and the amount
+     * (or "asks each time" with last time's). Due "ask me" bills come first
+     * with Pay; each has Edit and Stop.
+     */
+    #renderBills(state) {
+      const bills = window.__app?.bills;
+      const today = DateService.todayIso();
+      const repeats = bills ? bills.allRepeats(state) : [];
+      const due = !this.inGuestSpace && bills ? bills.due(today) : [];
+      if (!repeats.length) {
         return `
-        <div class="card p-10 text-center">
-          ${this.emptyState("No items yet", "Define your regular purchases here.")}
-          ${this.inGuestSpace ? "" : `
-          <button class="btn btn-primary mt-3" onclick="window.__app.openModal('regularItem')">
-            <i data-lucide="plus"></i> Add item
-          </button>`}
+        <div class="card p-8 text-center">
+          ${this.emptyState("No bills yet", "Rent on the 1st, school fees each term, the electricity bill \u2014 add them once and Pocket keeps track.")}
+          <div class="regular-example mt-4"><i data-lucide="repeat"></i> Rent \xB7 \u20B920,000 \xB7 every month on the 1st</div>
+          ${this.inGuestSpace ? "" : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('addRegular')"><i data-lucide="plus"></i> Add your first bill</button>`}
         </div>`;
       }
+      const rows = repeats.map((t) => {
+        const next = bills.nextDate(t, today, state);
+        const ask = t.askFirst === true;
+        const open = due.filter((d) => d.template.id === t.id);
+        return { t, next, ask, open, sort: open.length ? "0" + open[0].date : next ? "1" + next : "2" };
+      }).sort((a, b) => a.sort.localeCompare(b.sort));
+      const id = (t) => this.escapeHtml(t.id);
       return `
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        ${items.map((it) => `
-          <button class="card p-4 flex items-center gap-3 text-left hover:bg-zinc-50 dark:hover:bg-zinc-900"
-                  onclick="window.__app.openModal('regularItem',{id:'${it.id}'})">
-            <div class="icon-pill" style="background:${it.color}22;color:${it.color}">
-              <i data-lucide="${it.icon}"></i>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="font-medium truncate">${this.escapeHtml(it.name)}</div>
-              <div class="text-xs text-zinc-500 truncate">${it.payLater ? (() => {
+      <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">
+        ${rows.map(({ t, next, ask, open }) => {
+        const name = this.escapeHtml(t.payee || t.description || "Bill");
+        const every = this.#every(t.recurring);
+        const amount = ask ? `asks each time \xB7 last ${this.formatMoney(bills.lastAmount(t), t.currency)}` : this.formatMoney(t.amount, t.currency);
+        const ended = !next;
+        const status = open.length ? `<span class="bill-tag ${open[0].overdue ? "bill-late" : "bill-today"}">${open[0].overdue ? "overdue" : open[0].today ? "due today" : `due ${this.#short(open[0].date)}`}</span>` : ended ? `<span class="bill-tag" style="background:#f4f4f5;color:#71717a">ended ${t.recurring.until ? this.#short(t.recurring.until) : ""}</span>` : `<span class="text-xs text-zinc-500">next ${this.#short(next)}</span>`;
+        return `
+            <div class="flex items-center gap-3 p-3">
+              <span class="icon-pill" style="width:34px;height:34px;background:#f4f4f5"><i data-lucide="${ask ? "receipt" : "repeat"}" style="width:16px;height:16px"></i></span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">${name}</div>
+                <div class="text-xs text-zinc-500">${every} \xB7 ${amount}</div>
+                <div class="mt-1 flex items-center gap-3 flex-wrap text-xs">
+                  ${status}
+                  ${this.inGuestSpace ? "" : `
+                  <button class="underline text-zinc-500" onclick="window.__app.openModal('transaction',{id:'${id(t)}'})">Edit</button>
+                  ${ended ? "" : `<button class="underline text-zinc-500" onclick="window.__app.stopRepeating('${id(t)}')">Stop</button>`}`}
+                </div>
+              </div>
+              ${!this.inGuestSpace && open.length ? `<button class="btn btn-primary btn-sm" onclick="window.__app.openModal('payBill',{templateId:'${id(t)}',date:'${open[0].date}'})">Pay</button>` : ""}
+            </div>`;
+      }).join("")}
+      </div>
+      <p class="text-xs text-zinc-500 mt-3">Same amount each time: added on its date. "Asks each time": waits until you enter what you paid. Editing a bill changes it from then on.</p>`;
+    }
+    /** Pay-later items: what's owed to each vendor, then the items themselves. */
+    #renderDeliveries(state) {
+      const items = this.#tracked(state);
+      if (!items.length) {
+        return `
+        <div class="card p-8 text-center">
+          ${this.emptyState("No deliveries yet", "Milk, the newspaper, a maid \u2014 things that come most days and you pay for once a month.")}
+          <div class="regular-example mt-4"><i data-lucide="coffee"></i> Milk \xB7 1 L every day \xB7 pay Doodhwala monthly</div>
+          ${this.inGuestSpace ? "" : `<button class="btn btn-primary mt-4" onclick="window.__app.openModal('regularItem',{payLater:true})"><i data-lucide="plus"></i> Add your first delivery</button>`}
+        </div>`;
+      }
+      const list = items.map((it) => {
         const p = new DeliveryPlan(it);
-        return `${this.escapeHtml(p.qtyLabel(p.usualQty))} \xB7 ${p.daysLabel} \xB7 ${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} each \xB7 pay ${this.escapeHtml(p.vendor)} later`;
-      })() : `${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} default \xB7 ${it.currency || this.homeCurrency}`}</div>
-            </div>
-            <i data-lucide="chevron-right" class="text-zinc-400 flex-shrink-0"></i>
-          </button>`).join("")}
-      </div>`;
+        const color = Html.color(it.color);
+        return `
+        <div class="flex items-center gap-3 p-3">
+          <span class="icon-pill" style="background:${color}22;color:${color};width:32px;height:32px"><i data-lucide="${Html.icon(it.icon)}" style="width:15px;height:15px"></i></span>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">${this.escapeHtml(it.name)}</div>
+            <div class="text-xs text-zinc-500 truncate">${this.escapeHtml(p.qtyLabel(p.usualQty))} \xB7 ${p.daysLabel} \xB7 ${this.formatMoney(it.defaultAmount || 0, it.currency || this.homeCurrency)} each \xB7 ${this.escapeHtml(p.vendor)}</div>
+          </div>
+          ${this.inGuestSpace ? "" : `
+          <button class="btn btn-ghost btn-sm" onclick="window.__app.openModal('pauseDeliveries',{itemId:'${this.escapeHtml(it.id)}'})">Pause</button>
+          <button class="btn btn-outline btn-sm" onclick="window.__app.openModal('regularItem',{id:'${this.escapeHtml(it.id)}'})">Edit</button>`}
+        </div>`;
+      }).join("");
+      return `
+      ${this.inGuestSpace ? "" : this.#renderDues(state)}
+      <h3 class="font-semibold mt-5 mb-2 text-sm">Items</h3>
+      <div class="card divide-y divide-zinc-100 dark:divide-zinc-800">${list}</div>
+      <p class="text-xs text-zinc-500 mt-3">Each day is filled in from the usual \u2014 change only what was different on the Calendar tab.</p>`;
+    }
+    /** "every month", "every 2 weeks". */
+    #every(r) {
+      const n = Math.max(1, Number(r?.interval) || 1);
+      const u = { daily: "day", weekly: "week", monthly: "month", yearly: "year" }[r?.rule] || "month";
+      return n === 1 ? `every ${u}` : `every ${n} ${u}s`;
+    }
+    #short(iso) {
+      if (!iso) return "";
+      const [, m, d] = iso.split("-").map(Number);
+      return `${d} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]}`;
     }
     /** What's owed to each vendor, with Pay, Bill and Pause. */
     #renderDues(state) {
       const dues = window.__app?.vendorDues;
       const groups = dues ? dues.byVendor() : [];
       if (!groups.length) {
-        return `<div class="card p-8 text-center">${this.emptyState("No pay-later items", "Edit an item like milk or the newspaper and choose \u201CPay the vendor later\u201D.")}</div>`;
+        return "";
       }
       const home = this.homeCurrency;
       const owed = groups.reduce((t, g) => t + this.convert(g.amount, g.currency || home, home), 0);
@@ -13622,7 +13613,9 @@ This replaces your current grouping.`
         note: "",
         date: DateService.todayIso(),
         paymentType: window.__app?.paymentTypeService?.defaultType?.() || "card",
-        transferToAccountId: ""
+        transferToAccountId: "",
+        // "Add → a bill" opens a new entry already set to repeat (and to ask, for changing amounts).
+        ...opts.preset || {}
       };
       if (editing?.type === "transfer" && editing.transferPairId) {
         const pair = state.transactions.find((t) => t.id === editing.transferPairId);
@@ -14063,8 +14056,9 @@ This replaces your current grouping.`
           <input type="checkbox" name="recurringEnabled" ${hasRecurring ? "checked" : ""}
                  onchange="window.__app.toggleRecurringFields(this.checked)">
           <i data-lucide="repeat" style="width:13px;height:13px"></i>
-          <span class="font-medium">Repeat automatically</span>
+          <span class="font-medium">Repeats on a schedule</span>
         </label>
+        ${hasRecurring ? "" : `<div class="text-xs text-zinc-500 -mt-1">Rent, subscriptions, bills \u2014 listed under Regulars \u2192 Bills. Milk or paper every day? <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button> instead.</div>`}
         <div id="recurringFields" class="${hasRecurring ? "" : "hidden"}">
           <div class="flex items-center gap-2 mb-2 text-sm">
             <span class="text-zinc-500">Every</span>
@@ -15533,7 +15527,8 @@ This replaces your current grouping.`
         sharedOwnerId: null,
         categoryId: "",
         icon: "coffee",
-        color: ITEM_COLORS[0]
+        color: ITEM_COLORS[0],
+        payLater: opts.payLater === true
       };
       const amountVal = editing ? this.#fx.fromMinor(editing.defaultAmount, editing.currency) : 0;
       const accRef = AccountRef.fromRecord(data);
@@ -15555,7 +15550,7 @@ This replaces your current grouping.`
             class="p-5" style="min-width:320px;max-width:480px">
 
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">${editing ? "Edit item" : "New regular item"}</h3>
+          <h3 class="text-lg font-semibold">${editing ? editing.payLater ? "Edit delivery" : "Edit shortcut" : data.payLater ? "New delivery" : "New shortcut"}</h3>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
             <i data-lucide="x"></i>
           </button>
@@ -15564,7 +15559,7 @@ This replaces your current grouping.`
         <!-- Name -->
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Name</label>
-          <input class="input" name="name" required placeholder="e.g. Morning coffee"
+          <input class="input" name="name" required placeholder="${data.payLater ? "e.g. Milk" : "e.g. Morning coffee"}"
                  value="${this.#esc(data.name)}" autofocus>
         </div>
 
@@ -15672,15 +15667,15 @@ This replaces your current grouping.`
       const toggle = "const f=this.form, l=this.value==='later';f.querySelector('[data-later]').hidden=!l;f.querySelector('[data-price-label]').textContent=l?'Price per unit':'Default amount';";
       return `
         <div class="mb-4">
-          <label class="text-xs text-zinc-500 block mb-1">How do you pay?</label>
+          <label class="text-xs text-zinc-500 block mb-1">What is it?</label>
           <div class="grid grid-cols-2 gap-2">
             <label class="pay-choice">
               <input type="radio" name="pay" value="each" ${later ? "" : "checked"} onchange="${toggle}">
-              <span><b>Each time</b><small>Log it when you buy, e.g. coffee</small></span>
+              <span><b>Shortcut</b><small>Something you buy often; one tap fills a new entry, e.g. coffee</small></span>
             </label>
             <label class="pay-choice">
               <input type="radio" name="pay" value="later" ${later ? "checked" : ""} onchange="${toggle}">
-              <span><b>Pay the vendor later</b><small>Daily deliveries, settle monthly, e.g. milk</small></span>
+              <span><b>Delivery</b><small>Comes most days, you pay the vendor monthly, e.g. milk</small></span>
             </label>
           </div>
         </div>
@@ -15740,7 +15735,7 @@ This replaces your current grouping.`
           </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             Each day is filled in from this pattern; on the calendar, mark only the days that were different.
-            Nothing is spent until you pay the vendor from <b>Dues</b>.
+            Nothing is spent until you pay the vendor, under <b>Regulars \u2192 Deliveries</b>.
             Items with the same "Paid to" are settled together.
           </div>
         </div>`;
@@ -15885,7 +15880,7 @@ This replaces your current grouping.`
           <input type="number" name="total" id="dayLogTotal" class="input mb-4"
             placeholder="0.00" step="any" readonly>
           <button class="btn btn-primary w-full" type="submit">Add entry</button>
-        </form>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mt-2">No regular items configured yet.</p>`}
+        </form>` : deliveries.length ? "" : `<p class="text-sm text-zinc-500 mt-2">Nothing set up yet \u2014 add a delivery or a shortcut under Regulars \u2192 Add.</p>`}
       </div>`;
     }
     /** Each pay-later item on this day: what came, with − / + and back-to-usual. */
@@ -16116,6 +16111,34 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/modals/AddRegularModal.js
+  var AddRegularModal = class _AddRegularModal {
+    static CHOICES = Object.freeze([
+      { key: "bill", icon: "repeat", title: "A bill on a fixed date, same amount", eg: "Rent, school fees, Netflix" },
+      { key: "billAsk", icon: "receipt", title: "A bill on a date, the amount changes", eg: "Electricity, phone, gas" },
+      { key: "delivery", icon: "truck", title: "Delivered most days, paid monthly", eg: "Milk, newspaper, maid" },
+      { key: "shortcut", icon: "zap", title: "Something I buy often", eg: "Coffee, bus fare, vegetables" }
+    ]);
+    render() {
+      return `
+      <div class="p-5" style="min-width:300px;max-width:460px">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold">What do you want to track?</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <p class="text-xs text-zinc-500 mb-4">Pick the one that sounds like it \u2014 you can change it later.</p>
+        <div class="grid gap-2">
+          ${_AddRegularModal.CHOICES.map((c) => `
+            <button type="button" class="add-choice" onclick="window.__app.startRegular('${c.key}')">
+              <span class="icon-pill"><i data-lucide="${c.icon}"></i></span>
+              <span class="text-left"><b>${c.title}</b><small>${c.eg}</small></span>
+              <i data-lucide="chevron-right" class="ml-auto text-zinc-400"></i>
+            </button>`).join("")}
+        </div>
+      </div>`;
+    }
+  };
+
   // src/domain/services/BillService.js
   var BillService = class _BillService {
     /** Days ahead that count as "coming up". */
@@ -16157,6 +16180,25 @@ This replaces your current grouping.`
         }
       }
       return out.sort((a, b) => a.date.localeCompare(b.date));
+    }
+    /** Every repeating entry (the originals, not their copies), "ask me" bills included. */
+    allRepeats(state = this.#store.getState()) {
+      return (state.transactions || []).filter((t) => t.recurring && !t.recurringSourceId && t.type !== "transfer");
+    }
+    /**
+     * The next date a repeat falls on, from `today` (inclusive), skipping dates
+     * skipped or already made; null when it has ended.
+     */
+    nextDate(template, today, state = this.#store.getState()) {
+      const { rule, interval = 1, until } = template.recurring || {};
+      if (!rule) return null;
+      const anchor = Number(template.date.slice(8, 10)) || 1;
+      const ids = new Set((state.transactions || []).map((t) => t.id));
+      const skipped = new Set(template.recurring.skipped || []);
+      let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
+      for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+      return until && next > until ? null : next;
     }
     /** What was paid last time (the template's amount before any payment). */
     lastAmount(template) {
@@ -18164,6 +18206,7 @@ This replaces your current grouping.`
       this.#modal.register("settle", new SettleModal({ dues: () => this.#vendorDues }));
       this.#modal.register("pauseDeliveries", new PauseDeliveriesModal());
       this.#modal.register("payBill", new PayBillModal({ bills: () => this.#bills }));
+      this.#modal.register("addRegular", new AddRegularModal());
       this.#modal.register("currencySetup", this.#currencySetupModal);
       this.#bus.on("route:changed", ({ route }) => this.#renderView(route));
       this.#bus.on("toast", ({ message }) => this.#toast.show(message));
@@ -18284,6 +18327,7 @@ This replaces your current grouping.`
       "settle",
       "pauseDeliveries",
       "payBill",
+      "addRegular",
       "csv",
       "reconcile",
       "family",
@@ -20796,10 +20840,11 @@ They stay in your ledger as ordinary transactions and your balances do not chang
     }
     deleteRegularItem(id) {
       const s = this.#store.getState();
+      const name = (s.regularItems || []).find((i) => i.id === id)?.payLater ? "delivery" : "shortcut";
       const logged = this.#regularLogs.all().filter((t) => t.regularItemId === id).length;
-      const msg = logged ? `Delete this regular item?
+      const msg = logged ? `Delete this ${name}?
 
-The ${logged} transaction${logged === 1 ? "" : "s"} already logged from it stay in your ledger.` : "Delete this regular item?";
+The ${logged} entr${logged === 1 ? "y" : "ies"} already logged from it stay in your ledger.` : `Delete this ${name}?`;
       if (!confirm(msg)) return;
       (s.transactions || []).forEach((t) => {
         if (t.regularItemId === id) t.regularItemId = null;
@@ -21089,6 +21134,14 @@ Change ${own.name} to ${after ? plan.qtyLabel(after) : "none"} anyway? ${diff < 
       this.closeModal();
       this.#render();
       this.#toast.show(`Paid ${group.vendor} \xB7 up to ${DeliveryPlan.shortDate(to)}`);
+    }
+    /** "What do you want to track?" → the right form, already set up for it. */
+    startRegular(kind) {
+      this.closeModal();
+      if (kind === "delivery") return this.openModal("regularItem", { payLater: true });
+      if (kind === "shortcut") return this.openModal("regularItem", { payLater: false });
+      const preset = { recurring: { rule: "monthly", interval: 1, until: null }, ...kind === "billAsk" ? { askFirst: true } : {} };
+      this.openModal("transaction", { preset });
     }
     /** A due bill paid: a copy with the amount actually paid (BillService). */
     submitBill(e, templateId, occurrence) {

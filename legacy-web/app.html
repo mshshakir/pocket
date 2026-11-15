@@ -262,6 +262,15 @@
   .bill-late { background:#fee2e2; color:#b91c1c; } html.dark .bill-late { background:#3f1212; color:#fca5a5; }
   .bill-today { background:#fef3c7; color:#b45309; } html.dark .bill-today { background:#3b2a0a; color:#fcd34d; }
   .tg-locked { opacity:.45; pointer-events:none; user-select:none; }
+  .add-choice { display:flex; align-items:center; gap:.8rem; width:100%; padding:.8rem .9rem; border:1px solid #e4e4e7; border-radius:.8rem; text-align:left; transition:border-color .15s, background .15s; }
+  .add-choice:hover { border-color:#09090b; background:#fafafa; }
+  .add-choice b { display:block; font-size:.88rem; font-weight:600; }
+  .add-choice small { display:block; font-size:.75rem; color:#71717a; margin-top:.1rem; }
+  .add-choice .icon-pill { width:36px; height:36px; background:#f4f4f5; flex-shrink:0; }
+  html.dark .add-choice { border-color:#27272a; } html.dark .add-choice:hover { border-color:#fafafa; background:#18181b; }
+  html.dark .add-choice .icon-pill { background:#18181b; }
+  .regular-example { display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .75rem; border:1px dashed #d4d4d8; border-radius:.6rem; font-size:.8rem; color:#a1a1aa; }
+  .regular-example svg { width:14px; height:14px; }
   .plan-switch-note { font-size:.75rem; color:#059669; margin-top:.4rem; text-align:center; }
   html.dark .plan-switch-note { color:#34d399; }
   .plan-trial { font-size:.8rem; color:#71717a; text-decoration:underline; text-underline-offset:3px; }

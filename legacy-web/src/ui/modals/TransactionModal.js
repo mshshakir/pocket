@@ -237,6 +237,8 @@ export class TransactionModal {
             date:               DateService.todayIso(),
             paymentType:        window.__app?.paymentTypeService?.defaultType?.() || 'card',
             transferToAccountId:'',
+            // "Add → a bill" opens a new entry already set to repeat (and to ask, for changing amounts).
+            ...(opts.preset || {}),
           });
 
     // Enrich transfer-edit: surface pair account and stored exchange rate
@@ -813,8 +815,9 @@ export class TransactionModal {
           <input type="checkbox" name="recurringEnabled" ${hasRecurring ? 'checked' : ''}
                  onchange="window.__app.toggleRecurringFields(this.checked)">
           <i data-lucide="repeat" style="width:13px;height:13px"></i>
-          <span class="font-medium">Repeat automatically</span>
+          <span class="font-medium">Repeats on a schedule</span>
         </label>
+        ${hasRecurring ? '' : `<div class="text-xs text-zinc-500 -mt-1">Rent, subscriptions, bills — listed under Regulars → Bills. Milk or paper every day? <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('regularItem',{payLater:true})">Add a delivery</button> instead.</div>`}
         <div id="recurringFields" class="${hasRecurring ? '' : 'hidden'}">
           <div class="flex items-center gap-2 mb-2 text-sm">
             <span class="text-zinc-500">Every</span>

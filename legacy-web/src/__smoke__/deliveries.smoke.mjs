@@ -232,7 +232,7 @@ function boot(extraTx = []) {
   app.setCalTab('dues');
   await wait(30);
   const v = w.document.getElementById('viewContent').innerHTML;
-  ok('A4 Dues tab: vendors with Pay and Bill', /Dues/.test(v) && /Doodhwala/.test(v) && /Paper/.test(v) && /openModal\('settle'/.test(v) && /shareStatement/.test(v), v.slice(0, 300));
+  ok('A4 Deliveries tab: vendors with Pay and Bill, and the items', /Deliveries/.test(v) && /Pause/.test(v) && /Doodhwala/.test(v) && /Paper/.test(v) && /openModal\('settle'/.test(v) && /shareStatement/.test(v), v.slice(0, 300));
   app.setCalTab('grid');
   await wait(30);
   ok('A4 the grid marks a changed day', /cal-mark/.test(w.document.getElementById('viewContent').innerHTML));
@@ -279,6 +279,28 @@ function boot(extraTx = []) {
   const tf = w.document.querySelector('#txForm') || w.document.querySelector('form');
   ok('B3 the Repeat section offers "Amount changes — ask me each time" and who gets reminded',
      !!tf.querySelector('[name=recurringAsk]') && !!tf.querySelector('[name=remindTo]') && !!tf.querySelector('[name=remindDays]'));
+
+  // B6 Regulars → Bills, and Add → "What do you want to track?"
+  app.navigate('calendar'); app.setCalTab('bills');
+  await wait(40);
+  const bv = w.document.getElementById('viewContent');
+  ok('B6 Bills lists every repeat: rent (amount, next date) and electricity (asks each time)', /Regulars/.test(bv.textContent) && /Rent/.test(bv.textContent) && /every month · ₹20,000/.test(bv.textContent)
+     && /Electricity/.test(bv.textContent) && /asks each time · last ₹1,950/.test(bv.textContent) && /next \d+ \w+/.test(bv.textContent), bv.textContent.replace(/\s+/g, ' ').slice(0, 400));
+  app.openModal('addRegular');
+  await wait(20);
+  ok('B6 Add asks what you want to track, with four answers', /What do you want to track\?/.test(w.document.body.textContent) && w.document.querySelectorAll('.add-choice').length === 4);
+  app.startRegular('billAsk');
+  await wait(30);
+  const nf2 = w.document.querySelector('[name=recurringEnabled]')?.form;
+  ok('B6 "amount changes" opens a new entry set to repeat monthly and ask', nf2 && nf2.querySelector('[name=recurringEnabled]').checked && nf2.querySelector('[name=recurringAsk]').checked && nf2.querySelector('[name=recurringRule]').value === 'monthly');
+  app.closeModal(); app.startRegular('delivery');
+  await wait(20);
+  const df = w.document.getElementById('regularItemForm');
+  ok('B6 "delivered most days" opens a new delivery', /New delivery/.test(df.textContent) && df.querySelector('[name=pay][value=later]').checked && !df.querySelector('[data-later]').hidden);
+  app.closeModal(); app.startRegular('shortcut');
+  await wait(20);
+  ok('B6 "buy often" opens a new shortcut', /New shortcut/.test(w.document.getElementById('regularItemForm').textContent));
+  app.closeModal();
 
   // B5 From / To, and Stop repeating from a copy
   app.openModal('transaction', { id: 'tx_rent' });

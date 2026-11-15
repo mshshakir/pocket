@@ -62,6 +62,7 @@ export class RegularItemModal {
       categoryId:    '',
       icon:          'coffee',
       color:         ITEM_COLORS[0],
+      payLater:      opts.payLater === true,
     };
 
     const amountVal = editing
@@ -102,7 +103,7 @@ export class RegularItemModal {
             class="p-5" style="min-width:320px;max-width:480px">
 
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">${editing ? 'Edit item' : 'New regular item'}</h3>
+          <h3 class="text-lg font-semibold">${editing ? (editing.payLater ? 'Edit delivery' : 'Edit shortcut') : data.payLater ? 'New delivery' : 'New shortcut'}</h3>
           <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">
             <i data-lucide="x"></i>
           </button>
@@ -111,7 +112,7 @@ export class RegularItemModal {
         <!-- Name -->
         <div class="mb-3">
           <label class="text-xs text-zinc-500">Name</label>
-          <input class="input" name="name" required placeholder="e.g. Morning coffee"
+          <input class="input" name="name" required placeholder="${data.payLater ? 'e.g. Milk' : 'e.g. Morning coffee'}"
                  value="${this.#esc(data.name)}" autofocus>
         </div>
 
@@ -222,15 +223,15 @@ export class RegularItemModal {
       + "f.querySelector('[data-price-label]').textContent=l?'Price per unit':'Default amount';";
     return `
         <div class="mb-4">
-          <label class="text-xs text-zinc-500 block mb-1">How do you pay?</label>
+          <label class="text-xs text-zinc-500 block mb-1">What is it?</label>
           <div class="grid grid-cols-2 gap-2">
             <label class="pay-choice">
               <input type="radio" name="pay" value="each" ${later ? '' : 'checked'} onchange="${toggle}">
-              <span><b>Each time</b><small>Log it when you buy, e.g. coffee</small></span>
+              <span><b>Shortcut</b><small>Something you buy often; one tap fills a new entry, e.g. coffee</small></span>
             </label>
             <label class="pay-choice">
               <input type="radio" name="pay" value="later" ${later ? 'checked' : ''} onchange="${toggle}">
-              <span><b>Pay the vendor later</b><small>Daily deliveries, settle monthly, e.g. milk</small></span>
+              <span><b>Delivery</b><small>Comes most days, you pay the vendor monthly, e.g. milk</small></span>
             </label>
           </div>
         </div>
@@ -284,7 +285,7 @@ export class RegularItemModal {
           </div>
           <div class="text-[11px] text-zinc-500 mt-2 leading-relaxed">
             Each day is filled in from this pattern; on the calendar, mark only the days that were different.
-            Nothing is spent until you pay the vendor from <b>Dues</b>.
+            Nothing is spent until you pay the vendor, under <b>Regulars → Deliveries</b>.
             Items with the same "Paid to" are settled together.
           </div>
         </div>`;

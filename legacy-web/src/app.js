@@ -92,6 +92,7 @@ import { SettleModal }          from './ui/modals/SettleModal.js';
 import { PauseDeliveriesModal } from './ui/modals/PauseDeliveriesModal.js';
 import { NotifyField }          from './ui/components/NotifyField.js';
 import { PayBillModal }         from './ui/modals/PayBillModal.js';
+import { AddRegularModal }      from './ui/modals/AddRegularModal.js';
 import { BillService }          from './domain/services/BillService.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
@@ -377,6 +378,7 @@ export class Application {
     this.#modal.register('settle',       new SettleModal({ dues: () => this.#vendorDues }));
     this.#modal.register('pauseDeliveries', new PauseDeliveriesModal());
     this.#modal.register('payBill',      new PayBillModal({ bills: () => this.#bills }));
+    this.#modal.register('addRegular',   new AddRegularModal());
     this.#modal.register('currencySetup',this.#currencySetupModal);
 
     // 7. Subscribe to events
@@ -524,7 +526,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill',
+    'account', 'budget', 'category', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -3224,6 +3226,7 @@ export class Application {
     const s      = this.#store.getState();
     // Count across both books — an item on a shared account has all of its
     // entries in the owner's, so a local-only count read as "0 logged".
+    const name = (s.regularItems || []).find((i) => i.id === id)?.payLater ? 'delivery' : 'shortcut';
     const logged = this.#regularLogs.all().filter((t) => t.regularItemId === id).length;
 
     // Deleting the template used to destroy every transaction ever logged from
@@ -3231,9 +3234,9 @@ export class Application {
     // silently disappeared from the ledger and balances moved. The template is
     // a shortcut for creating transactions; removing it must not unmake them.
     const msg = logged
-      ? `Delete this regular item?\n\nThe ${logged} transaction${logged === 1 ? '' : 's'} `
+      ? `Delete this ${name}?\n\nThe ${logged} entr${logged === 1 ? 'y' : 'ies'} `
         + 'already logged from it stay in your ledger.'
-      : 'Delete this regular item?';
+      : `Delete this ${name}?`;
     if (!confirm(msg)) return;
 
     (s.transactions || []).forEach((t) => { if (t.regularItemId === id) t.regularItemId = null; });
@@ -3528,6 +3531,15 @@ export class Application {
     this.closeModal();
     this.#render();
     this.#toast.show(`Paid ${group.vendor} · up to ${DeliveryPlan.shortDate(to)}`);
+  }
+
+  /** "What do you want to track?" → the right form, already set up for it. */
+  startRegular(kind) {
+    this.closeModal();
+    if (kind === 'delivery') return this.openModal('regularItem', { payLater: true });
+    if (kind === 'shortcut') return this.openModal('regularItem', { payLater: false });
+    const preset = { recurring: { rule: 'monthly', interval: 1, until: null }, ...(kind === 'billAsk' ? { askFirst: true } : {}) };
+    this.openModal('transaction', { preset });
   }
 
   /** A due bill paid: a copy with the amount actually paid (BillService). */

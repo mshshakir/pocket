@@ -54,6 +54,27 @@ export class BillService {
     return out.sort((a, b) => a.date.localeCompare(b.date));
   }
 
+  /** Every repeating entry (the originals, not their copies), "ask me" bills included. */
+  allRepeats(state = this.#store.getState()) {
+    return (state.transactions || []).filter((t) => t.recurring && !t.recurringSourceId && t.type !== 'transfer');
+  }
+
+  /**
+   * The next date a repeat falls on, from `today` (inclusive), skipping dates
+   * skipped or already made; null when it has ended.
+   */
+  nextDate(template, today, state = this.#store.getState()) {
+    const { rule, interval = 1, until } = template.recurring || {};
+    if (!rule) return null;
+    const anchor = Number(template.date.slice(8, 10)) || 1;
+    const ids = new Set((state.transactions || []).map((t) => t.id));
+    const skipped = new Set(template.recurring.skipped || []);
+    let next = template.date >= today ? template.date : this.#recurring.stepDate(template.date, rule, interval, anchor);
+    for (let i = 0; i < 800 && next < today; i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+    for (let i = 0; i < 50 && (ids.has(`${template.id}__${next}`) || skipped.has(next)); i++) next = this.#recurring.stepDate(next, rule, interval, anchor);
+    return until && next > until ? null : next;
+  }
+
   /** What was paid last time (the template's amount before any payment). */
   lastAmount(template) {
     const paid = (this.#store.getState().transactions || [])

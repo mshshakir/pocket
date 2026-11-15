@@ -80,7 +80,7 @@ for (const on of [false, true]) {
 for (const mode of ['hijri', 'both']) {
   const off = boot(state(false, mode));
   await wait(80);
-  off.__app.navigate('calendar');
+  off.__app.navigate('calendar'); off.__app.setCalTab('grid');
   await wait(40);
   const text = off.document.querySelector('#viewContent')?.textContent ?? '';
   ok(`H3 Hijri off, mode "${mode}" chosen before: calendar shows no Hijri months`, text.length > 50 && !hasHijri(text), text.slice(0, 120));
@@ -88,7 +88,7 @@ for (const mode of ['hijri', 'both']) {
 {
   const on = boot(state(true, 'hijri'));
   await wait(80);
-  on.__app.navigate('calendar');
+  on.__app.navigate('calendar'); on.__app.setCalTab('grid');
   await wait(40);
   ok('H3 Hijri on, mode "hijri": the Hijri calendar stands', hasHijri(on.document.querySelector('#viewContent')?.textContent ?? ''));
 }

@@ -214,7 +214,7 @@ export class DeliveryBot {
       if (mid) await this.#deliveries.saveMessage(id, chatId, mid);
       sent++;
     }
-    if (!sent) await this.#telegram.reply(chatId, 'Nothing is expected today. Pay-later items (milk, newspaper) are set up in the app: Purchases → Items.');
+    if (!sent) await this.#telegram.reply(chatId, 'Nothing is expected today. Deliveries (milk, newspaper) are set up in the app: Regulars → Deliveries.');
   }
 
   /** What's owed to each vendor up to today, with a "Paid" button per vendor. */

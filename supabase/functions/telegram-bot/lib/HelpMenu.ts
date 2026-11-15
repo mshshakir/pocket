@@ -135,13 +135,13 @@ export class HelpMenu {
     deliveries: {
       button: '🥛 Milk, bills & dues',
       text: [
-        '<b>🥛 Deliveries</b> (items set to "Pay the vendor later" in the app)',
+        '<b>🥛 Deliveries</b> (set up in the app: Regulars → Deliveries)',
         'Each morning (9 am unless set) I ask what came, with − / + buttons. Tap ✓ if it was the usual; the first answer counts for everyone who got it.',
         'Or type a change: <code>no milk</code> · <code>milk none yesterday</code> · <code>milk x2</code> · <code>milk 2 L</code>',
         '<i>"milk 2" alone is still an expense of 2.</i>',
         '/deliveries  today\'s list again · /dues  what you owe each vendor, with ✓ Paid',
         '',
-        '<b>🧾 Bills</b> (repeating entries marked "Amount changes — ask me")',
+        '<b>🧾 Bills</b> (Regulars → Bills, set to "asks each time")',
         'I remind you before and on the day, with ✓ Paid (last time\'s amount) or Skip.',
         'Different amount: <code>paid electricity 1950</code>',
         '',
