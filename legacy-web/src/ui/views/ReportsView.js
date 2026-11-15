@@ -278,7 +278,7 @@ export class ReportsView extends BaseView {
     }
 
     // ── Net worth line ────────────────────────────────────────────────
-    const nwSeries = this.#reports.netWorthSeries();
+    const nwSeries = this.#reports.netWorthSeries({ todayAdjust: window.__app?.holdingsAdjustmentHome?.() ?? 0 });
     const nwCtx    = document.getElementById('reportNetWorth');
     if (nwCtx) {
       if (this.#charts.nw) { this.#charts.nw.destroy(); this.#charts.nw = null; }

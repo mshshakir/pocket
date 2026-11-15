@@ -129,11 +129,7 @@ export class AccountsView extends BaseView {
             <i data-lucide="pencil"></i>
           </button>
         </div>
-        <div class="mt-5 relative">
-          <div class="text-xs text-zinc-500">Balance</div>
-          <div class="text-2xl font-semibold ${a.balance < 0 ? 'text-rose-500' : ''}">${this.formatMoney(a.balance, a.currency)}</div>
-          ${a.currency !== home ? `<div class="text-xs text-zinc-500">${this.formatMoney(this.convert(a.balance, a.currency, home), home)} in ${home}</div>` : ''}
-        </div>
+        ${this.#balanceBlock(a, home)}
         <div class="mt-3 text-xs text-zinc-400 relative flex items-center gap-1">
           <i data-lucide="arrow-right" style="width:11px;height:11px;display:inline"></i> View transactions
         </div>
@@ -166,9 +162,26 @@ export class AccountsView extends BaseView {
         </div>`).join('')}`;
   }
 
+  /** Balance, or for an investment account with holdings: worth now and the gain. */
+  #balanceBlock(a, home) {
+    const worth = a.type === 'invest' ? (window.__app?.accountWorth?.(a) ?? a.balance) : a.balance;
+    const svc = window.__app?.holdings;
+    const held = a.type === 'invest' && svc ? svc.list().filter((h) => h.accountId === a.id).map((h) => svc.stats(h)) : [];
+    const cost = held.reduce((s, x) => s + x.cost, 0);
+    const adj = held.reduce((s, x) => s + x.gain, 0);
+    const pct = cost > 0 ? Math.round((1000 * adj) / cost) / 10 : null;
+    return `
+        <div class="mt-5 relative">
+          <div class="text-xs text-zinc-500">${held.length ? 'Worth now' : 'Balance'}</div>
+          <div class="text-2xl font-semibold ${worth < 0 ? 'text-rose-500' : ''}">${this.formatMoney(worth, a.currency)}</div>
+          ${held.length ? `<div class="text-xs ${adj >= 0 ? 'text-emerald-600' : 'text-rose-500'} acc-worth-gain">${adj >= 0 ? '+' : '−'}${this.formatMoney(Math.abs(adj), a.currency)}${pct !== null ? ` (${pct >= 0 ? '+' : ''}${pct}%)` : ''} gain</div>` : ''}
+          ${a.currency !== home ? `<div class="text-xs text-zinc-500">${this.formatMoney(this.convert(worth, a.currency, home), home)} in ${home}</div>` : ''}
+        </div>`;
+  }
+
   #sectionHeader(sec, collapsed, home) {
     const isCollapsed = collapsed.has(sec.id);
-    const totalHome   = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+    const totalHome   = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(window.__app?.accountWorth?.(a) ?? a.balance, a.currency, home), 0);
     return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"

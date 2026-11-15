@@ -920,6 +920,7 @@ var _PocketApp = (() => {
     { id: "accounts", label: "Accounts", icon: "wallet" },
     { id: "budgets", label: "Budgets", icon: "target" },
     { id: "debts", label: "Debts", icon: "hand-coins" },
+    { id: "investments", label: "Investments", icon: "gem" },
     { id: "calendar", label: "Regulars", icon: "repeat" },
     { id: "categories", label: "Categories", icon: "tags" },
     { id: "reports", label: "Reports", icon: "pie-chart" },
@@ -10981,6 +10982,17 @@ This replaces your current grouping.`
           "You can share an account with family so they can add entries to it."
         ]
       },
+      investments: {
+        title: "Investments",
+        intro: "The gold and silver you own: grams, what you paid, and what it\u2019s worth today.",
+        points: [
+          "<b>Add</b> it: pick gold or silver and the purity. Choose <b>I already own it</b> (grams and what you paid) or <b>Buying now</b> (grams, price per gram, and the account you paid from).",
+          "<b>Buy</b> and <b>Sell</b> move money between that account and your Investments account, with the grams on the same entry. Spending and budgets aren\u2019t affected.",
+          "Tap <b>Price</b> to enter today\u2019s price per gram. Worth = grams \xD7 price, and your total balance and net worth use it.",
+          "Set an alert, like <b>20%</b> gain or a price per gram. When the price reaches it you\u2019ll see it here and on the Dashboard.",
+          "Each card shows your <b>average cost</b> per gram and the gain. Open <b>History</b> to see or delete a buy or sale."
+        ]
+      },
       calendar: {
         title: "Regulars",
         intro: "Everything that repeats, in one place.",
@@ -11409,7 +11421,11 @@ This replaces your current grouping.`
      * starting balances, then walk forward emitting a point per unique date.
      * @returns {{ date: string, netWorth: number }[]}
      */
-    netWorthSeries() {
+    /**
+     * @param {{todayAdjust?: number}} [opts]  todayAdjust (home minor) is added to
+     *   today's point: holdings valued at the latest price instead of their cost.
+     */
+    netWorthSeries({ todayAdjust = 0 } = {}) {
       const state = this.#store.getState();
       const home = state.user.homeCurrency;
       const accounts = state.accounts.filter((a) => !a.excludeFromTotals);
@@ -11418,7 +11434,7 @@ This replaces your current grouping.`
         0
       );
       if (!state.transactions.length) {
-        return [{ date: DateService.todayIso(), netWorth: Math.round(openingTotal) }];
+        return [{ date: DateService.todayIso(), netWorth: Math.round(openingTotal + todayAdjust) }];
       }
       const txsAsc = state.transactions.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.id.localeCompare(b.id));
       const byId = new Map(accounts.map((a) => [a.id, a]));
@@ -11446,6 +11462,7 @@ This replaces your current grouping.`
       if (!series.length || series[series.length - 1].date !== today) {
         series.push({ date: today, netWorth: Math.round(running) });
       }
+      if (todayAdjust) series[series.length - 1].netWorth += Math.round(todayAdjust);
       return series;
     }
     /**
@@ -11733,7 +11750,7 @@ This replaces your current grouping.`
       const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
       const counted = state.accounts.filter((a) => AccountService.inTotals(a));
-      const total = counted.reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+      const total = counted.reduce((s, a) => s + this.convert(window.__app?.accountWorth?.(a) ?? a.balance, a.currency, home), 0);
       const recent = [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
       const todayIso = DateService.todayIso();
       const todayH = this.#hijri.toHijri(todayIso);
@@ -11751,6 +11768,7 @@ This replaces your current grouping.`
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ""}
+      ${this.#investmentAlerts()}
       ${this.#lowBalanceCard()}
       ${this.#billsCard(todayIso)}
 
@@ -11865,6 +11883,21 @@ This replaces your current grouping.`
      * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
      * to vendors for pay-later items — only when there is something.
      */
+    /** Gold or silver that has reached its gain alert. */
+    #investmentAlerts() {
+      if (this.inGuestSpace) return "";
+      const hits = window.__app?.holdings?.alerts?.() ?? [];
+      if (!hits.length) return "";
+      return `
+      <div class="card p-4 mb-4 inv-dash-alert" style="border-color:#34d399">
+        <h3 class="font-semibold flex items-center gap-2 mb-1 text-emerald-600"><i data-lucide="trending-up" style="width:16px;height:16px"></i> Investment alert</h3>
+        ${hits.map(({ h, st }) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
+            <button class="flex-1 text-left text-sm" onclick="window.__app.navigate('investments')"><b>${this.escapeHtml(h.name)}</b> is up ${st.gainPct}% \xB7 worth ${this.formatMoney(st.worth, h.currency)}</button>
+            <button class="btn btn-ghost btn-sm" onclick="window.__app.ackInvestmentAlert('${this.escapeHtml(h.id)}')">Got it</button>
+          </div>`).join("")}
+      </div>`;
+    }
     /** Accounts that have dropped below the floor their owner set. */
     #lowBalanceCard() {
       if (this.inGuestSpace) return "";
@@ -12445,11 +12478,7 @@ This replaces your current grouping.`
             <i data-lucide="pencil"></i>
           </button>
         </div>
-        <div class="mt-5 relative">
-          <div class="text-xs text-zinc-500">Balance</div>
-          <div class="text-2xl font-semibold ${a.balance < 0 ? "text-rose-500" : ""}">${this.formatMoney(a.balance, a.currency)}</div>
-          ${a.currency !== home ? `<div class="text-xs text-zinc-500">${this.formatMoney(this.convert(a.balance, a.currency, home), home)} in ${home}</div>` : ""}
-        </div>
+        ${this.#balanceBlock(a, home)}
         <div class="mt-3 text-xs text-zinc-400 relative flex items-center gap-1">
           <i data-lucide="arrow-right" style="width:11px;height:11px;display:inline"></i> View transactions
         </div>
@@ -12480,9 +12509,25 @@ This replaces your current grouping.`
           </div>
         </div>`).join("")}`;
     }
+    /** Balance, or for an investment account with holdings: worth now and the gain. */
+    #balanceBlock(a, home) {
+      const worth = a.type === "invest" ? window.__app?.accountWorth?.(a) ?? a.balance : a.balance;
+      const svc = window.__app?.holdings;
+      const held = a.type === "invest" && svc ? svc.list().filter((h) => h.accountId === a.id).map((h) => svc.stats(h)) : [];
+      const cost = held.reduce((s, x) => s + x.cost, 0);
+      const adj = held.reduce((s, x) => s + x.gain, 0);
+      const pct = cost > 0 ? Math.round(1e3 * adj / cost) / 10 : null;
+      return `
+        <div class="mt-5 relative">
+          <div class="text-xs text-zinc-500">${held.length ? "Worth now" : "Balance"}</div>
+          <div class="text-2xl font-semibold ${worth < 0 ? "text-rose-500" : ""}">${this.formatMoney(worth, a.currency)}</div>
+          ${held.length ? `<div class="text-xs ${adj >= 0 ? "text-emerald-600" : "text-rose-500"} acc-worth-gain">${adj >= 0 ? "+" : "\u2212"}${this.formatMoney(Math.abs(adj), a.currency)}${pct !== null ? ` (${pct >= 0 ? "+" : ""}${pct}%)` : ""} gain</div>` : ""}
+          ${a.currency !== home ? `<div class="text-xs text-zinc-500">${this.formatMoney(this.convert(worth, a.currency, home), home)} in ${home}</div>` : ""}
+        </div>`;
+    }
     #sectionHeader(sec, collapsed, home) {
       const isCollapsed = collapsed.has(sec.id);
-      const totalHome = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+      const totalHome = sec.accs.filter((a) => AccountService.inTotals(a)).reduce((s, a) => s + this.convert(window.__app?.accountWorth?.(a) ?? a.balance, a.currency, home), 0);
       return `
       <div class="flex items-center gap-2 mb-2 px-1">
         <button type="button"
@@ -13869,7 +13914,7 @@ This replaces your current grouping.`
              </tbody>
            </table>` : `<div class="text-sm text-zinc-500 text-center py-4">No data.</div>`;
       }
-      const nwSeries = this.#reports.netWorthSeries();
+      const nwSeries = this.#reports.netWorthSeries({ todayAdjust: window.__app?.holdingsAdjustmentHome?.() ?? 0 });
       const nwCtx = document.getElementById("reportNetWorth");
       if (nwCtx) {
         if (this.#charts.nw) {
@@ -14184,6 +14229,574 @@ This replaces your current grouping.`
     #paidAmount(d, state) {
       const payments = state.transactions.filter((t) => t.debtId === d.id && t.id !== d.initialTxId);
       return payments.reduce((s, t) => s + this.convert(t.amount, t.currency || d.currency, d.currency), 0);
+    }
+  };
+
+  // src/domain/services/HoldingService.js
+  var HoldingService = class _HoldingService {
+    /** Metals and their purities, in the order offered. */
+    static KINDS = Object.freeze({
+      gold: { label: "Gold", icon: "gem", purities: ["24k", "22k", "18k"] },
+      silver: { label: "Silver", icon: "circle", purities: ["999", "925"] }
+    });
+    /** Most prices kept per holding (oldest dropped). */
+    static MAX_PRICES = 400;
+    /** @type {() => object} */
+    #state;
+    /** @type {object} */
+    #fx;
+    /**
+     * @param {{state: () => object, fx: {convertStrict: Function, convert: Function}}} deps
+     */
+    constructor({ state, fx }) {
+      this.#state = state;
+      this.#fx = fx;
+    }
+    // ── Queries ─────────────────────────────────────────────────────────
+    /** All holdings not archived. */
+    list() {
+      return (this.#state().holdings || []).filter((h) => !h.archived);
+    }
+    /** @param {string} id */
+    find(id) {
+      return (this.#state().holdings || []).find((h) => h.id === id);
+    }
+    /** The entries (transfer legs) that bought or sold a holding, oldest first. */
+    entries(id) {
+      return (this.#state().transactions || []).filter((t) => t.holdingId === id && Number.isFinite(Number(t.qty))).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+    }
+    /** The latest price per gram, or null: { date, price }. */
+    static latestPrice(h) {
+      const p = Array.isArray(h?.prices) ? h.prices : [];
+      return p.length ? p[p.length - 1] : null;
+    }
+    /**
+     * Where a holding stands.
+     * @param {object} h
+     * @returns {{qty:number, cost:number, avgCost:number, price:number|null, priceDate:string|null,
+     *   worth:number, gain:number, gainPct:number|null, realised:number, ledgerNet:number,
+     *   target:number|null, reached:boolean, alertNew:boolean}}
+     *   money in minor units of the holding's currency; qty in grams
+     */
+    stats(h) {
+      const account = (this.#state().accounts || []).find((a) => a.id === h.accountId);
+      let qty = Number(h.openingQty) || 0;
+      let cost = Math.round(Number(h.openingCost) || 0);
+      let realised = 0, ledgerNet = 0;
+      for (const t of this.entries(h.id)) {
+        const q = Number(t.qty);
+        const money = Math.abs(Math.round(Number(t.amount) || 0));
+        if (account) ledgerNet += LedgerMath.accountDelta(t, account, this.#fx);
+        if (q > 0) {
+          qty += q;
+          cost += money;
+        } else if (q < 0) {
+          const sold = Math.min(-q, qty);
+          const avg = qty > 0 ? cost / qty : 0;
+          const costOut = Math.round(avg * sold);
+          realised += money - costOut;
+          cost -= costOut;
+          qty -= sold;
+        }
+      }
+      qty = _HoldingService.#grams(qty);
+      if (qty <= 0) {
+        qty = 0;
+        cost = 0;
+      }
+      const last = _HoldingService.latestPrice(h);
+      const price = last ? Number(last.price) : null;
+      const worth = price === null ? cost : Math.round(qty * price);
+      const gain = worth - cost;
+      const avgCost = qty > 0 ? Math.round(cost / qty) : 0;
+      const target = _HoldingService.targetPrice(h, avgCost);
+      const reached = target !== null && price !== null && qty > 0 && price >= target;
+      return {
+        qty,
+        cost,
+        avgCost,
+        price,
+        priceDate: last?.date ?? null,
+        worth,
+        gain,
+        gainPct: cost > 0 ? Math.round(1e3 * gain / cost) / 10 : null,
+        realised: Math.round(realised),
+        ledgerNet: Math.round(ledgerNet),
+        target,
+        reached,
+        alertNew: reached && h.alert?.ackTarget !== target
+      };
+    }
+    /**
+     * The price per gram the alert waits for: from a gain % on the average cost,
+     * or a set target price. null when no alert is set.
+     */
+    static targetPrice(h, avgCost) {
+      const a = h?.alert || {};
+      if (Number(a.targetPrice) > 0) return Math.round(a.targetPrice);
+      if (Number(a.gainPct) > 0 && avgCost > 0) return Math.round(avgCost * (1 + Number(a.gainPct) / 100));
+      return null;
+    }
+    /**
+     * How much an investment account's holdings add to (or take from) its
+     * balance at today's prices: Σ (worth − ledgerNet). Minor units of the
+     * account's currency.
+     */
+    adjustmentFor(accountId) {
+      return this.list().filter((h) => h.accountId === accountId).reduce((s, h) => {
+        const st = this.stats(h);
+        return s + (st.worth - st.ledgerNet);
+      }, 0);
+    }
+    /** Totals across all holdings, in the home currency. */
+    totals() {
+      const home = this.#state().user?.homeCurrency || "INR";
+      let worth = 0, cost = 0, realised = 0;
+      for (const h of this.list()) {
+        const st = this.stats(h);
+        worth += this.#fx.convert(st.worth, h.currency, home);
+        cost += this.#fx.convert(st.cost, h.currency, home);
+        realised += this.#fx.convert(st.realised, h.currency, home);
+      }
+      return {
+        home,
+        worth: Math.round(worth),
+        cost: Math.round(cost),
+        gain: Math.round(worth - cost),
+        gainPct: cost > 0 ? Math.round(1e3 * (worth - cost) / cost) / 10 : null,
+        realised: Math.round(realised)
+      };
+    }
+    /** Holdings whose gain alert has gone off and hasn't been dismissed. */
+    alerts() {
+      return this.list().map((h) => ({ h, st: this.stats(h) })).filter(({ st }) => st.alertNew);
+    }
+    // ── Changes (on the state; the caller saves) ───────────────────────
+    /**
+     * @param {{accountId:string, name?:string, kind:string, purity:string, currency:string,
+     *   openingQty?:number, openingCost?:number, price?:number, date:string, gainPct?:number, note?:string}} d
+     * @param {string} id
+     * @returns {object} the holding
+     */
+    create(d, id) {
+      const state = this.#state();
+      if (!Array.isArray(state.holdings)) state.holdings = [];
+      const kind = _HoldingService.KINDS[d.kind] ? d.kind : "gold";
+      const h = {
+        id,
+        accountId: d.accountId,
+        kind,
+        purity: d.purity || _HoldingService.KINDS[kind].purities[0],
+        name: (d.name || "").trim() || _HoldingService.defaultName(kind, d.purity),
+        unit: "g",
+        currency: d.currency,
+        openingQty: Number(d.openingQty) > 0 ? _HoldingService.#grams(d.openingQty) : 0,
+        openingCost: Number(d.openingCost) > 0 ? Math.round(d.openingCost) : 0,
+        prices: Number(d.price) > 0 ? [{ date: d.date, price: Math.round(d.price) }] : [],
+        alert: Number(d.gainPct) > 0 ? { gainPct: Number(d.gainPct) } : {},
+        note: d.note || ""
+      };
+      state.holdings.push(h);
+      return h;
+    }
+    /** Add (or replace that day's) price per gram. */
+    setPrice(h, date, price) {
+      const p = Array.isArray(h.prices) ? h.prices.filter((x) => x.date !== date) : [];
+      p.push({ date, price: Math.round(price) });
+      p.sort((a, b) => a.date.localeCompare(b.date));
+      h.prices = p.slice(-_HoldingService.MAX_PRICES);
+    }
+    /** Set the gain alert: a % on cost, or a target price per gram (minor). */
+    setAlert(h, { gainPct = null, targetPrice = null } = {}) {
+      h.alert = {
+        ...Number(gainPct) > 0 ? { gainPct: Number(gainPct) } : {},
+        ...Number(targetPrice) > 0 ? { targetPrice: Math.round(targetPrice) } : {}
+      };
+    }
+    /** Dismiss the alert that went off (it goes off again for a new target). */
+    ackAlert(h) {
+      const st = this.stats(h);
+      h.alert = { ...h.alert || {}, ackTarget: st.target };
+    }
+    /** e.g. "24k gold", "999 silver". */
+    static defaultName(kind, purity) {
+      return `${purity || _HoldingService.KINDS[kind]?.purities[0] || ""} ${kind === "silver" ? "silver" : "gold"}`.trim();
+    }
+    /** Grams to 3 places (milligrams), so 0.1 + 0.2 stays 0.3. */
+    static #grams(v) {
+      return Math.round(Number(v) * 1e3) / 1e3;
+    }
+  };
+
+  // src/ui/views/InvestmentsView.js
+  var InvestmentsView = class _InvestmentsView extends BaseView {
+    /** A price older than this many days is flagged. */
+    static STALE_DAYS = 3;
+    render() {
+      const svc = window.__app?.holdings;
+      const list = svc?.list() ?? [];
+      const guest = this.inGuestSpace;
+      const head = `
+      <div class="flex items-center justify-between mb-6 gap-2">
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Investments${this.helpButton("investments")}</h1>${this.helpHint("investments")}
+          <div class="text-xs text-zinc-500 mt-0.5">Gold and silver, valued at the latest price</div>
+        </div>
+        ${guest ? "" : `<button class="btn btn-primary inv-add" onclick="window.__app.openModal('investment')"><i data-lucide="plus"></i> Add</button>`}
+      </div>`;
+      if (guest) return head + `<div class="card p-10 text-center">${this.emptyState("Not shared", "Investments are kept in your own space.")}</div>`;
+      if (!list.length) {
+        return head + `<div class="card p-10 text-center">${this.emptyState("No investments yet", "Add the gold or silver you own, or buy some. Pocket keeps the grams, what you paid, and what it\u2019s worth today.")}</div>`;
+      }
+      const t = svc.totals();
+      const alerts = svc.alerts();
+      return `
+      ${head}
+      <div class="card p-5 mb-4 inv-summary">
+        <div class="text-xs text-zinc-500">Worth now</div>
+        <div class="text-3xl font-semibold">${this.formatMoney(t.worth, t.home)}</div>
+        <div class="text-sm mt-1">
+          <span class="text-zinc-500">Invested ${this.formatMoney(t.cost, t.home)} \xB7</span>
+          <span class="${t.gain >= 0 ? "text-emerald-600" : "text-rose-500"} font-medium">${t.gain >= 0 ? "+" : "\u2212"}${this.formatMoney(Math.abs(t.gain), t.home)}${t.gainPct !== null ? ` (${t.gainPct >= 0 ? "+" : ""}${t.gainPct}%)` : ""}</span>
+          ${t.realised ? `<span class="text-zinc-500"> \xB7 from sales ${t.realised >= 0 ? "+" : "\u2212"}${this.formatMoney(Math.abs(t.realised), t.home)}</span>` : ""}
+        </div>
+      </div>
+
+      ${alerts.map(({ h, st }) => `
+        <div class="card-muted p-3 mb-4 inv-alert flex items-center gap-3" style="border-color:#34d399">
+          <i data-lucide="trending-up" class="text-emerald-600"></i>
+          <div class="flex-1 text-sm"><b>${this.escapeHtml(h.name)}</b> is up ${st.gainPct}% \u2014 worth ${this.formatMoney(st.worth, h.currency)} on ${this.formatMoney(st.cost, h.currency)} invested.</div>
+          <button class="btn btn-ghost btn-sm" onclick="window.__app.ackInvestmentAlert('${this.jsArg(h.id)}')">Got it</button>
+        </div>`).join("")}
+
+      ${Object.entries(HoldingService.KINDS).map(([kind, k]) => {
+        const items = list.filter((h) => h.kind === kind);
+        if (!items.length) return "";
+        return `
+          <div class="mb-6 inv-group" data-kind="${kind}">
+            <div class="text-xs uppercase tracking-wider text-zinc-500 mb-2">${k.label}</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">${items.map((h) => this.#card(h, svc)).join("")}</div>
+          </div>`;
+      }).join("")}`;
+    }
+    // ── Private ───────────────────────────────────────────────────────────
+    #card(h, svc) {
+      const st = svc.stats(h);
+      const cur = h.currency;
+      const acc = this.state.accounts.find((a) => a.id === h.accountId);
+      const today = DateService.todayIso();
+      const age = st.priceDate ? Math.round((Date.parse(today) - Date.parse(st.priceDate)) / 864e5) : null;
+      const stale = age === null || age > _InvestmentsView.STALE_DAYS;
+      const grams = (g) => `${Number(g).toLocaleString("en-IN", { maximumFractionDigits: 3 })} g`;
+      const tone = st.gain >= 0 ? "text-emerald-600" : "text-rose-500";
+      const id = this.jsArg(h.id);
+      const history2 = svc.entries(h.id);
+      return `
+      <div class="card p-4 inv-card" data-holding="${this.escapeHtml(h.id)}">
+        <div class="flex items-start gap-3">
+          <div class="icon-pill" style="background:${h.kind === "silver" ? "#94a3b822" : "#f59e0b22"};color:${h.kind === "silver" ? "#64748b" : "#d97706"}"><i data-lucide="${HoldingService.KINDS[h.kind]?.icon || "gem"}"></i></div>
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold truncate">${this.escapeHtml(h.name)}</div>
+            <div class="text-xs text-zinc-500">${grams(st.qty)} \xB7 ${this.escapeHtml(h.purity)}${acc ? ` \xB7 in ${this.escapeHtml(acc.name)}` : ""}</div>
+          </div>
+          <div class="text-right">
+            <div class="font-semibold">${this.formatMoney(st.worth, cur)}</div>
+            <div class="text-xs ${tone}">${st.gain >= 0 ? "+" : "\u2212"}${this.formatMoney(Math.abs(st.gain), cur)}${st.gainPct !== null ? ` \xB7 ${st.gainPct >= 0 ? "+" : ""}${st.gainPct}%` : ""}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 mt-3 text-xs">
+          <span class="flex-1 ${stale ? "text-amber-600" : "text-zinc-500"} inv-price">
+            ${st.price !== null ? `${this.formatMoney(st.price, cur)} / g \xB7 ${DeliveryPlan.shortDate(st.priceDate)}${stale ? " \xB7 price may be old" : ""}` : "No price yet"}
+          </span>
+          <span class="text-zinc-500">Avg cost ${this.formatMoney(st.avgCost, cur)} / g</span>
+        </div>
+        ${st.target !== null ? `<div class="text-xs text-zinc-500 mt-1 inv-target"><i data-lucide="bell" style="width:11px;height:11px;display:inline"></i> Alert at ${this.formatMoney(st.target, cur)} / g${h.alert?.gainPct ? ` (+${h.alert.gainPct}%)` : ""}${st.reached ? ' \xB7 <span class="text-emerald-600">reached</span>' : ""}</div>` : ""}
+        <div class="grid grid-cols-3 gap-2 mt-3">
+          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})"><i data-lucide="plus"></i> Buy</button>
+          <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? "" : "disabled"} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})"><i data-lucide="minus"></i> Sell</button>
+          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('holdingPrice',{id:'${id}'})"><i data-lucide="tag"></i> Price</button>
+        </div>
+        <details class="mt-3 text-xs">
+          <summary class="cursor-pointer text-zinc-500">History${history2.length ? ` \xB7 ${history2.length}` : ""}</summary>
+          <div class="mt-2 divide-y divide-zinc-100 dark:divide-zinc-800">
+            ${Number(h.openingQty) > 0 ? `<div class="py-1.5 flex justify-between"><span>Already owned \xB7 ${grams(h.openingQty)}</span><span>${this.formatMoney(h.openingCost || 0, cur)}</span></div>` : ""}
+            ${history2.map((t) => `
+              <div class="py-1.5 flex items-center gap-2">
+                <span class="flex-1">${DeliveryPlan.shortDate(t.date)} \xB7 ${Number(t.qty) > 0 ? "Bought" : "Sold"} ${grams(Math.abs(t.qty))} @ ${this.formatMoney(t.unitPrice || 0, cur)}</span>
+                <span>${this.formatMoney(t.amount, t.currency || cur)}</span>
+                <button class="text-zinc-400 hover:text-rose-500" title="Delete" onclick="window.__app.deleteTx('${this.jsArg(t.id)}')"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button>
+              </div>`).join("")}
+            <div class="py-1.5"><button class="underline text-zinc-500" onclick="window.__app.openModal('investment',{id:'${id}'})">Edit or remove</button></div>
+          </div>
+        </details>
+      </div>`;
+    }
+  };
+
+  // src/ui/modals/InvestmentModal.js
+  var InvestmentModal = class _InvestmentModal {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    constructor() {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+    }
+    /** <option>s of a metal's purities. */
+    static purityOptions(kind, selected = "") {
+      return (HoldingService.KINDS[kind]?.purities || []).map((p) => `<option value="${p}" ${p === selected ? "selected" : ""}>${p}</option>`).join("");
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const h = opts.id ? (state.holdings || []).find((x) => x.id === opts.id) : null;
+      return h ? this.#edit(h) : this.#create(state);
+    }
+    // ── Private ───────────────────────────────────────────────────────────
+    #head(title) {
+      return `<div class="flex items-center justify-between mb-4"><h3 class="text-lg font-semibold">${title}</h3>
+      <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button></div>`;
+    }
+    #create(state) {
+      const invest = state.accounts.filter((a) => a.type === "invest" && !a.archived);
+      const payFrom = state.accounts.filter((a) => a.type !== "invest" && !a.archived);
+      const home = state.user.homeCurrency || "INR";
+      const step = CurrencyService.stepFor(invest[0]?.currency || home);
+      const today = DateService.todayIso();
+      const metal = (k, label) => `
+      <label class="cursor-pointer">
+        <input type="radio" name="kind" value="${k}" ${k === "gold" ? "checked" : ""} class="peer sr-only" onchange="window.__app.onHoldingKindChange(this)">
+        <span class="btn btn-outline w-full justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900"><i data-lucide="${HoldingService.KINDS[k].icon}"></i> ${label}</span>
+      </label>`;
+      const how = (k, label) => `
+      <label class="cursor-pointer">
+        <input type="radio" name="how" value="${k}" ${k === "own" ? "checked" : ""} class="peer sr-only" onchange="window.__app.onHoldingHowChange(this)">
+        <span class="btn btn-outline w-full justify-center text-sm peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900">${label}</span>
+      </label>`;
+      return `
+      <form onsubmit="window.__app.submitInvestment(event,'')" class="p-5 investment-form">
+        ${this.#head("Add gold or silver")}
+        <div class="grid grid-cols-2 gap-2 mb-3">${metal("gold", "Gold")}${metal("silver", "Silver")}</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Purity</label>
+            <select class="select" name="purity">${_InvestmentModal.purityOptions("gold")}</select>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Name (optional)</label>
+            <input class="input" name="name" placeholder="e.g. Wedding set">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-zinc-500">Kept in</label>
+          <select class="select" name="accountId">
+            ${invest.map((a) => `<option value="${Html.escape(a.id)}">${Html.escape(a.name)}</option>`).join("")}
+            <option value="__new__" ${invest.length ? "" : "selected"}>${invest.length ? "+ New account\u2026" : "Investments (made for you)"}</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 mb-3">${how("own", "I already own it")}${how("buy", "Buying now")}</div>
+
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Grams</label>
+            <input class="input" name="grams" type="number" min="0" step="0.001" required inputmode="decimal">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500" data-how-label="own">Today's price / g</label>
+            <label class="text-xs text-zinc-500" data-how-label="buy" style="display:none">Price paid / g</label>
+            <input class="input" name="price" type="number" min="0" step="${step}" inputmode="decimal">
+          </div>
+        </div>
+        <div data-how="own" class="mb-3">
+          <label class="text-xs text-zinc-500">What you paid in all (optional)</label>
+          <input class="input" name="paid" type="number" min="0" step="${step}" inputmode="decimal" placeholder="Leave empty to use today's price">
+        </div>
+        <div data-how="buy" class="grid grid-cols-2 gap-3 mb-3" style="display:none">
+          <div>
+            <label class="text-xs text-zinc-500">Pay from</label>
+            <select class="select" name="payFrom">
+              ${payFrom.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Date</label>
+            <input class="input" type="date" name="date" value="${today}">
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <label class="text-xs text-zinc-500">Tell me when the gain reaches (%)</label>
+          <input class="input" name="gainPct" type="number" min="0" step="1" placeholder="e.g. 20 \u2014 optional">
+        </div>
+
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
+        </div>
+      </form>`;
+    }
+    #edit(h) {
+      const step = CurrencyService.stepFor(h.currency);
+      return `
+      <form onsubmit="window.__app.submitInvestment(event,'${Html.escape(h.id)}')" class="p-5 investment-form">
+        ${this.#head(`Edit ${Html.escape(h.name)}`)}
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Name</label>
+            <input class="input" name="name" value="${Html.escape(h.name)}" required>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Purity</label>
+            <select class="select" name="purity">${_InvestmentModal.purityOptions(h.kind, h.purity)}</select>
+          </div>
+        </div>
+        <div class="text-xs text-zinc-500 mb-1">Owned before you started using Pocket</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Grams</label>
+            <input class="input" name="openingQty" type="number" min="0" step="0.001" value="${Number(h.openingQty) || ""}">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">What you paid in all</label>
+            <input class="input" name="openingCost" type="number" min="0" step="${step}" value="${h.openingCost ? this.#fx.fromMinor(h.openingCost, h.currency) : ""}">
+          </div>
+        </div>
+        <div class="text-xs text-zinc-500 mb-3">Buying and selling are in History on the card; delete an entry there to undo it.</div>
+        <div class="flex items-center gap-2">
+          <button type="button" class="btn btn-outline text-rose-500" onclick="window.__app.removeInvestment('${Html.escape(h.id)}')"><i data-lucide="trash-2"></i> Remove</button>
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
+        </div>
+      </form>`;
+    }
+  };
+
+  // src/ui/modals/TradeModal.js
+  var TradeModal = class {
+    /** @type {Store} */
+    #store;
+    /** @type {CurrencyService} */
+    #fx;
+    /** @type {() => HoldingService} */
+    #holdings;
+    /** @param {{holdings: () => HoldingService}} deps */
+    constructor({ holdings }) {
+      this.#store = Store.getInstance();
+      this.#fx = new CurrencyService();
+      this.#holdings = holdings;
+    }
+    render(opts = {}) {
+      const state = this.#store.getState();
+      const svc = this.#holdings();
+      const h = svc?.find(opts.id);
+      if (!h) return `<div class="p-5">Not found</div>`;
+      const sell = opts.mode === "sell";
+      const st = svc.stats(h);
+      const others = state.accounts.filter((a) => a.id !== h.accountId && a.type !== "invest" && !a.archived);
+      const price = st.price !== null ? this.#fx.fromMinor(st.price, h.currency) : "";
+      const step = CurrencyService.stepFor(h.currency);
+      return `
+      <form onsubmit="window.__app.submitTrade(event,'${Html.escape(h.id)}','${sell ? "sell" : "buy"}')" class="p-5 trade-form">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-lg font-semibold">${sell ? "Sell" : "Buy"} ${Html.escape(h.name)}</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <div class="text-xs text-zinc-500 mb-3">You hold ${Number(st.qty).toLocaleString("en-IN", { maximumFractionDigits: 3 })} g \xB7 average cost ${this.#fx.formatMoney(st.avgCost, h.currency)} / g</div>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-zinc-500">Grams</label>
+            <input class="input" name="grams" type="number" min="0.001" step="0.001" ${sell ? `max="${st.qty}"` : ""} required inputmode="decimal" autofocus
+                   oninput="window.__app.updateTradeTotal(this.form)">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Price / g</label>
+            <input class="input" name="price" type="number" min="0" step="${step}" required inputmode="decimal" value="${price}"
+                   oninput="window.__app.updateTradeTotal(this.form)">
+          </div>
+        </div>
+        <div class="text-sm mb-3 trade-total" data-currency="${Html.escape(h.currency)}"></div>
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <label class="text-xs text-zinc-500">${sell ? "Money goes to" : "Pay from"}</label>
+            <select class="select" name="other">
+              ${others.map((a) => `<option value="${Html.escape(a.id)}" ${a.id === state.user.defaultAccountId ? "selected" : ""}>${Html.escape(a.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Date</label>
+            <input class="input" type="date" name="date" value="${DateService.todayIso()}">
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm mb-4"><input type="checkbox" name="setPrice" checked> Also use this as today\u2019s price</label>
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> ${sell ? "Sell" : "Buy"}</button>
+        </div>
+      </form>`;
+    }
+  };
+
+  // src/ui/modals/HoldingPriceModal.js
+  var HoldingPriceModal = class {
+    /** @type {CurrencyService} */
+    #fx;
+    /** @type {() => HoldingService} */
+    #holdings;
+    /** @param {{holdings: () => HoldingService}} deps */
+    constructor({ holdings }) {
+      this.#fx = new CurrencyService();
+      this.#holdings = holdings;
+    }
+    render(opts = {}) {
+      const svc = this.#holdings();
+      const h = svc?.find(opts.id);
+      if (!h) return `<div class="p-5">Not found</div>`;
+      const st = svc.stats(h);
+      const step = CurrencyService.stepFor(h.currency);
+      const recent = (h.prices || []).slice(-5).reverse();
+      const usePct = !(Number(h.alert?.targetPrice) > 0);
+      return `
+      <form onsubmit="window.__app.submitHoldingPrice(event,'${Html.escape(h.id)}')" class="p-5 price-form">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg font-semibold">${Html.escape(h.name)} \xB7 price</h3>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+        </div>
+        <div class="grid grid-cols-2 gap-3 mb-2">
+          <div>
+            <label class="text-xs text-zinc-500">Price / g</label>
+            <input class="input" name="price" type="number" min="0" step="${step}" inputmode="decimal" autofocus
+                   value="${st.price !== null ? this.#fx.fromMinor(st.price, h.currency) : ""}">
+          </div>
+          <div>
+            <label class="text-xs text-zinc-500">Date</label>
+            <input class="input" type="date" name="date" value="${DateService.todayIso()}">
+          </div>
+        </div>
+        ${recent.length ? `<div class="text-xs text-zinc-500 mb-4">Recent: ${recent.map((p) => `${this.#fx.formatMoney(p.price, h.currency)} (${DeliveryPlan.shortDate(p.date)})`).join(" \xB7 ")}</div>` : '<div class="mb-4"></div>'}
+
+        <div class="card-muted p-3 mb-4">
+          <div class="text-sm font-medium mb-2 flex items-center gap-1.5"><i data-lucide="bell" style="width:14px;height:14px"></i> Gain alert</div>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="alertBy" value="pct" ${usePct ? "checked" : ""}> Gain %</label>
+            <label class="flex items-center gap-2 text-sm"><input type="radio" name="alertBy" value="price" ${usePct ? "" : "checked"}> Price / g</label>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <input class="input" name="gainPct" type="number" min="0" step="1" placeholder="e.g. 20" value="${Number(h.alert?.gainPct) || ""}">
+            <input class="input" name="targetPrice" type="number" min="0" step="${step}" placeholder="e.g. 8500" value="${h.alert?.targetPrice ? this.#fx.fromMinor(h.alert.targetPrice, h.currency) : ""}">
+          </div>
+          <div class="text-xs text-zinc-500 mt-2">${st.avgCost ? `Your average cost is ${this.#fx.formatMoney(st.avgCost, h.currency)} / g. ` : ""}Leave both empty for no alert. It shows once when reached.</div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <div class="flex-1"></div>
+          <button type="button" class="btn btn-ghost" onclick="window.__app.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i data-lucide="check"></i> Save</button>
+        </div>
+      </form>`;
     }
   };
 
@@ -20509,6 +21122,8 @@ This replaces your current grouping.`
     #owed;
     /** @type {SettingsModal}        */
     #settingsModal;
+    /** @type {HoldingService}       */
+    #holdings;
     /** @type {HabitService}         */
     #habits;
     /** @type {SyncService}          */
@@ -20617,6 +21232,7 @@ This replaces your current grouping.`
       this.#habits = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
       this.#regularLogs = new RegularLogService({ store: this.#store });
       this.#vendorDues = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+      this.#holdings = new HoldingService({ state: () => this.#store.getState(), fx: this.#fx });
       this.#owed = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
       this.#sync = new SyncService();
       this.#themeService = new ThemeService(this.#store);
@@ -20725,6 +21341,9 @@ This replaces your current grouping.`
       this.#modal.register("account", new AccountModal());
       this.#modal.register("category", new CategoryModal());
       this.#modal.register("help", new HelpModal());
+      this.#modal.register("investment", new InvestmentModal());
+      this.#modal.register("trade", new TradeModal({ holdings: () => this.#holdings }));
+      this.#modal.register("holdingPrice", new HoldingPriceModal({ holdings: () => this.#holdings }));
       this.#modal.register("feedback", new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
       new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
       this.#modal.register("categoryMerge", this.#categoryMergeModal = new CategoryMergeModal({ categories: () => this.#categories }));
@@ -20811,6 +21430,7 @@ This replaces your current grouping.`
         { id: "accounts", label: "Accounts", icon: "wallet" },
         { id: "budgets", label: "Budgets", icon: "target" },
         { id: "debts", label: "Debts", icon: "hand-coins" },
+        { id: "investments", label: "Investments", icon: "gem" },
         { id: "categories", label: "Categories", icon: "tags" },
         { id: "reports", label: "Reports", icon: "pie-chart" },
         { id: "family", label: "Family", icon: "users" }
@@ -20869,6 +21489,9 @@ This replaces your current grouping.`
       "budget",
       "category",
       "categoryMerge",
+      "investment",
+      "trade",
+      "holdingPrice",
       "debt",
       "debtPayment",
       "regularItem",
@@ -20946,6 +21569,9 @@ This replaces your current grouping.`
     }
     get owed() {
       return this.#owed;
+    }
+    get holdings() {
+      return this.#holdings;
     }
     /** Habits followed in Reports. */
     get habits() {
@@ -22743,6 +23369,187 @@ Leave empty to use your own name.`,
         statementDay: day(data.statementDay),
         dueDay: day(data.dueDay)
       };
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+    // Investments (gold and silver) — see HoldingService
+    // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * What an account is worth today: its balance, plus — for an investment
+     * account — its holdings at the latest price instead of what was paid.
+     * @param {object} account
+     * @returns {number} minor units of the account's currency
+     */
+    accountWorth(account) {
+      const base = Math.round(account?.balance ?? 0);
+      return account?.type === "invest" ? base + this.#holdings.adjustmentFor(account.id) : base;
+    }
+    /**
+     * What holdings add to net worth at today's prices, in the home currency:
+     * Σ over investment accounts that count in totals of (worth − balance).
+     */
+    holdingsAdjustmentHome() {
+      const state = this.#store.getState();
+      const home = state.user.homeCurrency;
+      return state.accounts.filter((a) => a.type === "invest" && AccountService.inTotals(a)).reduce((s, a) => s + this.#fx.convert(this.#holdings.adjustmentFor(a.id), a.currency, home), 0);
+    }
+    /** Add-investment form: the metal changed → offer its purities. */
+    onHoldingKindChange(radio) {
+      const sel = radio.form?.querySelector('select[name="purity"]');
+      if (sel) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+    }
+    /** Add-investment form: "I already own it" / "Buying now". */
+    onHoldingHowChange(radio) {
+      const form = radio.form;
+      for (const el of form.querySelectorAll("[data-how]")) el.style.display = el.dataset.how === radio.value ? "" : "none";
+      for (const el of form.querySelectorAll("[data-how-label]")) el.style.display = el.dataset.howLabel === radio.value ? "" : "none";
+    }
+    /** Buy/Sell form: "10 g × ₹7,200 = ₹72,000". */
+    updateTradeTotal(form) {
+      const out = form?.querySelector(".trade-total");
+      if (!out) return;
+      const g = Number(form.querySelector('[name="grams"]').value), p = Number(form.querySelector('[name="price"]').value);
+      const cur = out.dataset.currency;
+      out.textContent = g > 0 && p > 0 ? `${g} g \xD7 ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)} = ${this.#fx.formatMoney(this.#fx.toMinor(g * p, cur), cur)}` : "";
+    }
+    /** The investment account a new holding goes in, made if needed. */
+    #investAccount(chosen) {
+      const state = this.#store.getState();
+      const found = state.accounts.find((a) => a.id === chosen && a.type === "invest");
+      if (found) return found;
+      const existing = state.accounts.filter((a) => a.type === "invest" && !a.archived);
+      const name = existing.some((a) => a.name === "Investments") ? `Investments ${existing.length + 1}` : "Investments";
+      return this.#accounts.create({ name, type: "invest", currency: state.user.homeCurrency || "INR", color: "#d97706", icon: AccountService.typeIcon("invest") });
+    }
+    submitInvestment(event, id) {
+      event.preventDefault();
+      const fd = Object.fromEntries(new FormData(event.target).entries());
+      const state = this.#store.getState();
+      if (id) {
+        const h2 = this.#holdings.find(id);
+        if (!h2) return;
+        h2.name = String(fd.name || "").trim() || h2.name;
+        if (fd.purity) h2.purity = fd.purity;
+        const q = Number(fd.openingQty), c = Number(fd.openingCost);
+        h2.openingQty = q > 0 ? Math.round(q * 1e3) / 1e3 : 0;
+        h2.openingCost = c > 0 ? this.#fx.toMinor(c, h2.currency) : 0;
+        this.#store.persist();
+        this.closeModal();
+        this.#render();
+        this.#toast.show("Saved");
+        return this.#sync.schedulePush?.();
+      }
+      const grams = Number(fd.grams);
+      if (!(grams > 0)) return this.#toast.show("Enter the grams");
+      const how = fd.how === "buy" ? "buy" : "own";
+      if (how === "buy" && !(Number(fd.price) > 0)) return this.#toast.show("Enter the price per gram");
+      if (how === "buy" && !state.accounts.some((a) => a.id === fd.payFrom)) return this.#toast.show("Pick the account you paid from");
+      const acc = this.#investAccount(fd.accountId);
+      const cur = acc.currency;
+      const price = Number(fd.price) > 0 ? this.#fx.toMinor(Number(fd.price), cur) : 0;
+      const paid = Number(fd.paid) > 0 ? this.#fx.toMinor(Number(fd.paid), cur) : Math.round(grams * price);
+      const date = how === "buy" ? fd.date || DateService.todayIso() : DateService.todayIso();
+      const h = this.#holdings.create({
+        accountId: acc.id,
+        kind: fd.kind,
+        purity: fd.purity,
+        name: fd.name,
+        currency: cur,
+        openingQty: how === "own" ? grams : 0,
+        openingCost: how === "own" ? paid : 0,
+        price: price || (how === "own" && paid ? Math.round(paid / grams) : 0),
+        date,
+        gainPct: Number(fd.gainPct) || 0
+      }, IdGenerator.generate("hld"));
+      if (how === "buy") this.#recordTrade(h, "buy", { grams, price, other: fd.payFrom, date });
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`${h.name} added`);
+      this.#sync.schedulePush?.();
+    }
+    submitTrade(event, id, mode) {
+      event.preventDefault();
+      const fd = Object.fromEntries(new FormData(event.target).entries());
+      const h = this.#holdings.find(id);
+      if (!h) return;
+      const grams = Number(fd.grams), priceMajor = Number(fd.price);
+      if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show("Enter grams and price per gram");
+      if (mode === "sell" && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show("That\u2019s more than you hold");
+      if (!this.#store.getState().accounts.some((a) => a.id === fd.other)) return this.#toast.show("Pick an account");
+      const price = this.#fx.toMinor(priceMajor, h.currency);
+      const date = fd.date || DateService.todayIso();
+      this.#recordTrade(h, mode === "sell" ? "sell" : "buy", { grams, price, other: fd.other, date });
+      if (fd.setPrice) this.#holdings.setPrice(h, date, price);
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      this.#toast.show(`${mode === "sell" ? "Sold" : "Bought"} ${grams} g of ${h.name}`);
+      this.#sync.schedulePush?.();
+    }
+    /**
+     * A buy or sale as a transfer between `other` and the holding's account; the
+     * investment-account leg carries holdingId · qty · unitPrice.
+     */
+    #recordTrade(h, mode, { grams, price, other, date }) {
+      const state = this.#store.getState();
+      const minor = Math.round(grams * price);
+      const home = state.user.homeCurrency;
+      const sell = mode === "sell";
+      const data = {
+        accountId: sell ? h.accountId : other,
+        transferToAccountId: sell ? other : h.accountId,
+        payee: `${sell ? "Sell" : "Buy"} ${h.name}`,
+        note: `${grams} g @ ${this.#fx.formatMoney(price, h.currency)}/g`,
+        date
+      };
+      const legs = this.#buildTransferPair(data, {
+        minor,
+        currency: h.currency,
+        exchRate: (RATES[h.currency] || 1) / (RATES[home] || 1),
+        refAmt: this.#fx.convert(minor, h.currency, home),
+        xfer: null,
+        state
+      });
+      const leg = legs.find((t) => t.accountId === h.accountId);
+      Object.assign(leg, { holdingId: h.id, qty: sell ? -grams : grams, unitPrice: price });
+      state.transactions.push(...legs);
+    }
+    submitHoldingPrice(event, id) {
+      event.preventDefault();
+      const fd = Object.fromEntries(new FormData(event.target).entries());
+      const h = this.#holdings.find(id);
+      if (!h) return;
+      if (Number(fd.price) > 0) this.#holdings.setPrice(h, fd.date || DateService.todayIso(), this.#fx.toMinor(Number(fd.price), h.currency));
+      const byPrice = fd.alertBy === "price";
+      this.#holdings.setAlert(h, byPrice ? { targetPrice: Number(fd.targetPrice) > 0 ? this.#fx.toMinor(Number(fd.targetPrice), h.currency) : null } : { gainPct: Number(fd.gainPct) || null });
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      const st = this.#holdings.stats(h);
+      this.#toast.show(st.alertNew ? `${h.name} is up ${st.gainPct}% \u2014 your alert is reached` : "Price saved");
+      this.#sync.schedulePush?.();
+    }
+    ackInvestmentAlert(id) {
+      const h = this.#holdings.find(id);
+      if (!h) return;
+      this.#holdings.ackAlert(h);
+      this.#store.persist();
+      this.#render();
+      this.#sync.schedulePush?.();
+    }
+    /** Remove a holding: archived if it has buys or sales (their entries stay), else deleted. */
+    removeInvestment(id) {
+      const state = this.#store.getState();
+      const h = this.#holdings.find(id);
+      if (!h) return;
+      const used = this.#holdings.entries(id).length > 0;
+      if (!confirm(used ? `Hide ${h.name}? Its buy and sell entries stay in your accounts.` : `Remove ${h.name}?`)) return;
+      if (used) h.archived = true;
+      else state.holdings = (state.holdings || []).filter((x) => x.id !== id);
+      this.#store.persist();
+      this.closeModal();
+      this.#render();
+      this.#sync.schedulePush?.();
     }
     /** Accounts → Reorder / Done. */
     toggleAccountReorder() {
@@ -25047,6 +25854,9 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
           break;
         case "debts":
           view = new DebtsView();
+          break;
+        case "investments":
+          view = new InvestmentsView();
           break;
         case "calendar":
           view = new CalendarView();

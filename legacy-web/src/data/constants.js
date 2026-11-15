@@ -142,6 +142,7 @@ export const NAV_ITEMS = Object.freeze([
   { id: 'accounts',     label: 'Accounts',          icon: 'wallet'            },
   { id: 'budgets',      label: 'Budgets',           icon: 'target'            },
   { id: 'debts',        label: 'Debts',             icon: 'hand-coins'        },
+  { id: 'investments',  label: 'Investments',       icon: 'gem'               },
   { id: 'calendar',     label: 'Regulars',          icon: 'repeat'            },
   { id: 'categories',   label: 'Categories',        icon: 'tags'              },
   { id: 'reports',      label: 'Reports',           icon: 'pie-chart'         },

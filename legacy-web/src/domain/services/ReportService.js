@@ -121,7 +121,11 @@ export class ReportService {
    * starting balances, then walk forward emitting a point per unique date.
    * @returns {{ date: string, netWorth: number }[]}
    */
-  netWorthSeries() {
+  /**
+   * @param {{todayAdjust?: number}} [opts]  todayAdjust (home minor) is added to
+   *   today's point: holdings valued at the latest price instead of their cost.
+   */
+  netWorthSeries({ todayAdjust = 0 } = {}) {
     const state = this.#store.getState();
     const home  = state.user.homeCurrency;
     // Accounts set to "Leave out of totals" stay out of net worth too.
@@ -136,7 +140,7 @@ export class ReportService {
     );
 
     if (!state.transactions.length) {
-      return [{ date: DateService.todayIso(), netWorth: Math.round(openingTotal) }];
+      return [{ date: DateService.todayIso(), netWorth: Math.round(openingTotal + todayAdjust) }];
     }
 
     const txsAsc = state.transactions
@@ -179,6 +183,7 @@ export class ReportService {
     if (!series.length || series[series.length - 1].date !== today) {
       series.push({ date: today, netWorth: Math.round(running) });
     }
+    if (todayAdjust) series[series.length - 1].netWorth += Math.round(todayAdjust);
 
     return series;
   }

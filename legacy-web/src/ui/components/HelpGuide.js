@@ -31,6 +31,17 @@ export class HelpGuide {
         'You can share an account with family so they can add entries to it.',
       ],
     },
+    investments: {
+      title: 'Investments',
+      intro: 'The gold and silver you own: grams, what you paid, and what it’s worth today.',
+      points: [
+        '<b>Add</b> it: pick gold or silver and the purity. Choose <b>I already own it</b> (grams and what you paid) or <b>Buying now</b> (grams, price per gram, and the account you paid from).',
+        '<b>Buy</b> and <b>Sell</b> move money between that account and your Investments account, with the grams on the same entry. Spending and budgets aren’t affected.',
+        'Tap <b>Price</b> to enter today’s price per gram. Worth = grams × price, and your total balance and net worth use it.',
+        'Set an alert, like <b>20%</b> gain or a price per gram. When the price reaches it you’ll see it here and on the Dashboard.',
+        'Each card shows your <b>average cost</b> per gram and the gain. Open <b>History</b> to see or delete a buy or sale.',
+      ],
+    },
     calendar: {
       title: 'Regulars',
       intro: 'Everything that repeats, in one place.',

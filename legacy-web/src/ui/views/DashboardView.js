@@ -32,8 +32,9 @@ export class DashboardView extends BaseView {
     const expense    = monthTx.filter((t) => t.type === 'expense')
       .reduce((s, t) => s + this.convert(t.amount, t.currency, home), 0);
     const counted    = state.accounts.filter((a) => AccountService.inTotals(a));
+    // Investment accounts count at today's value (holdings at the latest price).
     const total      = counted
-      .reduce((s, a) => s + this.convert(a.balance, a.currency, home), 0);
+      .reduce((s, a) => s + this.convert(window.__app?.accountWorth?.(a) ?? a.balance, a.currency, home), 0);
     const recent     = [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
 
     const todayIso    = DateService.todayIso();
@@ -53,6 +54,7 @@ export class DashboardView extends BaseView {
       </div>
 
       ${state.user.showHijri ? this.#hijriCard(todayH, todayMiq) : ''}
+      ${this.#investmentAlerts()}
       ${this.#lowBalanceCard()}
       ${this.#billsCard(todayIso)}
 
@@ -185,6 +187,22 @@ export class DashboardView extends BaseView {
    * Bills waiting to be paid (overdue, today, the next 7 days) and what's owed
    * to vendors for pay-later items — only when there is something.
    */
+  /** Gold or silver that has reached its gain alert. */
+  #investmentAlerts() {
+    if (this.inGuestSpace) return '';
+    const hits = window.__app?.holdings?.alerts?.() ?? [];
+    if (!hits.length) return '';
+    return `
+      <div class="card p-4 mb-4 inv-dash-alert" style="border-color:#34d399">
+        <h3 class="font-semibold flex items-center gap-2 mb-1 text-emerald-600"><i data-lucide="trending-up" style="width:16px;height:16px"></i> Investment alert</h3>
+        ${hits.map(({ h, st }) => `
+          <div class="flex items-center gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-0">
+            <button class="flex-1 text-left text-sm" onclick="window.__app.navigate('investments')"><b>${this.escapeHtml(h.name)}</b> is up ${st.gainPct}% · worth ${this.formatMoney(st.worth, h.currency)}</button>
+            <button class="btn btn-ghost btn-sm" onclick="window.__app.ackInvestmentAlert('${this.escapeHtml(h.id)}')">Got it</button>
+          </div>`).join('')}
+      </div>`;
+  }
+
   /** Accounts that have dropped below the floor their owner set. */
   #lowBalanceCard() {
     if (this.inGuestSpace) return '';

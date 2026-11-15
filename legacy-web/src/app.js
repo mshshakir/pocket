@@ -72,6 +72,11 @@ import { BudgetDetailView }  from './ui/views/BudgetDetailView.js';
 import { CategoriesView }    from './ui/views/CategoriesView.js';
 import { ReportsView }       from './ui/views/ReportsView.js';
 import { DebtsView }         from './ui/views/DebtsView.js';
+import { InvestmentsView }   from './ui/views/InvestmentsView.js';
+import { InvestmentModal }   from './ui/modals/InvestmentModal.js';
+import { TradeModal }        from './ui/modals/TradeModal.js';
+import { HoldingPriceModal } from './ui/modals/HoldingPriceModal.js';
+import { HoldingService }    from './domain/services/HoldingService.js';
 import { CalendarView }      from './ui/views/CalendarView.js';
 import { FamilyView }        from './ui/views/FamilyView.js';
 
@@ -151,6 +156,7 @@ export class Application {
   /** @type {CategoryMergeModal}   */ #categoryMergeModal;
   /** @type {OwedService}          */ #owed;
   /** @type {SettingsModal}        */ #settingsModal;
+  /** @type {HoldingService}       */ #holdings;
   /** @type {HabitService}         */ #habits;
   /** @type {SyncService}          */ #sync;
   /** @type {ThemeService}         */ #themeService;
@@ -237,6 +243,7 @@ export class Application {
     this.#habits      = new HabitService({ convert: (m, f, t) => this.#fx.convert(m, f, t) });
     this.#regularLogs = new RegularLogService({ store: this.#store });
     this.#vendorDues  = new VendorDues({ store: this.#store, regularLogs: this.#regularLogs });
+    this.#holdings    = new HoldingService({ state: () => this.#store.getState(), fx: this.#fx });
     this.#owed        = new OwedService({ store: this.#store, fx: this.#fx, bills: () => this.#bills, vendorDues: () => this.#vendorDues, accounts: () => this.#accounts });
     this.#sync        = new SyncService();
     this.#themeService       = new ThemeService(this.#store);
@@ -382,6 +389,9 @@ export class Application {
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
     this.#modal.register('help',         new HelpModal());
+    this.#modal.register('investment',   new InvestmentModal());
+    this.#modal.register('trade',        new TradeModal({ holdings: () => this.#holdings }));
+    this.#modal.register('holdingPrice', new HoldingPriceModal({ holdings: () => this.#holdings }));
     this.#modal.register('feedback',     new FeedbackModal({ signedIn: () => !!this.#sync.currentUser }));
     // Drag-to-reorder lists (Accounts → Reorder); one listener for every render.
     new SortableList({ onDrop: (key, ids) => this.#onSortDrop(key, ids) });
@@ -504,6 +514,7 @@ export class Application {
       { id: 'accounts',   label: 'Accounts',          icon: 'wallet'         },
       { id: 'budgets',    label: 'Budgets',            icon: 'target'         },
       { id: 'debts',      label: 'Debts',              icon: 'hand-coins'     },
+      { id: 'investments',label: 'Investments',        icon: 'gem'            },
       { id: 'categories', label: 'Categories',         icon: 'tags'           },
       { id: 'reports',    label: 'Reports',            icon: 'pie-chart'      },
       { id: 'family',     label: 'Family',             icon: 'users'          },
@@ -561,7 +572,7 @@ export class Application {
    * payload and an authorisation branch per kind — that is phase 2.
    */
   static #HOME_ONLY_MODALS = new Set([
-    'account', 'budget', 'category', 'categoryMerge', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
+    'account', 'budget', 'category', 'categoryMerge', 'investment', 'trade', 'holdingPrice', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'payBill', 'addRegular', 'habit',
     'csv', 'reconcile', 'family', 'currencySetup',
   ]);
 
@@ -630,6 +641,7 @@ export class Application {
   /** Recurring bills that wait to be paid (amount changes). */
   get bills() { return this.#bills; }
   get owed()  { return this.#owed; }
+  get holdings() { return this.#holdings; }
   /** Habits followed in Reports. */
   get habits() { return this.#habits; }
   /** The signed-in email, for "who gets the Telegram message". */
@@ -2555,6 +2567,178 @@ export class Application {
       statementDay: day(data.statementDay),
       dueDay:       day(data.dueDay),
     };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Investments (gold and silver) — see HoldingService
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * What an account is worth today: its balance, plus — for an investment
+   * account — its holdings at the latest price instead of what was paid.
+   * @param {object} account
+   * @returns {number} minor units of the account's currency
+   */
+  accountWorth(account) {
+    const base = Math.round(account?.balance ?? 0);
+    return account?.type === 'invest' ? base + this.#holdings.adjustmentFor(account.id) : base;
+  }
+
+  /**
+   * What holdings add to net worth at today's prices, in the home currency:
+   * Σ over investment accounts that count in totals of (worth − balance).
+   */
+  holdingsAdjustmentHome() {
+    const state = this.#store.getState();
+    const home = state.user.homeCurrency;
+    return state.accounts.filter((a) => a.type === 'invest' && AccountService.inTotals(a))
+      .reduce((s, a) => s + this.#fx.convert(this.#holdings.adjustmentFor(a.id), a.currency, home), 0);
+  }
+
+  /** Add-investment form: the metal changed → offer its purities. */
+  onHoldingKindChange(radio) {
+    const sel = radio.form?.querySelector('select[name="purity"]');
+    if (sel) sel.innerHTML = InvestmentModal.purityOptions(radio.value);
+  }
+
+  /** Add-investment form: "I already own it" / "Buying now". */
+  onHoldingHowChange(radio) {
+    const form = radio.form;
+    for (const el of form.querySelectorAll('[data-how]')) el.style.display = el.dataset.how === radio.value ? '' : 'none';
+    for (const el of form.querySelectorAll('[data-how-label]')) el.style.display = el.dataset.howLabel === radio.value ? '' : 'none';
+  }
+
+  /** Buy/Sell form: "10 g × ₹7,200 = ₹72,000". */
+  updateTradeTotal(form) {
+    const out = form?.querySelector('.trade-total');
+    if (!out) return;
+    const g = Number(form.querySelector('[name="grams"]').value), p = Number(form.querySelector('[name="price"]').value);
+    const cur = out.dataset.currency;
+    out.textContent = g > 0 && p > 0 ? `${g} g × ${this.#fx.formatMoney(this.#fx.toMinor(p, cur), cur)} = ${this.#fx.formatMoney(this.#fx.toMinor(g * p, cur), cur)}` : '';
+  }
+
+  /** The investment account a new holding goes in, made if needed. */
+  #investAccount(chosen) {
+    const state = this.#store.getState();
+    const found = state.accounts.find((a) => a.id === chosen && a.type === 'invest');
+    if (found) return found;
+    const existing = state.accounts.filter((a) => a.type === 'invest' && !a.archived);
+    const name = existing.some((a) => a.name === 'Investments') ? `Investments ${existing.length + 1}` : 'Investments';
+    return this.#accounts.create({ name, type: 'invest', currency: state.user.homeCurrency || 'INR', color: '#d97706', icon: AccountService.typeIcon('invest') });
+  }
+
+  submitInvestment(event, id) {
+    event.preventDefault();
+    const fd = Object.fromEntries(new FormData(event.target).entries());
+    const state = this.#store.getState();
+    if (id) {
+      const h = this.#holdings.find(id);
+      if (!h) return;
+      h.name = String(fd.name || '').trim() || h.name;
+      if (fd.purity) h.purity = fd.purity;
+      const q = Number(fd.openingQty), c = Number(fd.openingCost);
+      h.openingQty = q > 0 ? Math.round(q * 1000) / 1000 : 0;
+      h.openingCost = c > 0 ? this.#fx.toMinor(c, h.currency) : 0;
+      this.#store.persist(); this.closeModal(); this.#render();
+      this.#toast.show('Saved');
+      return this.#sync.schedulePush?.();
+    }
+    const grams = Number(fd.grams);
+    if (!(grams > 0)) return this.#toast.show('Enter the grams');
+    const how = fd.how === 'buy' ? 'buy' : 'own';
+    if (how === 'buy' && !(Number(fd.price) > 0)) return this.#toast.show('Enter the price per gram');
+    if (how === 'buy' && !state.accounts.some((a) => a.id === fd.payFrom)) return this.#toast.show('Pick the account you paid from');
+    const acc = this.#investAccount(fd.accountId);
+    const cur = acc.currency;
+    const price = Number(fd.price) > 0 ? this.#fx.toMinor(Number(fd.price), cur) : 0;
+    const paid  = Number(fd.paid) > 0 ? this.#fx.toMinor(Number(fd.paid), cur) : Math.round(grams * price);
+    const date  = how === 'buy' ? (fd.date || DateService.todayIso()) : DateService.todayIso();
+    const h = this.#holdings.create({
+      accountId: acc.id, kind: fd.kind, purity: fd.purity, name: fd.name, currency: cur,
+      openingQty: how === 'own' ? grams : 0, openingCost: how === 'own' ? paid : 0,
+      price: price || (how === 'own' && paid ? Math.round(paid / grams) : 0), date, gainPct: Number(fd.gainPct) || 0,
+    }, IdGenerator.generate('hld'));
+    if (how === 'buy') this.#recordTrade(h, 'buy', { grams, price, other: fd.payFrom, date });
+    this.#store.persist(); this.closeModal(); this.#render();
+    this.#toast.show(`${h.name} added`);
+    this.#sync.schedulePush?.();
+  }
+
+  submitTrade(event, id, mode) {
+    event.preventDefault();
+    const fd = Object.fromEntries(new FormData(event.target).entries());
+    const h = this.#holdings.find(id);
+    if (!h) return;
+    const grams = Number(fd.grams), priceMajor = Number(fd.price);
+    if (!(grams > 0) || !(priceMajor > 0)) return this.#toast.show('Enter grams and price per gram');
+    if (mode === 'sell' && grams > this.#holdings.stats(h).qty + 1e-9) return this.#toast.show('That’s more than you hold');
+    if (!this.#store.getState().accounts.some((a) => a.id === fd.other)) return this.#toast.show('Pick an account');
+    const price = this.#fx.toMinor(priceMajor, h.currency);
+    const date = fd.date || DateService.todayIso();
+    this.#recordTrade(h, mode === 'sell' ? 'sell' : 'buy', { grams, price, other: fd.other, date });
+    if (fd.setPrice) this.#holdings.setPrice(h, date, price);
+    this.#store.persist(); this.closeModal(); this.#render();
+    this.#toast.show(`${mode === 'sell' ? 'Sold' : 'Bought'} ${grams} g of ${h.name}`);
+    this.#sync.schedulePush?.();
+  }
+
+  /**
+   * A buy or sale as a transfer between `other` and the holding's account; the
+   * investment-account leg carries holdingId · qty · unitPrice.
+   */
+  #recordTrade(h, mode, { grams, price, other, date }) {
+    const state = this.#store.getState();
+    const minor = Math.round(grams * price);
+    const home = state.user.homeCurrency;
+    const sell = mode === 'sell';
+    const data = {
+      accountId: sell ? h.accountId : other, transferToAccountId: sell ? other : h.accountId,
+      payee: `${sell ? 'Sell' : 'Buy'} ${h.name}`, note: `${grams} g @ ${this.#fx.formatMoney(price, h.currency)}/g`, date,
+    };
+    const legs = this.#buildTransferPair(data, {
+      minor, currency: h.currency, exchRate: (RATES[h.currency] || 1) / (RATES[home] || 1),
+      refAmt: this.#fx.convert(minor, h.currency, home), xfer: null, state,
+    });
+    const leg = legs.find((t) => t.accountId === h.accountId);
+    Object.assign(leg, { holdingId: h.id, qty: sell ? -grams : grams, unitPrice: price });
+    state.transactions.push(...legs);
+  }
+
+  submitHoldingPrice(event, id) {
+    event.preventDefault();
+    const fd = Object.fromEntries(new FormData(event.target).entries());
+    const h = this.#holdings.find(id);
+    if (!h) return;
+    if (Number(fd.price) > 0) this.#holdings.setPrice(h, fd.date || DateService.todayIso(), this.#fx.toMinor(Number(fd.price), h.currency));
+    const byPrice = fd.alertBy === 'price';
+    this.#holdings.setAlert(h, byPrice
+      ? { targetPrice: Number(fd.targetPrice) > 0 ? this.#fx.toMinor(Number(fd.targetPrice), h.currency) : null }
+      : { gainPct: Number(fd.gainPct) || null });
+    this.#store.persist(); this.closeModal(); this.#render();
+    const st = this.#holdings.stats(h);
+    this.#toast.show(st.alertNew ? `${h.name} is up ${st.gainPct}% — your alert is reached` : 'Price saved');
+    this.#sync.schedulePush?.();
+  }
+
+  ackInvestmentAlert(id) {
+    const h = this.#holdings.find(id);
+    if (!h) return;
+    this.#holdings.ackAlert(h);
+    this.#store.persist(); this.#render();
+    this.#sync.schedulePush?.();
+  }
+
+  /** Remove a holding: archived if it has buys or sales (their entries stay), else deleted. */
+  removeInvestment(id) {
+    const state = this.#store.getState();
+    const h = this.#holdings.find(id);
+    if (!h) return;
+    const used = this.#holdings.entries(id).length > 0;
+    if (!confirm(used ? `Hide ${h.name}? Its buy and sell entries stay in your accounts.` : `Remove ${h.name}?`)) return;
+    if (used) h.archived = true;
+    else state.holdings = (state.holdings || []).filter((x) => x.id !== id);
+    this.#store.persist(); this.closeModal(); this.#render();
+    this.#sync.schedulePush?.();
   }
 
   /** Accounts → Reorder / Done. */
@@ -4914,6 +5098,7 @@ export class Application {
       case 'categories':   view = new CategoriesView();   break;
       case 'reports':      view = new ReportsView();      break;
       case 'debts':        view = new DebtsView();        break;
+      case 'investments':  view = new InvestmentsView();  break;
       case 'calendar':     view = new CalendarView();     break;
       case 'family':       view = new FamilyView();       break;
       default:             view = { render: () => `<div class="p-6 text-zinc-400">View not found: ${id}</div>` };
