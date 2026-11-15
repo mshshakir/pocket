@@ -747,8 +747,9 @@
         </div>
         <div class="mt-2 text-base font-semibold text-amber-700">Pay ₹5,000 once. Pocket far more, year after year.</div>
         <div class="text-xs text-zinc-500 mt-1">Batches of 10 people. When a batch is full, you join the waitlist for the next one.</div>
+        <div id="programmeBatch" class="mt-3 text-sm font-medium" hidden></div>
         <a href="programme.html" class="mt-6 inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-zinc-900 text-white hover:bg-zinc-700 transition">
-          <i data-lucide="sprout"></i> Apply or join the waitlist
+          <i data-lucide="sprout"></i> <span id="programmeCta">Apply or join the waitlist</span>
         </a>
       </div>
       <ul class="md:flex-1 mt-8 md:mt-0 space-y-3 text-sm">
@@ -895,7 +896,18 @@
 </script>
 <script type="module">
   import { PricingToggle } from './src/web/PricingToggle.js';
+  import { ProgrammeBatches } from './src/web/ProgrammeBatches.js';
   new PricingToggle(document.getElementById('pricing')).start();
+  // Habit programme: where the batches stand (dates set in the admin dashboard).
+  ProgrammeBatches.load().then((b) => {
+    const m = b.message();
+    if (m.state === 'none') return;
+    const line = document.getElementById('programmeBatch');
+    line.textContent = `${m.title} · ${m.detail}`;
+    line.style.color = m.state === 'open' ? '#047857' : '#b45309';
+    line.hidden = false;
+    document.getElementById('programmeCta').textContent = m.action;
+  }).catch(() => {});
 </script>
 </body>
 </html>

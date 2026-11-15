@@ -14,6 +14,7 @@
 import { Html } from '../core/Html.js';
 import { PaymentService } from '../domain/billing/PaymentService.js';
 import { RazorpayCheckout } from '../domain/billing/RazorpayCheckout.js';
+import { ProgrammeBatches } from './ProgrammeBatches.js';
 
 export class ProgrammePage {
   static #FIELDS = ['fullName', 'whatsapp', 'telegram', 'household', 'currentMethod', 'goal', 'baselineDays', 'language', 'preferredTime'];
@@ -26,13 +27,16 @@ export class ProgrammePage {
   #editing = false;
   #busy = false;
   #message = '';
+  /** @type {ProgrammeBatches|null} */ #batches = null;
+  #loadBatches;
 
   /**
    * @param {import('./PocketSession.js').PocketSession} session
    * @param {HTMLElement} root
    * @param {{open: Function}} [checkout]
    */
-  constructor(session, root, checkout = new RazorpayCheckout()) {
+  constructor(session, root, checkout = new RazorpayCheckout(), loadBatches = () => ProgrammeBatches.load()) {
+    this.#loadBatches = loadBatches;
     this.#session = session;
     this.#root = root;
     this.#payments = new PaymentService(() => (this.#user ? session.invoker() : null), checkout);
@@ -41,6 +45,8 @@ export class ProgrammePage {
   }
 
   async start() {
+    // The batch banner doesn't need a sign-in; a failure just leaves it out.
+    this.#batches = await Promise.resolve().then(this.#loadBatches).catch(() => null);
     this.#session.onChange((user) => { if ((user?.id ?? null) !== (this.#user?.id ?? null)) this.#load(user); });
     await this.#load(await this.#session.user());
   }
@@ -114,14 +120,30 @@ export class ProgrammePage {
     const body = !this.#user ? this.#signedOut()
       : !this.#app || this.#app.status === 'withdrawn' || this.#editing ? this.#form()
       : this.#status();
-    this.#root.innerHTML = `${this.#message ? `<div class="mb-4 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm">${Html.escape(this.#message)}</div>` : ''}${body}`;
+    this.#root.innerHTML = `${this.#banner()}${this.#message ? `<div class="mb-4 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm">${Html.escape(this.#message)}</div>` : ''}${body}`;
     globalThis.lucide?.createIcons?.();
   }
 
+  /** Where the batches stand: open with places left, full, opening soon … (set in the admin dashboard). */
+  #banner() {
+    if (!this.#batches) return '';
+    const m = this.#batches.message();
+    const tone = m.state === 'open' ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+      : m.state === 'upcoming' ? 'border-sky-200 bg-sky-50 text-sky-900'
+      : 'border-amber-200 bg-amber-50 text-amber-900';
+    const icon = m.state === 'open' ? 'door-open' : m.state === 'upcoming' ? 'calendar-clock' : 'hourglass';
+    return `
+      <div class="programme-batch mb-4 rounded-xl border ${tone} px-4 py-3 flex items-start gap-3" data-state="${m.state}">
+        <i data-lucide="${icon}" class="mt-0.5 shrink-0"></i>
+        <div><div class="font-semibold">${Html.escape(m.title)}</div><div class="text-sm">${Html.escape(m.detail)}</div></div>
+      </div>`;
+  }
+
   #signedOut() {
+    const action = this.#batches?.message().action ?? 'Apply';
     return `
       <div class="card p-6 text-center">
-        <p class="text-zinc-600">Sign in with the Google account you use for Pocket (or will use) to apply.</p>
+        <p class="text-zinc-600">Sign in with the Google account you use for Pocket (or will use) to ${action === 'Apply now' ? 'apply' : 'join the waitlist'}.</p>
         <button data-action="sign-in" class="mt-4 btn-main" ${this.#busy ? 'disabled' : ''}><i data-lucide="log-in"></i> Sign in with Google</button>
       </div>`;
   }
@@ -149,10 +171,12 @@ export class ProgrammePage {
           <span>I agree to the programme terms: ₹5,000 for 6 weeks, <b>not refundable once my place is confirmed</b>. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
         </label>
         <div class="flex flex-wrap gap-3">
-          <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : 'Apply'}</button>
+          <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : (this.#batches?.open ? 'Apply now' : this.#batches ? 'Join the waitlist' : 'Apply')}</button>
           ${this.#editing ? '<button type="button" data-action="cancel-edit" class="btn-soft">Cancel</button>' : ''}
         </div>
-        ${this.#editing ? '' : '<p class="text-xs text-zinc-500">There is no payment now. If a batch has room, we offer you a place; otherwise you join the waitlist. You pay only when you accept a place.</p>'}
+        ${this.#editing ? '' : `<p class="text-xs text-zinc-500">There is no payment now. ${this.#batches?.open
+          ? `We'll offer you a place in ${Html.escape(this.#batches.headline.name)} on WhatsApp; you pay only when you accept it.`
+          : 'If a batch has room, we offer you a place; otherwise you join the waitlist. You pay only when you accept a place.'}</p>`}
       </form>`;
   }
 

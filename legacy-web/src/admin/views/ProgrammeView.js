@@ -103,26 +103,36 @@ export class ProgrammeView extends AdminView {
 
   #batches() {
     const statuses = ['planned', 'open', 'running', 'done'];
-    const rows = this.#data.batches.map((b) => `
+    const rows = this.#data.batches.map((b) => {
+      const taken = (b.confirmed || 0) + (b.offered || 0);
+      const state = ProgrammeView.publicState(b, taken);
+      return `
       <form data-form="batch" data-id="${b.id}" class="batch-row">
         <label>Name<input name="name" class="input" value="${Format.esc(b.name)}"></label>
+        <label>Applications open<input name="opens_on" type="date" class="input" value="${b.opens_on ?? ''}"></label>
+        <label>Applications close<input name="closes_on" type="date" class="input" value="${b.closes_on ?? ''}"></label>
         <label>Starts<input name="starts_on" type="date" class="input" value="${b.starts_on ?? ''}"></label>
         <label>Places<input name="capacity" type="number" min="1" class="input" value="${b.capacity}"></label>
         <label>Price ₹<input name="price" class="input" value="${Format.rupees(b.price_paise)}"></label>
         <label>Status<select name="status" class="input">${statuses.map((s) => `<option ${b.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
-        <span class="muted small">${b.confirmed} confirmed · ${b.offered} offered</span>
+        <span class="muted small">${b.confirmed} confirmed · ${b.offered} offered · <b class="batch-public">Website: ${ProgrammeView.#STATE_WORD[state]}</b></span>
         <button class="btn btn-sm">Save</button>
+        <button type="button" data-action="batch-close" data-id="${b.id}" data-closed="${b.closed_now ? '1' : ''}" class="btn btn-soft btn-sm">${b.closed_now ? 'Reopen applications' : 'Close now'}</button>
         <button type="button" data-action="open-tracker" data-id="${b.id}" class="btn btn-soft btn-sm">Tracker</button>
-      </form>`).join('');
+      </form>`;
+    }).join('');
     return `
       <div class="panel">
         <h3>Batches</h3>
+        <p class="muted small">The programme page and the homepage follow these dates: before “Applications open” they say when it opens and invite people to the waitlist; between open and close they say the batch is open with the places left; when it's full, closed (or Close now) they invite people to the waitlist for the next one. Places left counts confirmed and offered places.</p>
         ${rows || '<p class="muted">No batches yet.</p>'}
       </div>
       <div class="panel">
         <h3>New batch</h3>
         <form data-form="batch" class="batch-row">
           <label>Name<input name="name" class="input" required placeholder="e.g. Batch 1 · January"></label>
+          <label>Applications open<input name="opens_on" type="date" class="input"></label>
+          <label>Applications close<input name="closes_on" type="date" class="input"></label>
           <label>Starts<input name="starts_on" type="date" class="input"></label>
           <label>Places<input name="capacity" type="number" min="1" class="input" value="10"></label>
           <label>Price ₹<input name="price" class="input" value="5000"></label>
@@ -130,6 +140,28 @@ export class ProgrammeView extends AdminView {
           <button class="btn btn-sm">Create batch</button>
         </form>
       </div>`;
+  }
+
+  static #STATE_WORD = Object.freeze({
+    upcoming: 'opening soon (waitlist)', open: 'open — taking applications', full: 'full (waitlist)',
+    closed: 'closed (waitlist)', running: 'running', done: 'finished (not shown)',
+  });
+
+  /** What the website shows for a batch today — the same rules as pocket_programme_state (0041). */
+  static publicState(b, taken, today = ProgrammeView.#today()) {
+    const add = (iso, n) => { const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+    if (b.status === 'done') return 'done';
+    if (b.starts_on && today >= add(b.starts_on, 42)) return 'done';
+    if (b.starts_on && today >= b.starts_on) return 'running';
+    if (!b.opens_on || today < b.opens_on) return 'upcoming';
+    const close = b.closes_on || (b.starts_on ? add(b.starts_on, -1) : '9999-12-31');
+    if (b.closed_now || today > close) return 'closed';
+    if (taken >= b.capacity) return 'full';
+    return 'open';
+  }
+
+  static #today() {
+    return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10); // India date
   }
 
   // ── tracker ─────────────────────────────────────────────────────────
@@ -236,8 +268,16 @@ export class ProgrammeView extends AdminView {
           id: id ?? '', name: AdminView.text(form, 'name'), starts_on: AdminView.text(form, 'starts_on'),
           capacity: AdminView.text(form, 'capacity'), price_paise: Format.paise(AdminView.text(form, 'price')),
           status: AdminView.text(form, 'status'),
+          opens_on: AdminView.text(form, 'opens_on'), closes_on: AdminView.text(form, 'closes_on'),
         });
         this.host.toast(id ? 'Batch saved' : 'Batch created');
+        return true;
+      }
+      case 'batch-close': {
+        const closing = !el.dataset.closed;
+        if (closing && !confirm('Close applications for this batch now? The website will invite people to the waitlist instead.')) return false;
+        this.#data = await this.api.saveBatch({ id, closed_now: closing });
+        this.host.toast(closing ? 'Applications closed' : 'Applications reopened');
         return true;
       }
       case 'open-tracker':
