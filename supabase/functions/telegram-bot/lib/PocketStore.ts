@@ -23,6 +23,7 @@ export interface TelegramLink {
   email: string;                   // their sign-in email, lower-case
   default_owner_id: string | null; // book of the default account
   default_account_id: string | null;
+  created_at?: string;             // when this chat was (last) connected
 }
 
 /** A /link in progress: the code was emailed, the chat hasn't sent it yet. */
@@ -144,9 +145,27 @@ export class PocketStore {
 
   // ── Links ────────────────────────────────────────────────────────────────
 
+  /**
+   * Marks a Telegram update as handled. False when it was already seen (a re-send).
+   * Now and then clears ids older than three days; Telegram never re-sends those.
+   */
+  async claimUpdate(updateId: number): Promise<boolean> {
+    const { error } = await this.#sb.from('telegram_updates').insert({ update_id: updateId });
+    if (error?.code === '23505') return false;
+    if (error) {
+      console.error('[telegram-bot] claimUpdate', error); // never block a message on this
+      return true;
+    }
+    if (Math.random() < 0.02) {
+      const before = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      await this.#sb.from('telegram_updates').delete().lt('seen_at', before);
+    }
+    return true;
+  }
+
   async findLink(chatId: number): Promise<TelegramLink | null> {
     const { data, error } = await this.#sb
-      .from('telegram_links').select('chat_id, user_id, email, default_owner_id, default_account_id')
+      .from('telegram_links').select('chat_id, user_id, email, default_owner_id, default_account_id, created_at')
       .eq('chat_id', chatId).maybeSingle();
     if (error) throw error;
     return data;
@@ -157,7 +176,7 @@ export class PocketStore {
     await this.clearPending(chatId);
     const { error } = await this.#sb.from('telegram_links').upsert({
       chat_id: chatId, user_id: userId, email: email.toLowerCase().trim(),
-      default_owner_id: userId, default_account_id: null,
+      default_owner_id: userId, default_account_id: null, created_at: new Date().toISOString(),
     });
     if (error) throw error;
   }

@@ -38,6 +38,15 @@ export class LinkService {
     return LinkService.#CODE.test(text.trim());
   }
 
+  /**
+   * A bare code sent within an hour of connecting is the sign-in code again
+   * (typed twice, or re-sent by Telegram), not an amount to record.
+   */
+  static isRecentCode(text: string, link: { created_at?: string }, now = Date.now()): boolean {
+    if (!LinkService.isCode(text) || !link.created_at) return false;
+    return now - Date.parse(link.created_at) < LinkService.#CODE_TTL_MS;
+  }
+
   /** /link <email>: email a sign-in code to that address. */
   async start(chatId: number, rawEmail: string): Promise<void> {
     const email = rawEmail.trim().toLowerCase();

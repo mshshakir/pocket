@@ -40,14 +40,21 @@ class SecretReader {
   }
 }
 
+/** Keeps work running after the response is sent (Supabase Edge Runtime), or awaits it elsewhere. */
+type Background = (work: Promise<unknown>) => Promise<void>;
+
 class WebhookServer {
   readonly #secret: string;
   readonly #controller: BotController;
+  readonly #store: PocketStore;
+  readonly #background: Background;
 
-  constructor(secret: string, controller: BotController) {
+  constructor(secret: string, controller: BotController, store: PocketStore, background: Background) {
     if (!secret) throw new Error('TELEGRAM_WEBHOOK_SECRET is not set');
     this.#secret = secret;
     this.#controller = controller;
+    this.#store = store;
+    this.#background = background;
   }
 
   async handle(req: Request): Promise<Response> {
@@ -55,17 +62,35 @@ class WebhookServer {
     if (req.headers.get('x-telegram-bot-api-secret-token') !== this.#secret) {
       return new Response('forbidden', { status: 403 });
     }
+    let update: Record<string, unknown>;
     try {
-      const update = await req.json();
-      const message: TelegramMessage | undefined = update.message;
-      const callback: TelegramCallback | undefined = update.callback_query;
+      update = await req.json();
+    } catch {
+      return new Response('ok');
+    }
+    // Answer Telegram at once and do the work afterwards: a slow reply makes
+    // Telegram send the same update again, and each re-send was handled anew.
+    await this.#background(this.#process(update));
+    return new Response('ok');
+  }
+
+  async #process(update: Record<string, unknown>): Promise<void> {
+    try {
+      if (typeof update.update_id === 'number' && !(await this.#store.claimUpdate(update.update_id))) return;
+      const message = update.message as TelegramMessage | undefined;
+      const callback = update.callback_query as TelegramCallback | undefined;
       if (message?.chat?.id) await this.#controller.handleMessage(message);
       else if (callback?.id) await this.#controller.handleCallback(callback);
     } catch (err) {
       console.error('[telegram-bot] update failed', err);
     }
-    // Always 200 so Telegram doesn't retry; the per-message id dedups any retry anyway.
-    return new Response('ok');
+  }
+
+  /** EdgeRuntime.waitUntil when available (Supabase), otherwise just wait. */
+  static background(): Background {
+    const runtime = (globalThis as { EdgeRuntime?: { waitUntil(p: Promise<unknown>): void } }).EdgeRuntime;
+    if (runtime?.waitUntil) return (work) => { runtime.waitUntil(work); return Promise.resolve(); };
+    return async (work) => { await work; };
   }
 }
 
@@ -101,6 +126,8 @@ const server = new WebhookServer(
     new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
     new OwedBot(store, telegram, clock, rates),
   ),
+  store,
+  WebhookServer.background(),
 );
 
 Deno.serve((req) => server.handle(req));

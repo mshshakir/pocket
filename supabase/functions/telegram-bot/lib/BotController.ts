@@ -96,6 +96,12 @@ export class BotController {
           'Welcome to Pocket! To connect this chat to your Pocket account, send /link followed by the email you sign in with, e.g.\n/link name@gmail.com');
       }
       if (command.startsWith('/')) return void await this.#command(command, argument, link, chatId, message.message_id);
+      if (LinkService.isRecentCode(text, link)) {
+        await this.#dropPending(chatId);
+        return void await this.#telegram.reply(chatId,
+          `✅ This chat is already connected to ${link.email}. That code isn't needed again, and nothing was saved.\nTo record an amount this large, add a note, e.g. ${text} rent`,
+          message.message_id);
+      }
 
       const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
       if (notice) {
