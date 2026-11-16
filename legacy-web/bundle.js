@@ -25732,9 +25732,10 @@ ${body}\r
       }
     }
     /**
-     * Buying a plan without sharing while on one with it (e.g. Sync during the
-     * Full trial, or instead of Family): the people shared with lose the shared
-     * space at once, so ask first.
+     * Buying a plan without sharing (Sync) while sharing with family — during
+     * the Full trial, instead of Family, or after either has ended with family
+     * members still set up: they lose (or stay without) the shared space, in
+     * the app and on Telegram, so ask first.
      * @param {string} product
      * @returns {boolean} whether to go ahead
      */
@@ -25743,9 +25744,13 @@ ${body}\r
       const item = this.#paymentOffers?.products?.find((o) => o.product === product);
       const target = this.#planCatalogue?.find((p) => p.code === item?.plan);
       const current = this.#planCatalogue?.find((p) => p.code === plan?.plan);
-      if (!target || !current || plan.state !== "active" || !current.sharing || target.sharing) return true;
-      const trial = plan.term === "trial" ? " The rest of your trial is not carried over." : "";
-      return confirm(`${target.name} has no family sharing. If you buy it now, the people you share with lose access to your shared space today (their own books stay, and what they added stays in your book).${trial} Choose Family to keep sharing. Buy ${target.name} anyway?`);
+      if (!target || target.sharing) return true;
+      const shared = (this.#store.getState().family || []).filter((m) => m.email && (m.permissions || []).length).length;
+      const sharingNow = plan.state === "active" && !!current?.sharing;
+      if (!shared && !sharingNow) return true;
+      const trial = sharingNow && plan.term === "trial" ? " The rest of your trial is not carried over." : "";
+      const effect = sharingNow ? "the people you share with lose access to your shared space today" : "the people you shared with stay without access to your shared space, in the app and on Telegram";
+      return confirm(`${target.name} has no family sharing. If you buy it, ${effect} (their own books stay, and what they added stays in your book).${trial} Choose Family to keep sharing. Buy ${target.name} anyway?`);
     }
     /**
      * Moves to a cheaper plan for free; the time left becomes days on it.
