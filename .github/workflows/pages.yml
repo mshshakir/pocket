@@ -7,7 +7,7 @@
 # at the site root just works:
 #   /pocket/            → the marketing landing page (index.html)
 #   /pocket/app.html    → the app (hash-routed)
-#   /pocket/privacy.html
+#   /pocket/privacy.html  (and terms, refunds, shipping, contact)
 #
 # NOTE: the app's Google OAuth redirect is window.location.origin + pathname,
 # i.e. https://<user>.github.io/<repo>/app.html — add that (and the site root)

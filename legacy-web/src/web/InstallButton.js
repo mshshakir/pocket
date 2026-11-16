@@ -1,33 +1,33 @@
 /**
- * InstallButton — the homepage's "Install the app" button.
+ * InstallButton — the homepage's install buttons (the icon in the header and
+ * "Install the app" under the headline).
  *
- * When the browser has offered to install Pocket, a tap opens its install
- * window. Otherwise (iPhone, or a browser that makes no offer) a tap shows
- * the two steps to do it by hand. Hidden once Pocket is running as an
- * installed app.
+ * Shown only when Pocket can be installed and isn't yet: the browser has
+ * offered (it stops offering once the app is installed), or this is an
+ * iPhone / iPad. A tap opens the browser's install window; on iPhone it
+ * shows the two steps to do it by hand.
  */
 import { PwaService } from '../core/PwaService.js';
 
 export class InstallButton {
-  #button;
+  #buttons;
   #help;
   #pwa;
 
   /**
-   * @param {HTMLElement|null} button
+   * @param {Iterable<HTMLElement|null>} buttons
    * @param {HTMLElement|null} help   where the by-hand steps are shown
    * @param {PwaService} [pwa]
    */
-  constructor(button, help, pwa = null) {
-    this.#button = button;
+  constructor(buttons, help, pwa = null) {
+    this.#buttons = [...buttons].filter(Boolean);
     this.#help = help;
     this.#pwa = pwa || new PwaService({ win: window, onChange: () => this.#draw() });
   }
 
   start() {
     this.#pwa.start();
-    if (!this.#button) return this;
-    this.#button.addEventListener('click', () => this.#tap());
+    for (const b of this.#buttons) b.addEventListener('click', () => this.#tap());
     this.#draw();
     return this;
   }
@@ -42,8 +42,8 @@ export class InstallButton {
   }
 
   #draw() {
-    if (!this.#button) return;
-    this.#button.hidden = this.#pwa.installed;
-    if (this.#pwa.installed && this.#help) this.#help.hidden = true;
+    const show = this.#pwa.installable;
+    for (const b of this.#buttons) b.hidden = !show;
+    if (!show && this.#help) this.#help.hidden = true;
   }
 }

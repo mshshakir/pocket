@@ -63,6 +63,13 @@ export class PwaService {
     return this.#win.navigator?.standalone === true;
   }
 
+  /**
+   * Whether to show an Install button: not installed, and either the browser
+   * has offered (it stops offering once the app is installed) or this is an
+   * iPhone / iPad, where it is always done by hand.
+   */
+  get installable() { return !this.installed && (this.canInstall || this.isIos); }
+
   /** iPhone and iPad never offer to install; people add the app from the Share menu. */
   get isIos() {
     const nav = this.#win.navigator || {};

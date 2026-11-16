@@ -37,6 +37,7 @@
   .card-soft{background:#fff;border:1px solid #ececef;border-radius:20px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
   .ring-dot{box-shadow:0 0 0 4px #fff;}
   #programme ul svg{flex-shrink:0}
+  .install-btn[hidden]{display:none!important}
   .price-terms{display:inline-flex;padding:4px;border-radius:14px;background:#f4f4f5;gap:2px}
   .price-term{padding:.45rem 1rem;border-radius:10px;font-size:.85rem;font-weight:600;color:#71717a;display:inline-flex;align-items:center;gap:.4rem;transition:background .15s,color .15s}
   .price-term.on{background:#fff;color:#18181b;box-shadow:0 1px 3px rgba(0,0,0,.08)}
@@ -64,6 +65,11 @@
       <a href="#privacy" class="hidden xl:inline hover:text-zinc-900 transition">Privacy</a>
     </nav>
     <div class="flex items-center gap-2">
+      <!-- Shown only when Pocket can be installed and isn't yet (InstallButton) -->
+      <button type="button" id="installIcon" hidden title="Install the app" aria-label="Install the app"
+         class="install-btn inline-flex items-center justify-center w-10 h-10 rounded-xl text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition">
+        <i data-lucide="download"></i>
+      </button>
       <a href="app.html#signin"
          class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-zinc-700 hover:bg-zinc-100 transition whitespace-nowrap">
         <i data-lucide="log-in"></i> Sign in
@@ -103,8 +109,8 @@
          class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 transition shadow-sm">
         <i data-lucide="sparkles"></i> See it with sample data
       </a>
-      <button type="button" id="installBtn"
-         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 transition shadow-sm">
+      <button type="button" id="installBtn" hidden
+         class="install-btn inline-flex items-center gap-2 px-6 py-3 rounded-xl text-base font-semibold bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 transition shadow-sm">
         <i data-lucide="smartphone"></i> Install the app
       </button>
     </div>
@@ -885,10 +891,11 @@
       <a href="#telegram" class="hover:text-zinc-900">Telegram</a>
       <a href="#reports" class="hover:text-zinc-900">Reports</a>
       <a href="#investments" class="hover:text-zinc-900">Investments</a>
-      <a href="privacy.html" class="hover:text-zinc-900">Privacy</a>
-      <a href="terms.html" class="hover:text-zinc-900">Terms</a>
-      <a href="refunds.html" class="hover:text-zinc-900">Refunds</a>
-      <a href="contact.html" class="hover:text-zinc-900">Contact</a>
+      <a href="privacy.html" class="hover:text-zinc-900">Privacy Policy</a>
+      <a href="terms.html" class="hover:text-zinc-900">Terms &amp; Conditions</a>
+      <a href="refunds.html" class="hover:text-zinc-900">Cancellation &amp; Refunds</a>
+      <a href="shipping.html" class="hover:text-zinc-900">Shipping Policy</a>
+      <a href="contact.html" class="hover:text-zinc-900">Contact Us</a>
       <a href="https://github.com/mshshakir/pocket" target="_blank" rel="noopener" class="hover:text-zinc-900">Source code</a>
       <a href="app.html#signin" class="hover:text-zinc-900">Sign in</a>
       <a href="app.html" class="hover:text-zinc-900">Open app</a>
@@ -920,7 +927,7 @@
   import { ProgrammeBatches } from './src/web/ProgrammeBatches.js';
   import { InstallButton } from './src/web/InstallButton.js';
   // Install as an app (also sets up the offline copy of the app's files).
-  new InstallButton(document.getElementById('installBtn'), document.getElementById('installHelp')).start();
+  new InstallButton(document.querySelectorAll('.install-btn'), document.getElementById('installHelp')).start();
   new PricingToggle(document.getElementById('pricing')).start();
   // Habit programme: where the batches stand (dates set in the admin dashboard).
   ProgrammeBatches.load().then((b) => {

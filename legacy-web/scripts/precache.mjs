@@ -17,7 +17,7 @@ import { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export class PrecacheManifest {
-  static #PAGES = ['app.html', 'index.html', 'privacy.html', 'terms.html', 'refunds.html', 'contact.html', 'programme.html'];
+  static #PAGES = ['app.html', 'index.html', 'privacy.html', 'terms.html', 'refunds.html', 'shipping.html', 'contact.html', 'programme.html'];
   static #FOLDERS = ['src', 'vendor', 'img/icons'];
   static #SKIP = [/^src\/admin\//, /^src\/__smoke__\//, /\.(LICENSE|txt|md)$/i];
   static #EXTRA = ['manifest.webmanifest'];

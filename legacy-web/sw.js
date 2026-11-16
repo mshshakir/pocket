@@ -16,7 +16,9 @@
  * How a request is answered
  *   - A file with a deploy stamp (?v=…) never changes: copy first, else network.
  *   - Pages and unstamped files: network first (so a new release shows at
- *     once), falling back to the copy when offline or the network is too slow.
+ *     once), falling back to the copy when offline, when the network is too
+ *     slow, or when the site answers with an error (down, moved or closed) —
+ *     so an installed Pocket keeps opening whatever happens to the website.
  *   - CDN scripts and fonts: the copy at once, refreshed in the background.
  *
  * BUILD is stamped by the deploy; each release gets its own cache and the old
@@ -117,8 +119,9 @@ class OfflineFiles {
     const copy = () => this.#copyOf(cache, request);
     try {
       const res = await this.#withinTime(fetch(request), copy);
-      if (res.ok && res.type === 'basic') cache.put(request, res.clone());
-      return res;
+      if (res.ok && res.type === 'basic') { cache.put(request, res.clone()); return res; }
+      // The site answered, but with an error page: the saved copy is better.
+      return (res.ok ? null : await copy()) || res;
     } catch (_) {
       return (await copy()) || Response.error();
     }

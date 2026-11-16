@@ -29,6 +29,8 @@ console.log('\nInstall & offline suite');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
+const ios_ua = () => 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari';
+
 /** A window with just what PwaService touches. */
 class FakeWindow {
   listeners = {};
@@ -53,13 +55,14 @@ class FakeWindow {
   const pwa = new PwaService({ win, onChange: () => changes++ }).start();
   ok('P1 before the browser offers: cannot install, not installed, steps mention the browser menu', !pwa.canInstall && !pwa.installed && /Install app/.test(pwa.manualSteps));
   ok('P1 install() with no offer says unavailable', await pwa.install() === 'unavailable');
+  ok('P1 no offer yet (or already installed, when the browser stops offering): no Install button', !pwa.installable);
   let prevented = 0, prompted = 0;
   const offer = { preventDefault: () => prevented++, prompt: async () => { prompted++; }, userChoice: Promise.resolve({ outcome: 'accepted' }) };
   win.fire('beforeinstallprompt', offer);
-  ok('P1 the offer is held (the browser\'s own bar is suppressed) and the page is told', pwa.canInstall && prevented === 1 && changes === 1);
+  ok('P1 the offer is held (the browser\'s own bar is suppressed) and the page is told', pwa.canInstall && pwa.installable && prevented === 1 && changes === 1);
   ok('P1 install() shows the browser\'s window and reports the answer; the offer is used up', await pwa.install() === 'accepted' && prompted === 1 && !pwa.canInstall);
   win.fire('appinstalled');
-  ok('P1 once installed it says so', pwa.installed);
+  ok('P1 once installed it says so, and the Install button goes', pwa.installed && !pwa.installable);
   const dismissed = new FakeWindow();
   const p2 = new PwaService({ win: dismissed }).start();
   dismissed.fire('beforeinstallprompt', { preventDefault() {}, prompt: async () => {}, userChoice: Promise.resolve({ outcome: 'dismissed' }) });
@@ -67,6 +70,8 @@ class FakeWindow {
   const standalone = new FakeWindow(); standalone.standalone = true;
   ok('P1 running from the home screen counts as installed', new PwaService({ win: standalone }).installed);
   const ios = new FakeWindow(); ios.navigator.userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari'; 
+  const iosHome = new FakeWindow(); iosHome.navigator.userAgent = ios_ua(); iosHome.navigator.standalone = true;
+  ok('P1 iPhone in Safari shows Install (done by hand); from the home screen it does not', new PwaService({ win: (() => { const x = new FakeWindow(); x.navigator.userAgent = ios_ua(); return x; })() }).installable && !new PwaService({ win: iosHome }).installable);
   ok('P1 iPhone: steps say Share → Add to Home Screen', new PwaService({ win: ios }).isIos && /Add to Home Screen/.test(new PwaService({ win: ios }).manualSteps));
   win.navigator.onLine = false; win.fire('offline');
   ok('P1 going offline is noticed and reported', !pwa.online && changes >= 3);
@@ -87,7 +92,11 @@ class FakeWindow {
     && manifest.icons.some((i) => i.purpose === 'maskable') && manifest.icons.every((i) => existsSync(join(root, i.src))));
   const app = readFileSync(join(root, 'app.html'), 'utf8'); const home = readFileSync(join(root, 'index.html'), 'utf8');
   ok('M1 the app and the homepage link the manifest; the homepage has an Install button',
-    /rel="manifest" href="manifest\.webmanifest"/.test(app) && /rel="manifest" href="manifest\.webmanifest"/.test(home) && /id="installBtn"/.test(home) && /InstallButton/.test(home));
+    /rel="manifest" href="manifest\.webmanifest"/.test(app) && /rel="manifest" href="manifest\.webmanifest"/.test(home) && /id="installBtn" hidden/.test(home) && /id="installIcon" hidden/.test(home) && /InstallButton/.test(home));
+  const pages = ['terms.html', 'privacy.html', 'shipping.html', 'contact.html', 'refunds.html'];
+  ok('M1 the homepage footer links the five policy pages a payment provider asks for, and each exists', pages.every((p) => home.includes(`href="${p}"`) && existsSync(join(root, p))));
+  const contact = readFileSync(join(root, 'contact.html'), 'utf8');
+  ok('M1 Contact Us has an email and a phone number, and nothing "To be added"', /mailto:/.test(contact) && /tel:\+91/.test(contact) && !/To be added/.test(contact));
   ok('M1 the app page has a place for the notes', /id="appNotices"/.test(app));
 }
 
@@ -95,7 +104,7 @@ class FakeWindow {
   const site = mkdtempSync(join(tmpdir(), 'pocket-precache-'));
   cpSync(root, site, { recursive: true, filter: (p) => !/node_modules/.test(p) });
   const list = new PrecacheManifest(site, 'abc12345').write();
-  ok('L1 lists the pages, the manifest and the icons', ['app.html', 'index.html', 'privacy.html', 'manifest.webmanifest', 'img/icons/icon-512.png'].every((f) => list.files.includes(f)));
+  ok('L1 lists the pages, the manifest and the icons', ['app.html', 'index.html', 'privacy.html', 'shipping.html', 'manifest.webmanifest', 'img/icons/icon-512.png'].every((f) => list.files.includes(f)));
   ok('L1 every app module is listed with the deploy stamp', list.files.includes('src/app.js?v=abc12345') && list.files.includes('src/core/PwaService.js?v=abc12345') && list.files.filter((f) => f.startsWith('src/')).every((f) => f.endsWith('?v=abc12345')));
   ok('L1 export libraries and fonts are listed, unstamped', list.files.includes('vendor/jspdf.umd.min.js') && list.files.includes('vendor/fonts/NotoSans-Regular.ttf'));
   ok('L1 not listed: admin, tests, licences, bundle.js, homepage pictures', !list.files.some((f) => /admin|__smoke__|LICENSE|bundle\.js|img\/app/.test(f)));
@@ -143,11 +152,12 @@ function boot() {
   w.dispatchEvent(offer);
   await wait(10);
   ok('A1 the browser offers: the open Settings shows an Install Pocket button', !!card()?.querySelector('.install-now') && !card().querySelector('.install-steps'));
+  ok('A1 and an install icon appears in the top bar', /installApp\(\)/.test(w.document.querySelector('.status-icons .status-icon-install')?.getAttribute('onclick') || ''));
   await app.installApp();
   ok('A1 Install Pocket opens the browser\'s window and confirms', prompted === 1 && /Pocket is installed/.test(w.document.getElementById('toast').textContent));
   w.dispatchEvent(new w.Event('appinstalled'));
   await wait(10);
-  ok('A1 once installed the card is gone', !card());
+  ok('A1 once installed the card and the top-bar icon are gone', !card() && !w.document.querySelector('.status-icon-install'));
   ok('A1 the General tab keeps its six settings', w.document.querySelectorAll('[data-settings-tab="general"] .grid.grid-cols-2 select').length === 6);
   app.closeModal();
 

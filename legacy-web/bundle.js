@@ -19679,7 +19679,7 @@ This replaces your current grouping.`
      * backupAsk: false while automatic backups are looking after a due backup (no box needed).
      * @type {{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}}
      */
-    #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
+    #state = { installable: false, online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
     /**
      * @param {HTMLElement|null} el  where the boxes go
      * @param {object} [deps]
@@ -19738,7 +19738,12 @@ This replaces your current grouping.`
         <i data-lucide="${name}" style="width:18px;height:18px;color:${color}"></i>
         ${dot ? `<span class="status-dot" style="position:absolute;top:5px;right:4px;width:7px;height:7px;border-radius:9999px;background:${color}"></span>` : ""}
       </button>`;
-      return (s.online ? icon("offline", "wifi", "You're online", _AppNotices.backupColor(0)) : icon("offline", "wifi-off", this.#offlineLabel(), _AppNotices.offlineColor(this.#offlineProgress()), true)) + (s.backupOn ? icon("backup", s.backupDue ? "cloud-upload" : "cloud-check", this.#backupLabel(s), _AppNotices.backupColor(s.backupProgress), s.backupDue) : "");
+      const install = s.installable ? `
+      <button type="button" class="btn btn-ghost px-2 status-icon status-icon-install" title="Install Pocket as an app" aria-label="Install Pocket as an app"
+              onclick="window.__app.installApp()">
+        <i data-lucide="download" style="width:18px;height:18px;color:#059669"></i>
+      </button>` : "";
+      return install + (s.online ? icon("offline", "wifi", "You're online", _AppNotices.backupColor(0)) : icon("offline", "wifi-off", this.#offlineLabel(), _AppNotices.offlineColor(this.#offlineProgress()), true)) + (s.backupOn ? icon("backup", s.backupDue ? "cloud-upload" : "cloud-check", this.#backupLabel(s), _AppNotices.backupColor(s.backupProgress), s.backupDue) : "");
     }
     /**
      * The backup icon's colour: green just after a backup, shading to amber as
@@ -23904,6 +23909,14 @@ This replaces your current grouping.`
       } catch (_) {
       }
       return this.#win.navigator?.standalone === true;
+    }
+    /**
+     * Whether to show an Install button: not installed, and either the browser
+     * has offered (it stops offering once the app is installed) or this is an
+     * iPhone / iPad, where it is always done by hand.
+     */
+    get installable() {
+      return !this.installed && (this.canInstall || this.isIos);
     }
     /** iPhone and iPad never offer to install; people add the app from the Share menu. */
     get isIos() {
@@ -29513,6 +29526,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       const online = this.#pwa?.online !== false;
       if (drive.connected && drive.due && online && !drive.automatic) this.#driveBackup.warm();
       this.#notices.show({
+        installable: !!this.#pwa?.installable,
         // Automatic backups look after a due backup themselves; the box asks only if that failed.
         backupAsk: !drive.automatic || this.#driveAutoFailed,
         online: this.#pwa?.online !== false,

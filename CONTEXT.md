@@ -81,6 +81,13 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   token kept in `pocket.v1.drive.refreshToken` on the device only; with it, a due backup runs by itself when
   the app is opened (`Application.#automaticBackup`, one try per 30 min across tabs via `pocket.v1.drive.auto`);
   Google refusing the refresh token switches automatic off. Deno test `drive-auth/test/handler_test.ts` (18).
+  *Later the same day:* install icons (app top bar `.status-icon-install`, site header `#installIcon`, hero
+  `#installBtn`) show only while `PwaService.installable` (browser has offered, or iPhone not yet on the home
+  screen) — so never once installed; `sw.js` serves the saved copy when the site answers with an error, so an
+  installed app keeps opening if the website is down or closed (`smoke:offline` O4). Policy pages for
+  Razorpay: new `shipping.html`; `terms.html` = "Terms and Conditions", `refunds.html` = "Cancellation and
+  Refunds", `contact.html` = "Contact Us" with email and phone (name and address rows left out until the
+  owner gives them); every footer links all five.
   Without the switch, a schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
   when due, the note above the page offers **Back up now**. **Needs `GOOGLE_DRIVE_CLIENT_ID` in
   `data/constants.js`** (public OAuth client ID; the card is hidden while empty). Tests: `pwa.smoke.mjs` (39),

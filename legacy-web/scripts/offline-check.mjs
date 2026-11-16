@@ -13,7 +13,8 @@
  *   O2  servers stopped (no internet at all): the app still opens — demo and
  *       the real app, the homepage, an export library
  *   O3  the manifest and icons are served and valid for installing
- *   O4  a new release replaces the old copy
+ *   O4  the website answering "not found" for everything (closed or moved): the installed app still opens
+ *   O5  a new release replaces the old copy
  */
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
@@ -54,6 +55,8 @@ class LocalServer {
   static #TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
     '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp', '.ttf': 'font/ttf' };
   #root; #port; #server = null; #sockets = new Set();
+  /** True = answer 404 to everything, as a site that has been taken down does. */
+  gone = false;
 
   constructor(root, port) { this.#root = root; this.#port = port; }
 
@@ -62,6 +65,7 @@ class LocalServer {
   async start() {
     this.#server = createServer((req, res) => {
       const url = new URL(req.url, 'http://x');
+      if (this.gone) { res.writeHead(404, { 'content-type': 'text/html' }); res.end('<h1>404</h1>'); return; }
       if (!url.pathname.startsWith('/pocket/')) { res.writeHead(404); res.end(); return; }
       const rel = normalize(decodeURIComponent(url.pathname.slice('/pocket/'.length))) || 'index.html';
       const file = join(this.#root, rel === '.' ? 'index.html' : rel);
@@ -186,19 +190,30 @@ class OfflineCheck {
       this.ok('O2 offline: the site address opens the homepage', await page.evaluate(() => !!document.getElementById('installBtn')));
       this.ok('O2 no page errors while offline', errors.length === 0, errors.slice(0, 3).join(' | '));
 
-      // O4 — a new release
+      // O4 — the website is gone (answers 404), the device is online
+      web.gone = true;
+      await web.start();
+      await ctx.setOffline(false);
+      await page.goto(`${web.base}/app.html`, { waitUntil: 'load' });
+      const goneOpens = await page.waitForFunction(() => !!window.__app && document.getElementById('viewContent')?.children.length > 0, null, { timeout: 20000 }).then(() => true, () => false);
+      const goneLib = await page.evaluate(async () => (await fetch('vendor/write-excel-file.min.js')).ok);
+      const goneWorker = await page.evaluate(async () => !!(await navigator.serviceWorker.getRegistration())?.active);
+      this.ok('O4 website closed (404 for everything): the installed app still opens, with its export library and its worker', goneOpens && goneLib && goneWorker);
+      await web.stop();
+      web.gone = false;
+
+      // O5 — a new release
       site.build('bbbb2222');
       await web.start(); await cdn.start();
-      await ctx.setOffline(false);
       await page.goto(`${web.base}/app.html?demo`, { waitUntil: 'load' });
       await page.waitForSelector('.demo-banner', { timeout: 20000 });
       const next = await this.#waitForCopy(page, 'pocket-bbbb2222', list.files.length);
       const names = await this.#waitForOnly(page, 'pocket-bbbb2222');
-      this.ok('O4 a new release is copied and the old copy removed', next.count >= list.files.length && names.join() === 'pocket-bbbb2222', names.join());
+      this.ok('O5 a new release is copied and the old copy removed', next.count >= list.files.length && names.join() === 'pocket-bbbb2222', names.join());
       await page.reload({ waitUntil: 'load' });
       await page.waitForSelector('.demo-banner', { timeout: 20000 });
       const stamp = await page.evaluate(() => document.querySelector('script[src^="src/app.js"]')?.getAttribute('src'));
-      this.ok('O4 the page now runs the new release', stamp === 'src/app.js?v=bbbb2222', stamp);
+      this.ok('O5 the page now runs the new release', stamp === 'src/app.js?v=bbbb2222', stamp);
     } finally {
       await browser.close();
       await web.stop().catch(() => {}); await cdn.stop().catch(() => {});

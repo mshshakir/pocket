@@ -5060,6 +5060,7 @@ export class Application {
     const online = this.#pwa?.online !== false;
     if (drive.connected && drive.due && online && !drive.automatic) this.#driveBackup.warm();
     this.#notices.show({
+      installable: !!this.#pwa?.installable,
       // Automatic backups look after a due backup themselves; the box asks only if that failed.
       backupAsk: !drive.automatic || this.#driveAutoFailed,
       online: this.#pwa?.online !== false,

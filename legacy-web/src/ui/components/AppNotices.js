@@ -20,6 +20,8 @@
  *   - Tapping an icon opens its box again (for the backup: when the last one
  *     was, when the next is due, and Back up now); every box has a close button.
  *
+ * An install icon joins them while Pocket can be installed and isn't yet.
+ *
  * What was closed is remembered on the device (pocket.v1.notices).
  */
 import { Html } from '../../core/Html.js';
@@ -44,7 +46,7 @@ export class AppNotices {
    * backupAsk: false while automatic backups are looking after a due backup (no box needed).
    * @type {{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}}
    */
-  #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
+  #state = { installable: false, online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
 
   /**
    * @param {HTMLElement|null} el  where the boxes go
@@ -104,7 +106,12 @@ export class AppNotices {
         <i data-lucide="${name}" style="width:18px;height:18px;color:${color}"></i>
         ${dot ? `<span class="status-dot" style="position:absolute;top:5px;right:4px;width:7px;height:7px;border-radius:9999px;background:${color}"></span>` : ''}
       </button>`;
-    return (s.online
+    const install = s.installable ? `
+      <button type="button" class="btn btn-ghost px-2 status-icon status-icon-install" title="Install Pocket as an app" aria-label="Install Pocket as an app"
+              onclick="window.__app.installApp()">
+        <i data-lucide="download" style="width:18px;height:18px;color:#059669"></i>
+      </button>` : '';
+    return install + (s.online
       ? icon('offline', 'wifi', 'You\'re online', AppNotices.backupColor(0))
       : icon('offline', 'wifi-off', this.#offlineLabel(), AppNotices.offlineColor(this.#offlineProgress()), true))
       + (s.backupOn ? icon('backup', s.backupDue ? 'cloud-upload' : 'cloud-check', this.#backupLabel(s), AppNotices.backupColor(s.backupProgress), s.backupDue) : '');
