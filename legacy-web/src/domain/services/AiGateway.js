@@ -32,16 +32,17 @@ export class AiGateway {
   }
 
   /**
-   * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number}} request
+   * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number, seconds?: number}} request
+   *   seconds: how long the recording is (voice only) — voice entries are charged by length
    * @returns {Promise<string>} the model's text answer
    * @throws {AiError}
    */
-  async generate({ kind, book, parts, maxOutputTokens = 1024 }) {
+  async generate({ kind, book, parts, maxOutputTokens = 1024, seconds = 0 }) {
     const invoke = this.#invoker();
     if (!invoke || !book) throw new AiError('Please sign in to use AI scanning and voice entry.', 'signed_out');
     let result;
     try {
-      result = await invoke('ai', { body: { kind, book, ref: AiGateway.#ref(), parts, maxOutputTokens } });
+      result = await invoke('ai', { body: { kind, book, ref: AiGateway.#ref(), parts, maxOutputTokens, ...(kind === 'voice' ? { seconds } : {}) } });
     } catch (_) {
       throw new AiError('Network error — check your connection and try again.', 'network');
     }

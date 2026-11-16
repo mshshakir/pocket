@@ -48,16 +48,18 @@ export class AiHandler {
 
     if (!this.#gemini) return this.#fail(503, 'not_set_up', 'AI scanning isn\'t set up yet. Please try again later.');
 
-    const charge = await this.#credits.spend(userId, request.book, request.ref);
+    const charge = await this.#credits.spend(userId, request.book, request.ref, request.kind, request.seconds);
     if (!charge.ok) {
-      return charge.reason === 'no_access'
-        ? this.#fail(403, 'no_access', 'You can\'t add entries to that shared space.')
-        : this.#fail(402, 'no_credits', 'You have no AI credits left. Buy a pack in Settings → Your plan.');
+      if (charge.reason === 'no_access') return this.#fail(403, 'no_access', 'You can\'t add entries to that shared space.');
+      const need = charge.cost ?? 1, have = charge.remaining ?? 0;
+      return this.#fail(402, 'no_credits', have > 0
+        ? `This needs ${need} AI credit${need === 1 ? '' : 's'} and you have ${have}. Buy a pack in Settings → Your plan.`
+        : 'You have no AI credits left. Buy a pack in Settings → Your plan.');
     }
 
     try {
       const text = await this.#gemini.generate(request);
-      return this.#json(200, { text, chargedTo: charge.chargedTo, remaining: charge.remaining ?? null });
+      return this.#json(200, { text, chargedTo: charge.chargedTo, cost: charge.cost ?? null, remaining: charge.remaining ?? null });
     } catch (e) {
       await this.#credits.refund(userId, request.ref);
       const message = e instanceof GeminiError ? e.message : 'The AI service failed. Please try again.';

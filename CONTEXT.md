@@ -56,6 +56,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · AI credits re-priced** (migration `0043_ai_credit_costs`, applied; 0042 is the Telegram
+  self-link migration from another session). Pack ₹100 = 500 credits (`ai_credit_paise` 20); a scan costs
+  `ai_scan_credits` (5); a voice entry `ai_voice_credits` (1) per `ai_voice_block_secs` (30 s) or part; every
+  account gets `ai_welcome_credits` (20) once (`pocket_ai_welcome`, given by `pocket_entitlements()` — now
+  volatile plpgsql — and by the first charge). The `ai` function calls `pocket_ai_charge(user, book, ref, kind,
+  seconds)`; `AiRequest.seconds` = what the app measured (`VoiceRecorder.seconds`), never less than the
+  recording's size allows, capped at 600. AI failure still refunds; a misheard recording doesn't.
+  `Entitlements.aiCosts` / `aiCostLine` feed the pack card and the voice overlay's "speak clearly" line.
+  No one held purchased credits at the change.
 - **2026-11-16 · Install as an app + offline, Google Drive backup** (branch `install-offline-drive-backup`).
   *Install/offline:* `manifest.webmanifest`, icons in `img/icons/`, `sw.js` (class `OfflineFiles`: stamped `?v=`
   files copy-first, pages and unstamped files network-first with a 4 s fall-back to the copy, CDN scripts

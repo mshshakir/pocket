@@ -215,7 +215,7 @@ export class PlanCard {
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
-            <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
+            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for a year. ${Html.escape(plan.aiCostLine)}</div>
             ${PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, PlanCard.#price(pack), buying, false)}

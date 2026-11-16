@@ -16,6 +16,9 @@
  *  - Public surface: `recording` getter, `start()`, `stop()`, `cancel()`.
  */
 export class VoiceRecorder {
+  /** When the current recording started (ms), and how long the last one ran (s). */
+  #startedAt = 0;
+  #seconds = 0;
   /** @type {MediaStream|null} */    #stream = null;
   /** @type {MediaRecorder|null} */  #rec    = null;
   /** @type {Blob[]} */              #chunks = [];
@@ -72,7 +75,12 @@ export class VoiceRecorder {
       : new MediaRecorder(this.#stream);
     this.#rec.ondataavailable = (e) => { if (e.data && e.data.size) this.#chunks.push(e.data); };
     this.#rec.start();
+    this.#startedAt = Date.now();
+    this.#seconds = 0;
   }
+
+  /** How long the last finished recording was, in seconds (voice entries are charged by this). */
+  get seconds() { return this.#seconds; }
 
   /**
    * Stop recording and resolve with the captured audio as a Blob.
@@ -84,6 +92,7 @@ export class VoiceRecorder {
       if (!this.#rec) { this.#cleanup(); return reject(new Error('Not recording')); }
       const rec = this.#rec;
       rec.onstop = () => {
+        this.#seconds = this.#startedAt ? Math.max(1, Math.ceil((Date.now() - this.#startedAt) / 1000)) : 0;
         const type = rec.mimeType || 'audio/webm';
         const blob = new Blob(this.#chunks, { type });
         this.#cleanup();

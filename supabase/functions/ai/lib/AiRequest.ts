@@ -16,6 +16,14 @@ export class AiRequest {
   static readonly MAX_INLINE_CHARS = 6_000_000;
   static readonly MAX_TEXT_CHARS = 20_000;
   static readonly MAX_OUTPUT_TOKENS = 1024;
+  /** Longest recording billed for; also the most a voice entry can be said to last. */
+  static readonly MAX_SECONDS = 600;
+  /**
+   * A recording can't be shorter than its size allows: no browser records
+   * speech above about 128 kbit/s (16,000 bytes a second). Stops an app that
+   * under-reports the length to pay less.
+   */
+  static readonly #MAX_BYTES_PER_SECOND = 16_000;
   static readonly #UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   static readonly #MEDIA = /^(image\/(jpeg|png|webp|heic|heif|gif)|application\/pdf|audio\/(webm|ogg|mp4|mpeg|mp3|wav|aac|m4a|x-m4a|3gpp))(;.*)?$/i;
 
@@ -25,6 +33,8 @@ export class AiRequest {
     readonly ref: string,
     readonly parts: Part[],
     readonly maxOutputTokens: number,
+    /** Length of the recording in seconds (voice only; 0 for a scan). Voice is charged by this. */
+    readonly seconds: number,
   ) {}
 
   /** @throws AiRequestError with a sentence for the person */
@@ -57,6 +67,14 @@ export class AiRequest {
 
     const out = Number(b.maxOutputTokens);
     const max = Number.isInteger(out) && out > 0 ? Math.min(out, AiRequest.MAX_OUTPUT_TOKENS) : AiRequest.MAX_OUTPUT_TOKENS;
-    return new AiRequest(kind, b.book, b.ref, parts, max);
+    return new AiRequest(kind, b.book, b.ref, parts, max, kind === 'voice' ? AiRequest.#seconds(b.seconds, inline) : 0);
+  }
+
+  /** The recording's length: what the app measured, but never less than its size makes possible. */
+  static #seconds(reported: unknown, base64Chars: number): number {
+    const said = Number(reported);
+    const atLeast = Math.ceil((base64Chars * 3 / 4) / AiRequest.#MAX_BYTES_PER_SECOND);
+    const secs = Math.max(Number.isFinite(said) && said > 0 ? said : 1, atLeast, 1);
+    return Math.min(Math.ceil(secs), AiRequest.MAX_SECONDS);
   }
 }

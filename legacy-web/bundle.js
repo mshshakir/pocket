@@ -5802,7 +5802,7 @@ var _PocketApp = (() => {
      * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
      * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
      */
-    async parseVoice(audio, { book } = {}) {
+    async parseVoice(audio, { book, seconds = 0 } = {}) {
       const state = this.#store.getState();
       let base64, mediaType;
       try {
@@ -5825,6 +5825,7 @@ var _PocketApp = (() => {
         kind: "voice",
         book,
         maxOutputTokens: 1024,
+        seconds,
         parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt2 }]
       });
       const m = raw.match(/\{[\s\S]*\}/);
@@ -6762,6 +6763,13 @@ RULES:
 
   // src/domain/billing/Entitlements.js
   var Entitlements = class _Entitlements {
+    /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
+    static AI_COSTS = Object.freeze({ scan: 5, voice: 1, voiceSeconds: 30 });
+    /** The server's costs, each a whole number above zero, else the default. */
+    static #costs(raw) {
+      const pick = (k) => Number.isInteger(raw?.[k]) && raw[k] > 0 ? raw[k] : _Entitlements.AI_COSTS[k];
+      return { scan: pick("scan"), voice: pick("voice"), voiceSeconds: pick("voiceSeconds") };
+    }
     static FEATURES = Object.freeze(["sync", "telegram", "sharing"]);
     static STATES = Object.freeze(["free", "active", "grace", "lapsed"]);
     static #LEVELS = Object.freeze(["none", "read", "write"]);
@@ -6789,7 +6797,8 @@ RULES:
         aiCredits: 0,
         aiUnlimited: false,
         trialAvailable: true,
-        paymentsOpen: false
+        paymentsOpen: false,
+        aiCosts: { ..._Entitlements.AI_COSTS }
       });
     }
     /**
@@ -6828,7 +6837,8 @@ RULES:
         aiCredits: Number.isInteger(raw.aiCredits) ? raw.aiCredits : 0,
         aiUnlimited: raw.aiUnlimited === true,
         trialAvailable: raw.trialAvailable !== false,
-        paymentsOpen: raw.paymentsOpen === true
+        paymentsOpen: raw.paymentsOpen === true,
+        aiCosts: _Entitlements.#costs(raw.aiCosts)
       });
     }
     get plan() {
@@ -6874,6 +6884,16 @@ RULES:
     /** Online payment is switched on (billing_settings.payments_enabled). */
     get paymentsOpen() {
       return this.#data.paymentsOpen;
+    }
+    /** Credits a scan costs, and a voice entry per `voiceSeconds` of recording. @returns {{scan: number, voice: number, voiceSeconds: number}} */
+    get aiCosts() {
+      return { ...this.#data.aiCosts };
+    }
+    /** e.g. "A scan uses 5 credits; a voice entry uses 1 for every 30 seconds." */
+    get aiCostLine() {
+      const c = this.#data.aiCosts;
+      const n = (x) => `${x} credit${x === 1 ? "" : "s"}`;
+      return `A scan uses ${n(c.scan)}; a voice entry uses ${c.voice} for every ${c.voiceSeconds} seconds.`;
     }
     get isLifetime() {
       return this.#data.term === "lifetime" && this.#data.state === "active";
@@ -7075,16 +7095,17 @@ RULES:
       this.#invoker = invoker;
     }
     /**
-     * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number}} request
+     * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number, seconds?: number}} request
+     *   seconds: how long the recording is (voice only) — voice entries are charged by length
      * @returns {Promise<string>} the model's text answer
      * @throws {AiError}
      */
-    async generate({ kind, book, parts, maxOutputTokens = 1024 }) {
+    async generate({ kind, book, parts, maxOutputTokens = 1024, seconds = 0 }) {
       const invoke = this.#invoker();
       if (!invoke || !book) throw new AiError("Please sign in to use AI scanning and voice entry.", "signed_out");
       let result;
       try {
-        result = await invoke("ai", { body: { kind, book, ref: _AiGateway.#ref(), parts, maxOutputTokens } });
+        result = await invoke("ai", { body: { kind, book, ref: _AiGateway.#ref(), parts, maxOutputTokens, ...kind === "voice" ? { seconds } : {} } });
       } catch (_) {
         throw new AiError("Network error \u2014 check your connection and try again.", "network");
       }
@@ -10853,6 +10874,9 @@ This replaces your current grouping.`
 
   // src/ui/components/VoiceRecorder.js
   var VoiceRecorder = class _VoiceRecorder {
+    /** When the current recording started (ms), and how long the last one ran (s). */
+    #startedAt = 0;
+    #seconds = 0;
     /** @type {MediaStream|null} */
     #stream = null;
     /** @type {MediaRecorder|null} */
@@ -10912,6 +10936,12 @@ This replaces your current grouping.`
         if (e.data && e.data.size) this.#chunks.push(e.data);
       };
       this.#rec.start();
+      this.#startedAt = Date.now();
+      this.#seconds = 0;
+    }
+    /** How long the last finished recording was, in seconds (voice entries are charged by this). */
+    get seconds() {
+      return this.#seconds;
     }
     /**
      * Stop recording and resolve with the captured audio as a Blob.
@@ -10926,6 +10956,7 @@ This replaces your current grouping.`
         }
         const rec = this.#rec;
         rec.onstop = () => {
+          this.#seconds = this.#startedAt ? Math.max(1, Math.ceil((Date.now() - this.#startedAt) / 1e3)) : 0;
           const type = rec.mimeType || "audio/webm";
           const blob = new Blob(this.#chunks, { type });
           this.#cleanup();
@@ -11044,7 +11075,11 @@ This replaces your current grouping.`
       document.head.appendChild(s);
     }
     /** Build and show the overlay in the "listening" state. */
-    open(getLevel) {
+    /**
+     * @param {() => number} getLevel  the microphone level, 0..1
+     * @param {string} [note]  a line under the timer, e.g. what a voice entry costs
+     */
+    open(getLevel, note = "") {
       _VoiceOverlay.#injectStyle();
       this.#getLevel = typeof getLevel === "function" ? getLevel : () => 0;
       const bars = Array.from({ length: _VoiceOverlay.#BAR_COUNT }).map(() => '<span class="pv-bar"></span>').join("");
@@ -11058,8 +11093,10 @@ This replaces your current grouping.`
         <div class="pv-bars">${bars}</div>
         <div class="pv-proc" style="display:none"><div class="pv-ring"></div></div>
         <div class="pv-timer">0:00</div>
+        <div class="pv-note" style="font-size:11.5px;color:#a1a1aa;margin-top:8px;line-height:1.4"></div>
         <button class="pv-stop">\u25A0 Stop &amp; read</button>
       </div>`;
+      this.#el.querySelector(".pv-note").textContent = note;
       this.#barsEl = this.#el.querySelector(".pv-bars");
       this.#timerEl = this.#el.querySelector(".pv-timer");
       this.#titleEl = this.#el.querySelector(".pv-title");
@@ -11997,7 +12034,7 @@ This replaces your current grouping.`
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
-            <div class="text-xs text-zinc-500 mt-0.5">${pack.aiCredits.toLocaleString()} receipt scans or voice entries, valid for a year</div>
+            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for a year. ${Html.escape(plan.aiCostLine)}</div>
             ${_PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
@@ -25458,6 +25495,13 @@ ${body}\r
     getPlan() {
       return this.#sync.plan;
     }
+    /** The line under the voice timer: speak clearly, and what it costs (nothing to say about cost on unlimited). */
+    #voiceNote() {
+      const plan = this.#sync.plan;
+      if (!plan || plan.aiUnlimited) return "Speak clearly, close to the phone.";
+      const c = plan.aiCosts;
+      return `Speak clearly, close to the phone. ${c.voice} credit for every ${c.voiceSeconds} seconds, used even if it mishears you.`;
+    }
     /** Plans on offer, or null while loading (Settings shows "Loading plans…"). */
     get planCatalogue() {
       return this.#planCatalogue;
@@ -27059,7 +27103,7 @@ Leave empty to use your own name.`,
           return;
         }
         try {
-          const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook() });
+          const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook(), seconds: recorder.seconds });
           finish();
           this.closeModal();
           this.openModal("transaction", { prefill });
@@ -27071,7 +27115,7 @@ Leave empty to use your own name.`,
       };
       try {
         await recorder.start();
-        overlay.open(() => recorder.getLevel());
+        overlay.open(() => recorder.getLevel(), this.#voiceNote());
       } catch (e) {
         this.#voice = null;
         this.#toast.show("Microphone unavailable: " + (e.message || "permission denied"));

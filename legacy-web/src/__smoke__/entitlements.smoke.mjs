@@ -78,5 +78,15 @@ const lapsed = { ...grace, plan: 'free', planName: 'Free', state: 'lapsed', acce
   ok('E10 unlimited account: unlimited everywhere', wife.aiUnlimited && wife.aiPayer() === 'unlimited' && wife.aiPayer('owner-1') === 'unlimited');
 }
 
+{
+  const free = Entitlements.free();
+  ok('AI costs: 5 credits a scan and 1 per 30 seconds of voice until the server says otherwise', free.aiCosts.scan === 5 && free.aiCosts.voice === 1 && free.aiCosts.voiceSeconds === 30
+    && free.aiCostLine === 'A scan uses 5 credits; a voice entry uses 1 for every 30 seconds.', free.aiCostLine);
+  const set = Entitlements.from({ plan: 'free', state: 'free', aiCredits: 20, aiCosts: { scan: 1, voice: 2, voiceSeconds: 60 } });
+  ok('AI costs follow the server, and the 20 free credits show as the balance', set.aiCosts.scan === 1 && set.aiCosts.voiceSeconds === 60 && set.aiCredits === 20 && /uses 1 credit;/.test(set.aiCostLine));
+  const odd = Entitlements.from({ plan: 'free', state: 'free', aiCosts: { scan: 0, voice: 'x' } });
+  ok('odd costs from the server fall back to the defaults', odd.aiCosts.scan === 5 && odd.aiCosts.voice === 1 && odd.aiCosts.voiceSeconds === 30);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -825,6 +825,14 @@ export class Application {
   /** @returns {import('./domain/billing/Entitlements.js').Entitlements} */
   getPlan() { return this.#sync.plan; }
 
+  /** The line under the voice timer: speak clearly, and what it costs (nothing to say about cost on unlimited). */
+  #voiceNote() {
+    const plan = this.#sync.plan;
+    if (!plan || plan.aiUnlimited) return 'Speak clearly, close to the phone.';
+    const c = plan.aiCosts;
+    return `Speak clearly, close to the phone. ${c.voice} credit for every ${c.voiceSeconds} seconds, used even if it mishears you.`;
+  }
+
   /** Plans on offer, or null while loading (Settings shows "Loading plans…"). */
   get planCatalogue() { return this.#planCatalogue; }
 
@@ -2543,7 +2551,7 @@ export class Application {
       if (!blob || !blob.size) { finish(); this.#toast.show('No audio captured — please try again'); return; }
 
       try {
-        const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook() });
+        const prefill = await this.receiptScanner.parseVoice(blob, { book: this.#aiBook(), seconds: recorder.seconds });
         finish();
         this.closeModal();
         this.openModal('transaction', { prefill });
@@ -2558,7 +2566,7 @@ export class Application {
     // denied-permission prompt doesn't leave an empty meter on screen.
     try {
       await recorder.start();
-      overlay.open(() => recorder.getLevel());
+      overlay.open(() => recorder.getLevel(), this.#voiceNote());
     } catch (e) {
       this.#voice = null;
       this.#toast.show('Microphone unavailable: ' + (e.message || 'permission denied'));

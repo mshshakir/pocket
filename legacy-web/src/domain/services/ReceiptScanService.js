@@ -117,7 +117,7 @@ export class ReceiptScanService {
    * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
    * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
    */
-  async parseVoice(audio, { book } = {}) {
+  async parseVoice(audio, { book, seconds = 0 } = {}) {
     const state  = this.#store.getState();
 
     let base64, mediaType;
@@ -140,7 +140,7 @@ export class ReceiptScanService {
     // 512 was enough for a single flat object; an itemised response with
     // several categories needs the same headroom the receipt path has.
     const raw = await this.#gateway.generate({
-      kind: 'voice', book, maxOutputTokens: 1024,
+      kind: 'voice', book, maxOutputTokens: 1024, seconds,
       parts: [{ inline_data: { mime_type: mediaType, data: base64 } }, { text: prompt }],
     });
     const m    = raw.match(/\{[\s\S]*\}/);

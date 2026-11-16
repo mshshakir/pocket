@@ -20,8 +20,9 @@ const post = (b: unknown, auth = 'Bearer good') =>
 
 class FakeCredits {
   spent: string[] = []; refunded: string[] = [];
+  asked: { kind: string; seconds: number }[] = [];
   constructor(public answer: Charge) {}
-  spend(_u: string, _b: string, ref: string) { this.spent.push(ref); return Promise.resolve(this.answer); }
+  spend(_u: string, _b: string, ref: string, kind: string, seconds: number) { this.spent.push(ref); this.asked.push({ kind, seconds }); return Promise.resolve(this.answer); }
   refund(_u: string, ref: string) { this.refunded.push(ref); return Promise.resolve(); }
 }
 const gemini = (status: number, text = '{"total": 12}') => new GeminiClient('server-key', ((_u: unknown, init?: RequestInit) => {
@@ -40,6 +41,22 @@ console.log('\nai function');
   ok('A1 a scan is charged once and answered', res.status === 200 && j.text === '{"total": 12}' && j.chargedTo === 'family' && c.spent.length === 1 && !c.refunded.length, JSON.stringify(j));
   const last = (gemini as unknown as { last: { headers: Record<string, string>; sent: { generationConfig: { maxOutputTokens: number } } } }).last;
   ok('A2 Gemini gets the server key and a capped output length', last.headers['x-goog-api-key'] === 'server-key' && last.sent.generationConfig.maxOutputTokens <= 1024);
+}
+{
+  const voice = (over: Record<string, unknown> = {}) => body({ kind: 'voice', parts: [{ inline_data: { mime_type: 'audio/webm', data: 'AAAA' } }, { text: 'parse' }], ...over });
+  const c = new FakeCredits({ ok: true, chargedTo: 'own', cost: 5, remaining: 15 });
+  const scan = await (await make(c).handle(post(body()))).json();
+  await make(c).handle(post(voice({ seconds: 42 })));
+  await make(c).handle(post(voice()));
+  await make(c).handle(post(voice({ seconds: 99999 })));
+  await make(c).handle(post(voice({ seconds: 1, parts: [{ inline_data: { mime_type: 'audio/webm', data: 'A'.repeat(1_280_000) } }, { text: 'parse' }] })));
+  ok('C1 the database is told what kind of request it is; a scan has no length', c.asked[0].kind === 'receipt' && c.asked[0].seconds === 0 && scan.cost === 5 && scan.remaining === 15, JSON.stringify(c.asked[0]));
+  ok('C2 a voice entry is charged by the length the app measured', c.asked[1].kind === 'voice' && c.asked[1].seconds === 42);
+  ok('C3 no length given counts as the shortest; a silly length is capped at 10 minutes', c.asked[2].seconds === 1 && c.asked[3].seconds === 600, `${c.asked[2].seconds} ${c.asked[3].seconds}`);
+  ok('C4 a length too short for the size of the recording is raised to what the size allows (960 KB ≥ 60 s)', c.asked[4].seconds === 60, String(c.asked[4].seconds));
+  const short = new FakeCredits({ ok: false, reason: 'no_credits', cost: 5, remaining: 3 });
+  const j = await (await make(short).handle(post(body()))).json();
+  ok('C5 not enough credits for this request: says how many it needs and how many there are', j.code === 'no_credits' && /needs 5 AI credits and you have 3/.test(j.error), j.error);
 }
 {
   const c = new FakeCredits({ ok: true, chargedTo: 'own' });

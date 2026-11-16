@@ -28,7 +28,7 @@ export class PricingView extends AdminView {
         <form data-form="settings" class="form-grid">
           <label class="check wide"><input type="checkbox" name="payments_enabled" ${s.payments_enabled ? 'checked' : ''}> <b>Online payment on</b> <span class="muted">(buy buttons in the app and the programme page)</span></label>
           <label>Read-only days after a plan ends<input name="grace_days" type="number" min="0" class="input" value="${s.grace_days}"></label>
-          <label>AI price per use (₹)<input name="ai_credit" class="input" value="${Format.rupees(s.ai_credit_paise)}"></label>
+          <label>AI price per credit (₹)<input name="ai_credit" class="input" value="${Format.rupees(s.ai_credit_paise)}"></label>
           <label>AI pack price (₹)<input name="ai_pack" class="input" value="${Format.rupees(s.ai_pack_paise)}"></label>
           <label>AI credits valid for (days)<input name="ai_credit_days" type="number" min="1" class="input" value="${s.ai_credit_days}"></label>
           <div class="wide"><button class="btn">Save settings</button></div>

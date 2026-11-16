@@ -19,6 +19,15 @@
  * pool, then your own credits.
  */
 export class Entitlements {
+  /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
+  static AI_COSTS = Object.freeze({ scan: 5, voice: 1, voiceSeconds: 30 });
+
+  /** The server's costs, each a whole number above zero, else the default. */
+  static #costs(raw) {
+    const pick = (k) => (Number.isInteger(raw?.[k]) && raw[k] > 0 ? raw[k] : Entitlements.AI_COSTS[k]);
+    return { scan: pick('scan'), voice: pick('voice'), voiceSeconds: pick('voiceSeconds') };
+  }
+
   static FEATURES = Object.freeze(['sync', 'telegram', 'sharing']);
   static STATES   = Object.freeze(['free', 'active', 'grace', 'lapsed']);
   static #LEVELS  = Object.freeze(['none', 'read', 'write']);
@@ -38,6 +47,7 @@ export class Entitlements {
       access: { sync: 'none', telegram: 'none', sharing: 'none' },
       seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: false, trialAvailable: true,
       paymentsOpen: false,
+      aiCosts: { ...Entitlements.AI_COSTS },
     });
   }
 
@@ -78,6 +88,7 @@ export class Entitlements {
       aiUnlimited: raw.aiUnlimited === true,
       trialAvailable: raw.trialAvailable !== false,
       paymentsOpen: raw.paymentsOpen === true,
+      aiCosts: Entitlements.#costs(raw.aiCosts),
     });
   }
 
@@ -97,6 +108,15 @@ export class Entitlements {
   get trialAvailable() { return this.#data.trialAvailable; }
   /** Online payment is switched on (billing_settings.payments_enabled). */
   get paymentsOpen()   { return this.#data.paymentsOpen; }
+  /** Credits a scan costs, and a voice entry per `voiceSeconds` of recording. @returns {{scan: number, voice: number, voiceSeconds: number}} */
+  get aiCosts()        { return { ...this.#data.aiCosts }; }
+
+  /** e.g. "A scan uses 5 credits; a voice entry uses 1 for every 30 seconds." */
+  get aiCostLine() {
+    const c = this.#data.aiCosts;
+    const n = (x) => `${x} credit${x === 1 ? '' : 's'}`;
+    return `A scan uses ${n(c.scan)}; a voice entry uses ${c.voice} for every ${c.voiceSeconds} seconds.`;
+  }
   get isLifetime()     { return this.#data.term === 'lifetime' && this.#data.state === 'active'; }
   /** The plan ended recently: its features still show, but nothing can change. */
   get isReadOnly()     { return this.#data.state === 'grace'; }

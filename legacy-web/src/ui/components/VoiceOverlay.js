@@ -73,7 +73,11 @@ export class VoiceOverlay {
   }
 
   /** Build and show the overlay in the "listening" state. */
-  open(getLevel) {
+  /**
+   * @param {() => number} getLevel  the microphone level, 0..1
+   * @param {string} [note]  a line under the timer, e.g. what a voice entry costs
+   */
+  open(getLevel, note = '') {
     VoiceOverlay.#injectStyle();
     this.#getLevel = typeof getLevel === 'function' ? getLevel : () => 0;
 
@@ -90,9 +94,11 @@ export class VoiceOverlay {
         <div class="pv-bars">${bars}</div>
         <div class="pv-proc" style="display:none"><div class="pv-ring"></div></div>
         <div class="pv-timer">0:00</div>
+        <div class="pv-note" style="font-size:11.5px;color:#a1a1aa;margin-top:8px;line-height:1.4"></div>
         <button class="pv-stop">■ Stop &amp; read</button>
       </div>`;
 
+    this.#el.querySelector('.pv-note').textContent = note;
     this.#barsEl  = this.#el.querySelector('.pv-bars');
     this.#timerEl = this.#el.querySelector('.pv-timer');
     this.#titleEl = this.#el.querySelector('.pv-title');
