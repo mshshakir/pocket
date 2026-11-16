@@ -5802,6 +5802,10 @@ var _PocketApp = (() => {
      * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
      * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
      */
+    /** What the last scan or voice entry cost and what is left (see AiGateway.lastUse). */
+    get lastUse() {
+      return this.#gateway.lastUse;
+    }
     async parseVoice(audio, { book, seconds = 0 } = {}) {
       const state = this.#store.getState();
       let base64, mediaType;
@@ -6798,6 +6802,7 @@ RULES:
         aiUnlimited: false,
         trialAvailable: true,
         paymentsOpen: false,
+        backup: false,
         aiCosts: { ..._Entitlements.AI_COSTS }
       });
     }
@@ -6838,6 +6843,7 @@ RULES:
         aiUnlimited: raw.aiUnlimited === true,
         trialAvailable: raw.trialAvailable !== false,
         paymentsOpen: raw.paymentsOpen === true,
+        backup: raw.backup === true,
         aiCosts: _Entitlements.#costs(raw.aiCosts)
       });
     }
@@ -6884,6 +6890,10 @@ RULES:
     /** Online payment is switched on (billing_settings.payments_enabled). */
     get paymentsOpen() {
       return this.#data.paymentsOpen;
+    }
+    /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
+    get backup() {
+      return this.#data.backup;
     }
     /** Credits a scan costs, and a voice entry per `voiceSeconds` of recording. @returns {{scan: number, voice: number, voiceSeconds: number}} */
     get aiCosts() {
@@ -7086,6 +7096,7 @@ RULES:
   var AiGateway = class _AiGateway {
     /** @type {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} */
     #invoker;
+    #lastUse = null;
     /**
      * @param {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} invoker
      *   gives supabase.functions.invoke for the signed-in person, or null when signed out
@@ -7112,7 +7123,20 @@ RULES:
       const { data, error } = result ?? {};
       if (error) throw await _AiGateway.#explain(error);
       if (typeof data?.text !== "string") throw new AiError("The AI returned nothing. Please try again.", "ai_failed");
+      this.#lastUse = {
+        chargedTo: data.chargedTo || null,
+        cost: Number.isInteger(data.cost) ? data.cost : null,
+        remaining: Number.isInteger(data.remaining) ? data.remaining : null
+      };
       return data.text;
+    }
+    /**
+     * Who paid for the last successful request, what it cost and what is left
+     * (remaining is null for unlimited). Null before any request.
+     * @returns {{chargedTo: string|null, cost: number|null, remaining: number|null}|null}
+     */
+    get lastUse() {
+      return this.#lastUse;
     }
     /** A function error carries the server's JSON answer in its response. */
     static async #explain(error) {
@@ -11892,7 +11916,7 @@ This replaces your current grouping.`
       switch (plan.state) {
         case "active":
           if (plan.isLifetime) return "Everything in your plan is included, with no end date.";
-          if (plan.term === "trial") return `Trial until ${day(plan.endsAt)}.`;
+          if (plan.term === "trial") return `Full trial until ${day(plan.endsAt)}.`;
           return plan.endsAt ? `${plan.toJSON().autoRenew ? "Renews" : "Active until"} ${day(plan.endsAt)}.` : "Active.";
         case "grace":
           return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ""}. Your cloud copy is read-only until <strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
@@ -12016,7 +12040,7 @@ This replaces your current grouping.`
       if (plan.state === "active" && plan.isPaid) return "";
       const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
       if (offers && (!product || !product.available)) return "";
-      const text = `or try it for ${p.trial_days} days for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
+      const text = `or take the Full trial: everything for ${p.trial_days} days, ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
       if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
       return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
     }
@@ -20289,15 +20313,15 @@ This replaces your current grouping.`
               Each backup saves two files in a <b>Pocket backups</b> folder in your own Google Drive: your whole book
               (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
               ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
-              and the files never pass through Pocket's servers. When a backup is due, Pocket shows
-              <b>Back up now</b> the next time you open it \u2014 one tap saves it. Or switch on
-              <b>Back up automatically</b> and Pocket saves it by itself when you open it.
+              and the files never pass through Pocket's servers. <b>Back up now</b> and <b>Restore</b> are free.
+              With scheduled backups, Pocket shows <b>Back up now</b> when one is due, or saves it by itself
+              if you switch on <b>Back up automatically</b>.
             </div>
           </details>`;
       if (!d.connected) {
         return `
         <div class="card-muted p-3 mb-3 drive-backup">${head}
-          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive, on a schedule you choose. Free on every plan.</div>
+          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive. Backing up and restoring are free.</div>
           <button class="btn btn-primary w-full justify-center drive-connect" onclick="window.__app.driveConnect()" ${d.busy ? "disabled" : ""}>
             <i data-lucide="link"></i> ${d.busy ? "Connecting\u2026" : "Connect Google Drive"}
           </button>${how}
@@ -20309,11 +20333,23 @@ This replaces your current grouping.`
           <div class="text-xs text-zinc-500 mb-2">
             ${d.email ? `Connected to <b>${this.#esc(d.email)}</b>` : "Connected"} \xB7 Last backup: <span class="drive-last">${this.#esc(last)}</span>${d.due ? ' \xB7 <span class="text-amber-600">due now</span>' : ""}
           </div>
+          ${d.unlocked ? `
           <label class="text-xs text-zinc-500">Back up</label>
           <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
             ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? "selected" : ""}>${c.label}</option>`).join("")}
-          </select>
-          ${d.automaticOffered || d.automatic ? `
+          </select>` : `
+          <div class="flex items-start gap-3 mb-3 p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 drive-unlock">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium">Scheduled backups</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ""}; included in Sync and Family.
+              </div>
+            </div>
+            <button type="button" class="btn btn-primary text-xs drive-unlock-buy" onclick="window.__app.driveUnlock()" ${d.busy || d.offer?.buying ? "disabled" : ""}>
+              ${d.offer?.buying ? "Opening\u2026" : d.offer ? `Unlock \xB7 ${this.#esc(d.offer.price)}` : "Unlock"}
+            </button>
+          </div>`}
+          ${d.unlocked && (d.automaticOffered || d.automatic) ? `
           <div class="flex items-start gap-3 mb-3 drive-auto">
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium">Back up automatically</div>
@@ -24514,6 +24550,8 @@ ${body}\r
     static #KEY = "pocket.v1.drive";
     /** When an automatic backup last started on this device (any tab). */
     static #AUTO_KEY = "pocket.v1.drive.auto";
+    /** Whose book has scheduled backups unlocked on this device (an owner key). */
+    static #UNLOCKED_KEY = "pocket.v1.drive.unlocked";
     /** After an automatic try, wait this long before another (also stops two tabs both saving). */
     static #AUTO_GAP_MS = 30 * 6e4;
     /** The owner recorded for a book nobody has signed in to. */
@@ -24550,14 +24588,17 @@ ${body}\r
     /**
      * Where things stand for this book.
      * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
-     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null, automatic: boolean}}
+     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null, automatic: boolean, unlocked: boolean}}
      *   automatic: backups run by themselves (the person switched it on)
+     *   unlocked: a schedule and automatic backups are available (the add-on, or a plan that includes it)
      *   progress: how far through the period the last backup is (see BackupSchedule.progress)
      */
     status(owner) {
       const s = this.#settingsFor(owner);
-      const schedule = new BackupSchedule(s?.frequency);
+      const unlocked = this.unlocked(owner);
+      const schedule = new BackupSchedule(unlocked ? s?.frequency : "off");
       return {
+        unlocked,
         connected: !!s,
         email: s?.email || "",
         schedule,
@@ -24565,7 +24606,7 @@ ${body}\r
         due: !!s && schedule.isDue(s.lastAt, this.#now()),
         progress: s ? schedule.progress(s.lastAt, this.#now()) : null,
         daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null,
-        automatic: !!s?.refreshToken
+        automatic: unlocked && !!s?.refreshToken
       };
     }
     /**
@@ -24590,6 +24631,21 @@ ${body}\r
         return this.status(owner);
       });
     }
+    /** Whether scheduled and automatic backups are unlocked for this book on this device. */
+    unlocked(owner) {
+      return this.#read(_DriveBackupService.#UNLOCKED_KEY) === _DriveBackupService.#ownerKey(owner);
+    }
+    /**
+     * Record what the person's plan says (called when the plan is known).
+     * @param {string|null} owner @param {boolean} yes
+     */
+    setUnlocked(owner, yes) {
+      try {
+        if (yes) this.#storage.setItem(_DriveBackupService.#UNLOCKED_KEY, _DriveBackupService.#ownerKey(owner));
+        else if (this.unlocked(owner)) this.#storage.removeItem(_DriveBackupService.#UNLOCKED_KEY);
+      } catch (_) {
+      }
+    }
     /** Whether automatic backups can be offered (the server side is set up). @returns {Promise<boolean>} */
     automaticOffered() {
       return this.#tokens.automaticOffered();
@@ -24599,6 +24655,7 @@ ${body}\r
      * @param {string|null} owner
      */
     async enableAutomatic(owner) {
+      if (!this.unlocked(owner)) throw new Error("Automatic backups are part of scheduled backups. Unlock them first.");
       return this.#exclusive(async () => {
         const s = this.#linked(owner);
         const refreshToken = await this.#tokens.authorizeOffline();
@@ -24643,7 +24700,7 @@ ${body}\r
     /** @param {string|null} owner @param {string} frequency  off | daily | weekly | monthly */
     setFrequency(owner, frequency) {
       const s = this.#settingsFor(owner);
-      if (!s) return;
+      if (!s || !this.unlocked(owner)) return;
       this.#save({ ...s, frequency: new BackupSchedule(frequency).key });
     }
     /**
@@ -24714,7 +24771,7 @@ ${body}\r
       const s = this.#settingsFor(owner);
       if (!s) throw new Error("Connect Google Drive first");
       this.#tokens.account = s.email;
-      this.#tokens.refreshToken = s.refreshToken || "";
+      this.#tokens.refreshToken = this.unlocked(owner) ? s.refreshToken || "" : "";
       return s;
     }
     /** The saved link, only if it was made for this book's owner. */
@@ -25167,6 +25224,10 @@ ${body}\r
       });
       this.#planBanner = new PlanBanner(document.getElementById("planBanner"), this.#bus);
       this.#bus.on("plan:changed", () => {
+        if (this.#sync.currentUser && this.#driveBackup) {
+          this.#driveBackup.setUnlocked(Repository.storedOwner(), !!this.#sync.plan?.backup);
+          this.#refreshNotices();
+        }
         if (this.#modal.active === "settings") this.#modal.refresh();
       });
       this.#bus.on("session:known", () => {
@@ -25495,6 +25556,29 @@ ${body}\r
     getPlan() {
       return this.#sync.plan;
     }
+    /**
+     * After a scan or voice entry: the usual note, or — when the person's own
+     * credits are running low (less than two scans' worth) — how many are left,
+     * with a button to buy a pack.
+     * @param {string} message
+     */
+    #aiDoneToast(message) {
+      const use = this.receiptScanner.lastUse;
+      const scan = this.#sync.plan?.aiCosts?.scan ?? 5;
+      const low = use && use.chargedTo !== "unlimited" && use.remaining !== null && use.remaining < scan * 2;
+      if (!low) {
+        this.#toast.show(message);
+        return;
+      }
+      const left = use.remaining;
+      this.#toast.show(`${left} AI credit${left === 1 ? "" : "s"} left`, {
+        action: { label: "Buy a pack", run: () => {
+          this.closeModal();
+          this.openModal("settings");
+          this.setSettingsTab("account");
+        } }
+      });
+    }
     /** The line under the voice timer: speak clearly, and what it costs (nothing to say about cost on unlimited). */
     #voiceNote() {
       const plan = this.#sync.plan;
@@ -25637,7 +25721,7 @@ ${body}\r
         this.#coupon = "";
         this.#couponApplied = null;
         this.#couponOpen = false;
-        this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : "Payment received \u2014 your plan is updated");
+        this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : product === "drive_backup" ? "Payment received \u2014 scheduled backups are on" : "Payment received \u2014 your plan is updated");
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
       } finally {
@@ -27045,7 +27129,7 @@ Leave empty to use your own name.`,
         const prefill = await scanner.scan(file, { book: this.#aiBook() });
         this.closeModal();
         this.openModal("transaction", { prefill });
-        this.#toast.show("Receipt scanned \xB7 review and save");
+        this.#aiDoneToast("Receipt scanned \xB7 review and save");
       } catch (e) {
         this.#showAiError(e, "Scan");
         if (scanText) scanText.textContent = "Scan receipt";
@@ -27107,7 +27191,7 @@ Leave empty to use your own name.`,
           finish();
           this.closeModal();
           this.openModal("transaction", { prefill });
-          this.#toast.show("Heard it \xB7 review and save");
+          this.#aiDoneToast("Heard it \xB7 review and save");
         } catch (e) {
           finish();
           this.#showAiError(e, "Voice");
@@ -29620,12 +29704,14 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     driveStatus() {
       const svc = this.#driveBackup;
       if (!svc || !svc.available || DemoMode.active) {
-        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
+        return { available: false, connected: false, unlocked: false, offer: null, email: "", frequency: "off", lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
       }
       const st = svc.status(Repository.storedOwner());
       return {
         available: true,
         connected: st.connected,
+        unlocked: st.unlocked,
+        offer: this.#backupOffer(),
         email: st.email,
         frequency: st.schedule.key,
         lastAt: st.lastAt,
@@ -29637,6 +29723,29 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         busy: svc.busy,
         keep: DriveBackupService.KEEP
       };
+    }
+    /** The add-on's price as the server quoted it for this person, e.g. "₹199", or null when unknown. */
+    #backupOffer() {
+      const item = this.#paymentOffers?.products?.find((o) => o.product === "drive_backup" && o.available);
+      if (!item) return null;
+      return { price: `\u20B9${(item.amountPaise / 100).toLocaleString("en-IN")}`, buying: this.#buying === "drive_backup" };
+    }
+    /** Buy scheduled and automatic backups (one-time). Needs a sign-in so the purchase is remembered. */
+    async driveUnlock() {
+      if (!this.#sync.currentUser) {
+        this.#toast.show("Sign in first, so Pocket remembers your purchase");
+        this.closeModal();
+        setTimeout(() => this.openModal("auth"), 200);
+        return;
+      }
+      if (!this.#paymentOffers) await this.#refreshPlanInfo();
+      if (!this.#backupOffer()) {
+        this.#toast.show(this.#sync.plan?.backup ? "Scheduled backups are already on for your account" : "Payments aren't available right now. Please try again later.");
+        this.#driveChanged();
+        return;
+      }
+      await this.buy("drive_backup");
+      this.#driveChanged();
     }
     async driveConnect() {
       await this.#driveJob(async () => {

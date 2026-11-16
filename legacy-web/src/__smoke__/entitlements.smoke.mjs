@@ -84,6 +84,7 @@ const lapsed = { ...grace, plan: 'free', planName: 'Free', state: 'lapsed', acce
     && free.aiCostLine === 'A scan uses 5 credits; a voice entry uses 1 for every 30 seconds.', free.aiCostLine);
   const set = Entitlements.from({ plan: 'free', state: 'free', aiCredits: 20, aiCosts: { scan: 1, voice: 2, voiceSeconds: 60 } });
   ok('AI costs follow the server, and the 20 free credits show as the balance', set.aiCosts.scan === 1 && set.aiCosts.voiceSeconds === 60 && set.aiCredits === 20 && /uses 1 credit;/.test(set.aiCostLine));
+  ok('scheduled backups: off unless the server says so', !free.backup && !set.backup && Entitlements.from({ plan: 'free', state: 'free', backup: true }).backup && !Entitlements.from({ plan: 'free', state: 'free', backup: 'yes' }).backup);
   const odd = Entitlements.from({ plan: 'free', state: 'free', aiCosts: { scan: 0, voice: 'x' } });
   ok('odd costs from the server fall back to the defaults', odd.aiCosts.scan === 5 && odd.aiCosts.voice === 1 && odd.aiCosts.voiceSeconds === 30);
 }

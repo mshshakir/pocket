@@ -54,7 +54,7 @@ export class PlanCard {
     switch (plan.state) {
       case 'active':
         if (plan.isLifetime) return 'Everything in your plan is included, with no end date.';
-        if (plan.term === 'trial') return `Trial until ${day(plan.endsAt)}.`;
+        if (plan.term === 'trial') return `Full trial until ${day(plan.endsAt)}.`;
         return plan.endsAt ? `${plan.toJSON().autoRenew ? 'Renews' : 'Active until'} ${day(plan.endsAt)}.` : 'Active.';
       case 'grace':
         return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ''}. Your cloud copy is read-only until `
@@ -195,7 +195,7 @@ export class PlanCard {
     if (plan.state === 'active' && plan.isPaid) return '';
     const product = offers?.products.find((o) => o.plan === p.code && o.term === 'trial');
     if (offers && (!product || !product.available)) return '';
-    const text = `or try it for ${p.trial_days} days for ${product ? PlanCard.#price(product) : PlanCard.#inr(p.trial_paise)}`;
+    const text = `or take the Full trial: everything for ${p.trial_days} days, ${product ? PlanCard.#price(product) : PlanCard.#inr(p.trial_paise)}`;
     if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
     return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? 'disabled' : ''} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? 'Opening…' : text}</button></div>`;
   }

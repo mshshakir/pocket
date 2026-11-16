@@ -9,6 +9,12 @@
  * restore, and a CSV of every transaction. The newest KEEP backups are kept;
  * older ones are removed from the folder.
  *
+ * Backing up by hand and restoring are free for everyone. A schedule and
+ * automatic backups need the add-on (bought once, or included in Sync and
+ * Family): the app tells this service with setUnlocked(), and it is
+ * remembered on the device so the schedule keeps working offline. Without
+ * it the schedule reads as "off" and nothing is ever due.
+ *
  * The link to Drive belongs to this device and to whoever's book is on it:
  * the settings record the book's owner, and anyone else finds Drive "not
  * connected", so one person's book can never be saved into another's Drive.
@@ -33,6 +39,8 @@ export class DriveBackupService {
   static #KEY = 'pocket.v1.drive';
   /** When an automatic backup last started on this device (any tab). */
   static #AUTO_KEY = 'pocket.v1.drive.auto';
+  /** Whose book has scheduled backups unlocked on this device (an owner key). */
+  static #UNLOCKED_KEY = 'pocket.v1.drive.unlocked';
   /** After an automatic try, wait this long before another (also stops two tabs both saving). */
   static #AUTO_GAP_MS = 30 * 60_000;
   /** The owner recorded for a book nobody has signed in to. */
@@ -69,14 +77,17 @@ export class DriveBackupService {
   /**
    * Where things stand for this book.
    * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
-   * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null, automatic: boolean}}
+   * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null, automatic: boolean, unlocked: boolean}}
    *   automatic: backups run by themselves (the person switched it on)
+   *   unlocked: a schedule and automatic backups are available (the add-on, or a plan that includes it)
    *   progress: how far through the period the last backup is (see BackupSchedule.progress)
    */
   status(owner) {
     const s = this.#settingsFor(owner);
-    const schedule = new BackupSchedule(s?.frequency);
+    const unlocked = this.unlocked(owner);
+    const schedule = new BackupSchedule(unlocked ? s?.frequency : 'off');
     return {
+      unlocked,
       connected: !!s,
       email: s?.email || '',
       schedule,
@@ -84,7 +95,7 @@ export class DriveBackupService {
       due: !!s && schedule.isDue(s.lastAt, this.#now()),
       progress: s ? schedule.progress(s.lastAt, this.#now()) : null,
       daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null,
-      automatic: !!s?.refreshToken,
+      automatic: unlocked && !!s?.refreshToken,
     };
   }
 
@@ -107,6 +118,22 @@ export class DriveBackupService {
     });
   }
 
+  /** Whether scheduled and automatic backups are unlocked for this book on this device. */
+  unlocked(owner) {
+    return this.#read(DriveBackupService.#UNLOCKED_KEY) === DriveBackupService.#ownerKey(owner);
+  }
+
+  /**
+   * Record what the person's plan says (called when the plan is known).
+   * @param {string|null} owner @param {boolean} yes
+   */
+  setUnlocked(owner, yes) {
+    try {
+      if (yes) this.#storage.setItem(DriveBackupService.#UNLOCKED_KEY, DriveBackupService.#ownerKey(owner));
+      else if (this.unlocked(owner)) this.#storage.removeItem(DriveBackupService.#UNLOCKED_KEY);
+    } catch (_) { /* private mode */ }
+  }
+
   /** Whether automatic backups can be offered (the server side is set up). @returns {Promise<boolean>} */
   automaticOffered() { return this.#tokens.automaticOffered(); }
 
@@ -115,6 +142,7 @@ export class DriveBackupService {
    * @param {string|null} owner
    */
   async enableAutomatic(owner) {
+    if (!this.unlocked(owner)) throw new Error('Automatic backups are part of scheduled backups. Unlock them first.');
     return this.#exclusive(async () => {
       const s = this.#linked(owner);
       const refreshToken = await this.#tokens.authorizeOffline();
@@ -157,7 +185,7 @@ export class DriveBackupService {
   /** @param {string|null} owner @param {string} frequency  off | daily | weekly | monthly */
   setFrequency(owner, frequency) {
     const s = this.#settingsFor(owner);
-    if (!s) return;
+    if (!s || !this.unlocked(owner)) return;
     this.#save({ ...s, frequency: new BackupSchedule(frequency).key });
   }
 
@@ -233,7 +261,7 @@ export class DriveBackupService {
     const s = this.#settingsFor(owner);
     if (!s) throw new Error('Connect Google Drive first');
     this.#tokens.account = s.email;
-    this.#tokens.refreshToken = s.refreshToken || '';
+    this.#tokens.refreshToken = this.unlocked(owner) ? (s.refreshToken || '') : '';
     return s;
   }
 

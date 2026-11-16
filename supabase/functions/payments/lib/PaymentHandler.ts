@@ -42,6 +42,7 @@ export class PaymentHandler {
     lifetime: 'Your account is already free for life.',
     trial_used: 'You\'ve already used your trial.',
     has_plan: 'The trial is for people without a plan.',
+    has_backup: 'Scheduled backups are already switched on for your account.',
     no_place: 'There is no programme place waiting for you to pay for.',
     no_credit: 'There\'s no paid time left on your plan to move.',
     not_lower: 'Moving to a bigger plan needs a payment; your time left is added as extra days.',

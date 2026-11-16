@@ -117,7 +117,10 @@ export class ReceiptScanService {
    * @returns {Promise<Object>} prefill for openModal('transaction', { prefill })
    * @throws {Error} '.message' human-readable; AiError (with `.code`) for sign-in and credits.
    */
-  async parseVoice(audio, { book, seconds = 0 } = {}) {
+/** What the last scan or voice entry cost and what is left (see AiGateway.lastUse). */
+  get lastUse() { return this.#gateway.lastUse; }
+
+    async parseVoice(audio, { book, seconds = 0 } = {}) {
     const state  = this.#store.getState();
 
     let base64, mediaType;

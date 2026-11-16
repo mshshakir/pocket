@@ -126,7 +126,7 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 a plan can be pointed out (website link)', /plan-highlight[^"]*" id="plan-family"/.test(card.html(free({ paymentsOpen: true }), catalogue, offers(), null, '', { highlight: 'family' })));
   ok('C6 payment open: trial, months, years and the AI pack can be bought',
      ['family_trial', 'sync_month', 'sync_year', 'family_month', 'family_year', 'ai_pack'].every((x) => buys.includes(x)), buys.join());
-  ok('C6 prices are shown in rupees', openMonth.includes('Get Sync · ₹169') && open.includes('Get Family · ₹1,499') && open.includes('or try it for 14 days for ₹50'));
+  ok('C6 prices are shown in rupees', openMonth.includes('Get Sync · ₹169') && open.includes('Get Family · ₹1,499') && open.includes('or take the Full trial: everything for 14 days, ₹50'));
 
   const used = card.html(free({ paymentsOpen: true, trialAvailable: false }), catalogue, offers(false));
   ok('C6 a used trial has no button', !used.includes("buy('family_trial')"));

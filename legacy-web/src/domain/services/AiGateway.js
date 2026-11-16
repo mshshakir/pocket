@@ -21,6 +21,7 @@ export class AiError extends Error {
 export class AiGateway {
   /** @type {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} */
   #invoker;
+  #lastUse = null;
 
   /**
    * @param {() => (((name: string, opts: object) => Promise<{data: any, error: any}>)|null)} invoker
@@ -49,8 +50,20 @@ export class AiGateway {
     const { data, error } = result ?? {};
     if (error) throw await AiGateway.#explain(error);
     if (typeof data?.text !== 'string') throw new AiError('The AI returned nothing. Please try again.', 'ai_failed');
+    this.#lastUse = {
+      chargedTo: data.chargedTo || null,
+      cost: Number.isInteger(data.cost) ? data.cost : null,
+      remaining: Number.isInteger(data.remaining) ? data.remaining : null,
+    };
     return data.text;
   }
+
+  /**
+   * Who paid for the last successful request, what it cost and what is left
+   * (remaining is null for unlimited). Null before any request.
+   * @returns {{chargedTo: string|null, cost: number|null, remaining: number|null}|null}
+   */
+  get lastUse() { return this.#lastUse; }
 
   /** A function error carries the server's JSON answer in its response. */
   static async #explain(error) {

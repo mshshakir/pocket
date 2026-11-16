@@ -21,6 +21,10 @@
  *   A3  not again within half an hour, nor from a second tab; switching off goes back to the Back up now box
  *   A4  Google withdrew the permission: automatic turns itself off and the box asks for a tap
  *   A5  Google gave no lasting permission, or the window was closed: stays off, says why
+ *   L1  without the add-on: Connect, Back up now and Restore work; no schedule, no automatic switch, an Unlock row
+ *   L2  nothing is ever due, no icon, and nothing runs by itself — even with settings left over from before
+ *   L3  Unlock asks a signed-out person to sign in first
+ *   L4  once the add-on is recorded for this book, the schedule and the switch are back
  *
  * Run: node src/__smoke__/drive-backup.smoke.mjs
  */
@@ -109,7 +113,7 @@ const book = () => ({
   transactions: [{ id: 't1', date: '2026-11-10', type: 'expense', accountId: 'a1', categoryId: 'c1', amount: 12500, currency: 'INR', payee: 'Chai, "special"', note: '', tags: [] }],
   budgets: [], debts: [], family: [], merchantCategories: {}, accountGroups: [], regularItems: [],
 });
-function boot({ search = '', clientId = 'test-client', owner = null, drive = new FakeGoogleDrive(), storage = null } = {}) {
+function boot({ search = '', clientId = 'test-client', owner = null, drive = new FakeGoogleDrive(), storage = null, paid = true } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
       <div id="planBanner"></div><div class="status-icons"></div><div id="appNotices"></div>
       <div id="viewContent"></div><div id="sidebarNav"></div><div id="bottomNav"></div><div id="authPill"></div><div id="app"></div>
@@ -117,6 +121,8 @@ function boot({ search = '', clientId = 'test-client', owner = null, drive = new
   const { window } = dom;
   window.localStorage.setItem('pocket.v1', JSON.stringify(book()));
   if (owner) window.localStorage.setItem('pocket.v1.owner', owner);
+  // Scheduled backups are an add-on; most of this suite runs with it unlocked for this book.
+  if (paid) window.localStorage.setItem('pocket.v1.drive.unlocked', owner || 'guest');
   for (const [k, v] of Object.entries(storage || {})) window.localStorage.setItem(k, v);
   window.lucide = { createIcons() {} };
   window.Chart = function () { return { destroy() {} }; };
@@ -373,6 +379,50 @@ const notice = (w) => w.document.querySelector('.app-notice-backup');
   shy.g.givesRefreshToken = true; shy.g.window = 'closed';
   await shy.w.__app.driveSetAutomatic(true);
   ok('A5 Google\'s window closed: stays off, the switch works again', !shy.w.__app.driveStatus().automatic && /closed before it finished/.test(toast(shy.w)) && !shy.w.document.querySelector('.drive-auto-toggle')?.disabled);
+}
+
+{
+  const { w, g } = boot({ paid: false });
+  await wait(80);
+  const app = w.__app;
+  await dataTab(w);
+  await app.driveConnect();
+  await wait(30);
+  const card = () => w.document.querySelector('.drive-backup');
+  ok('L1 without the add-on: connected, with Back up now, Restore and an Unlock row — no schedule choice, no automatic switch',
+    /me@example\.com/.test(card().textContent) && !!card().querySelector('.drive-now') && !!card().querySelector('.drive-restore-open')
+    && !!card().querySelector('.drive-unlock-buy') && /one-time add-on/.test(card().querySelector('.drive-unlock').textContent)
+    && !card().querySelector('.drive-frequency') && !card().querySelector('.drive-auto'), card().textContent);
+  await app.driveBackupNow();
+  ok('L1 Back up now is free: the book and CSV are saved', g.namesIn(g.folderId()).length === 2 && /Backed up to Google Drive/.test(toast(w)));
+  app.openDriveRestore();
+  await until(() => w.document.querySelectorAll('.drive-restore-row').length === 1);
+  ok('L1 Restore is free: the backup is listed', w.document.querySelectorAll('.drive-restore-row').length === 1);
+  app.closeModal();
+
+  const left = { ...JSON.parse(w.localStorage.getItem('pocket.v1.drive')), frequency: 'daily', lastAt: '2026-01-01T00:00:00.000Z', refreshToken: 'rt-left-over' };
+  w.localStorage.setItem('pocket.v1.drive', JSON.stringify(left));
+  app.driveSetFrequency('daily');
+  app.navigate('transactions');
+  await wait(300);
+  const st = app.driveStatus();
+  ok('L2 nothing is due, no icon or box, not automatic — even with a schedule and permission left over from before',
+    st.connected && !st.unlocked && !st.due && st.frequency === 'off' && !st.automatic && !notice(w) && !w.document.querySelector('.status-icon-backup'));
+  ok('L2 and nothing was saved by itself', g.namesIn(g.folderId()).length === 2 && !g.authCalls.includes('refresh'));
+  await app.driveSetAutomatic(true);
+  ok('L2 switching automatic on is refused until unlocked', !app.driveStatus().automatic && /Unlock them first/.test(toast(w)), toast(w));
+
+  await app.driveUnlock();
+  await wait(260);
+  ok('L3 Unlock when signed out: asks to sign in first', /Sign in first/.test(toast(w)));
+  app.closeModal();
+
+  w.localStorage.setItem('pocket.v1.drive.unlocked', 'guest');
+  const tab = await dataTab(w);
+  ok('L4 with the add-on recorded for this book: the schedule is back (daily, due) and Unlock is gone',
+    app.driveStatus().unlocked && tab.querySelector('.drive-frequency')?.value === 'daily' && !tab.querySelector('.drive-unlock') && app.driveStatus().due);
+  w.localStorage.setItem('pocket.v1.drive.unlocked', 'someone-else');
+  ok('L4 the add-on recorded for another person\'s book does not unlock this one', !app.driveStatus().unlocked);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

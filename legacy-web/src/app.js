@@ -486,6 +486,11 @@ export class Application {
     // Plans: the banner above every page, and Settings kept current.
     this.#planBanner = new PlanBanner(document.getElementById('planBanner'), this.#bus);
     this.#bus.on('plan:changed', () => {
+      // Scheduled backups: remember on this device what the signed-in person's plan says.
+      if (this.#sync.currentUser && this.#driveBackup) {
+        this.#driveBackup.setUnlocked(Repository.storedOwner(), !!this.#sync.plan?.backup);
+        this.#refreshNotices();
+      }
       if (this.#modal.active === 'settings') this.#modal.refresh();
     });
 
@@ -825,6 +830,23 @@ export class Application {
   /** @returns {import('./domain/billing/Entitlements.js').Entitlements} */
   getPlan() { return this.#sync.plan; }
 
+  /**
+   * After a scan or voice entry: the usual note, or — when the person's own
+   * credits are running low (less than two scans' worth) — how many are left,
+   * with a button to buy a pack.
+   * @param {string} message
+   */
+  #aiDoneToast(message) {
+    const use = this.receiptScanner.lastUse;
+    const scan = this.#sync.plan?.aiCosts?.scan ?? 5;
+    const low = use && use.chargedTo !== 'unlimited' && use.remaining !== null && use.remaining < scan * 2;
+    if (!low) { this.#toast.show(message); return; }
+    const left = use.remaining;
+    this.#toast.show(`${left} AI credit${left === 1 ? '' : 's'} left`, {
+      action: { label: 'Buy a pack', run: () => { this.closeModal(); this.openModal('settings'); this.setSettingsTab('account'); } },
+    });
+  }
+
   /** The line under the voice timer: speak clearly, and what it costs (nothing to say about cost on unlimited). */
   #voiceNote() {
     const plan = this.#sync.plan;
@@ -943,7 +965,9 @@ export class Application {
       const code = this.#couponApplied && this.#paymentOffers?.coupon?.products?.includes(product) ? this.#couponApplied : '';
       await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
       this.#coupon = ''; this.#couponApplied = null; this.#couponOpen = false;
-      this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added' : 'Payment received — your plan is updated');
+      this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added'
+        : product === 'drive_backup' ? 'Payment received — scheduled backups are on'
+        : 'Payment received — your plan is updated');
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
     } finally {
@@ -2499,7 +2523,7 @@ export class Application {
       // Close the current modal (if open) and open a fresh, fully pre-filled one
       this.closeModal();
       this.openModal('transaction', { prefill });
-      this.#toast.show('Receipt scanned · review and save');
+      this.#aiDoneToast('Receipt scanned · review and save');
     } catch (e) {
       this.#showAiError(e, 'Scan');
       // Restore button label on any failure
@@ -2555,7 +2579,7 @@ export class Application {
         finish();
         this.closeModal();
         this.openModal('transaction', { prefill });
-        this.#toast.show('Heard it · review and save');
+        this.#aiDoneToast('Heard it · review and save');
       } catch (e) {
         finish();
         this.#showAiError(e, 'Voice');
@@ -5123,15 +5147,41 @@ export class Application {
   driveStatus() {
     const svc = this.#driveBackup;
     if (!svc || !svc.available || DemoMode.active) {
-      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
+      return { available: false, connected: false, unlocked: false, offer: null, email: '', frequency: 'off', lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
     }
     const st = svc.status(Repository.storedOwner());
     return {
-      available: true, connected: st.connected, email: st.email, frequency: st.schedule.key,
+      available: true, connected: st.connected, unlocked: st.unlocked, offer: this.#backupOffer(),
+      email: st.email, frequency: st.schedule.key,
       lastAt: st.lastAt, due: st.due, progress: st.progress, daysLeft: st.daysLeft,
       automatic: st.automatic, automaticOffered: this.#driveAutoOffered === true,
       busy: svc.busy, keep: DriveBackupService.KEEP,
     };
+  }
+
+  /** The add-on's price as the server quoted it for this person, e.g. "₹199", or null when unknown. */
+  #backupOffer() {
+    const item = this.#paymentOffers?.products?.find((o) => o.product === 'drive_backup' && o.available);
+    if (!item) return null;
+    return { price: `₹${(item.amountPaise / 100).toLocaleString('en-IN')}`, buying: this.#buying === 'drive_backup' };
+  }
+
+  /** Buy scheduled and automatic backups (one-time). Needs a sign-in so the purchase is remembered. */
+  async driveUnlock() {
+    if (!this.#sync.currentUser) {
+      this.#toast.show('Sign in first, so Pocket remembers your purchase');
+      this.closeModal();
+      setTimeout(() => this.openModal('auth'), 200);
+      return;
+    }
+    if (!this.#paymentOffers) await this.#refreshPlanInfo();
+    if (!this.#backupOffer()) {
+      this.#toast.show(this.#sync.plan?.backup ? 'Scheduled backups are already on for your account' : 'Payments aren\'t available right now. Please try again later.');
+      this.#driveChanged();
+      return;
+    }
+    await this.buy('drive_backup');
+    this.#driveChanged();
   }
 
   async driveConnect() {

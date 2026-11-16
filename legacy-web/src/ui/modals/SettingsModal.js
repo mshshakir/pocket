@@ -323,15 +323,15 @@ export class SettingsModal {
               Each backup saves two files in a <b>Pocket backups</b> folder in your own Google Drive: your whole book
               (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
               ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
-              and the files never pass through Pocket's servers. When a backup is due, Pocket shows
-              <b>Back up now</b> the next time you open it — one tap saves it. Or switch on
-              <b>Back up automatically</b> and Pocket saves it by itself when you open it.
+              and the files never pass through Pocket's servers. <b>Back up now</b> and <b>Restore</b> are free.
+              With scheduled backups, Pocket shows <b>Back up now</b> when one is due, or saves it by itself
+              if you switch on <b>Back up automatically</b>.
             </div>
           </details>`;
     if (!d.connected) {
       return `
         <div class="card-muted p-3 mb-3 drive-backup">${head}
-          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive, on a schedule you choose. Free on every plan.</div>
+          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive. Backing up and restoring are free.</div>
           <button class="btn btn-primary w-full justify-center drive-connect" onclick="window.__app.driveConnect()" ${d.busy ? 'disabled' : ''}>
             <i data-lucide="link"></i> ${d.busy ? 'Connecting…' : 'Connect Google Drive'}
           </button>${how}
@@ -343,11 +343,23 @@ export class SettingsModal {
           <div class="text-xs text-zinc-500 mb-2">
             ${d.email ? `Connected to <b>${this.#esc(d.email)}</b>` : 'Connected'} · Last backup: <span class="drive-last">${this.#esc(last)}</span>${d.due ? ' · <span class="text-amber-600">due now</span>' : ''}
           </div>
+          ${d.unlocked ? `
           <label class="text-xs text-zinc-500">Back up</label>
           <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
             ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? 'selected' : ''}>${c.label}</option>`).join('')}
-          </select>
-          ${d.automaticOffered || d.automatic ? `
+          </select>` : `
+          <div class="flex items-start gap-3 mb-3 p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 drive-unlock">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium">Scheduled backups</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ''}; included in Sync and Family.
+              </div>
+            </div>
+            <button type="button" class="btn btn-primary text-xs drive-unlock-buy" onclick="window.__app.driveUnlock()" ${d.busy || d.offer?.buying ? 'disabled' : ''}>
+              ${d.offer?.buying ? 'Opening…' : d.offer ? `Unlock · ${this.#esc(d.offer.price)}` : 'Unlock'}
+            </button>
+          </div>`}
+          ${d.unlocked && (d.automaticOffered || d.automatic) ? `
           <div class="flex items-start gap-3 mb-3 drive-auto">
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium">Back up automatically</div>

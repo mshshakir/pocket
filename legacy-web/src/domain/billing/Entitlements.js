@@ -47,6 +47,7 @@ export class Entitlements {
       access: { sync: 'none', telegram: 'none', sharing: 'none' },
       seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: false, trialAvailable: true,
       paymentsOpen: false,
+      backup: false,
       aiCosts: { ...Entitlements.AI_COSTS },
     });
   }
@@ -88,6 +89,7 @@ export class Entitlements {
       aiUnlimited: raw.aiUnlimited === true,
       trialAvailable: raw.trialAvailable !== false,
       paymentsOpen: raw.paymentsOpen === true,
+      backup: raw.backup === true,
       aiCosts: Entitlements.#costs(raw.aiCosts),
     });
   }
@@ -108,6 +110,8 @@ export class Entitlements {
   get trialAvailable() { return this.#data.trialAvailable; }
   /** Online payment is switched on (billing_settings.payments_enabled). */
   get paymentsOpen()   { return this.#data.paymentsOpen; }
+  /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
+  get backup()         { return this.#data.backup; }
   /** Credits a scan costs, and a voice entry per `voiceSeconds` of recording. @returns {{scan: number, voice: number, voiceSeconds: number}} */
   get aiCosts()        { return { ...this.#data.aiCosts }; }
 

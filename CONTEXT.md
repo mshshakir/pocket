@@ -56,6 +56,17 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · Plans reshaped** (migration `0044_backup_addon_and_full_trial`, applied). *Scheduled Drive
+  backups are a one-time add-on* (₹199, `billing_settings.backup_paise`, product `drive_backup`, table
+  `addons`); Back up now and Restore stay free; Sync, Family and people covered by Family have it included
+  (`pocket_has_backup`, `pocket_entitlements().backup`). The app records it per device
+  (`DriveBackupService.setUnlocked`, `pocket.v1.drive.unlocked` = the book's owner) on `plan:changed`, so the
+  schedule works offline; locked = schedule reads "off", nothing due, no automatic. Settings card shows an
+  Unlock row (`Application.driveUnlock` → sign-in if needed → `buy('drive_backup')`). *Trial* is named
+  "Full trial" everywhere. *AI low balance:* after a scan/voice entry, under two scans' worth left shows
+  "N AI credits left · Buy a pack" (`AiGateway.lastUse`). The ₹99 commitment-fee idea was dropped.
+  **Not built — waiting for Razorpay approval:** Sync/Family as auto-renewing subscriptions (Terms and Refunds
+  still say nothing renews).
 - **2026-11-16 · AI credits re-priced** (migration `0043_ai_credit_costs`, applied; 0042 is the Telegram
   self-link migration from another session). Pack ₹100 = 500 credits (`ai_credit_paise` 20); a scan costs
   `ai_scan_credits` (5); a voice entry `ai_voice_credits` (1) per `ai_voice_block_secs` (30 s) or part; every
