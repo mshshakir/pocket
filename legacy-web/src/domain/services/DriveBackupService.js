@@ -58,7 +58,8 @@ export class DriveBackupService {
   /**
    * Where things stand for this book.
    * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
-   * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean}}
+   * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null}}
+   *   progress: how far through the period the last backup is (see BackupSchedule.progress)
    */
   status(owner) {
     const s = this.#settingsFor(owner);
@@ -69,6 +70,8 @@ export class DriveBackupService {
       schedule,
       lastAt: s?.lastAt || null,
       due: !!s && schedule.isDue(s.lastAt, this.#now()),
+      progress: s ? schedule.progress(s.lastAt, this.#now()) : null,
+      daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null,
     };
   }
 

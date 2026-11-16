@@ -7,7 +7,8 @@
  *   M1  manifest: installable (name, standalone, start page, icons that exist); pages link it
  *   L1  precache list: pages, stamped modules, vendor, icons; CDN scripts from app.html; no admin; sw.js stamped
  *   A1  Settings → General: Install card with a button when offered, steps when not, gone once installed
- *   A2  offline: a note above the page; back online it goes
+ *   A2  network icon: green online; offline amber shading to red over a week; the offline box the first time
+ *       only, with a close button; tap the icon to reopen
  *
  * Run: node src/__smoke__/pwa.smoke.mjs
  */
@@ -109,7 +110,7 @@ class FakeWindow {
 const bundleSrc = readFileSync(join(root, 'bundle.js'), 'utf8');
 function boot() {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
-      <div id="planBanner"></div><div id="appNotices"></div>
+      <div id="planBanner"></div><div class="status-icons"></div><div id="appNotices"></div>
       <div id="viewContent"></div><div id="sidebarNav"></div><div id="bottomNav"></div><div id="authPill"></div><div id="app"></div>
     </body></html>`, { url: 'https://local.test/app.html', pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window } = dom;
@@ -151,13 +152,41 @@ function boot() {
   app.closeModal();
 
   const note = () => w.document.querySelector('.app-notice-offline');
-  ok('A2 online: no note', !note());
+  const hueOf = (win) => Number(/hsl\((\d+)/.exec(win.document.querySelector('.status-icons .status-icon-offline')?.innerHTML || '')?.[1]);
+  ok('A2 online: no box; a green network icon with no dot', !note() && hueOf(w) === 142 && !w.document.querySelector('.status-icon-offline .status-dot'));
+  app.toggleNotice('offline');
+  ok('A2 tapping the green icon says you are online; closing it does not use up the first offline explanation', /You're online/.test(w.document.querySelector('.app-notice-online')?.textContent || ''));
+  app.dismissNotice('offline');
   Object.defineProperty(w.navigator, 'onLine', { value: false, configurable: true });
   w.dispatchEvent(new w.Event('offline'));
-  ok('A2 offline: a note says entries are saved on this device', !!note() && /saved on this device/.test(note().textContent) && !/will sync/.test(note().textContent));
-  Object.defineProperty(w.navigator, 'onLine', { value: true, configurable: true });
-  w.dispatchEvent(new w.Event('online'));
-  ok('A2 back online: the note goes', !note());
+  const icon = () => w.document.querySelector('.status-icons .status-icon-offline');
+  const net = (on) => { Object.defineProperty(w.navigator, 'onLine', { value: on, configurable: true }); w.dispatchEvent(new w.Event(on ? 'online' : 'offline')); };
+  ok('A2 offline the first time: a box says entries are saved on this device, with a close button, and an icon in the top bar',
+    !!note() && /saved on this device/.test(note().textContent) && !/will sync/.test(note().textContent) && !!note().querySelector('.app-notice-close') && !!icon()
+    && hueOf(w) === 38 && !!icon().querySelector('.status-dot'), String(hueOf(w)));
+  app.dismissNotice('offline');
+  ok('A2 closed: the box goes, the icon stays while offline', !note() && !!icon());
+  app.toggleNotice('offline');
+  ok('A2 tapping the icon opens the box again', !!note());
+  net(true);
+  ok('A2 back online: the box goes and the icon is green again', !note() && hueOf(w) === 142);
+  net(false);
+  ok('A2 offline again: only the icon', !note() && hueOf(w) === 38);
+  const remembered = JSON.parse(w.localStorage.getItem('pocket.v1.notices'));
+  w.localStorage.setItem('pocket.v1.notices', JSON.stringify({ ...remembered, lastOnlineAt: new Date(Date.now() - 3.5 * 86_400_000).toISOString() }));
+  w.dispatchEvent(new w.Event('offline'));
+  const half = hueOf(w);
+  w.localStorage.setItem('pocket.v1.notices', JSON.stringify({ ...remembered, lastOnlineAt: new Date(Date.now() - 20 * 86_400_000).toISOString() }));
+  w.dispatchEvent(new w.Event('offline'));
+  ok('A2 the longer offline, the redder: half-way after 3½ days, fully red after a week', half < 38 && half > 4 && hueOf(w) === 4 && /last online/.test(icon().getAttribute('title')), `${half} ${hueOf(w)}`);
+  net(true);
+  const fresh = boot();
+  await wait(100);
+  Object.defineProperty(fresh.navigator, 'onLine', { value: false, configurable: true }); fresh.dispatchEvent(new fresh.Event('offline'));
+  ok('A2 a box left open counts as seen once the device is back online', !!fresh.document.querySelector('.app-notice-offline'));
+  Object.defineProperty(fresh.navigator, 'onLine', { value: true, configurable: true }); fresh.dispatchEvent(new fresh.Event('online'));
+  Object.defineProperty(fresh.navigator, 'onLine', { value: false, configurable: true }); fresh.dispatchEvent(new fresh.Event('offline'));
+  ok('A2 so the next time offline shows just the icon', !fresh.document.querySelector('.app-notice-offline') && !!fresh.document.querySelector('.status-icon-offline'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

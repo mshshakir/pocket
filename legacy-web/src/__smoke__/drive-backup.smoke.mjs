@@ -8,7 +8,9 @@
  *   U2  Settings → Data: Connect, then connected with the email, schedule and buttons
  *   U3  Back up now saves the book + CSV into "Pocket backups"; the book restores the same data
  *   U4  only the newest 10 backups are kept
- *   U5  a due backup shows the note above the page; Back up now clears it; Later hides it
+ *   U5  a due backup shows a box and a top-bar icon; Back up now clears both; Later / close hides the box
+ *       (icon stays, tap to reopen); the box returns after 3 days, and for the next due backup;
+ *       the icon is green after a backup and shades to amber when due, then red when overdue
  *   U6  Restore lists backups and swaps the book (after asking)
  *   U7  closing Google's window, or a blocked pop-up, says so and changes nothing
  *   U8  another person's book on this device is "not connected" (never saved into this Drive)
@@ -104,7 +106,7 @@ const book = () => ({
 });
 function boot({ search = '', clientId = 'test-client', owner = null, drive = new FakeGoogleDrive(), storage = null } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
-      <div id="planBanner"></div><div id="appNotices"></div>
+      <div id="planBanner"></div><div class="status-icons"></div><div id="appNotices"></div>
       <div id="viewContent"></div><div id="sidebarNav"></div><div id="bottomNav"></div><div id="authPill"></div><div id="app"></div>
     </body></html>`, { url: `https://local.test/app.html${search}`, pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window } = dom;
@@ -192,9 +194,49 @@ const notice = (w) => w.document.querySelector('.app-notice-backup');
   ok('U5 Back up now on the note saves a backup and clears it', /driveBackupNow\(\)/.test(noteButton) && !notice(w) && g.namesIn(folder).filter((n) => /^Pocket book/.test(n)).length === 10);
   w.localStorage.setItem('pocket.v1.drive', JSON.stringify({ ...JSON.parse(w.localStorage.getItem('pocket.v1.drive')), lastAt: '2026-01-01T00:00:00.000Z' }));
   app.driveSetFrequency('daily');
-  app.hideBackupNotice();
+  const icon = () => w.document.querySelector('.status-icons .status-icon-backup');
+  ok('U5 while a backup is due its icon is in the top bar, and the box has Later and a close button', !!icon() && !!notice(w).querySelector('.app-notice-close'));
+  app.dismissNotice('backup');
   app.navigate('transactions');
-  ok('U5 Later hides the note for this visit', !notice(w));
+  ok('U5 Later (or close) hides the box; the icon stays', !notice(w) && !!icon());
+  app.toggleNotice('backup');
+  ok('U5 tapping the icon opens the box again', !!notice(w));
+  app.toggleNotice('backup');
+  ok('U5 tapping it once more closes it', !notice(w) && !!icon());
+  const seen = JSON.parse(w.localStorage.getItem('pocket.v1.notices'));
+  w.localStorage.setItem('pocket.v1.notices', JSON.stringify({ ...seen, backupClosed: { ...seen.backupClosed, at: new Date(Date.now() - 2 * 86_400_000).toISOString() } }));
+  app.driveSetFrequency('daily');
+  ok('U5 two days after closing it, still just the icon', !notice(w) && !!icon());
+  w.localStorage.setItem('pocket.v1.notices', JSON.stringify({ ...seen, backupClosed: { ...seen.backupClosed, at: new Date(Date.now() - 4 * 86_400_000).toISOString() } }));
+  app.driveSetFrequency('daily');
+  ok('U5 after three days with no backup the box comes back', !!notice(w));
+  app.dismissNotice('backup');
+  await wait(1100);
+  await app.driveBackupNow();
+  const hue = () => Number(/hsl\((\d+)/.exec(icon()?.innerHTML || '')?.[1]);
+  ok('U5 once backed up, the box is gone and the icon is green with no dot', !notice(w) && !!icon() && hue() === 142 && !icon().querySelector('.status-dot'), String(hue()));
+  app.toggleNotice('backup');
+  ok('U5 tapping the green icon says it is up to date and when the next is due, with Back up now but no Later', /up to date/.test(notice(w).textContent) && /due tomorrow/.test(notice(w).textContent) && /Back up now/.test(notice(w).textContent) && !/Later/.test(notice(w).textContent));
+  app.dismissNotice('backup');
+  const ageBy = (days) => { w.localStorage.setItem('pocket.v1.drive', JSON.stringify({ ...JSON.parse(w.localStorage.getItem('pocket.v1.drive')), lastAt: new Date(Date.now() - days * 86_400_000).toISOString() })); };
+  ageBy(3); app.driveSetFrequency('weekly');
+  const mid = hue();
+  ok('U5 weekly, 3 days old: not due, the icon has moved part of the way from green to amber', !notice(w) && mid < 142 && mid > 38 && !icon().querySelector('.status-dot'), String(mid));
+  ageBy(7); app.driveSetFrequency('weekly');
+  ok('U5 weekly, 7 days old: due — amber with a dot, and the box shows', hue() === 38 && !!icon().querySelector('.status-dot') && !!notice(w), String(hue()));
+  app.dismissNotice('backup');
+  ageBy(11); app.driveSetFrequency('weekly');
+  const late = hue();
+  ageBy(30); app.driveSetFrequency('weekly');
+  ok('U5 overdue: the icon shades on towards red and stops there', late < 38 && late > 4 && hue() === 4, `${late} ${hue()}`);
+  app.driveSetFrequency('off');
+  ok('U5 no schedule: no icon', !icon());
+  app.driveSetFrequency('daily'); app.dismissNotice('backup');
+  await wait(1100);
+  await app.driveBackupNow();
+  w.localStorage.setItem('pocket.v1.drive', JSON.stringify({ ...JSON.parse(w.localStorage.getItem('pocket.v1.drive')), lastAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }));
+  app.driveSetFrequency('daily');
+  ok('U5 the next time a backup falls due the box shows again', !!notice(w) && !!icon());
 
   // U6 restore
   const older = g.add({ name: 'Pocket book 2026-11-01 070000.json', parents: [folder], body: JSON.stringify({ ...book(), accounts: [{ ...book().accounts[0], name: 'Restored bank' }], transactions: [] }) });

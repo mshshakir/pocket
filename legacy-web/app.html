@@ -396,7 +396,11 @@
       <div class="w-8 h-8 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center font-semibold text-sm">P</div>
       <span class="font-semibold tracking-tight">Pocket</span>
     </div>
-    <button class="btn btn-ghost" onclick="window.__app.toggleTheme()" title="Theme"><i data-lucide="sun-moon"></i></button>
+    <div class="flex items-center">
+      <!-- Offline / backup-due icons (AppNotices); tap one to read about it -->
+      <div class="status-icons flex items-center"></div>
+      <button class="btn btn-ghost" onclick="window.__app.toggleTheme()" title="Theme"><i data-lucide="sun-moon"></i></button>
+    </div>
   </div>
 </header>
 
@@ -411,6 +415,7 @@
         <div class="font-semibold tracking-tight">Pocket</div>
         <div class="text-xs text-zinc-500">Personal finance</div>
       </div>
+      <div class="status-icons flex items-center ml-auto"></div>
     </div>
 
     <!-- Navigation items injected by Navigation component -->

@@ -42,6 +42,30 @@ export class BackupSchedule {
     return BackupSchedule.#dayNumber(now) - BackupSchedule.#dayNumber(last) >= this.days;
   }
 
+  /**
+   * How far through the period the last backup is: 0 = just made, 1 = due,
+   * 2 = a whole period overdue. Never backed up counts as 1 (due). Null when
+   * there is no schedule.
+   * @param {string|null} lastAt @param {Date} [now]
+   * @returns {number|null}
+   */
+  progress(lastAt, now = new Date()) {
+    if (!this.automatic) return null;
+    const last = lastAt ? new Date(lastAt) : null;
+    if (!last || Number.isNaN(last.getTime())) return 1;
+    return Math.max(0, (BackupSchedule.#dayNumber(now) - BackupSchedule.#dayNumber(last)) / this.days);
+  }
+
+  /**
+   * Days until the next backup is due (0 or less = due now). Null when there is no schedule.
+   * @param {string|null} lastAt @param {Date} [now]
+   * @returns {number|null}
+   */
+  daysLeft(lastAt, now = new Date()) {
+    const done = this.progress(lastAt, now);
+    return done === null ? null : Math.round((1 - done) * this.days);
+  }
+
   /** Whole days since a fixed point, by the local calendar. */
   static #dayNumber(d) {
     return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000);

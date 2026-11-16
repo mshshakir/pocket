@@ -176,7 +176,7 @@ class OfflineCheck {
       await page.reload({ waitUntil: 'load' });
       const demoOffline = await page.waitForSelector('.demo-banner', { timeout: 20000 }).then(() => true, () => false);
       this.ok('O2 offline: the demo opens from the copy', demoOffline);
-      this.ok('O2 offline: the "You\'re offline" note shows above the page', await page.evaluate(() => /You're offline/.test(document.querySelector('.app-notice-offline')?.textContent || '')));
+      this.ok('O2 offline: the "You\'re offline" box shows the first time, with its icon in the top bar', await page.evaluate(() => /You're offline/.test(document.querySelector('.app-notice-offline')?.textContent || '') && !!document.querySelector('.status-icons .status-icon-offline')));
       await page.goto(`${web.base}/app.html`, { waitUntil: 'load' });
       const appOffline = await page.waitForFunction(() => !!window.__app && document.getElementById('viewContent')?.children.length > 0, null, { timeout: 20000 }).then(() => true, () => false);
       this.ok('O2 offline: the real app opens and draws a page', appOffline);

@@ -19661,58 +19661,211 @@ This replaces your current grouping.`
 
   // src/ui/components/AppNotices.js
   var AppNotices = class _AppNotices {
+    static #KEY = "pocket.v1.notices";
+    static REMIND_DAYS = 3;
+    /** Offline this long = the network icon is fully red. */
+    static OFFLINE_DAYS = 7;
+    static #GREEN = 142;
+    static #AMBER = 38;
+    static #RED = 4;
     #el;
-    #backupHidden = false;
-    /** @type {{online: boolean, syncs: boolean, backupDue: boolean, backupBusy: boolean, lastAt: string|null}} */
-    #state = { online: true, syncs: false, backupDue: false, backupBusy: false, lastAt: null };
-    /** @param {HTMLElement|null} el */
-    constructor(el) {
+    #iconEls;
+    #storage;
+    #now;
+    /** Boxes opened by tapping their icon; they stay until closed. */
+    #opened = { offline: false, backup: false };
+    /**
+     * backupOn: a schedule is set; backupProgress: 0 = just backed up, 1 = due, 2 = a period overdue.
+     * @type {{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}}
+     */
+    #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupBusy: false, lastAt: null };
+    /**
+     * @param {HTMLElement|null} el  where the boxes go
+     * @param {object} [deps]
+     * @param {Iterable<HTMLElement>} [deps.icons]  where the icons go (top bar, sidebar)
+     * @param {{getItem: Function, setItem: Function}|null} [deps.storage]  null = remembered for this visit only
+     * @param {() => Date} [deps.now]
+     */
+    constructor(el, { icons = [], storage = null, now = () => /* @__PURE__ */ new Date() } = {}) {
       this.#el = el;
+      this.#iconEls = [...icons];
+      this.#storage = storage || _AppNotices.#memory();
+      this.#now = now;
     }
-    /** @param {Partial<{online: boolean, syncs: boolean, backupDue: boolean, backupBusy: boolean, lastAt: string|null}>} state */
+    /** @param {Partial<{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}>} state */
     show(state) {
+      const wasOffline = !this.#state.online;
       this.#state = { ...this.#state, ...state };
-      if (!this.#el) return;
-      this.#el.innerHTML = this.html();
+      if (this.#state.online) this.#noteOnline();
+      if (wasOffline && this.#state.online) {
+        this.#remember({ offlineSeen: true });
+        this.#opened.offline = false;
+      }
+      if (!this.#state.backupOn) this.#opened.backup = false;
+      for (const el of this.#iconEls) el.innerHTML = this.iconsHtml();
+      if (this.#el) this.#el.innerHTML = this.html();
       if (typeof lucide !== "undefined") lucide.createIcons();
     }
-    /** Hide the backup note until the app is next opened. */
-    hideBackup() {
-      this.#backupHidden = true;
+    /** Close a box. @param {'offline'|'backup'} kind */
+    dismiss(kind) {
+      if (kind === "offline" && !this.#state.online) this.#remember({ offlineSeen: true });
+      if (kind === "backup" && this.#state.backupDue) this.#remember({ backupClosed: { lastAt: this.#state.lastAt || null, at: this.#now().toISOString() } });
+      this.#opened[kind] = false;
       this.show({});
     }
+    /** Open a box again (its icon was tapped); a second tap closes it. @param {'offline'|'backup'} kind */
+    toggle(kind) {
+      if (this.#boxShown(kind)) {
+        this.dismiss(kind);
+        return false;
+      }
+      this.#opened[kind] = true;
+      this.show({});
+      return true;
+    }
+    /** The boxes above the page. */
     html() {
       const s = this.#state;
-      return (s.online ? "" : this.#offline(s)) + (s.backupDue && !this.#backupHidden ? this.#backup(s) : "");
+      return (this.#boxShown("offline") ? this.#offline(s) : "") + (this.#boxShown("backup") ? this.#backup(s) : "");
+    }
+    /** The icons for the top bar: one per thing that applies now. */
+    iconsHtml() {
+      const s = this.#state;
+      const icon = (kind, name, label, color, dot = false) => `
+      <button type="button" class="btn btn-ghost px-2 status-icon status-icon-${kind}" title="${label}" aria-label="${label}"
+              style="position:relative" onclick="window.__app.toggleNotice('${kind}')">
+        <i data-lucide="${name}" style="width:18px;height:18px;color:${color}"></i>
+        ${dot ? `<span class="status-dot" style="position:absolute;top:5px;right:4px;width:7px;height:7px;border-radius:9999px;background:${color}"></span>` : ""}
+      </button>`;
+      return (s.online ? icon("offline", "wifi", "You're online", _AppNotices.backupColor(0)) : icon("offline", "wifi-off", this.#offlineLabel(), _AppNotices.offlineColor(this.#offlineProgress()), true)) + (s.backupOn ? icon("backup", s.backupDue ? "cloud-upload" : "cloud-check", this.#backupLabel(s), _AppNotices.backupColor(s.backupProgress), s.backupDue) : "");
+    }
+    /**
+     * The backup icon's colour: green just after a backup, shading to amber as
+     * the next one comes due, then to red over one more period.
+     * @param {number|null} progress  0 = just backed up, 1 = due, 2+ = long overdue
+     * @returns {string} a CSS colour
+     */
+    static backupColor(progress) {
+      const p = Math.min(2, Math.max(0, Number(progress) || 0));
+      const [green, amber, red] = [_AppNotices.#GREEN, _AppNotices.#AMBER, _AppNotices.#RED];
+      const hue = p <= 1 ? green + (amber - green) * p : amber + (red - amber) * (p - 1);
+      const light = p <= 1 ? 36 + 8 * p : 44 + 4 * (p - 1);
+      return `hsl(${Math.round(hue)} 78% ${Math.round(light)}%)`;
+    }
+    /**
+     * The network icon's colour while offline: amber at first, shading to red.
+     * @param {number} progress  0 = just went offline, 1 = offline for OFFLINE_DAYS or more
+     * @returns {string} a CSS colour
+     */
+    static offlineColor(progress) {
+      const p = Math.min(1, Math.max(0, Number(progress) || 0));
+      return `hsl(${Math.round(_AppNotices.#AMBER + (_AppNotices.#RED - _AppNotices.#AMBER) * p)} 78% ${Math.round(44 + 4 * p)}%)`;
+    }
+    /** How long the device has been offline, as a share of OFFLINE_DAYS (0–1). */
+    #offlineProgress() {
+      const since = new Date(this.#remembered().lastOnlineAt || NaN);
+      if (Number.isNaN(since.getTime())) return 0;
+      return Math.min(1, Math.max(0, (this.#now() - since) / (_AppNotices.OFFLINE_DAYS * 864e5)));
+    }
+    /** "You're offline · last online 14 Nov 2026, 9:02 am" */
+    #offlineLabel() {
+      const since = this.#remembered().lastOnlineAt;
+      return since ? `You're offline \xB7 last online ${_AppNotices.day(since)}` : "You're offline";
+    }
+    /** Remember when the device was last seen online (at most one write a minute). */
+    #noteOnline() {
+      const last = new Date(this.#remembered().lastOnlineAt || NaN);
+      if (Number.isNaN(last.getTime()) || this.#now() - last > 6e4) this.#remember({ lastOnlineAt: this.#now().toISOString() });
+    }
+    /** "Backed up … · next due in 5 days", for the icon's tooltip and the box. */
+    #backupLabel(s) {
+      if (s.backupDue) return "Google Drive backup is due";
+      const left = Number(s.backupDaysLeft) || 0;
+      return `Backed up to Google Drive \xB7 next due ${left <= 1 ? "tomorrow" : `in ${left} days`}`;
+    }
+    #boxShown(kind) {
+      const s = this.#state;
+      const seen = this.#remembered();
+      if (kind === "offline") return this.#opened.offline || !s.online && !seen.offlineSeen;
+      return s.backupOn && (this.#opened.backup || s.backupDue && !this.#backupClosed(seen.backupClosed));
+    }
+    /** Closed for this same due backup, and not long enough ago to remind again. */
+    #backupClosed(closed) {
+      if (!closed || (closed.lastAt || null) !== (this.#state.lastAt || null)) return false;
+      const days = (this.#now() - new Date(closed.at)) / 864e5;
+      return days >= 0 && days < _AppNotices.REMIND_DAYS;
+    }
+    #close(kind) {
+      return `
+        <button class="btn btn-ghost px-2 app-notice-close" aria-label="Close" title="Close" onclick="window.__app.dismissNotice('${kind}')">
+          <i data-lucide="x"></i>
+        </button>`;
     }
     #offline(s) {
+      if (s.online) {
+        return `
+      <div class="plan-banner app-notice-online" role="status">
+        <i data-lucide="wifi" class="plan-banner-icon" style="color:${_AppNotices.backupColor(0)}"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold">You're online</div>
+          <div class="plan-banner-text">
+            ${s.syncs ? "What you add syncs as you go." : "Everything is saved on this device."}
+            Pocket also works without internet \u2014 this icon changes colour when you're offline.
+          </div>
+        </div>${this.#close("offline")}
+      </div>`;
+      }
+      const since = this.#remembered().lastOnlineAt;
       return `
       <div class="plan-banner app-notice-offline" role="status">
-        <i data-lucide="wifi-off" class="plan-banner-icon"></i>
+        <i data-lucide="wifi-off" class="plan-banner-icon" style="color:${_AppNotices.offlineColor(this.#offlineProgress())}"></i>
         <div class="flex-1 min-w-0">
           <div class="font-semibold">You're offline</div>
           <div class="plan-banner-text">
             Keep going \u2014 what you add is saved on this device${s.syncs ? " and will sync when you're back online" : ""}.
+            ${since ? `Last online: ${Html.escape(_AppNotices.day(since))}.` : ""}
+            The icon at the top shows when you're offline.
           </div>
-        </div>
+        </div>${this.#close("offline")}
       </div>`;
     }
     #backup(s) {
       const last = s.lastAt ? `Last backup: ${Html.escape(_AppNotices.day(s.lastAt))}.` : "No backup has been saved yet.";
+      const left = Number(s.backupDaysLeft) || 0;
+      const next = s.backupDue ? "" : ` The next one is due ${left <= 1 ? "tomorrow" : `in ${left} days`}.`;
       return `
       <div class="plan-banner app-notice-backup" role="status">
-        <i data-lucide="cloud-upload" class="plan-banner-icon" style="color:#2563eb"></i>
+        <i data-lucide="${s.backupDue ? "cloud-upload" : "cloud-check"}" class="plan-banner-icon" style="color:${_AppNotices.backupColor(s.backupProgress)}"></i>
         <div class="flex-1 min-w-0">
-          <div class="font-semibold">Your Google Drive backup is due</div>
-          <div class="plan-banner-text">${last}${s.online ? "" : " It needs internet \u2014 try again when you're online."}</div>
+          <div class="font-semibold">${s.backupDue ? "Your Google Drive backup is due" : "Your Google Drive backup is up to date"}</div>
+          <div class="plan-banner-text">${last}${next}${s.online ? "" : " Backing up needs internet \u2014 try again when you're online."}</div>
           <div class="flex flex-wrap gap-2 mt-2">
             <button class="btn btn-primary text-sm" onclick="window.__app.driveBackupNow()" ${s.backupBusy || !s.online ? 'disabled style="opacity:.5;cursor:default"' : ""}>
               <i data-lucide="cloud-upload"></i> ${s.backupBusy ? "Backing up\u2026" : "Back up now"}
             </button>
-            <button class="btn btn-outline text-sm" onclick="window.__app.hideBackupNotice()">Later</button>
+            ${s.backupDue ? `<button class="btn btn-outline text-sm" onclick="window.__app.dismissNotice('backup')">Later</button>` : ""}
           </div>
-        </div>
+        </div>${this.#close("backup")}
       </div>`;
+    }
+    #remembered() {
+      try {
+        return JSON.parse(this.#storage.getItem(_AppNotices.#KEY) || "{}") || {};
+      } catch (_) {
+        return {};
+      }
+    }
+    #remember(change) {
+      try {
+        this.#storage.setItem(_AppNotices.#KEY, JSON.stringify({ ...this.#remembered(), ...change }));
+      } catch (_) {
+      }
+    }
+    static #memory() {
+      const m = /* @__PURE__ */ new Map();
+      return { getItem: (k) => m.has(k) ? m.get(k) : null, setItem: (k, v) => {
+        m.set(k, String(v));
+      } };
     }
     /** e.g. "16 Nov 2026, 8:16 am" */
     static day(iso) {
@@ -19762,6 +19915,28 @@ This replaces your current grouping.`
       const last = lastAt ? new Date(lastAt) : null;
       if (!last || Number.isNaN(last.getTime())) return true;
       return _BackupSchedule.#dayNumber(now) - _BackupSchedule.#dayNumber(last) >= this.days;
+    }
+    /**
+     * How far through the period the last backup is: 0 = just made, 1 = due,
+     * 2 = a whole period overdue. Never backed up counts as 1 (due). Null when
+     * there is no schedule.
+     * @param {string|null} lastAt @param {Date} [now]
+     * @returns {number|null}
+     */
+    progress(lastAt, now = /* @__PURE__ */ new Date()) {
+      if (!this.automatic) return null;
+      const last = lastAt ? new Date(lastAt) : null;
+      if (!last || Number.isNaN(last.getTime())) return 1;
+      return Math.max(0, (_BackupSchedule.#dayNumber(now) - _BackupSchedule.#dayNumber(last)) / this.days);
+    }
+    /**
+     * Days until the next backup is due (0 or less = due now). Null when there is no schedule.
+     * @param {string|null} lastAt @param {Date} [now]
+     * @returns {number|null}
+     */
+    daysLeft(lastAt, now = /* @__PURE__ */ new Date()) {
+      const done = this.progress(lastAt, now);
+      return done === null ? null : Math.round((1 - done) * this.days);
     }
     /** Whole days since a fixed point, by the local calendar. */
     static #dayNumber(d) {
@@ -24177,7 +24352,8 @@ ${body}\r
     /**
      * Where things stand for this book.
      * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
-     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean}}
+     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null}}
+     *   progress: how far through the period the last backup is (see BackupSchedule.progress)
      */
     status(owner) {
       const s = this.#settingsFor(owner);
@@ -24187,7 +24363,9 @@ ${body}\r
         email: s?.email || "",
         schedule,
         lastAt: s?.lastAt || null,
-        due: !!s && schedule.isDue(s.lastAt, this.#now())
+        due: !!s && schedule.isDue(s.lastAt, this.#now()),
+        progress: s ? schedule.progress(s.lastAt, this.#now()) : null,
+        daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null
       };
     }
     /**
@@ -29071,7 +29249,10 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     // Install as an app · offline note · Google Drive backup
     // ──────────────────────────────────────────────────────────────────────────
     #startAppShell() {
-      this.#notices = new AppNotices(document.getElementById("appNotices"));
+      this.#notices = new AppNotices(document.getElementById("appNotices"), {
+        icons: document.querySelectorAll(".status-icons"),
+        storage: DemoMode.active ? null : window.localStorage
+      });
       this.#pwa = new PwaService({
         win: window,
         onChange: () => {
@@ -29112,7 +29293,11 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       this.#notices.show({
         online: this.#pwa?.online !== false,
         syncs: !!this.#sync.currentUser,
-        backupDue: drive.available && drive.connected && drive.due && !this.#lockState(),
+        // A schedule is set: the top-bar icon shows how fresh the last backup is.
+        backupOn: drive.connected && drive.progress !== null && !this.#lockState(),
+        backupProgress: drive.progress,
+        backupDaysLeft: drive.daysLeft,
+        backupDue: drive.connected && drive.due && !this.#lockState(),
         backupBusy: drive.busy,
         lastAt: drive.lastAt
       });
@@ -29135,7 +29320,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     driveStatus() {
       const svc = this.#driveBackup;
       if (!svc || !svc.available || DemoMode.active) {
-        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, busy: false, keep: DriveBackupService.KEEP };
+        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, progress: null, daysLeft: null, busy: false, keep: DriveBackupService.KEEP };
       }
       const st = svc.status(Repository.storedOwner());
       return {
@@ -29145,6 +29330,8 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         frequency: st.schedule.key,
         lastAt: st.lastAt,
         due: st.due,
+        progress: st.progress,
+        daysLeft: st.daysLeft,
         busy: svc.busy,
         keep: DriveBackupService.KEEP
       };
@@ -29196,8 +29383,13 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         this.#toast.show(e?.message || "Could not restore that backup");
       }
     }
-    hideBackupNotice() {
-      this.#notices?.hideBackup();
+    /** Close a note above the page (its icon stays in the top bar). @param {'offline'|'backup'} kind */
+    dismissNotice(kind) {
+      this.#notices?.dismiss(kind);
+    }
+    /** A top-bar icon was tapped: open its note (or close it if open). @param {'offline'|'backup'} kind */
+    toggleNotice(kind) {
+      if (this.#notices?.toggle(kind)) window.scrollTo?.({ top: 0, behavior: "smooth" });
     }
     /** Run one Drive action, showing "…ing" while it runs and any problem as a toast. */
     async #driveJob(job) {

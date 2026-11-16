@@ -69,10 +69,15 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   days), `BackupFiles` (`Pocket book <date time>.json` = Export JSON without `_` keys, `Pocket transactions
   <date time>.csv` = the import columns), `DriveBackupService` (folder "Pocket backups", keeps newest 10,
   settings in `pocket.v1.drive` tied to the book's owner so another person's book is never saved there),
-  `DriveRestoreModal`. A schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
+  `DriveRestoreModal`. *Status icons:* `AppNotices` draws a network icon and (with a schedule) a backup icon
+  into every `.status-icons` (phone top bar, sidebar): network green online, amber → red over 7 days offline
+  (`lastOnlineAt`); backup green → amber over the chosen period (`BackupSchedule.progress`), → red one more
+  period overdue, with a dot once due. Boxes: offline the first time only; backup each time one falls due
+  (closed = stays away, returns after 3 days); tap an icon to reopen; state in `pocket.v1.notices`.
+  A schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
   when due, the note above the page offers **Back up now**. **Needs `GOOGLE_DRIVE_CLIENT_ID` in
-  `data/constants.js`** (public OAuth client ID; the card is hidden while empty). Tests: `pwa.smoke.mjs` (32),
-  `drive-backup.smoke.mjs` (46, with `FakeGoogleDrive.mjs`), and `npm run smoke:offline` (13, real Chrome:
+  `data/constants.js`** (public OAuth client ID; the card is hidden while empty). Tests: `pwa.smoke.mjs` (39),
+  `drive-backup.smoke.mjs` (58, with `FakeGoogleDrive.mjs`), and `npm run smoke:offline` (13, real Chrome:
   installs the worker, stops the servers, the app still opens, a new release replaces the old copy).
 - **2026-11-14 · Telegram group summaries:** migration 0022 (`telegram_groups`, `pocket_group_claim`,
   `pocket_space_summary` — only the space's own accounts, expense/income, no transfers; pg_cron job

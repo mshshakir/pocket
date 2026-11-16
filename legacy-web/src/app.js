@@ -4998,7 +4998,10 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #startAppShell() {
-    this.#notices = new AppNotices(document.getElementById('appNotices'));
+    this.#notices = new AppNotices(document.getElementById('appNotices'), {
+      icons: document.querySelectorAll('.status-icons'),
+      storage: DemoMode.active ? null : window.localStorage,
+    });
     this.#pwa = new PwaService({
       win: window,
       onChange: () => {
@@ -5040,7 +5043,11 @@ export class Application {
     this.#notices.show({
       online: this.#pwa?.online !== false,
       syncs: !!this.#sync.currentUser,
-      backupDue: drive.available && drive.connected && drive.due && !this.#lockState(),
+      // A schedule is set: the top-bar icon shows how fresh the last backup is.
+      backupOn: drive.connected && drive.progress !== null && !this.#lockState(),
+      backupProgress: drive.progress,
+      backupDaysLeft: drive.daysLeft,
+      backupDue: drive.connected && drive.due && !this.#lockState(),
       backupBusy: drive.busy,
       lastAt: drive.lastAt,
     });
@@ -5066,12 +5073,13 @@ export class Application {
   driveStatus() {
     const svc = this.#driveBackup;
     if (!svc || !svc.available || DemoMode.active) {
-      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, busy: false, keep: DriveBackupService.KEEP };
+      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, progress: null, daysLeft: null, busy: false, keep: DriveBackupService.KEEP };
     }
     const st = svc.status(Repository.storedOwner());
     return {
       available: true, connected: st.connected, email: st.email, frequency: st.schedule.key,
-      lastAt: st.lastAt, due: st.due, busy: svc.busy, keep: DriveBackupService.KEEP,
+      lastAt: st.lastAt, due: st.due, progress: st.progress, daysLeft: st.daysLeft,
+      busy: svc.busy, keep: DriveBackupService.KEEP,
     };
   }
 
@@ -5127,7 +5135,13 @@ export class Application {
     }
   }
 
-  hideBackupNotice() { this.#notices?.hideBackup(); }
+  /** Close a note above the page (its icon stays in the top bar). @param {'offline'|'backup'} kind */
+  dismissNotice(kind) { this.#notices?.dismiss(kind); }
+
+  /** A top-bar icon was tapped: open its note (or close it if open). @param {'offline'|'backup'} kind */
+  toggleNotice(kind) {
+    if (this.#notices?.toggle(kind)) window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  }
 
   /** Run one Drive action, showing "…ing" while it runs and any problem as a toast. */
   async #driveJob(job) {
