@@ -17,8 +17,21 @@ export class ExchangeRates {
     return { ...saved, ...(live ?? {}) };
   }
 
-  async #live(): Promise<Record<string, number> | null> {
-    if (this.#cache && Date.now() - this.#fetchedAt < ExchangeRates.#TTL_MS) return this.#cache;
+  /** Starts fetching now, so the rates are ready by the time an entry needs them. */
+  warm(): void {
+    void this.#live();
+  }
+
+  #inFlight: Promise<Record<string, number> | null> | null = null;
+
+  #live(): Promise<Record<string, number> | null> {
+    if (this.#cache && Date.now() - this.#fetchedAt < ExchangeRates.#TTL_MS) return Promise.resolve(this.#cache);
+    // One fetch at a time: callers while it runs share it.
+    this.#inFlight ??= this.#fetch().finally(() => { this.#inFlight = null; });
+    return this.#inFlight;
+  }
+
+  async #fetch(): Promise<Record<string, number> | null> {
     try {
       const res = await fetch(ExchangeRates.#ENDPOINT, { signal: AbortSignal.timeout(ExchangeRates.#TIMEOUT_MS) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

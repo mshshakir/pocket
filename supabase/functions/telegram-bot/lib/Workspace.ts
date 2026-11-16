@@ -41,9 +41,19 @@ export class Workspace {
   }
 
   /** The person's own book and every book shared with them, loaded in parallel. */
-  static async load(store: PocketStore, link: TelegramLink): Promise<Workspace> {
-    const [plan, shares] = await Promise.all([PlanAccess.load(store, link.user_id), store.sharesFor(link.email)]);
-    const own = plan.ownBook ? await store.tryLoadBook(link.user_id) : null;
+  static async load(store: PocketStore, link: TelegramLink, plan?: Promise<PlanAccess>): Promise<Workspace> {
+    // Plan, shares and own book all at once; the own book is dropped if the plan doesn't allow it.
+    const [access, shares, ownBook] = await Promise.all([
+      plan ?? PlanAccess.load(store, link.user_id), store.sharesFor(link.email), store.tryLoadBook(link.user_id),
+    ]);
+    return Workspace.#assemble(store, link, access, shares, ownBook);
+  }
+
+  static async #assemble(
+    store: PocketStore, link: TelegramLink, plan: PlanAccess,
+    shares: Awaited<ReturnType<PocketStore['sharesFor']>>, ownBook: PocketBook | null,
+  ): Promise<Workspace> {
+    const own = plan.ownBook ? ownBook : null;
     const accesses: BookAccess[] = [];
     if (own) {
       accesses.push({ ownerId: link.user_id, isOwn: true, label: 'you', book: own, accounts: own.accounts });

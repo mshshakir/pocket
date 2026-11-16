@@ -145,22 +145,39 @@ export class PocketStore {
 
   // ── Links ────────────────────────────────────────────────────────────────
 
+  // ── Update queue (migrations 0049, 0050) ─────────────────────────────────
+
   /**
-   * Marks a Telegram update as handled. False when it was already seen (a re-send).
-   * Now and then clears ids older than three days; Telegram never re-sends those.
+   * Stores an incoming update before Telegram is told it arrived. False when
+   * it was stored before (Telegram sent it again). Throws if it can't be
+   * stored, so the webhook fails and Telegram keeps it to send later.
    */
-  async claimUpdate(updateId: number): Promise<boolean> {
-    const { error } = await this.#sb.from('telegram_updates').insert({ update_id: updateId });
+  async receiveUpdate(updateId: number, payload: unknown): Promise<boolean> {
+    const now = new Date().toISOString();
+    const { error } = await this.#sb.from('telegram_updates')
+      .insert({ update_id: updateId, payload, attempts: 1, claimed_at: now });
     if (error?.code === '23505') return false;
-    if (error) {
-      console.error('[telegram-bot] claimUpdate', error); // never block a message on this
-      return true;
-    }
+    if (error) throw error;
+    return true;
+  }
+
+  /** Marks an update handled (with the error, if handling threw). Now and then clears old ones. */
+  async finishUpdate(updateId: number, error?: string): Promise<void> {
+    const { error: e } = await this.#sb.from('telegram_updates')
+      .update({ done_at: new Date().toISOString(), last_error: error ?? null, payload: null })
+      .eq('update_id', updateId);
+    if (e) console.error('[telegram-bot] finishUpdate', e);
     if (Math.random() < 0.02) {
       const before = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
       await this.#sb.from('telegram_updates').delete().lt('seen_at', before);
     }
-    return true;
+  }
+
+  /** Claims updates whose handling never finished, to handle them again. */
+  async staleUpdates(limit = 10): Promise<Array<{ update_id: number; payload: Record<string, unknown> }>> {
+    const { data, error } = await this.#sb.rpc('pocket_telegram_stale_updates', { p_limit: limit });
+    if (error) throw error;
+    return (data ?? []) as Array<{ update_id: number; payload: Record<string, unknown> }>;
   }
 
   async findLink(chatId: number): Promise<TelegramLink | null> {

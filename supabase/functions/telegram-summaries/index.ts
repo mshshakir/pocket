@@ -16,6 +16,7 @@
  * (optional, Asia/Kolkata), and SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { BotApp, SecretReader } from '../telegram-bot/lib/BotApp.ts';
 import { BillReminderRunner } from '../telegram-bot/lib/BillReminderRunner.ts';
 import { BudgetAlertRunner } from '../telegram-bot/lib/BudgetAlertRunner.ts';
 import { BudgetAlertStore } from '../telegram-bot/lib/BudgetAlertStore.ts';
@@ -40,12 +41,16 @@ const runner = new SummaryRunner(store, telegram, new GroupSummaries(store, new 
 const checkins = new CheckinRunner(store, deliveries, telegram, clock);
 const bills = new BillReminderRunner(store, deliveries, telegram, clock);
 const budgetAlerts = new BudgetAlertRunner(store, new BudgetAlertStore(sb), telegram, clock);
+const bot = BotApp.create(new SecretReader(Deno.env.toObject()));
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('ok');
   try {
     // Each part runs even if another fails.
-    const parts = await Promise.allSettled([runner.run(), checkins.run(), bills.run(), budgetAlerts.run()]);
+    const parts = await Promise.allSettled([
+      runner.run(), checkins.run(), bills.run(), budgetAlerts.run(),
+      bot.queue.sweep(), // Telegram messages the bot didn't finish handling
+    ]);
     for (const p of parts) if (p.status === 'rejected') console.error('[scheduled]', p.reason);
     return Response.json(parts.map((p) => (p.status === 'fulfilled' ? p.value : { failed: true })));
   } catch (e) {

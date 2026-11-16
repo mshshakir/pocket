@@ -79,6 +79,8 @@ export class BotController {
       return;
     }
 
+    // "typing…" shows while the bot works; it isn't waited for.
+    void Promise.resolve().then(() => this.#telegram.typing(chatId)).catch(() => {});
     try {
       const command = text.split(/[\s@]/)[0].toLowerCase();
       const argument = text.split(/\s+/).slice(1).join(' ');
@@ -103,17 +105,21 @@ export class BotController {
           message.message_id);
       }
 
-      const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+      // Everything an entry needs is fetched at once rather than one after another.
+      const planLoad = PlanAccess.load(this.#store, link.user_id);
+      const books = Workspace.load(this.#store, link, planLoad);
+      books.catch(() => {}); // not every message needs the books; a failure surfaces where one does
+      const [plan, pending] = await Promise.all([planLoad, this.#store.getPending(chatId)]);
+      const notice = plan.notice();
       if (notice) {
         await this.#dropPending(chatId);
         return void await this.#telegram.reply(chatId, notice, message.message_id);
       }
 
-      const pending = await this.#store.getPending(chatId);
       if (pending?.kind === 'edit') {
         return void await this.#entries.record({
           link, chatId, seed: pending.seed_message_id, text, replace: true, oldOwnerId: pending.owner_id,
-          replyTo: message.message_id, confirmMessageId: pending.confirm_message_id,
+          replyTo: message.message_id, confirmMessageId: pending.confirm_message_id, workspace: await books,
         });
       }
       if (pending?.kind === 'category' && pending.source_text) {
@@ -124,7 +130,7 @@ export class BotController {
             replace: pending.replace, oldOwnerId: pending.owner_id,
             replyTo: message.message_id, categoryName: text,
             promptMessageId: pending.prompt_message_id, confirmMessageId: pending.confirm_message_id,
-            queue: pending.queue ?? [], shared: pending.shared ?? false,
+            queue: pending.queue ?? [], shared: pending.shared ?? false, workspace: await books,
           });
         }
         await this.#dropPending(chatId);
@@ -133,7 +139,9 @@ export class BotController {
       if (this.#owed && !EntryBatch.isBatch(text) && await this.#owed.tryText(link, chatId, message.message_id, text)) return;
       if (this.#deliveries && !EntryBatch.isBatch(text) && await this.#deliveries.tryText(link, chatId, message.message_id, text)) return;
       if (EntryBatch.isBatch(text)) return void await this.#batches.record(link, chatId, message.message_id, text);
-      await this.#entries.record({ link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id });
+      await this.#entries.record({
+        link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id, workspace: await books,
+      });
     } catch (err) {
       console.error('[telegram-bot]', err);
       await this.#telegram.reply(chatId, `⚠️ Not saved: ${BotController.#reason(err)}`, message.message_id);

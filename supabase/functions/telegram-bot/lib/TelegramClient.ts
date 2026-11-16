@@ -66,6 +66,11 @@ export class TelegramClient {
     });
   }
 
+  /** Shows "typing…" in the chat until the next message is sent (or ~5 s pass). */
+  async typing(chatId: number): Promise<void> {
+    await this.#call('sendChatAction', { chat_id: chatId, action: 'typing' });
+  }
+
   /** Acknowledges a button tap, optionally with a short toast. */
   async answer(callbackId: string, text?: string): Promise<void> {
     await this.#call('answerCallbackQuery', { callback_query_id: callbackId, text });

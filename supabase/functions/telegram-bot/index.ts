@@ -11,49 +11,26 @@
  * Deploy with --no-verify-jwt: Telegram cannot send a Supabase JWT, so the
  * webhook secret header is the gate instead.
  */
-import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { BatchEntryService } from './lib/BatchEntryService.ts';
-import { BotController, type TelegramCallback, type TelegramMessage } from './lib/BotController.ts';
-import { DeliveryBot } from './lib/DeliveryBot.ts';
-import { DeliveryStore } from './lib/DeliveryStore.ts';
-import { EntryService } from './lib/EntryService.ts';
-import { ExchangeRates } from './lib/ExchangeRates.ts';
-import { GroupService } from './lib/GroupService.ts';
-import { GroupSummaries } from './lib/GroupSummaries.ts';
-import { LinkService } from './lib/LinkService.ts';
-import { LocalClock } from './lib/LocalClock.ts';
-import { OwedBot } from './lib/OwedBot.ts';
-import { PocketStore } from './lib/PocketStore.ts';
-import { SummaryReport } from './lib/SummaryReport.ts';
-import { TelegramClient } from './lib/TelegramClient.ts';
-
-/** Reads secrets by name, ignoring capitalisation (TELEGRAM_BOT_TOKEN = Telegram_Bot_Token). */
-class SecretReader {
-  readonly #byLowerName: Map<string, string>;
-
-  constructor(env: Record<string, string>) {
-    this.#byLowerName = new Map(Object.entries(env).map(([k, v]) => [k.toLowerCase(), v]));
-  }
-
-  get(name: string): string {
-    return this.#byLowerName.get(name.toLowerCase()) ?? '';
-  }
-}
+import { BotApp, SecretReader } from './lib/BotApp.ts';
+import type { UpdateQueue } from './lib/UpdateQueue.ts';
 
 /** Keeps work running after the response is sent (Supabase Edge Runtime), or awaits it elsewhere. */
 type Background = (work: Promise<unknown>) => Promise<void>;
 
+/**
+ * Stores each update, tells Telegram it arrived, then handles it. A slow
+ * reply would make Telegram send the same update again; storing first means
+ * an update is never lost even if the function stops while handling it.
+ */
 class WebhookServer {
   readonly #secret: string;
-  readonly #controller: BotController;
-  readonly #store: PocketStore;
+  readonly #app: BotApp;
   readonly #background: Background;
 
-  constructor(secret: string, controller: BotController, store: PocketStore, background: Background) {
+  constructor(secret: string, app: BotApp, background: Background) {
     if (!secret) throw new Error('TELEGRAM_WEBHOOK_SECRET is not set');
     this.#secret = secret;
-    this.#controller = controller;
-    this.#store = store;
+    this.#app = app;
     this.#background = background;
   }
 
@@ -66,24 +43,22 @@ class WebhookServer {
     try {
       update = await req.json();
     } catch {
-      return new Response('ok');
+      return new Response('ok'); // not an update; nothing to retry
     }
-    // Answer Telegram at once and do the work afterwards: a slow reply makes
-    // Telegram send the same update again, and each re-send was handled anew.
-    await this.#background(this.#process(update));
-    return new Response('ok');
-  }
-
-  async #process(update: Record<string, unknown>): Promise<void> {
+    this.#app.rates.warm(); // ready by the time an entry needs them
+    const queue: UpdateQueue = this.#app.queue;
     try {
-      if (typeof update.update_id === 'number' && !(await this.#store.claimUpdate(update.update_id))) return;
-      const message = update.message as TelegramMessage | undefined;
-      const callback = update.callback_query as TelegramCallback | undefined;
-      if (message?.chat?.id) await this.#controller.handleMessage(message);
-      else if (callback?.id) await this.#controller.handleCallback(callback);
+      if (!(await queue.receive(update))) return new Response('ok'); // a re-send
     } catch (err) {
-      console.error('[telegram-bot] update failed', err);
+      // Couldn't store it: fail, so Telegram keeps the update and sends it again.
+      console.error('[telegram-bot] could not store update', err);
+      return new Response('retry', { status: 503 });
     }
+    await this.#background((async () => {
+      await queue.handle(update);
+      await queue.sweep().catch((err) => console.error('[telegram-bot] sweep', err));
+    })());
+    return new Response('ok');
   }
 
   /** EdgeRuntime.waitUntil when available (Supabase), otherwise just wait. */
@@ -95,38 +70,9 @@ class WebhookServer {
 }
 
 const secrets = new SecretReader(Deno.env.toObject());
-
-const supabase = createClient(
-  secrets.get('SUPABASE_URL'),
-  secrets.get('SUPABASE_SERVICE_ROLE_KEY'),
-  { auth: { persistSession: false } },
-);
-
-// Sign-in codes for /link run on a separate client with the public key, as in the
-// app, so a verified user session can never replace the privileged one above.
-const auth = createClient(
-  secrets.get('SUPABASE_URL'),
-  secrets.get('SUPABASE_ANON_KEY'),
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
-
-const store = new PocketStore(supabase);
-const telegram = new TelegramClient(secrets.get('TELEGRAM_BOT_TOKEN'));
-const clock = new LocalClock(secrets.get('BOT_TIMEZONE') || 'Asia/Kolkata');
-const rates = new ExchangeRates();
-const entries = new EntryService(store, telegram, clock, rates);
-
 const server = new WebhookServer(
   secrets.get('TELEGRAM_WEBHOOK_SECRET'),
-  new BotController(
-    store, telegram, entries,
-    new LinkService(store, telegram, auth),
-    new BatchEntryService(store, telegram, entries),
-    new GroupService(store, telegram, new GroupSummaries(store, new SummaryReport()), clock),
-    new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
-    new OwedBot(store, telegram, clock, rates),
-  ),
-  store,
+  BotApp.create(secrets),
   WebhookServer.background(),
 );
 
