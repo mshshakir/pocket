@@ -96,7 +96,7 @@ class FakeWindow {
   const pages = ['terms.html', 'privacy.html', 'shipping.html', 'contact.html', 'refunds.html'];
   ok('M1 the homepage footer links the five policy pages a payment provider asks for, and each exists', pages.every((p) => home.includes(`href="${p}"`) && existsSync(join(root, p))));
   const contact = readFileSync(join(root, 'contact.html'), 'utf8');
-  ok('M1 Contact Us has an email and a phone number, and nothing "To be added"', /mailto:/.test(contact) && /tel:\+91/.test(contact) && !/To be added/.test(contact));
+  ok('M1 Contact Us has an email, a phone number and an address, and nothing "To be added"', /mailto:/.test(contact) && /tel:\+91/.test(contact) && /data-contact="address">[^<]+Mumbai/.test(contact) && !/To be added/.test(contact));
   ok('M1 the app page has a place for the notes', /id="appNotices"/.test(app));
 }
 
