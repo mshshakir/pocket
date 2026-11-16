@@ -25712,6 +25712,7 @@ ${body}\r
      */
     async buy(product) {
       if (this.#buying || !this.#sync.currentUser) return;
+      if (!this.#confirmLosingSharing(product)) return;
       this.#payments ??= this.#sync.payments();
       this.#buying = product;
       this.#modal.refresh();
@@ -25729,6 +25730,22 @@ ${body}\r
         await this.#refreshPlanInfo();
         this.#modal.refresh();
       }
+    }
+    /**
+     * Buying a plan without sharing while on one with it (e.g. Sync during the
+     * Full trial, or instead of Family): the people shared with lose the shared
+     * space at once, so ask first.
+     * @param {string} product
+     * @returns {boolean} whether to go ahead
+     */
+    #confirmLosingSharing(product) {
+      const plan = this.getPlan();
+      const item = this.#paymentOffers?.products?.find((o) => o.product === product);
+      const target = this.#planCatalogue?.find((p) => p.code === item?.plan);
+      const current = this.#planCatalogue?.find((p) => p.code === plan?.plan);
+      if (!target || !current || plan.state !== "active" || !current.sharing || target.sharing) return true;
+      const trial = plan.term === "trial" ? " The rest of your trial is not carried over." : "";
+      return confirm(`${target.name} has no family sharing. If you buy it now, the people you share with lose access to your shared space today (their own books stay, and what they added stays in your book).${trial} Choose Family to keep sharing. Buy ${target.name} anyway?`);
     }
     /**
      * Moves to a cheaper plan for free; the time left becomes days on it.
