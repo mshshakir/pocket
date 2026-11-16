@@ -103,8 +103,8 @@ export class InvestmentsView extends BaseView {
         ${st.dividends ? `<div class="text-xs text-emerald-600 mt-1 inv-dividends">Dividends received ${this.formatMoney(st.dividends, cur)}</div>` : ''}
         ${st.target !== null ? `<div class="text-xs text-zinc-500 mt-1 inv-target"><i data-lucide="bell" style="width:11px;height:11px;display:inline"></i> Alert at ${this.formatMoney(st.target, cur)} / ${k.per}${h.alert?.gainPct ? ` (+${h.alert.gainPct}%)` : ''}${st.reached ? ' · <span class="text-emerald-600">reached</span>' : ''}</div>` : ''}
         <div class="grid ${isShares ? 'grid-cols-4' : 'grid-cols-3'} gap-2 mt-3">
-          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})"><i data-lucide="plus"></i> Buy</button>
-          <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? '' : 'disabled'} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})"><i data-lucide="minus"></i> Sell</button>
+          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})" title="Note something you bought elsewhere"><i data-lucide="plus"></i> Bought</button>
+          <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? '' : 'disabled'} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})" title="Note something you sold elsewhere"><i data-lucide="minus"></i> Sold</button>
           <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('holdingPrice',{id:'${id}'})"><i data-lucide="tag"></i> Price</button>
           ${isShares ? `<button class="btn btn-outline btn-sm justify-center inv-dividend-btn" onclick="window.__app.openModal('trade',{id:'${id}',mode:'dividend'})"><i data-lucide="banknote"></i> Dividend</button>` : ''}
         </div>

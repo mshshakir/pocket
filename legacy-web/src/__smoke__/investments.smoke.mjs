@@ -172,7 +172,7 @@ const fill = (f, values) => { for (const [k, v] of Object.entries(values)) { con
   ok('A6 deleting the buy (from History) removes both legs and the 10 g', !st().transactions.some((t) => t.id === buyLeg.id || t.id === buyLeg.transferPairId) && app.holdings.stats(h).qty === 15);
   app.openHelp('investments');
   await wait(10);
-  ok('A6 help explains Add, Buy/Sell, Price and alerts', ['I already own it', 'Buy', 'Sell', 'Price', '20%'].every((k) => w.document.querySelector('.help-sheet').textContent.includes(k)));
+  ok('A6 help explains Add, Buy/Sell, Price and alerts', ['I already own it', 'Bought', 'Sold', 'Price', '20%'].every((k) => w.document.querySelector('.help-sheet').textContent.includes(k)));
   app.closeModal();
 
   app.openModal('investment');

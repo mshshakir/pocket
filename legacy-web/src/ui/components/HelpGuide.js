@@ -35,8 +35,8 @@ export class HelpGuide {
       title: 'Investments',
       intro: 'The gold, silver and shares you own: how much, what you paid, and what it’s worth today.',
       points: [
-        '<b>Add</b> it: pick gold, silver or shares. For gold and silver choose the purity; for shares type the company and its code (optional). Then choose <b>I already own it</b> or <b>Buying now</b>.',
-        '<b>Buy</b> and <b>Sell</b> move money between your account and your Investments account, with the grams or shares on the same entry. Add <b>Charges</b> (brokerage, making charges) and they count in what it cost you. Spending and budgets aren’t affected.',
+        '<b>Add</b> it: pick gold, silver or shares. For gold and silver choose the purity; for shares type the company and its code (optional). Then choose <b>I already own it</b> or <b>Just bought it</b>.',
+        '<b>Bought</b> and <b>Sold</b> note a purchase or sale you made elsewhere (at a jeweller or through your broker): the money moves between your account and your Investments account, with the grams or shares on the same entry. Pocket doesn\'t buy or sell anything itself. Add <b>Charges</b> (brokerage, making charges) and they count in what it cost you. Spending and budgets aren’t affected.',
         'Tap <b>Price</b> to enter today’s price per gram or per share. Worth = how much you hold × price, and your total balance and net worth use it.',
         'For shares, tap <b>Dividend</b> when one is paid: it’s saved as income and shown on the card.',
         'Set an alert, like <b>20%</b> gain or a target price. When the price reaches it you’ll see it here and on the Dashboard.',

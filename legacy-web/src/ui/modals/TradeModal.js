@@ -72,7 +72,7 @@ export class TradeModal {
     return `
       <form onsubmit="window.__app.submitTrade(event,'${Html.escape(h.id)}','${sell ? 'sell' : 'buy'}')" class="p-5 trade-form">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-lg font-semibold">${sell ? 'Sell' : 'Buy'} ${Html.escape(h.name)}</h3>${close}
+          <h3 class="text-lg font-semibold">${sell ? 'Note a sale' : 'Note a purchase'} · ${Html.escape(h.name)}</h3>${close}
         </div>
         <div class="text-xs text-zinc-500 mb-3">You hold ${HoldingService.qtyText(h, st.qty)} · average cost ${this.#fx.formatMoney(st.avgCost, h.currency)} / ${k.per}</div>
         <div class="grid grid-cols-3 gap-3 mb-3">
@@ -104,7 +104,7 @@ export class TradeModal {
           </div>
         </div>
         <label class="flex items-center gap-2 text-sm mb-4"><input type="checkbox" name="setPrice" checked> Also use this as today’s price</label>
-        ${footer(sell ? 'Sell' : 'Buy')}
+        ${footer(sell ? 'Save sale' : 'Save purchase')}
       </form>`;
   }
 }

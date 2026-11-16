@@ -4,7 +4,7 @@
  * New: what it is (gold / silver / shares), purity or company and code,
  * where it's kept, then either
  *   "I already own it" — how much, what you paid (optional), today's price, or
- *   "Buying now"       — how much, price each, charges, pay from (a transfer).
+ *   "Just bought it"   — how much, price each, charges, pay from (a transfer).
  * Edit: name, what you already owned before using Pocket, remove.
  *
  * opts: { id?: string }
@@ -90,7 +90,7 @@ export class InvestmentModal {
           </select>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 mb-3">${how('own', 'I already own it')}${how('buy', 'Buying now')}</div>
+        <div class="grid grid-cols-2 gap-2 mb-3">${how('own', 'I already own it')}${how('buy', 'Just bought it')}</div>
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>

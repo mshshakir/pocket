@@ -12854,8 +12854,8 @@ This replaces your current grouping.`
         title: "Investments",
         intro: "The gold, silver and shares you own: how much, what you paid, and what it\u2019s worth today.",
         points: [
-          "<b>Add</b> it: pick gold, silver or shares. For gold and silver choose the purity; for shares type the company and its code (optional). Then choose <b>I already own it</b> or <b>Buying now</b>.",
-          "<b>Buy</b> and <b>Sell</b> move money between your account and your Investments account, with the grams or shares on the same entry. Add <b>Charges</b> (brokerage, making charges) and they count in what it cost you. Spending and budgets aren\u2019t affected.",
+          "<b>Add</b> it: pick gold, silver or shares. For gold and silver choose the purity; for shares type the company and its code (optional). Then choose <b>I already own it</b> or <b>Just bought it</b>.",
+          "<b>Bought</b> and <b>Sold</b> note a purchase or sale you made elsewhere (at a jeweller or through your broker): the money moves between your account and your Investments account, with the grams or shares on the same entry. Pocket doesn't buy or sell anything itself. Add <b>Charges</b> (brokerage, making charges) and they count in what it cost you. Spending and budgets aren\u2019t affected.",
           "Tap <b>Price</b> to enter today\u2019s price per gram or per share. Worth = how much you hold \xD7 price, and your total balance and net worth use it.",
           "For shares, tap <b>Dividend</b> when one is paid: it\u2019s saved as income and shown on the card.",
           "Set an alert, like <b>20%</b> gain or a target price. When the price reaches it you\u2019ll see it here and on the Dashboard.",
@@ -16798,8 +16798,8 @@ This replaces your current grouping.`
         ${st.dividends ? `<div class="text-xs text-emerald-600 mt-1 inv-dividends">Dividends received ${this.formatMoney(st.dividends, cur)}</div>` : ""}
         ${st.target !== null ? `<div class="text-xs text-zinc-500 mt-1 inv-target"><i data-lucide="bell" style="width:11px;height:11px;display:inline"></i> Alert at ${this.formatMoney(st.target, cur)} / ${k.per}${h.alert?.gainPct ? ` (+${h.alert.gainPct}%)` : ""}${st.reached ? ' \xB7 <span class="text-emerald-600">reached</span>' : ""}</div>` : ""}
         <div class="grid ${isShares ? "grid-cols-4" : "grid-cols-3"} gap-2 mt-3">
-          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})"><i data-lucide="plus"></i> Buy</button>
-          <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? "" : "disabled"} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})"><i data-lucide="minus"></i> Sell</button>
+          <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('trade',{id:'${id}',mode:'buy'})" title="Note something you bought elsewhere"><i data-lucide="plus"></i> Bought</button>
+          <button class="btn btn-outline btn-sm justify-center" ${st.qty > 0 ? "" : "disabled"} onclick="window.__app.openModal('trade',{id:'${id}',mode:'sell'})" title="Note something you sold elsewhere"><i data-lucide="minus"></i> Sold</button>
           <button class="btn btn-outline btn-sm justify-center" onclick="window.__app.openModal('holdingPrice',{id:'${id}'})"><i data-lucide="tag"></i> Price</button>
           ${isShares ? `<button class="btn btn-outline btn-sm justify-center inv-dividend-btn" onclick="window.__app.openModal('trade',{id:'${id}',mode:'dividend'})"><i data-lucide="banknote"></i> Dividend</button>` : ""}
         </div>
@@ -16892,7 +16892,7 @@ This replaces your current grouping.`
           </select>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 mb-3">${how("own", "I already own it")}${how("buy", "Buying now")}</div>
+        <div class="grid grid-cols-2 gap-2 mb-3">${how("own", "I already own it")}${how("buy", "Just bought it")}</div>
 
         <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
@@ -17038,7 +17038,7 @@ This replaces your current grouping.`
       return `
       <form onsubmit="window.__app.submitTrade(event,'${Html.escape(h.id)}','${sell ? "sell" : "buy"}')" class="p-5 trade-form">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-lg font-semibold">${sell ? "Sell" : "Buy"} ${Html.escape(h.name)}</h3>${close}
+          <h3 class="text-lg font-semibold">${sell ? "Note a sale" : "Note a purchase"} \xB7 ${Html.escape(h.name)}</h3>${close}
         </div>
         <div class="text-xs text-zinc-500 mb-3">You hold ${HoldingService.qtyText(h, st.qty)} \xB7 average cost ${this.#fx.formatMoney(st.avgCost, h.currency)} / ${k.per}</div>
         <div class="grid grid-cols-3 gap-3 mb-3">
@@ -17070,7 +17070,7 @@ This replaces your current grouping.`
           </div>
         </div>
         <label class="flex items-center gap-2 text-sm mb-4"><input type="checkbox" name="setPrice" checked> Also use this as today\u2019s price</label>
-        ${footer(sell ? "Sell" : "Buy")}
+        ${footer(sell ? "Save sale" : "Save purchase")}
       </form>`;
     }
   };
@@ -27542,7 +27542,7 @@ Leave empty to use your own name.`,
       const qty = form.querySelector('[name="grams"]');
       if (qty) qty.step = shares ? "1" : "0.001";
     }
-    /** Add-investment form: "I already own it" / "Buying now". */
+    /** Add-investment form: "I already own it" / "Just bought it". */
     onHoldingHowChange(radio) {
       const form = radio.form;
       for (const el of form.querySelectorAll("[data-how]")) el.style.display = el.dataset.how === radio.value ? "" : "none";

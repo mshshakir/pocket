@@ -2806,7 +2806,7 @@ export class Application {
     if (qty) qty.step = shares ? '1' : '0.001';
   }
 
-  /** Add-investment form: "I already own it" / "Buying now". */
+  /** Add-investment form: "I already own it" / "Just bought it". */
   onHoldingHowChange(radio) {
     const form = radio.form;
     for (const el of form.querySelectorAll('[data-how]')) el.style.display = el.dataset.how === radio.value ? '' : 'none';
