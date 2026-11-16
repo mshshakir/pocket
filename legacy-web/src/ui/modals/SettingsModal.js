@@ -1,8 +1,8 @@
 /**
  * SettingsModal — App preferences in four tabs, so nothing needs a long scroll:
- *   General  currencies, defaults, date format, theme, Hijri calendar
+ *   General  currencies, defaults, date format, theme, Hijri calendar, install as an app
  *   Account  sign-in and cloud sync, plan, AI
- *   Data     move in (CSV), export / import, reset, saved copies
+ *   Data     Google Drive backup, move in (CSV), export / import, reset, saved copies
  *   Help     feedback and feature requests
  */
 import { Store }           from '../../core/Store.js';
@@ -11,6 +11,8 @@ import { HijriCalendarService } from '../../domain/services/HijriCalendarService
 import { CURRENCIES }      from '../../data/constants.js';
 import { BookCleaner }     from '../../domain/services/BookCleaner.js';
 import { PlanCard }        from '../components/PlanCard.js';
+import { AppNotices }      from '../components/AppNotices.js';
+import { BackupSchedule }  from '../../domain/services/BackupSchedule.js';
 
 export class SettingsModal {
   /** @type {Store} */                #store;
@@ -128,7 +130,8 @@ export class SettingsModal {
           </div>
         </div>
 
-        ${this.#renderHijriSection(u)}`;
+        ${this.#renderHijriSection(u)}
+        ${this.#install()}`;
   }
 
   /** Account: sign-in and sync, plan, AI. */
@@ -221,6 +224,7 @@ export class SettingsModal {
   /** Data: move in, export / import, reset, saved copies. */
   #data(state) {
     return `
+        ${this.#driveBackup()}
         <!-- Migrate from another app (CSV) -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-center gap-2 mb-2">
@@ -298,6 +302,83 @@ export class SettingsModal {
         })()}
 
 `;
+  }
+
+  /**
+   * Google Drive backup: connect, how often, back up now, restore.
+   * Hidden in the demo and until a Google client ID is set.
+   */
+  #driveBackup() {
+    const d = window.__app?.driveStatus?.();
+    if (!d || !d.available) return '';
+    const head = `
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="cloud-upload" style="width:16px;height:16px" class="text-blue-600"></i>
+            <div class="font-medium text-sm flex-1">Google Drive backup</div>
+          </div>`;
+    const how = `
+          <details class="mt-2 text-xs text-zinc-500">
+            <summary class="cursor-pointer">How it works</summary>
+            <div class="mt-1 leading-relaxed">
+              Each backup saves two files in a <b>Pocket backups</b> folder in your own Google Drive: your whole book
+              (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
+              ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
+              and the files never pass through Pocket's servers. When a backup is due, Pocket shows
+              <b>Back up now</b> the next time you open it — one tap saves it.
+            </div>
+          </details>`;
+    if (!d.connected) {
+      return `
+        <div class="card-muted p-3 mb-3 drive-backup">${head}
+          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive, on a schedule you choose. Free on every plan.</div>
+          <button class="btn btn-primary w-full justify-center drive-connect" onclick="window.__app.driveConnect()" ${d.busy ? 'disabled' : ''}>
+            <i data-lucide="link"></i> ${d.busy ? 'Connecting…' : 'Connect Google Drive'}
+          </button>${how}
+        </div>`;
+    }
+    const last = d.lastAt ? AppNotices.day(d.lastAt) : 'not yet';
+    return `
+        <div class="card-muted p-3 mb-3 drive-backup">${head}
+          <div class="text-xs text-zinc-500 mb-2">
+            ${d.email ? `Connected to <b>${this.#esc(d.email)}</b>` : 'Connected'} · Last backup: <span class="drive-last">${this.#esc(last)}</span>${d.due ? ' · <span class="text-amber-600">due now</span>' : ''}
+          </div>
+          <label class="text-xs text-zinc-500">Back up</label>
+          <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
+            ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? 'selected' : ''}>${c.label}</option>`).join('')}
+          </select>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-primary justify-center drive-now" onclick="window.__app.driveBackupNow()" ${d.busy ? 'disabled' : ''}>
+              <i data-lucide="cloud-upload"></i> ${d.busy ? 'Backing up…' : 'Back up now'}
+            </button>
+            <button class="btn btn-outline justify-center drive-restore-open" onclick="window.__app.openDriveRestore()" ${d.busy ? 'disabled' : ''}>
+              <i data-lucide="history"></i> Restore…
+            </button>
+          </div>
+          <button class="w-full text-xs text-zinc-500 hover:text-rose-500 pt-2 drive-disconnect" onclick="window.__app.driveDisconnect()">
+            Disconnect Google Drive
+          </button>${how}
+        </div>`;
+  }
+
+  /** Install Pocket as an app on this device (hidden once it is installed). */
+  #install() {
+    const i = window.__app?.installInfo?.();
+    if (!i || i.installed) return '';
+    return `
+        <div class="card-muted p-3 mb-3 install-card">
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="smartphone" style="width:16px;height:16px" class="text-emerald-600"></i>
+            <div class="font-medium text-sm flex-1">Install Pocket as an app</div>
+          </div>
+          <div class="text-xs text-zinc-500 ${i.canInstall ? 'mb-2' : ''}">
+            Get Pocket on your home screen. It opens full screen and works without internet.
+            ${i.canInstall ? '' : `<span class="install-steps">${this.#esc(i.steps)}</span>`}
+          </div>
+          ${i.canInstall ? `
+          <button class="btn btn-primary w-full justify-center install-now" onclick="window.__app.installApp()">
+            <i data-lucide="download"></i> Install Pocket
+          </button>` : ''}
+        </div>`;
   }
 
   /** Help: feedback and feature requests, version. */

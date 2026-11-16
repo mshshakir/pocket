@@ -6,7 +6,7 @@
 > Paste this whole file into a new chat to bring a fresh session up to speed.
 > It complements the auto-memory (see _Memory_ below) — this is the human-readable brief.
 
-**Last updated:** 2026-08-15 (mobile port same day)
+**Last updated:** 2026-11-16
 
 ---
 
@@ -56,6 +56,24 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · Install as an app + offline, Google Drive backup** (branch `install-offline-drive-backup`).
+  *Install/offline:* `manifest.webmanifest`, icons in `img/icons/`, `sw.js` (class `OfflineFiles`: stamped `?v=`
+  files copy-first, pages and unstamped files network-first with a 4 s fall-back to the copy, CDN scripts
+  copy-then-refresh; never touches Supabase/Google calls). The deploy (`pages.yml`) now also stamps
+  `src="src/app.js"` and runs `scripts/precache.mjs` (`PrecacheManifest`) to write `precache.json` and stamp
+  `BUILD` in `sw.js`; each release gets its own cache. `core/PwaService` (registers the worker, holds the
+  install offer, `navigator.storage.persist()`, online state), `ui/components/AppNotices` (`#appNotices`:
+  offline note, "backup due"), Settings → General Install card, homepage `web/InstallButton`.
+  *Drive backup (all plans, no server):* `core/GoogleTokenClient` (Google Identity Services token flow, scope
+  `drive.file`, token in memory only), `DriveClient`, `BackupSchedule` (off/daily/weekly/monthly by calendar
+  days), `BackupFiles` (`Pocket book <date time>.json` = Export JSON without `_` keys, `Pocket transactions
+  <date time>.csv` = the import columns), `DriveBackupService` (folder "Pocket backups", keeps newest 10,
+  settings in `pocket.v1.drive` tied to the book's owner so another person's book is never saved there),
+  `DriveRestoreModal`. A schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
+  when due, the note above the page offers **Back up now**. **Needs `GOOGLE_DRIVE_CLIENT_ID` in
+  `data/constants.js`** (public OAuth client ID; the card is hidden while empty). Tests: `pwa.smoke.mjs` (32),
+  `drive-backup.smoke.mjs` (46, with `FakeGoogleDrive.mjs`), and `npm run smoke:offline` (13, real Chrome:
+  installs the worker, stops the servers, the app still opens, a new release replaces the old copy).
 - **2026-11-14 · Telegram group summaries:** migration 0022 (`telegram_groups`, `pocket_group_claim`,
   `pocket_space_summary` — only the space's own accounts, expense/income, no transfers; pg_cron job
   `telegram-summaries` hourly at :07 → edge function `supabase/functions/telegram-summaries`,

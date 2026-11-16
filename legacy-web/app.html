@@ -4,6 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>Pocket — Personal Finance</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#18181b">
+<link rel="icon" type="image/png" sizes="192x192" href="img/icons/icon-192.png">
+<link rel="apple-touch-icon" href="img/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pocket">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -426,6 +432,8 @@
     <div class="max-w-5xl mx-auto px-4 md:px-8 py-5 md:py-8 pb-28 md:pb-12">
       <!-- Plan notice (only when a plan needs attention, e.g. download before the cloud copy closes) -->
       <div id="planBanner"></div>
+      <!-- Short notes: no internet; a Google Drive backup is due -->
+      <div id="appNotices"></div>
       <!-- Space switcher (hidden unless someone shares accounts with you) -->
       <div id="spaceBar"></div>
       <!-- Active view renders here -->

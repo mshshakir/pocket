@@ -1042,6 +1042,7 @@ var _PocketApp = (() => {
   });
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
+  var GOOGLE_DRIVE_CLIENT_ID = "";
 
   // src/domain/services/IdGenerator.js
   var IdGenerator = class {
@@ -19658,6 +19659,116 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/AppNotices.js
+  var AppNotices = class _AppNotices {
+    #el;
+    #backupHidden = false;
+    /** @type {{online: boolean, syncs: boolean, backupDue: boolean, backupBusy: boolean, lastAt: string|null}} */
+    #state = { online: true, syncs: false, backupDue: false, backupBusy: false, lastAt: null };
+    /** @param {HTMLElement|null} el */
+    constructor(el) {
+      this.#el = el;
+    }
+    /** @param {Partial<{online: boolean, syncs: boolean, backupDue: boolean, backupBusy: boolean, lastAt: string|null}>} state */
+    show(state) {
+      this.#state = { ...this.#state, ...state };
+      if (!this.#el) return;
+      this.#el.innerHTML = this.html();
+      if (typeof lucide !== "undefined") lucide.createIcons();
+    }
+    /** Hide the backup note until the app is next opened. */
+    hideBackup() {
+      this.#backupHidden = true;
+      this.show({});
+    }
+    html() {
+      const s = this.#state;
+      return (s.online ? "" : this.#offline(s)) + (s.backupDue && !this.#backupHidden ? this.#backup(s) : "");
+    }
+    #offline(s) {
+      return `
+      <div class="plan-banner app-notice-offline" role="status">
+        <i data-lucide="wifi-off" class="plan-banner-icon"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold">You're offline</div>
+          <div class="plan-banner-text">
+            Keep going \u2014 what you add is saved on this device${s.syncs ? " and will sync when you're back online" : ""}.
+          </div>
+        </div>
+      </div>`;
+    }
+    #backup(s) {
+      const last = s.lastAt ? `Last backup: ${Html.escape(_AppNotices.day(s.lastAt))}.` : "No backup has been saved yet.";
+      return `
+      <div class="plan-banner app-notice-backup" role="status">
+        <i data-lucide="cloud-upload" class="plan-banner-icon" style="color:#2563eb"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold">Your Google Drive backup is due</div>
+          <div class="plan-banner-text">${last}${s.online ? "" : " It needs internet \u2014 try again when you're online."}</div>
+          <div class="flex flex-wrap gap-2 mt-2">
+            <button class="btn btn-primary text-sm" onclick="window.__app.driveBackupNow()" ${s.backupBusy || !s.online ? 'disabled style="opacity:.5;cursor:default"' : ""}>
+              <i data-lucide="cloud-upload"></i> ${s.backupBusy ? "Backing up\u2026" : "Back up now"}
+            </button>
+            <button class="btn btn-outline text-sm" onclick="window.__app.hideBackupNotice()">Later</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    /** e.g. "16 Nov 2026, 8:16 am" */
+    static day(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleString(void 0, { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
+    }
+  };
+
+  // src/domain/services/BackupSchedule.js
+  var BackupSchedule = class _BackupSchedule {
+    /** [key, label, days between backups] */
+    static #CHOICES = Object.freeze([
+      ["off", "Only when I tap Back up now", 0],
+      ["daily", "Every day", 1],
+      ["weekly", "Every week", 7],
+      ["monthly", "Every month", 30]
+    ]);
+    static DEFAULT = "weekly";
+    #key;
+    /** @param {string} [key] one of off | daily | weekly | monthly; anything else = the default */
+    constructor(key) {
+      this.#key = _BackupSchedule.#CHOICES.some(([k]) => k === key) ? key : _BackupSchedule.DEFAULT;
+    }
+    /** @returns {Array<{key: string, label: string}>} */
+    static choices() {
+      return _BackupSchedule.#CHOICES.map(([key, label]) => ({ key, label }));
+    }
+    get key() {
+      return this.#key;
+    }
+    get label() {
+      return _BackupSchedule.#CHOICES.find(([k]) => k === this.#key)[1];
+    }
+    get days() {
+      return _BackupSchedule.#CHOICES.find(([k]) => k === this.#key)[2];
+    }
+    get automatic() {
+      return this.days > 0;
+    }
+    /**
+     * @param {string|null} lastAt  when the last backup finished (ISO), or null for never
+     * @param {Date} [now]
+     */
+    isDue(lastAt, now = /* @__PURE__ */ new Date()) {
+      if (!this.automatic) return false;
+      const last = lastAt ? new Date(lastAt) : null;
+      if (!last || Number.isNaN(last.getTime())) return true;
+      return _BackupSchedule.#dayNumber(now) - _BackupSchedule.#dayNumber(last) >= this.days;
+    }
+    /** Whole days since a fixed point, by the local calendar. */
+    static #dayNumber(d) {
+      return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5);
+    }
+  };
+
   // src/ui/modals/SettingsModal.js
   var SettingsModal = class _SettingsModal {
     /** @type {Store} */
@@ -19776,7 +19887,8 @@ This replaces your current grouping.`
           </div>
         </div>
 
-        ${this.#renderHijriSection(u)}`;
+        ${this.#renderHijriSection(u)}
+        ${this.#install()}`;
     }
     /** Account: sign-in and sync, plan, AI. */
     #account(u, state, isSaaS, sbUser) {
@@ -19861,6 +19973,7 @@ This replaces your current grouping.`
     /** Data: move in, export / import, reset, saved copies. */
     #data(state) {
       return `
+        ${this.#driveBackup()}
         <!-- Migrate from another app (CSV) -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-center gap-2 mb-2">
@@ -19938,6 +20051,81 @@ This replaces your current grouping.`
       })()}
 
 `;
+    }
+    /**
+     * Google Drive backup: connect, how often, back up now, restore.
+     * Hidden in the demo and until a Google client ID is set.
+     */
+    #driveBackup() {
+      const d = window.__app?.driveStatus?.();
+      if (!d || !d.available) return "";
+      const head = `
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="cloud-upload" style="width:16px;height:16px" class="text-blue-600"></i>
+            <div class="font-medium text-sm flex-1">Google Drive backup</div>
+          </div>`;
+      const how = `
+          <details class="mt-2 text-xs text-zinc-500">
+            <summary class="cursor-pointer">How it works</summary>
+            <div class="mt-1 leading-relaxed">
+              Each backup saves two files in a <b>Pocket backups</b> folder in your own Google Drive: your whole book
+              (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
+              ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
+              and the files never pass through Pocket's servers. When a backup is due, Pocket shows
+              <b>Back up now</b> the next time you open it \u2014 one tap saves it.
+            </div>
+          </details>`;
+      if (!d.connected) {
+        return `
+        <div class="card-muted p-3 mb-3 drive-backup">${head}
+          <div class="text-xs text-zinc-500 mb-2">Keep a copy of your book in your own Google Drive, on a schedule you choose. Free on every plan.</div>
+          <button class="btn btn-primary w-full justify-center drive-connect" onclick="window.__app.driveConnect()" ${d.busy ? "disabled" : ""}>
+            <i data-lucide="link"></i> ${d.busy ? "Connecting\u2026" : "Connect Google Drive"}
+          </button>${how}
+        </div>`;
+      }
+      const last = d.lastAt ? AppNotices.day(d.lastAt) : "not yet";
+      return `
+        <div class="card-muted p-3 mb-3 drive-backup">${head}
+          <div class="text-xs text-zinc-500 mb-2">
+            ${d.email ? `Connected to <b>${this.#esc(d.email)}</b>` : "Connected"} \xB7 Last backup: <span class="drive-last">${this.#esc(last)}</span>${d.due ? ' \xB7 <span class="text-amber-600">due now</span>' : ""}
+          </div>
+          <label class="text-xs text-zinc-500">Back up</label>
+          <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
+            ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? "selected" : ""}>${c.label}</option>`).join("")}
+          </select>
+          <div class="grid grid-cols-2 gap-2">
+            <button class="btn btn-primary justify-center drive-now" onclick="window.__app.driveBackupNow()" ${d.busy ? "disabled" : ""}>
+              <i data-lucide="cloud-upload"></i> ${d.busy ? "Backing up\u2026" : "Back up now"}
+            </button>
+            <button class="btn btn-outline justify-center drive-restore-open" onclick="window.__app.openDriveRestore()" ${d.busy ? "disabled" : ""}>
+              <i data-lucide="history"></i> Restore\u2026
+            </button>
+          </div>
+          <button class="w-full text-xs text-zinc-500 hover:text-rose-500 pt-2 drive-disconnect" onclick="window.__app.driveDisconnect()">
+            Disconnect Google Drive
+          </button>${how}
+        </div>`;
+    }
+    /** Install Pocket as an app on this device (hidden once it is installed). */
+    #install() {
+      const i = window.__app?.installInfo?.();
+      if (!i || i.installed) return "";
+      return `
+        <div class="card-muted p-3 mb-3 install-card">
+          <div class="flex items-center gap-2 mb-1">
+            <i data-lucide="smartphone" style="width:16px;height:16px" class="text-emerald-600"></i>
+            <div class="font-medium text-sm flex-1">Install Pocket as an app</div>
+          </div>
+          <div class="text-xs text-zinc-500 ${i.canInstall ? "mb-2" : ""}">
+            Get Pocket on your home screen. It opens full screen and works without internet.
+            ${i.canInstall ? "" : `<span class="install-steps">${this.#esc(i.steps)}</span>`}
+          </div>
+          ${i.canInstall ? `
+          <button class="btn btn-primary w-full justify-center install-now" onclick="window.__app.installApp()">
+            <i data-lucide="download"></i> Install Pocket
+          </button>` : ""}
+        </div>`;
     }
     /** Help: feedback and feature requests, version. */
     #help(sbUser) {
@@ -23478,6 +23666,742 @@ This replaces your current grouping.`
     }
   };
 
+  // src/core/PwaService.js
+  var PwaService = class {
+    #win;
+    #onChange;
+    /** The browser's saved install offer (BeforeInstallPromptEvent), if any. */
+    #offer = null;
+    #installedNow = false;
+    #started = false;
+    /**
+     * @param {object} [deps]
+     * @param {Window} [deps.win]
+     * @param {() => void} [deps.onChange]  called when install or online state changes
+     */
+    constructor({ win = globalThis, onChange = () => {
+    } } = {}) {
+      this.#win = win;
+      this.#onChange = onChange;
+    }
+    /** Listen for the browser's events and register the worker. Safe to call once per page. */
+    start({ worker = "sw.js" } = {}) {
+      if (this.#started) return this;
+      this.#started = true;
+      const w = this.#win;
+      w.addEventListener?.("beforeinstallprompt", (e) => {
+        e.preventDefault();
+        this.#offer = e;
+        this.#onChange();
+      });
+      w.addEventListener?.("appinstalled", () => {
+        this.#offer = null;
+        this.#installedNow = true;
+        this.#onChange();
+      });
+      w.addEventListener?.("online", () => this.#onChange());
+      w.addEventListener?.("offline", () => this.#onChange());
+      this.#register(worker);
+      return this;
+    }
+    /** True when the browser has offered to install and the person hasn't answered yet. */
+    get canInstall() {
+      return !!this.#offer;
+    }
+    /** True when Pocket is running as an installed app (or was installed just now). */
+    get installed() {
+      if (this.#installedNow) return true;
+      try {
+        if (this.#win.matchMedia?.("(display-mode: standalone)")?.matches) return true;
+      } catch (_) {
+      }
+      return this.#win.navigator?.standalone === true;
+    }
+    /** iPhone and iPad never offer to install; people add the app from the Share menu. */
+    get isIos() {
+      const nav = this.#win.navigator || {};
+      return /iphone|ipad|ipod/i.test(nav.userAgent || "") || /mac/i.test(nav.platform || "") && Number(nav.maxTouchPoints) > 1;
+    }
+    get online() {
+      return this.#win.navigator?.onLine !== false;
+    }
+    /** How to install by hand, for when the browser made no offer. */
+    get manualSteps() {
+      return this.isIos ? 'In Safari, tap Share, then "Add to Home Screen".' : `Open your browser's menu (\u22EE) and choose "Install app" or "Add to Home screen".`;
+    }
+    /**
+     * Show the browser's install window.
+     * @returns {Promise<'accepted'|'dismissed'|'unavailable'>}
+     */
+    async install() {
+      const offer = this.#offer;
+      if (!offer) return "unavailable";
+      this.#offer = null;
+      try {
+        await offer.prompt();
+        const choice = await offer.userChoice;
+        this.#onChange();
+        return choice?.outcome === "accepted" ? "accepted" : "dismissed";
+      } catch (_) {
+        this.#onChange();
+        return "unavailable";
+      }
+    }
+    /**
+     * Ask the browser not to clear this site's storage on its own.
+     * @returns {Promise<boolean>} whether storage is now kept
+     */
+    async keepStorage() {
+      try {
+        const storage = this.#win.navigator?.storage;
+        if (!storage?.persist) return false;
+        if (await storage.persisted?.()) return true;
+        return await storage.persist();
+      } catch (_) {
+        return false;
+      }
+    }
+    #register(worker) {
+      const nav = this.#win.navigator;
+      const secure = this.#win.isSecureContext !== false;
+      if (!worker || !secure || !nav?.serviceWorker?.register) return;
+      const go = () => nav.serviceWorker.register(worker).catch((e) => console.warn("[PwaService] offline support not set up:", e));
+      if (this.#win.document?.readyState === "complete") go();
+      else this.#win.addEventListener?.("load", go, { once: true });
+    }
+  };
+
+  // src/core/GoogleTokenClient.js
+  var GoogleTokenClient = class _GoogleTokenClient {
+    static #SCRIPT = "https://accounts.google.com/gsi/client";
+    /** Treat a token as used up this long before Google does. */
+    static #MARGIN_MS = 6e4;
+    #clientId;
+    #scope;
+    #win;
+    #token = null;
+    #expiresAt = 0;
+    /** The Google account to pre-select in Google's window (an email). */
+    #account = "";
+    /** @type {Promise<void>|null} */
+    #loading = null;
+    /**
+     * @param {object} deps
+     * @param {string} deps.clientId  the OAuth client ID (public; empty = not set up)
+     * @param {string} deps.scope
+     * @param {Window} [deps.win]
+     */
+    constructor({ clientId, scope, win = globalThis }) {
+      this.#clientId = (clientId || "").trim();
+      this.#scope = scope;
+      this.#win = win;
+    }
+    /** Whether a client ID has been set, i.e. the feature can be offered. */
+    get configured() {
+      return !!this.#clientId;
+    }
+    /** Whether a token is in hand, so the next call needs no Google window. */
+    get ready() {
+      return !!this.#token && Date.now() < this.#expiresAt;
+    }
+    /** @param {string} email  the Google account to pre-select next time */
+    set account(email) {
+      this.#account = email || "";
+    }
+    /**
+     * An access token; opens Google's window when none is in hand.
+     * @returns {Promise<string>}
+     */
+    async token() {
+      const hint = this.#account;
+      if (this.ready) return this.#token;
+      if (!this.configured) throw new GoogleAuthError("not_configured", "Google Drive backup is not set up yet");
+      await this.#load();
+      const oauth = this.#win.google?.accounts?.oauth2;
+      if (!oauth) throw new GoogleAuthError("unavailable", "Could not reach Google. Check your connection and try again.");
+      const answer = await new Promise((resolve, reject) => {
+        const client = oauth.initTokenClient({
+          client_id: this.#clientId,
+          scope: this.#scope,
+          prompt: "",
+          ...hint ? { hint } : {},
+          callback: (res) => res?.access_token ? resolve(res) : reject(GoogleAuthError.from(res)),
+          error_callback: (err) => reject(GoogleAuthError.from(err))
+        });
+        client.requestAccessToken();
+      });
+      if (!String(answer.scope || this.#scope).split(" ").includes(this.#scope)) {
+        throw new GoogleAuthError("scope_denied", "Pocket needs permission to save files to your Google Drive. Please tick that box and try again.");
+      }
+      this.#token = answer.access_token;
+      this.#expiresAt = Date.now() + Math.max(0, Number(answer.expires_in) || 0) * 1e3 - _GoogleTokenClient.#MARGIN_MS;
+      return this.#token;
+    }
+    /**
+     * Fetch Google's sign-in library ahead of the tap that will need it, so its
+     * window opens at once (browsers only allow a new window right after a tap).
+     */
+    warm() {
+      if (this.configured) this.#load().catch(() => null);
+    }
+    /** Drop the token in hand (e.g. Google said it's no longer valid). */
+    forget() {
+      this.#token = null;
+      this.#expiresAt = 0;
+    }
+    /** Withdraw the permission at Google, as far as this token allows, and forget it. */
+    async revoke() {
+      const token = this.#token;
+      this.forget();
+      if (!token) return;
+      await new Promise((resolve) => {
+        try {
+          this.#win.google?.accounts?.oauth2?.revoke?.(token, () => resolve());
+        } catch (_) {
+        }
+        setTimeout(resolve, 1500);
+      });
+    }
+    #load() {
+      if (this.#win.google?.accounts?.oauth2) return Promise.resolve();
+      if (!this.#loading) {
+        this.#loading = new Promise((resolve, reject) => {
+          const doc = this.#win.document;
+          const el = doc.createElement("script");
+          el.src = _GoogleTokenClient.#SCRIPT;
+          el.async = true;
+          el.onload = () => resolve();
+          el.onerror = () => {
+            this.#loading = null;
+            reject(new GoogleAuthError("unavailable", "Could not reach Google. Check your connection and try again."));
+          };
+          doc.head.appendChild(el);
+        });
+      }
+      return this.#loading;
+    }
+  };
+  var GoogleAuthError = class _GoogleAuthError extends Error {
+    /** @param {string} code @param {string} message */
+    constructor(code, message) {
+      super(message);
+      this.name = "GoogleAuthError";
+      this.code = code;
+    }
+    /** @param {{type?: string, error?: string}|undefined} raw  what Google's library reported */
+    static from(raw) {
+      const type = raw?.type || raw?.error || "unknown";
+      if (type === "popup_closed" || type === "access_denied") {
+        return new _GoogleAuthError("cancelled", "Google sign-in was closed before it finished.");
+      }
+      if (type === "popup_failed_to_open") {
+        return new _GoogleAuthError("blocked", "Your browser blocked the Google window. Allow pop-ups for Pocket and try again.");
+      }
+      return new _GoogleAuthError(type, "Google sign-in did not finish. Please try again.");
+    }
+  };
+
+  // src/domain/services/DriveClient.js
+  var DriveClient = class _DriveClient {
+    static SCOPE = "https://www.googleapis.com/auth/drive.file";
+    static #API = "https://www.googleapis.com/drive/v3";
+    static #UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
+    static #FOLDER_MIME = "application/vnd.google-apps.folder";
+    /** Google's limit for a one-request upload is 5 MB; larger files go in two steps. */
+    static #SIMPLE_LIMIT = 45e5;
+    static #FILE_FIELDS = "id,name,size,createdTime";
+    #tokens;
+    #fetch;
+    /**
+     * @param {object} deps
+     * @param {{token: (opts?: object) => Promise<string>, forget: () => void}} deps.tokens
+     * @param {typeof fetch} [deps.fetch]
+     */
+    constructor({ tokens, fetch: fetch2 = (...a) => globalThis.fetch(...a) }) {
+      this.#tokens = tokens;
+      this.#fetch = fetch2;
+    }
+    /** @returns {Promise<{email: string, name: string}>} whose Drive this is */
+    async account() {
+      const json = await this.#json(`${_DriveClient.#API}/about?fields=${encodeURIComponent("user(displayName,emailAddress)")}`);
+      return { email: json.user?.emailAddress || "", name: json.user?.displayName || "" };
+    }
+    /** The id of Pocket's folder with this name, made if it isn't there. @returns {Promise<string>} */
+    async ensureFolder(name) {
+      const q = `name = '${_DriveClient.#quote(name)}' and mimeType = '${_DriveClient.#FOLDER_MIME}' and trashed = false`;
+      const found = await this.#json(`${_DriveClient.#API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent("files(id)")}&pageSize=1`);
+      if (found.files?.[0]?.id) return found.files[0].id;
+      const made = await this.#json(`${_DriveClient.#API}/files?fields=id`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, mimeType: _DriveClient.#FOLDER_MIME })
+      });
+      return made.id;
+    }
+    /** Whether the folder is still there (not deleted or binned by the person). */
+    async folderExists(folderId) {
+      try {
+        const f = await this.#json(`${_DriveClient.#API}/files/${encodeURIComponent(folderId)}?fields=${encodeURIComponent("id,trashed")}`);
+        return !!f.id && !f.trashed;
+      } catch (e) {
+        if (e instanceof DriveError && e.status === 404) return false;
+        throw e;
+      }
+    }
+    /**
+     * Save one text file into a folder.
+     * @param {{folderId: string, name: string, mime: string, body: string}} file
+     * @returns {Promise<{id: string, name: string, size: number, createdTime: string}>}
+     */
+    async upload({ folderId, name, mime, body }) {
+      const meta = { name, mimeType: mime, parents: [folderId] };
+      const bytes = new TextEncoder().encode(body);
+      const file = bytes.length <= _DriveClient.#SIMPLE_LIMIT ? await this.#uploadInOne(meta, mime, body) : await this.#uploadInSteps(meta, mime, bytes);
+      return _DriveClient.#fileOf(file);
+    }
+    /** The files in a folder, newest first. */
+    async list(folderId) {
+      const q = `'${_DriveClient.#quote(folderId)}' in parents and trashed = false`;
+      const out = [];
+      let pageToken = "";
+      do {
+        const page = await this.#json(`${_DriveClient.#API}/files?q=${encodeURIComponent(q)}&orderBy=${encodeURIComponent("createdTime desc")}&pageSize=200&fields=${encodeURIComponent(`nextPageToken,files(${_DriveClient.#FILE_FIELDS})`)}` + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""));
+        out.push(...(page.files || []).map(_DriveClient.#fileOf));
+        pageToken = page.nextPageToken || "";
+      } while (pageToken && out.length < 1e3);
+      return out;
+    }
+    /** @returns {Promise<string>} the file's text */
+    async download(fileId) {
+      const res = await this.#send(`${_DriveClient.#API}/files/${encodeURIComponent(fileId)}?alt=media`);
+      return res.text();
+    }
+    async remove(fileId) {
+      await this.#send(`${_DriveClient.#API}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" });
+    }
+    // ── Uploads ──────────────────────────────────────────────────────────
+    #uploadInOne(meta, mime, body) {
+      const boundary = `pocket${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+      const payload = `--${boundary}\r
+Content-Type: application/json; charset=UTF-8\r
+\r
+${JSON.stringify(meta)}\r
+--${boundary}\r
+Content-Type: ${mime}; charset=UTF-8\r
+\r
+${body}\r
+--${boundary}--`;
+      return this.#json(`${_DriveClient.#UPLOAD}?uploadType=multipart&fields=${encodeURIComponent(_DriveClient.#FILE_FIELDS)}`, {
+        method: "POST",
+        headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+        body: payload
+      });
+    }
+    async #uploadInSteps(meta, mime, bytes) {
+      const start = await this.#send(`${_DriveClient.#UPLOAD}?uploadType=resumable&fields=${encodeURIComponent(_DriveClient.#FILE_FIELDS)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": mime },
+        body: JSON.stringify(meta)
+      });
+      const session = start.headers.get("Location");
+      if (!session) throw new DriveError(0, "Google Drive did not accept the upload. Please try again.");
+      const res = await this.#send(session, { method: "PUT", headers: { "Content-Type": mime }, body: bytes });
+      return res.json();
+    }
+    // ── Requests ─────────────────────────────────────────────────────────
+    async #json(url, init) {
+      const res = await this.#send(url, init);
+      return res.status === 204 ? {} : res.json();
+    }
+    /** One request with the token; if Google says the token is stale, get a new one and try once more. */
+    async #send(url, init = {}, retried = false) {
+      const token = await this.#tokens.token();
+      let res;
+      try {
+        res = await this.#fetch(url, { ...init, headers: { ...init.headers || {}, Authorization: `Bearer ${token}` } });
+      } catch (_) {
+        throw new DriveError(0, "Could not reach Google Drive. Check your connection and try again.");
+      }
+      if (res.status === 401 && !retried) {
+        this.#tokens.forget();
+        return this.#send(url, init, true);
+      }
+      if (!res.ok) throw await DriveError.of(res);
+      return res;
+    }
+    static #fileOf(f) {
+      return { id: f.id, name: f.name || "", size: Number(f.size) || 0, createdTime: f.createdTime || "" };
+    }
+    /** Escape a value for a Drive search (q=) string. */
+    static #quote(s) {
+      return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+  };
+  var DriveError = class _DriveError extends Error {
+    /** @param {number} status @param {string} message @param {string} [reason] */
+    constructor(status, message, reason = "") {
+      super(message);
+      this.name = "DriveError";
+      this.status = status;
+      this.reason = reason;
+    }
+    /** @param {Response} res */
+    static async of(res) {
+      let reason = "";
+      try {
+        reason = (await res.json())?.error?.errors?.[0]?.reason || "";
+      } catch (_) {
+      }
+      if (reason === "storageQuotaExceeded") return new _DriveError(res.status, "Your Google Drive is full. Free some space and try again.", reason);
+      if (res.status === 401 || res.status === 403) return new _DriveError(res.status, "Google Drive did not allow that. Connect Google Drive again.", reason);
+      if (res.status === 404) return new _DriveError(res.status, "That file is no longer in your Google Drive.", reason);
+      return new _DriveError(res.status, "Google Drive had a problem. Please try again in a moment.", reason);
+    }
+  };
+
+  // src/domain/services/BackupFiles.js
+  var BackupFiles = class _BackupFiles {
+    static #BOOK = "Pocket book";
+    static #CSV = "Pocket transactions";
+    static #NAME = /^Pocket (book|transactions) (\d{4})-(\d{2})-(\d{2}) (\d{2})(\d{2})(\d{2})?\.(json|csv)$/;
+    /**
+     * The files for a backup made now.
+     * @param {object} state  the book
+     * @param {string} csv    every transaction as CSV text
+     * @param {Date} [now]
+     * @returns {{stamp: string, files: Array<{kind: 'book'|'csv', name: string, mime: string, body: string}>}}
+     */
+    static make(state, csv, now = /* @__PURE__ */ new Date()) {
+      const stamp = _BackupFiles.#stamp(now);
+      return {
+        stamp,
+        files: [
+          {
+            kind: "book",
+            name: `${_BackupFiles.#BOOK} ${stamp}.json`,
+            mime: "application/json",
+            body: JSON.stringify(Repository.stripTransient(state))
+          },
+          { kind: "csv", name: `${_BackupFiles.#CSV} ${stamp}.csv`, mime: "text/csv", body: csv }
+        ]
+      };
+    }
+    /**
+     * Pair a folder's files into backups, newest first. Files Pocket didn't name are left out.
+     * @param {Array<{id: string, name: string, size: number, createdTime: string}>} files
+     * @returns {Array<{stamp: string, at: Date, book: object|null, csv: object|null, fileIds: string[]}>}
+     */
+    static group(files) {
+      const byStamp = /* @__PURE__ */ new Map();
+      for (const f of files || []) {
+        const m = _BackupFiles.#NAME.exec(f.name || "");
+        if (!m) continue;
+        const stamp = `${m[2]}-${m[3]}-${m[4]} ${m[5]}${m[6]}${m[7] || ""}`;
+        if (!byStamp.has(stamp)) {
+          byStamp.set(stamp, {
+            stamp,
+            at: new Date(Number(m[2]), Number(m[3]) - 1, Number(m[4]), Number(m[5]), Number(m[6]), Number(m[7] || 0)),
+            book: null,
+            csv: null,
+            fileIds: []
+          });
+        }
+        const group = byStamp.get(stamp);
+        if (m[1] === "book" && !group.book) group.book = f;
+        if (m[1] === "transactions" && !group.csv) group.csv = f;
+        group.fileIds.push(f.id);
+      }
+      return [...byStamp.values()].sort((a, b) => b.at - a.at);
+    }
+    /**
+     * Read a book file back.
+     * @param {string} text
+     * @returns {object} the book
+     * @throws {Error} when it isn't a Pocket book
+     */
+    static parseBook(text) {
+      let book;
+      try {
+        book = JSON.parse(text);
+      } catch (_) {
+        throw new Error("That file is not a Pocket book");
+      }
+      if (!book || !Array.isArray(book.accounts) || !Array.isArray(book.transactions)) {
+        throw new Error("That file is not a Pocket book");
+      }
+      return book;
+    }
+    /** e.g. "2026-11-16 081605" (local time; seconds keep two backups in one minute apart). */
+    static #stamp(d) {
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    }
+  };
+
+  // src/domain/services/DriveBackupService.js
+  var DriveBackupService = class _DriveBackupService {
+    static FOLDER = "Pocket backups";
+    static KEEP = 10;
+    static #KEY = "pocket.v1.drive";
+    /** The owner recorded for a book nobody has signed in to. */
+    static GUEST = "guest";
+    #tokens;
+    #drive;
+    #storage;
+    #now;
+    #busy = false;
+    /**
+     * @param {object} deps
+     * @param {import('../../core/GoogleTokenClient.js').GoogleTokenClient} deps.tokens
+     * @param {import('./DriveClient.js').DriveClient} deps.drive
+     * @param {{getItem: Function, setItem: Function, removeItem: Function}} deps.storage  this device's storage
+     * @param {() => Date} [deps.now]
+     */
+    constructor({ tokens, drive, storage, now = () => /* @__PURE__ */ new Date() }) {
+      this.#tokens = tokens;
+      this.#drive = drive;
+      this.#storage = storage;
+      this.#now = now;
+    }
+    /** Whether the feature can be offered at all (a Google client ID is set). */
+    get available() {
+      return this.#tokens.configured;
+    }
+    get busy() {
+      return this.#busy;
+    }
+    /** Get ready for a tap on Connect / Back up now (loads Google's sign-in library). */
+    warm() {
+      this.#tokens.warm();
+    }
+    /**
+     * Where things stand for this book.
+     * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
+     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean}}
+     */
+    status(owner) {
+      const s = this.#settingsFor(owner);
+      const schedule = new BackupSchedule(s?.frequency);
+      return {
+        connected: !!s,
+        email: s?.email || "",
+        schedule,
+        lastAt: s?.lastAt || null,
+        due: !!s && schedule.isDue(s.lastAt, this.#now())
+      };
+    }
+    /**
+     * Link this book to a Google Drive. Opens Google's window (call from a tap).
+     * @param {string|null} owner
+     */
+    async connect(owner) {
+      return this.#exclusive(async () => {
+        this.#tokens.account = "";
+        await this.#tokens.token();
+        const who = await this.#drive.account().catch(() => ({ email: "", name: "" }));
+        const folderId = await this.#drive.ensureFolder(_DriveBackupService.FOLDER);
+        this.#tokens.account = who.email;
+        this.#save({
+          owner: _DriveBackupService.#ownerKey(owner),
+          email: who.email,
+          name: who.name,
+          folderId,
+          frequency: BackupSchedule.DEFAULT,
+          lastAt: null
+        });
+        return this.status(owner);
+      });
+    }
+    /** Unlink. Backups already in Drive stay there. */
+    async disconnect() {
+      try {
+        this.#storage.removeItem(_DriveBackupService.#KEY);
+      } catch (_) {
+      }
+      await this.#tokens.revoke();
+      this.#tokens.account = "";
+    }
+    /** @param {string|null} owner @param {string} frequency  off | daily | weekly | monthly */
+    setFrequency(owner, frequency) {
+      const s = this.#settingsFor(owner);
+      if (!s) return;
+      this.#save({ ...s, frequency: new BackupSchedule(frequency).key });
+    }
+    /**
+     * Save a backup now, then drop the oldest beyond KEEP.
+     * @param {{owner: string|null, state: object, csv: string}} book
+     * @returns {Promise<{stamp: string, removed: number}>}
+     */
+    async backup({ owner, state, csv }) {
+      return this.#exclusive(async () => {
+        const s = this.#linked(owner);
+        const folderId = await this.#folder(s);
+        const { stamp, files } = BackupFiles.make(state, csv, this.#now());
+        for (const file of files) await this.#drive.upload({ folderId, name: file.name, mime: file.mime, body: file.body });
+        this.#save({ ...s, folderId, lastAt: this.#now().toISOString() });
+        const removed = await this.#prune(folderId).catch(() => 0);
+        return { stamp, removed };
+      });
+    }
+    /**
+     * The backups in Drive, newest first (only those with a book to restore).
+     * @param {string|null} owner
+     */
+    async list(owner) {
+      const s = this.#linked(owner);
+      const files = await this.#drive.list(s.folderId);
+      return BackupFiles.group(files).filter((b) => b.book);
+    }
+    /**
+     * Fetch one backup's book, ready to restore.
+     * @param {string|null} owner @param {string} fileId  the book file's id
+     * @returns {Promise<object>}
+     */
+    async fetchBook(owner, fileId) {
+      this.#linked(owner);
+      return BackupFiles.parseBook(await this.#drive.download(fileId));
+    }
+    // ── Internals ────────────────────────────────────────────────────────
+    /** The folder to save into; made again if the person deleted it. */
+    async #folder(s) {
+      if (s.folderId && await this.#drive.folderExists(s.folderId)) return s.folderId;
+      return this.#drive.ensureFolder(_DriveBackupService.FOLDER);
+    }
+    async #prune(folderId) {
+      const old = BackupFiles.group(await this.#drive.list(folderId)).slice(_DriveBackupService.KEEP);
+      let removed = 0;
+      for (const backup of old) {
+        for (const id of backup.fileIds) await this.#drive.remove(id);
+        removed++;
+      }
+      return removed;
+    }
+    /** One Drive job at a time, so a double tap can't save twice. */
+    async #exclusive(job) {
+      if (this.#busy) throw new Error("A backup is already running");
+      this.#busy = true;
+      try {
+        return await job();
+      } finally {
+        this.#busy = false;
+      }
+    }
+    #linked(owner) {
+      const s = this.#settingsFor(owner);
+      if (!s) throw new Error("Connect Google Drive first");
+      this.#tokens.account = s.email;
+      return s;
+    }
+    /** The saved link, only if it was made for this book's owner. */
+    #settingsFor(owner) {
+      let s = null;
+      try {
+        s = JSON.parse(this.#storage.getItem(_DriveBackupService.#KEY) || "null");
+      } catch (_) {
+        s = null;
+      }
+      if (!s || typeof s !== "object" || !s.folderId) return null;
+      return s.owner === _DriveBackupService.#ownerKey(owner) ? s : null;
+    }
+    #save(settings) {
+      try {
+        this.#storage.setItem(_DriveBackupService.#KEY, JSON.stringify(settings));
+      } catch (_) {
+      }
+    }
+    static #ownerKey(owner) {
+      return owner || _DriveBackupService.GUEST;
+    }
+  };
+
+  // src/ui/modals/DriveRestoreModal.js
+  var DriveRestoreModal = class _DriveRestoreModal {
+    /** @type {() => Promise<Array<{stamp: string, at: Date, book: {id: string, size: number}, csv: object|null}>>} */
+    #load;
+    /** @type {() => void} */
+    #redraw;
+    /** 'loading' | 'ready' | 'error' */
+    #phase = "loading";
+    #backups = [];
+    #error = "";
+    /** The backup being restored right now (its book file id), or null. */
+    #restoring = null;
+    /**
+     * @param {object} deps
+     * @param {() => Promise<Array>} deps.load     the backups in Drive
+     * @param {() => void} deps.redraw             re-draw this window
+     */
+    constructor({ load, redraw }) {
+      this.#load = load;
+      this.#redraw = redraw;
+    }
+    /** Called by the app when the window opens: fetch the list. */
+    async open() {
+      this.#phase = "loading";
+      this.#backups = [];
+      this.#error = "";
+      this.#restoring = null;
+      try {
+        this.#backups = await this.#load();
+        this.#phase = "ready";
+      } catch (e) {
+        this.#error = e?.message || "Could not read your Google Drive backups";
+        this.#phase = "error";
+      }
+      this.#redraw();
+    }
+    /** @param {string|null} fileId */
+    set restoring(fileId) {
+      this.#restoring = fileId;
+      this.#redraw();
+    }
+    render() {
+      return `
+      <div class="p-5 drive-restore">
+        <div class="sheet-header flex items-center justify-between">
+          <h3 class="text-lg font-semibold">Restore from Google Drive</h3>
+          <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close" title="Close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="text-xs text-zinc-500 mt-1 mb-3 leading-relaxed">
+          Restoring swaps the book on this device for the one in the backup. Anything added after that backup is lost,
+          so back up first if you're unsure.
+        </div>
+        ${this.#body()}
+      </div>`;
+    }
+    #body() {
+      if (this.#phase === "loading") return '<div class="text-sm text-zinc-500 py-6 text-center">Looking in your Google Drive\u2026</div>';
+      if (this.#phase === "error") {
+        return `
+        <div class="text-sm text-rose-600 py-3">${Html.escape(this.#error)}</div>
+        <button class="btn btn-outline w-full justify-center" onclick="window.__app.openDriveRestore()">
+          <i data-lucide="refresh-cw"></i> Try again
+        </button>`;
+      }
+      if (!this.#backups.length) {
+        return '<div class="text-sm text-zinc-500 py-6 text-center">No backups in your Google Drive yet. Tap <b>Back up now</b> in Settings to save the first one.</div>';
+      }
+      return this.#backups.map((b) => `
+      <div class="flex items-center gap-3 py-2.5 border-t border-zinc-100 dark:border-zinc-800 drive-restore-row">
+        <i data-lucide="file-clock" style="width:18px;height:18px" class="text-zinc-400"></i>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium">${Html.escape(AppNotices.day(b.at.toISOString()))}</div>
+          <div class="text-xs text-zinc-500">${_DriveRestoreModal.#size(b.book.size)}${b.csv ? " \xB7 with CSV" : ""}</div>
+        </div>
+        <button class="btn btn-outline text-xs" ${this.#restoring ? "disabled" : ""}
+                onclick="window.__app.driveRestore('${Html.escape(b.book.id)}')">
+          ${this.#restoring === b.book.id ? "Restoring\u2026" : "Restore"}
+        </button>
+      </div>`).join("");
+    }
+    static #size(bytes) {
+      if (!bytes) return "Book";
+      return bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))} KB` : `${(bytes / 1e6).toFixed(1)} MB`;
+    }
+  };
+
   // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
@@ -23586,6 +24510,14 @@ This replaces your current grouping.`
     // ExportModal
     #planBanner = null;
     // PlanBanner
+    /** @type {AppNotices|null} offline note and "backup due" above every page */
+    #notices = null;
+    /** @type {PwaService|null} install as an app, offline files, online state */
+    #pwa = null;
+    /** @type {DriveBackupService|null} backups to the person's Google Drive */
+    #driveBackup = null;
+    /** @type {DriveRestoreModal|null} */
+    #driveRestoreModal = null;
     /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
     #planCatalogue = null;
     /** What's for sale for this person (payments function), when payment is open; null otherwise. */
@@ -23805,6 +24737,7 @@ This replaces your current grouping.`
         this.#sessionChecked = true;
         this.#render();
       });
+      this.#startAppShell();
       this.#render();
       if (DemoMode.active) {
         this.#sessionChecked = true;
@@ -23962,7 +24895,10 @@ This replaces your current grouping.`
           sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id }
         });
       }
-      if (name === "settings") this.#refreshPlanInfo();
+      if (name === "settings") {
+        this.#refreshPlanInfo();
+        if (this.driveStatus().available && this.#pwa?.online !== false) this.#driveBackup.warm();
+      }
       if (name === "debtPayment") {
         this.#modal.open("debtPayment", { ...opts, mode: "payment" });
       } else {
@@ -28111,14 +29047,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       const reader = new FileReader();
       reader.onload = () => {
         try {
-          const parsed = JSON.parse(reader.result);
-          if (!Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
-            throw new Error("Invalid structure");
-          }
-          this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
-          this.#ensureUserDefaults();
-          this.#accounts.recompute();
-          this.#store.persist();
+          this.#replaceBook(BackupFiles.parseBook(reader.result));
           this.closeModal();
           this.#render();
           this.#toast.show("Data imported");
@@ -28127,6 +29056,164 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }
       };
       reader.readAsText(file);
+    }
+    /**
+     * Swap the book on this device for another (Import JSON, restore from Google Drive).
+     * @param {object} book  a parsed Pocket book
+     */
+    #replaceBook(book) {
+      this.#store.replaceState(book, (s) => StateMigrator.migrate(s));
+      this.#ensureUserDefaults();
+      this.#accounts.recompute();
+      this.#store.persist();
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+    // Install as an app · offline note · Google Drive backup
+    // ──────────────────────────────────────────────────────────────────────────
+    #startAppShell() {
+      this.#notices = new AppNotices(document.getElementById("appNotices"));
+      this.#pwa = new PwaService({
+        win: window,
+        onChange: () => {
+          this.#refreshNotices();
+          if (this.#modal.active === "settings") this.#modal.refresh();
+        }
+      }).start();
+      const tokens = new GoogleTokenClient({
+        clientId: window.POCKET_GOOGLE_CLIENT_ID || GOOGLE_DRIVE_CLIENT_ID,
+        scope: DriveClient.SCOPE,
+        win: window
+      });
+      this.#driveBackup = new DriveBackupService({
+        tokens,
+        drive: new DriveClient({ tokens, fetch: (...a) => window.fetch(...a) }),
+        storage: window.localStorage
+      });
+      this.#driveRestoreModal = new DriveRestoreModal({
+        load: () => this.#driveBackup.list(Repository.storedOwner()),
+        redraw: () => {
+          if (this.#modal.active === "driveRestore") this.#modal.refresh();
+        }
+      });
+      this.#modal.register("driveRestore", this.#driveRestoreModal);
+      this.#bus.on("session:known", () => this.#refreshNotices());
+      this.#bus.on("auth:changed", () => this.#refreshNotices());
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) this.#refreshNotices();
+      });
+      this.#refreshNotices();
+      if (!DemoMode.active) this.#pwa.keepStorage();
+    }
+    /** The notes above every page: offline, and a Google Drive backup that is due. */
+    #refreshNotices() {
+      if (!this.#notices) return;
+      const drive = this.driveStatus();
+      if (drive.connected && drive.due && this.#pwa?.online !== false) this.#driveBackup.warm();
+      this.#notices.show({
+        online: this.#pwa?.online !== false,
+        syncs: !!this.#sync.currentUser,
+        backupDue: drive.available && drive.connected && drive.due && !this.#lockState(),
+        backupBusy: drive.busy,
+        lastAt: drive.lastAt
+      });
+    }
+    /** For Settings → General: can Pocket be installed here, and how. */
+    installInfo() {
+      return {
+        installed: !!this.#pwa?.installed,
+        canInstall: !!this.#pwa?.canInstall,
+        steps: this.#pwa?.manualSteps || ""
+      };
+    }
+    async installApp() {
+      const outcome = await this.#pwa?.install();
+      if (outcome === "accepted") this.#toast.show("Pocket is installed");
+      else if (outcome === "unavailable") this.#toast.show(this.#pwa?.manualSteps || "Use your browser's menu to install");
+      if (this.#modal.active === "settings") this.#modal.refresh();
+    }
+    /** For Settings → Data and the notes: where the Google Drive backup stands. */
+    driveStatus() {
+      const svc = this.#driveBackup;
+      if (!svc || !svc.available || DemoMode.active) {
+        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, busy: false, keep: DriveBackupService.KEEP };
+      }
+      const st = svc.status(Repository.storedOwner());
+      return {
+        available: true,
+        connected: st.connected,
+        email: st.email,
+        frequency: st.schedule.key,
+        lastAt: st.lastAt,
+        due: st.due,
+        busy: svc.busy,
+        keep: DriveBackupService.KEEP
+      };
+    }
+    async driveConnect() {
+      await this.#driveJob(async () => {
+        const st = await this.#driveBackup.connect(Repository.storedOwner());
+        this.#toast.show(st.email ? `Connected to ${st.email}` : "Google Drive connected");
+      });
+    }
+    async driveDisconnect() {
+      if (!confirm("Disconnect Google Drive? Backups already in your Drive stay there.")) return;
+      await this.#driveBackup.disconnect();
+      this.#toast.show("Google Drive disconnected");
+      this.#driveChanged();
+    }
+    driveSetFrequency(value) {
+      this.#driveBackup.setFrequency(Repository.storedOwner(), value);
+      this.#driveChanged();
+    }
+    /** Save a backup now (from Settings or the "backup due" note). Opens Google's window if needed. */
+    async driveBackupNow() {
+      await this.#driveJob(async () => {
+        await this.#driveBackup.backup({
+          owner: Repository.storedOwner(),
+          state: this.#store.getState(),
+          csv: this.#ledgerCsv("all")
+        });
+        this.#toast.show("Backed up to Google Drive");
+      });
+    }
+    openDriveRestore() {
+      this.#modal.open("driveRestore", {});
+      lucide?.createIcons?.();
+      this.#driveRestoreModal.open();
+    }
+    /** @param {string} fileId  the backup's book file in Drive */
+    async driveRestore(fileId) {
+      if (!confirm("Restore this backup? It replaces the book on this device.")) return;
+      this.#driveRestoreModal.restoring = fileId;
+      try {
+        const book = await this.#driveBackup.fetchBook(Repository.storedOwner(), fileId);
+        this.#replaceBook(book);
+        this.closeModal();
+        this.#render();
+        this.#toast.show("Backup restored");
+      } catch (e) {
+        this.#driveRestoreModal.restoring = null;
+        this.#toast.show(e?.message || "Could not restore that backup");
+      }
+    }
+    hideBackupNotice() {
+      this.#notices?.hideBackup();
+    }
+    /** Run one Drive action, showing "…ing" while it runs and any problem as a toast. */
+    async #driveJob(job) {
+      if (this.#driveBackup.busy) return;
+      const running = job();
+      this.#driveChanged();
+      try {
+        await running;
+      } catch (e) {
+        this.#toast.show(e?.message || "Google Drive did not respond. Please try again.");
+      }
+      this.#driveChanged();
+    }
+    #driveChanged() {
+      this.#refreshNotices();
+      if (this.#modal.active === "settings") this.#modal.refresh();
     }
     /** Conflict-backup recovery (SyncService keeps timestamped copies). */
     conflictBackups() {
@@ -28185,8 +29272,22 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       }
     }
     exportCsv(range) {
+      const blob = new Blob([this.#ledgerCsv(range)], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "transactions-" + (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) + ".csv";
+      a.click();
+      this.closeModal();
+      this.#toast.show("CSV downloaded");
+    }
+    /**
+     * Transactions as CSV text, in the import template's columns (so the file
+     * can be imported back). Used by Export CSV and by Google Drive backups.
+     * @param {string} range  'all', 'current' (the Reports range) or a number of days
+     * @returns {string}
+     */
+    #ledgerCsv(range) {
       const state = this.#store.getState();
-      const home = state.user.homeCurrency;
       const COLS = [
         ["Date", "date"],
         ["Type", "type"],
@@ -28209,7 +29310,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         ["AddedBy", "addedBy"]
       ];
       const effectiveRange = range === "current" ? this.#reportRange : range;
-      const txs = state.transactions.filter((t) => this.#withinRange(t.date, effectiveRange)).sort((a2, b) => a2.date.localeCompare(b.date));
+      const txs = state.transactions.filter((t) => this.#withinRange(t.date, effectiveRange)).sort((a, b) => a.date.localeCompare(b.date));
       const catPair = (id) => {
         const cat = state.categories.find((c) => c.id === id);
         if (!cat) return ["", ""];
@@ -28232,8 +29333,8 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         if (t.type === "transfer" && t.transferPairId) {
           if (t.transferDir === "in") return;
           const pair = state.transactions.find((x) => x.id === t.transferPairId);
-          const accFrom = state.accounts.find((a2) => a2.id === t.accountId);
-          const accTo = pair ? state.accounts.find((a2) => a2.id === pair.accountId) : null;
+          const accFrom = state.accounts.find((a) => a.id === t.accountId);
+          const accTo = pair ? state.accounts.find((a) => a.id === pair.accountId) : null;
           const crossCcy = pair && pair.currency !== t.currency;
           rows.push(buildRow({
             date: t.date,
@@ -28258,7 +29359,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         if (t.debtId) {
           const debt = state.debts?.find((x) => x.id === t.debtId);
           if (debt) {
-            const acc2 = state.accounts.find((a2) => a2.id === t.accountId);
+            const acc2 = state.accounts.find((a) => a.id === t.accountId);
             if (t.debtRole === "initial") {
               rows.push(buildRow({
                 date: t.date,
@@ -28297,7 +29398,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }
         if (Array.isArray(t.splits) && t.splits.length) {
           t.splits.forEach((s) => {
-            const acc2 = state.accounts.find((a2) => a2.id === (s.accountId || t.accountId));
+            const acc2 = state.accounts.find((a) => a.id === (s.accountId || t.accountId));
             const [cn2, sn2] = catPair(s.categoryId);
             rows.push(buildRow({
               date: t.date,
@@ -28319,7 +29420,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
           emitted.add(t.id);
           return;
         }
-        const acc = state.accounts.find((a2) => a2.id === t.accountId);
+        const acc = state.accounts.find((a) => a.id === t.accountId);
         const [cn, sn] = catPair(t.categoryId);
         rows.push(buildRow({
           date: t.date,
@@ -28338,14 +29439,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }));
         emitted.add(t.id);
       });
-      const csv = rows.map((r) => r.join(",")).join("\n");
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "transactions-" + (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) + ".csv";
-      a.click();
-      this.closeModal();
-      this.#toast.show("CSV downloaded");
+      return rows.map((r) => r.join(",")).join("\n");
     }
     downloadImportTemplate() {
       const today = DateService.todayIso();

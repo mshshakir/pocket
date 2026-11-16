@@ -207,3 +207,13 @@ export const ACCOUNT_TYPE_ICONS = Object.freeze({
 // ── Supabase (developer-configured) ────────────────────────────────────
 export const APP_SUPABASE_URL = 'https://nvsfxdnnakzfzsrsfftp.supabase.co';
 export const APP_SUPABASE_KEY = 'sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn';
+
+/**
+ * Google Drive backup: the OAuth client ID from Google Cloud Console
+ * (APIs & Services → Credentials → OAuth client ID → Web application, with
+ * this site's address under "Authorised JavaScript origins"). It is a public
+ * identifier, not a secret. Empty = the Google Drive backup card is hidden.
+ * Someone hosting their own copy can instead set
+ * window.POCKET_GOOGLE_CLIENT_ID in app.html.
+ */
+export const GOOGLE_DRIVE_CLIENT_ID = '';

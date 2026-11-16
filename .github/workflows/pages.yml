@@ -51,7 +51,11 @@ jobs:
           # the new code at once instead of a copy cached for up to 10 minutes.
           v="${GITHUB_SHA::8}"
           find _site/src -name '*.js' -print0 | xargs -0 sed -i -E "s#(from '\.{1,2}/[^'?]+\.js)'#\1?v=$v'#g"
-          sed -i -E "s#(from '\./src/[^'?]+\.js)'#\1?v=$v'#g; s#src=\"bundle\.js\"#src=\"bundle.js?v=$v\"#g" _site/*.html
+          sed -i -E "s#(from '\./src/[^'?]+\.js)'#\1?v=$v'#g; s#src=\"bundle\.js\"#src=\"bundle.js?v=$v\"#g; s#src=\"src/app\.js\"#src=\"src/app.js?v=$v\"#g" _site/*.html
+          # Offline: list the files the service worker keeps on the device and
+          # stamp this deploy into sw.js (after the stamping above, so the
+          # list matches what the pages ask for).
+          node _site/scripts/precache.mjs _site "$v"
 
       - uses: actions/upload-pages-artifact@v3
         with:

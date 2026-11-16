@@ -123,6 +123,15 @@ import { BillService }          from './domain/services/BillService.js';
 import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
 import { PlanBanner }           from './ui/components/PlanBanner.js';
+import { AppNotices }           from './ui/components/AppNotices.js';
+import { PwaService }           from './core/PwaService.js';
+import { Repository }           from './core/Repository.js';
+import { GoogleTokenClient }    from './core/GoogleTokenClient.js';
+import { DriveClient }          from './domain/services/DriveClient.js';
+import { DriveBackupService }   from './domain/services/DriveBackupService.js';
+import { BackupFiles }          from './domain/services/BackupFiles.js';
+import { DriveRestoreModal }    from './ui/modals/DriveRestoreModal.js';
+import { GOOGLE_DRIVE_CLIENT_ID } from './data/constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -199,6 +208,14 @@ export class Application {
   #currencySetupModal= null;  // CurrencySetupModal
   #exportModal       = null;  // ExportModal
   #planBanner        = null;  // PlanBanner
+  /** @type {AppNotices|null} offline note and "backup due" above every page */
+  #notices           = null;
+  /** @type {PwaService|null} install as an app, offline files, online state */
+  #pwa               = null;
+  /** @type {DriveBackupService|null} backups to the person's Google Drive */
+  #driveBackup       = null;
+  /** @type {DriveRestoreModal|null} */
+  #driveRestoreModal = null;
   /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
   #planCatalogue     = null;
   /** What's for sale for this person (payments function), when payment is open; null otherwise. */
@@ -470,6 +487,9 @@ export class Application {
     // The session check decides between the book and the lock screen.
     this.#bus.on('session:known', () => { this.#sessionChecked = true; this.#render(); });
 
+    // Install as an app + offline files; notes above every page; Google Drive backup.
+    this.#startAppShell();
+
     // 8. Initial render (shows locally-cached or seed data while Supabase loads;
     //    a book that belongs to an account waits on "Opening your book…")
     this.#render();
@@ -639,7 +659,10 @@ export class Application {
         sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id },
       });
     }
-    if (name === 'settings') this.#refreshPlanInfo();
+    if (name === 'settings') {
+      this.#refreshPlanInfo();
+      if (this.driveStatus().available && this.#pwa?.online !== false) this.#driveBackup.warm();
+    }
     // debtPayment needs to route to DebtModal in payment mode
     if (name === 'debtPayment') {
       this.#modal.open('debtPayment', { ...opts, mode: 'payment' });
@@ -4946,24 +4969,182 @@ export class Application {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(reader.result);
-        if (!Array.isArray(parsed.accounts) || !Array.isArray(parsed.transactions)) {
-          throw new Error('Invalid structure');
-        }
-        // replaceState() deletes every key the incoming object omits, so an
-        // older or partial export used to wipe user settings, categories,
-        // budgets, debts and regular items. Running the migrator back-fills
-        // those (and openingBalance, without which every balance collapses to
-        // the bare ledger sum) before the swap.
-        this.#store.replaceState(parsed, (s) => StateMigrator.migrate(s));
-        this.#ensureUserDefaults();
-        this.#accounts.recompute();
-        this.#store.persist();
+        this.#replaceBook(BackupFiles.parseBook(reader.result));
         this.closeModal(); this.#render();
         this.#toast.show('Data imported');
       } catch { this.#toast.show('Invalid JSON file'); }
     };
     reader.readAsText(file);
+  }
+
+  /**
+   * Swap the book on this device for another (Import JSON, restore from Google Drive).
+   * @param {object} book  a parsed Pocket book
+   */
+  #replaceBook(book) {
+    // replaceState() deletes every key the incoming object omits, so an
+    // older or partial export used to wipe user settings, categories,
+    // budgets, debts and regular items. Running the migrator back-fills
+    // those (and openingBalance, without which every balance collapses to
+    // the bare ledger sum) before the swap.
+    this.#store.replaceState(book, (s) => StateMigrator.migrate(s));
+    this.#ensureUserDefaults();
+    this.#accounts.recompute();
+    this.#store.persist();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Install as an app · offline note · Google Drive backup
+  // ──────────────────────────────────────────────────────────────────────────
+
+  #startAppShell() {
+    this.#notices = new AppNotices(document.getElementById('appNotices'));
+    this.#pwa = new PwaService({
+      win: window,
+      onChange: () => {
+        this.#refreshNotices();
+        if (this.#modal.active === 'settings') this.#modal.refresh();
+      },
+    }).start();
+
+    const tokens = new GoogleTokenClient({
+      clientId: window.POCKET_GOOGLE_CLIENT_ID || GOOGLE_DRIVE_CLIENT_ID,
+      scope: DriveClient.SCOPE,
+      win: window,
+    });
+    this.#driveBackup = new DriveBackupService({
+      tokens,
+      drive: new DriveClient({ tokens, fetch: (...a) => window.fetch(...a) }),
+      storage: window.localStorage,
+    });
+    this.#driveRestoreModal = new DriveRestoreModal({
+      load: () => this.#driveBackup.list(Repository.storedOwner()),
+      redraw: () => { if (this.#modal.active === 'driveRestore') this.#modal.refresh(); },
+    });
+    this.#modal.register('driveRestore', this.#driveRestoreModal);
+
+    this.#bus.on('session:known', () => this.#refreshNotices());
+    this.#bus.on('auth:changed', () => this.#refreshNotices());
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.#refreshNotices(); });
+    this.#refreshNotices();
+
+    // Ask the browser to keep the book rather than clear it when space runs low.
+    if (!DemoMode.active) this.#pwa.keepStorage();
+  }
+
+  /** The notes above every page: offline, and a Google Drive backup that is due. */
+  #refreshNotices() {
+    if (!this.#notices) return;
+    const drive = this.driveStatus();
+    if (drive.connected && drive.due && this.#pwa?.online !== false) this.#driveBackup.warm();
+    this.#notices.show({
+      online: this.#pwa?.online !== false,
+      syncs: !!this.#sync.currentUser,
+      backupDue: drive.available && drive.connected && drive.due && !this.#lockState(),
+      backupBusy: drive.busy,
+      lastAt: drive.lastAt,
+    });
+  }
+
+  /** For Settings → General: can Pocket be installed here, and how. */
+  installInfo() {
+    return {
+      installed: !!this.#pwa?.installed,
+      canInstall: !!this.#pwa?.canInstall,
+      steps: this.#pwa?.manualSteps || '',
+    };
+  }
+
+  async installApp() {
+    const outcome = await this.#pwa?.install();
+    if (outcome === 'accepted') this.#toast.show('Pocket is installed');
+    else if (outcome === 'unavailable') this.#toast.show(this.#pwa?.manualSteps || 'Use your browser\'s menu to install');
+    if (this.#modal.active === 'settings') this.#modal.refresh();
+  }
+
+  /** For Settings → Data and the notes: where the Google Drive backup stands. */
+  driveStatus() {
+    const svc = this.#driveBackup;
+    if (!svc || !svc.available || DemoMode.active) {
+      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, busy: false, keep: DriveBackupService.KEEP };
+    }
+    const st = svc.status(Repository.storedOwner());
+    return {
+      available: true, connected: st.connected, email: st.email, frequency: st.schedule.key,
+      lastAt: st.lastAt, due: st.due, busy: svc.busy, keep: DriveBackupService.KEEP,
+    };
+  }
+
+  async driveConnect() {
+    await this.#driveJob(async () => {
+      const st = await this.#driveBackup.connect(Repository.storedOwner());
+      this.#toast.show(st.email ? `Connected to ${st.email}` : 'Google Drive connected');
+    });
+  }
+
+  async driveDisconnect() {
+    if (!confirm('Disconnect Google Drive? Backups already in your Drive stay there.')) return;
+    await this.#driveBackup.disconnect();
+    this.#toast.show('Google Drive disconnected');
+    this.#driveChanged();
+  }
+
+  driveSetFrequency(value) {
+    this.#driveBackup.setFrequency(Repository.storedOwner(), value);
+    this.#driveChanged();
+  }
+
+  /** Save a backup now (from Settings or the "backup due" note). Opens Google's window if needed. */
+  async driveBackupNow() {
+    await this.#driveJob(async () => {
+      await this.#driveBackup.backup({
+        owner: Repository.storedOwner(),
+        state: this.#store.getState(),
+        csv: this.#ledgerCsv('all'),
+      });
+      this.#toast.show('Backed up to Google Drive');
+    });
+  }
+
+  openDriveRestore() {
+    this.#modal.open('driveRestore', {});
+    lucide?.createIcons?.();
+    this.#driveRestoreModal.open();
+  }
+
+  /** @param {string} fileId  the backup's book file in Drive */
+  async driveRestore(fileId) {
+    if (!confirm('Restore this backup? It replaces the book on this device.')) return;
+    this.#driveRestoreModal.restoring = fileId;
+    try {
+      const book = await this.#driveBackup.fetchBook(Repository.storedOwner(), fileId);
+      this.#replaceBook(book);
+      this.closeModal(); this.#render();
+      this.#toast.show('Backup restored');
+    } catch (e) {
+      this.#driveRestoreModal.restoring = null;
+      this.#toast.show(e?.message || 'Could not restore that backup');
+    }
+  }
+
+  hideBackupNotice() { this.#notices?.hideBackup(); }
+
+  /** Run one Drive action, showing "…ing" while it runs and any problem as a toast. */
+  async #driveJob(job) {
+    if (this.#driveBackup.busy) return;
+    const running = job();
+    this.#driveChanged();
+    try {
+      await running;
+    } catch (e) {
+      this.#toast.show(e?.message || 'Google Drive did not respond. Please try again.');
+    }
+    this.#driveChanged();
+  }
+
+  #driveChanged() {
+    this.#refreshNotices();
+    if (this.#modal.active === 'settings') this.#modal.refresh();
   }
 
   /** Conflict-backup recovery (SyncService keeps timestamped copies). */
@@ -5029,8 +5210,23 @@ export class Application {
   }
 
   exportCsv(range) {
+    const blob = new Blob([this.#ledgerCsv(range)], { type: 'text/csv;charset=utf-8' });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = 'transactions-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.click();
+    this.closeModal();
+    this.#toast.show('CSV downloaded');
+  }
+
+  /**
+   * Transactions as CSV text, in the import template's columns (so the file
+   * can be imported back). Used by Export CSV and by Google Drive backups.
+   * @param {string} range  'all', 'current' (the Reports range) or a number of days
+   * @returns {string}
+   */
+  #ledgerCsv(range) {
     const state = this.#store.getState();
-    const home  = state.user.homeCurrency;
 
     const COLS  = [
       ['Date','date'],['Type','type'],['Account','account'],['ToAccount','toaccount'],
@@ -5140,14 +5336,7 @@ export class Application {
       emitted.add(t.id);
     });
 
-    const csv  = rows.map((r) => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const a    = document.createElement('a');
-    a.href     = URL.createObjectURL(blob);
-    a.download = 'transactions-' + new Date().toISOString().slice(0, 10) + '.csv';
-    a.click();
-    this.closeModal();
-    this.#toast.show('CSV downloaded');
+    return rows.map((r) => r.join(',')).join('\n');
   }
 
   downloadImportTemplate() {
