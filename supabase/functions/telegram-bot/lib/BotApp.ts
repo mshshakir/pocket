@@ -19,6 +19,7 @@ import { PocketStore } from './PocketStore.ts';
 import { SummaryReport } from './SummaryReport.ts';
 import { TelegramClient } from './TelegramClient.ts';
 import { UpdateQueue } from './UpdateQueue.ts';
+import { WebhookRegion } from './WebhookRegion.ts';
 
 /** Reads secrets by name, ignoring capitalisation (TELEGRAM_BOT_TOKEN = Telegram_Bot_Token). */
 export class SecretReader {
@@ -37,11 +38,13 @@ export class BotApp {
   readonly store: PocketStore;
   readonly rates: ExchangeRates;
   readonly queue: UpdateQueue;
+  readonly region: WebhookRegion;
 
-  private constructor(store: PocketStore, rates: ExchangeRates, queue: UpdateQueue) {
+  private constructor(store: PocketStore, rates: ExchangeRates, queue: UpdateQueue, region: WebhookRegion) {
     this.store = store;
     this.rates = rates;
     this.queue = queue;
+    this.region = region;
   }
 
   static create(secrets: SecretReader): BotApp {
@@ -71,6 +74,8 @@ export class BotApp {
       new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
       new OwedBot(store, telegram, clock, rates),
     );
-    return new BotApp(store, rates, new UpdateQueue(store, controller));
+    // BOT_REGION (optional secret): where the database is; defaults to Sydney.
+    const region = new WebhookRegion(telegram, secrets.get('SUPABASE_URL'), secrets.get('BOT_REGION'), secrets.get('TELEGRAM_WEBHOOK_SECRET'));
+    return new BotApp(store, rates, new UpdateQueue(store, controller), region);
   }
 }

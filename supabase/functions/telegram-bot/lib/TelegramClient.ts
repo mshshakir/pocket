@@ -66,6 +66,11 @@ export class TelegramClient {
     });
   }
 
+  /** Points the webhook at a URL, keeping the secret header (other settings stay as they were). */
+  async setWebhook(url: string, secretToken: string): Promise<boolean> {
+    return (await this.#raw('setWebhook', { url, secret_token: secretToken })).ok;
+  }
+
   /** Shows "typing…" in the chat until the next message is sent (or ~5 s pass). */
   async typing(chatId: number): Promise<void> {
     await this.#call('sendChatAction', { chat_id: chatId, action: 'typing' });

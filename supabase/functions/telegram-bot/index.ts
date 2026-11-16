@@ -6,6 +6,8 @@
  *   TELEGRAM_BOT_TOKEN       from @BotFather
  *   TELEGRAM_WEBHOOK_SECRET  any long random string; also passed to setWebhook
  *   BOT_TIMEZONE             optional, defaults to Asia/Kolkata
+ *   BOT_REGION               optional, the database's region (ap-southeast-2); the
+ *                            webhook is pinned there (lib/WebhookRegion.ts)
  * SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and SUPABASE_ANON_KEY are provided automatically.
  *
  * Deploy with --no-verify-jwt: Telegram cannot send a Supabase JWT, so the
@@ -46,6 +48,7 @@ class WebhookServer {
       return new Response('ok'); // not an update; nothing to retry
     }
     this.#app.rates.warm(); // ready by the time an entry needs them
+    await this.#background(this.#app.region.ensure(req.url).catch((err) => console.error('[telegram-bot] region', err)));
     const queue: UpdateQueue = this.#app.queue;
     try {
       if (!(await queue.receive(update))) return new Response('ok'); // a re-send
