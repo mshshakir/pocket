@@ -940,8 +940,8 @@ export class Application {
     if (!pending) return;
     if (!this.#sync.currentUser) { this.openModal('auth'); return; }
     try { sessionStorage.removeItem(Application.#PENDING_PLANS); } catch (_) { /* ignore */ }
-    const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? [];
-    if (plan) { this.#planHighlight = plan; this.#planTerm = term === 'month' ? 'month' : 'year'; }
+    const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? (pending === 'plus' ? [null, 'plus', null] : []);
+    if (plan && term) { this.#planHighlight = plan; this.#planTerm = term === 'month' ? 'month' : 'year'; }
     this.openModal('settings');
     let tries = 0;
     const scroll = () => {
@@ -958,7 +958,6 @@ export class Application {
    */
   async buy(product) {
     if (this.#buying || !this.#sync.currentUser) return;
-    if (!this.#confirmLosingSharing(product)) return;
     this.#payments ??= this.#sync.payments();
     this.#buying = product;
     this.#modal.refresh();
@@ -967,7 +966,7 @@ export class Application {
       await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
       this.#coupon = ''; this.#couponApplied = null; this.#couponOpen = false;
       this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added'
-        : product === 'drive_backup' ? 'Payment received — scheduled backups are on'
+        : product === 'drive_backup' ? 'Payment received — Pocket Plus is on: scheduled backups'
         : 'Payment received — your plan is updated');
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
@@ -976,31 +975,6 @@ export class Application {
       await this.#refreshPlanInfo();
       this.#modal.refresh();
     }
-  }
-
-  /**
-   * Buying a plan without sharing (Sync) while sharing with family — during
-   * the Full trial, instead of Family, or after either has ended with family
-   * members still set up: they lose (or stay without) the shared space, in
-   * the app and on Telegram, so ask first.
-   * @param {string} product
-   * @returns {boolean} whether to go ahead
-   */
-  #confirmLosingSharing(product) {
-    const plan = this.getPlan();
-    const item = this.#paymentOffers?.products?.find((o) => o.product === product);
-    const target = this.#planCatalogue?.find((p) => p.code === item?.plan);
-    const current = this.#planCatalogue?.find((p) => p.code === plan?.plan);
-    if (!target || target.sharing) return true;
-    // People this book is shared with: family members given access to at least one account.
-    const shared = (this.#store.getState().family || []).filter((m) => m.email && (m.permissions || []).length).length;
-    const sharingNow = plan.state === 'active' && !!current?.sharing;
-    if (!shared && !sharingNow) return true;
-    const trial = sharingNow && plan.term === 'trial' ? ' The rest of your trial is not carried over.' : '';
-    const effect = sharingNow
-      ? 'the people you share with lose access to your shared space today'
-      : 'the people you shared with stay without access to your shared space, in the app and on Telegram';
-    return confirm(`${target.name} has no family sharing. If you buy it, ${effect} (their own books stay, and what they added stays in your book).${trial} Choose Family to keep sharing. Buy ${target.name} anyway?`);
   }
 
   /**

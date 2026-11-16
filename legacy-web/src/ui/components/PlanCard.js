@@ -54,7 +54,7 @@ export class PlanCard {
     switch (plan.state) {
       case 'active':
         if (plan.isLifetime) return 'Everything in your plan is included, with no end date.';
-        if (plan.term === 'trial') return `Full trial until ${day(plan.endsAt)}.`;
+        if (plan.term === 'trial') return `Introductory offer until ${day(plan.endsAt)}.`;
         return plan.endsAt ? `${plan.toJSON().autoRenew ? 'Renews' : 'Active until'} ${day(plan.endsAt)}.` : 'Active.';
       case 'grace':
         return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ''}. Your cloud copy is read-only until `
@@ -64,7 +64,7 @@ export class PlanCard {
           + 'your cloud copy is kept and comes back when you renew.';
       default:
         return 'Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with '
-          + 'family come with Sync and Family.';
+          + 'family come with Pocket Pro.';
     }
   }
 
@@ -74,7 +74,7 @@ export class PlanCard {
       rows.push(['People', `${plan.seatsUsed} of ${plan.seats}, you included`]);
     }
     for (const c of plan.coveredBy) {
-      rows.push(['Shared space', `${Html.escape(c.ownerEmail)}'s Family plan${c.access === 'read' ? ' (ended, read-only)' : ''}`]);
+      rows.push(['Shared space', `${Html.escape(c.ownerEmail)}'s Pocket Pro${c.access === 'read' ? ' (ended, read-only)' : ''}`]);
     }
     rows.push(['AI scans & voice', this.#ai(plan)]);
     return `
@@ -119,6 +119,7 @@ export class PlanCard {
         </div>
         ${selling ? this.#couponField(coupon, ui) : ''}
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join('')}
+        ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling
           ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
@@ -189,13 +190,14 @@ export class PlanCard {
     return `about ${years} year${years === 1 ? '' : 's'}${rest ? ` ${rest} month${rest === 1 ? '' : 's'}` : ''}`;
   }
 
-  /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */
+  /** "or start with the first 3 months for ₹149" — a link while buying is open, plain text otherwise. */
   #trialLink(p, plan, offers, buying) {
     if (p.trial_paise == null || !p.trial_days || !plan.trialAvailable) return '';
     if (plan.state === 'active' && plan.isPaid) return '';
     const product = offers?.products.find((o) => o.plan === p.code && o.term === 'trial');
     if (offers && (!product || !product.available)) return '';
-    const text = `or take the Full trial: everything for ${p.trial_days} days, ${product ? PlanCard.#price(product) : PlanCard.#inr(p.trial_paise)}`;
+    const span = p.trial_days % 30 === 0 ? `${p.trial_days / 30} month${p.trial_days === 30 ? '' : 's'}` : `${p.trial_days} days`;
+    const text = `or start with the first ${span} for ${product ? PlanCard.#price(product) : PlanCard.#inr(p.trial_paise)}`;
     if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
     return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? 'disabled' : ''} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? 'Opening…' : text}</button></div>`;
   }
@@ -204,6 +206,24 @@ export class PlanCard {
   static #saving(p) {
     if (!p.monthly_paise || !p.yearly_paise) return 0;
     return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
+  }
+
+  /** Pocket Plus: scheduled Google Drive backups, bought once (hidden once someone has it, or on Pocket Pro). */
+  #backupAddon(plan, offers, buying) {
+    if (plan.backup || !plan.paymentsOpen || !offers) return '';
+    const item = offers.products.find((o) => o.product === 'drive_backup' && o.available);
+    if (!item) return '';
+    return `
+      <div class="plan-box plan-box-slim" id="plan-plus">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="cloud-upload" style="width:14px;height:14px"></i> Pocket Plus</div>
+            <div class="text-xs text-zinc-500 mt-0.5">Google Drive backups daily, weekly or monthly, and automatic. Pay once, keep it.</div>
+            ${PlanCard.#codeNote(item)}
+          </div>
+          ${this.#button(item, PlanCard.#price(item), buying, false)}
+        </div>
+      </div>`;
   }
 
   #aiPack(plan, offers, buying) {

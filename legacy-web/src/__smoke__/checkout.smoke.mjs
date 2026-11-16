@@ -126,7 +126,7 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 a plan can be pointed out (website link)', /plan-highlight[^"]*" id="plan-family"/.test(card.html(free({ paymentsOpen: true }), catalogue, offers(), null, '', { highlight: 'family' })));
   ok('C6 payment open: trial, months, years and the AI pack can be bought',
      ['family_trial', 'sync_month', 'sync_year', 'family_month', 'family_year', 'ai_pack'].every((x) => buys.includes(x)), buys.join());
-  ok('C6 prices are shown in rupees', openMonth.includes('Get Sync · ₹169') && open.includes('Get Family · ₹1,499') && open.includes('or take the Full trial: everything for 14 days, ₹50'));
+  ok('C6 prices are shown in rupees', openMonth.includes('Get Sync · ₹169') && open.includes('Get Family · ₹1,499') && open.includes('or start with the first 14 days for ₹50'));
 
   const used = card.html(free({ paymentsOpen: true, trialAvailable: false }), catalogue, offers(false));
   ok('C6 a used trial has no button', !used.includes("buy('family_trial')"));
@@ -138,6 +138,14 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
      syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
 
+  const withPlus = (o) => ({ products: [...o.products, { product: 'drive_backup', name: 'Pocket Plus', addon: 'drive_backup', amountPaise: 19900, available: true }] });
+  const plusFree = card.html(free({ paymentsOpen: true }), catalogue, withPlus(offers()));
+  const plusHave = card.html(free({ paymentsOpen: true, backup: true }), catalogue, withPlus(offers()));
+  ok('C6 Pocket Plus: on sale for ₹199 to someone without it; hidden once they have it (or a plan includes it)',
+     plusFree.includes('id="plan-plus"') && plusFree.includes("buy('drive_backup')") && plusFree.includes('₹199') && !plusHave.includes("buy('drive_backup')"));
+  const intro = card.html(free({ paymentsOpen: true }), [catalogue[0], { ...catalogue[2], trial_days: 90, trial_paise: 14900 }],
+    { products: [p('family_trial', 'family', 'trial', 14900), p('family_month', 'family', 'month', 9900), p('family_year', 'family', 'year', 99900)] });
+  ok('C6 a 90-day offer reads "the first 3 months"', intro.includes('or start with the first 3 months for ₹149'));
   const life = card.html(Entitlements.from({ plan: 'family', state: 'active', term: 'lifetime', aiUnlimited: true, paymentsOpen: true }), catalogue, offers());
   ok('C6 for life with unlimited AI: nothing to buy', !life.includes('__app.buy('));
 }

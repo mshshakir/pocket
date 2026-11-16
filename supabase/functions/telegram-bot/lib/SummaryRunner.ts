@@ -33,7 +33,7 @@ export interface RunResult {
 }
 
 export class SummaryRunner {
-  static readonly #PAUSED = '⏸ Pocket summaries are paused: the Family plan for this shared space has ended. '
+  static readonly #PAUSED = '⏸ Pocket summaries are paused: the Pocket Pro plan for this shared space has ended. '
     + 'They start again when it is renewed.';
 
   readonly #store: PocketStore;

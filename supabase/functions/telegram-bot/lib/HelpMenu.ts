@@ -172,7 +172,7 @@ export class HelpMenu {
     family: {
       button: '👪 Family group summaries',
       text: [
-        '<b>👪 Family group summaries</b> (Family plan)',
+        '<b>👪 Family group summaries</b> (Pocket Pro)',
         'Add me to your family\'s Telegram group (or a topic in it) and send /summary on there. I\'ll post summaries of your shared space: daily, weekly, monthly and yearly, with the change from the period before.',
         'Only the shared space\'s accounts are included, never personal ones, and I don\'t read the group\'s messages. Entries still come here.',
         '',

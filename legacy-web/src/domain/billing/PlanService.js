@@ -115,10 +115,10 @@ export class PlanService {
   static explain(err) {
     if (err?.hint) return err.hint;
     switch (err?.details) {
-      case 'sharing': return 'Sharing with family needs a Family plan.';
-      case 'seats':   return 'Your Family plan is full. Remove someone to add another person.';
-      case 'shared':  return 'This shared space is read-only: its owner\'s Family plan is not active.';
-      default:        return 'Saving to the cloud needs a Sync or Family plan.';
+      case 'sharing': return 'Sharing with family needs Pocket Pro.';
+      case 'seats':   return 'Your Pocket Pro plan is full (5 people). Remove someone to add another person.';
+      case 'shared':  return 'This shared space is read-only: its owner\'s Pocket Pro has ended.';
+      default:        return 'Saving to the cloud needs Pocket Pro.';
     }
   }
 

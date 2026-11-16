@@ -101,10 +101,10 @@ export class PlanAccess {
         + 'Renew your plan to keep logging here.';
     }
     if (this.#coveredBy.some((c) => c.access === 'read')) {
-      return '⏸ The Family plan you log under has ended, so logging into that shared space is paused. '
+      return '⏸ The Pocket Pro plan you log under has ended, so logging into that shared space is paused. '
         + 'You can still see it in the Pocket app for now.';
     }
-    return 'Logging by Telegram is part of Pocket\'s Sync and Family plans.\n\n'
+    return 'Logging by Telegram is part of Pocket Pro.\n\n'
       + 'Pocket itself stays free on your device. Open the app → Settings → Your plan to upgrade.';
   }
 

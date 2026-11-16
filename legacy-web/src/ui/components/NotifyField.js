@@ -60,7 +60,7 @@ export class NotifyField {
       <div class="tg-locked" aria-disabled="true">${html}</div>
       <div class="text-[11px] text-zinc-500 mt-1">
         <i data-lucide="lock" style="width:11px;height:11px;display:inline"></i>
-        Telegram messages are part of the Sync and Family plans —
+        Telegram messages are part of Pocket Pro —
         <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('settings')">see plans</button>.
       </div>`;
   }

@@ -56,6 +56,14 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · Pocket Pro and Pocket Plus** (migration `0045_pocket_pro`, applied). One paid plan: code
+  `family` (kept so nothing breaks) renamed **Pocket Pro** — ₹99/month, ₹999/year, 5 people, sync + Telegram +
+  sharing; **introductory offer** = the `family_trial` product, 90 days for ₹149, once per account. Plan `sync`
+  set `active = false`; the one paid Sync-year subscription was moved to `family` with the same end date.
+  The ₹199 `drive_backup` add-on is called **Pocket Plus** (homepage card, in-app plan chooser `#plan-plus`,
+  website link `app.html#plans=plus`). The Sync-vs-Family "you'll cut off your family" warning was removed.
+  Wording updated in the app, Telegram bot, homepage pricing (Free / Pocket Plus / Pocket Pro), Terms, Refunds,
+  Shipping and Privacy. Subscriptions (auto-renew) still not built — waiting for Razorpay.
 - **2026-11-16 · Plans reshaped** (migration `0044_backup_addon_and_full_trial`, applied). *Scheduled Drive
   backups are a one-time add-on* (₹199, `billing_settings.backup_paise`, product `drive_backup`, table
   `addons`); Back up now and Restore stay free; Sync, Family and people covered by Family have it included

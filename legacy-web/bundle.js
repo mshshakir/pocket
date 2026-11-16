@@ -7066,13 +7066,13 @@ RULES:
       if (err?.hint) return err.hint;
       switch (err?.details) {
         case "sharing":
-          return "Sharing with family needs a Family plan.";
+          return "Sharing with family needs Pocket Pro.";
         case "seats":
-          return "Your Family plan is full. Remove someone to add another person.";
+          return "Your Pocket Pro plan is full (5 people). Remove someone to add another person.";
         case "shared":
-          return "This shared space is read-only: its owner's Family plan is not active.";
+          return "This shared space is read-only: its owner's Pocket Pro has ended.";
         default:
-          return "Saving to the cloud needs a Sync or Family plan.";
+          return "Saving to the cloud needs Pocket Pro.";
       }
     }
     #set(next) {
@@ -11916,14 +11916,14 @@ This replaces your current grouping.`
       switch (plan.state) {
         case "active":
           if (plan.isLifetime) return "Everything in your plan is included, with no end date.";
-          if (plan.term === "trial") return `Full trial until ${day(plan.endsAt)}.`;
+          if (plan.term === "trial") return `Introductory offer until ${day(plan.endsAt)}.`;
           return plan.endsAt ? `${plan.toJSON().autoRenew ? "Renews" : "Active until"} ${day(plan.endsAt)}.` : "Active.";
         case "grace":
           return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ""}. Your cloud copy is read-only until <strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
         case "lapsed":
           return "Pocket keeps working on this device, with every export. Cloud sync and Telegram are paused; your cloud copy is kept and comes back when you renew.";
         default:
-          return "Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with family come with Sync and Family.";
+          return "Pocket works fully on this device, with every export. Cloud sync, Telegram and sharing with family come with Pocket Pro.";
       }
     }
     #details(plan) {
@@ -11932,7 +11932,7 @@ This replaces your current grouping.`
         rows.push(["People", `${plan.seatsUsed} of ${plan.seats}, you included`]);
       }
       for (const c of plan.coveredBy) {
-        rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Family plan${c.access === "read" ? " (ended, read-only)" : ""}`]);
+        rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Pocket Pro${c.access === "read" ? " (ended, read-only)" : ""}`]);
       }
       rows.push(["AI scans & voice", this.#ai(plan)]);
       return `
@@ -11975,6 +11975,7 @@ This replaces your current grouping.`
         </div>
         ${selling ? this.#couponField(coupon, ui) : ""}
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
+        ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
@@ -12034,13 +12035,14 @@ This replaces your current grouping.`
       const years = Math.floor(months / 12), rest = months % 12;
       return `about ${years} year${years === 1 ? "" : "s"}${rest ? ` ${rest} month${rest === 1 ? "" : "s"}` : ""}`;
     }
-    /** "or try it for 14 days for ₹50" — a link while buying is open, plain text otherwise. */
+    /** "or start with the first 3 months for ₹149" — a link while buying is open, plain text otherwise. */
     #trialLink(p, plan, offers, buying) {
       if (p.trial_paise == null || !p.trial_days || !plan.trialAvailable) return "";
       if (plan.state === "active" && plan.isPaid) return "";
       const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
       if (offers && (!product || !product.available)) return "";
-      const text = `or take the Full trial: everything for ${p.trial_days} days, ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
+      const span = p.trial_days % 30 === 0 ? `${p.trial_days / 30} month${p.trial_days === 30 ? "" : "s"}` : `${p.trial_days} days`;
+      const text = `or start with the first ${span} for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
       if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
       return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
     }
@@ -12048,6 +12050,23 @@ This replaces your current grouping.`
     static #saving(p) {
       if (!p.monthly_paise || !p.yearly_paise) return 0;
       return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
+    }
+    /** Pocket Plus: scheduled Google Drive backups, bought once (hidden once someone has it, or on Pocket Pro). */
+    #backupAddon(plan, offers, buying) {
+      if (plan.backup || !plan.paymentsOpen || !offers) return "";
+      const item = offers.products.find((o) => o.product === "drive_backup" && o.available);
+      if (!item) return "";
+      return `
+      <div class="plan-box plan-box-slim" id="plan-plus">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="cloud-upload" style="width:14px;height:14px"></i> Pocket Plus</div>
+            <div class="text-xs text-zinc-500 mt-0.5">Google Drive backups daily, weekly or monthly, and automatic. Pay once, keep it.</div>
+            ${_PlanCard.#codeNote(item)}
+          </div>
+          ${this.#button(item, _PlanCard.#price(item), buying, false)}
+        </div>
+      </div>`;
     }
     #aiPack(plan, offers, buying) {
       if (plan.aiUnlimited || !plan.paymentsOpen || !offers) return "";
@@ -17814,7 +17833,7 @@ This replaces your current grouping.`
       <div class="tg-locked" aria-disabled="true">${html}</div>
       <div class="text-[11px] text-zinc-500 mt-1">
         <i data-lucide="lock" style="width:11px;height:11px;display:inline"></i>
-        Telegram messages are part of the Sync and Family plans \u2014
+        Telegram messages are part of Pocket Pro \u2014
         <button type="button" class="underline" onclick="window.__app.closeModal();window.__app.openModal('settings')">see plans</button>.
       </div>`;
     }
@@ -20144,7 +20163,7 @@ This replaces your current grouping.`
             <div class="flex-1">
               <div class="font-medium text-sm">Cloud Sync &amp; Multi-device</div>
               <div class="text-xs text-zinc-500">
-                ${isSaaS ? !sbUser ? "Sign in to choose a plan. Sync and Family keep all your devices in sync." : window.__app.getPlan().can("sync") ? "All your devices stay in sync." : "Signed in. Your book stays on this device; cloud sync comes with Sync and Family." : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
+                ${isSaaS ? !sbUser ? "Sign in to choose a plan. Pocket Pro keeps all your devices in sync." : window.__app.getPlan().can("sync") ? "All your devices stay in sync." : "Signed in. Your book stays on this device; cloud sync comes with Pocket Pro." : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
               </div>
             </div>
             ${sbUser ? `<span class="chip" style="background:#10b98122;color:#10b981"><i data-lucide="check-circle-2" style="width:11px;height:11px;display:inline"></i> Connected</span>` : ""}
@@ -20340,9 +20359,9 @@ This replaces your current grouping.`
           </select>` : `
           <div class="flex items-start gap-3 mb-3 p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 drive-unlock">
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium">Scheduled backups</div>
+              <div class="text-sm font-medium">Pocket Plus \xB7 scheduled backups</div>
               <div class="text-xs text-zinc-500 leading-relaxed">
-                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ""}; included in Sync and Family.
+                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ""}; included in Pocket Pro.
               </div>
             </div>
             <button type="button" class="btn btn-primary text-xs drive-unlock-buy" onclick="window.__app.driveUnlock()" ${d.busy || d.offer?.buying ? "disabled" : ""}>
@@ -25689,8 +25708,8 @@ ${body}\r
         sessionStorage.removeItem(_Application.#PENDING_PLANS);
       } catch (_) {
       }
-      const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? [];
-      if (plan) {
+      const [, plan, term] = pending.match(/^([a-z]+)_(month|year|trial)$/) ?? (pending === "plus" ? [null, "plus", null] : []);
+      if (plan && term) {
         this.#planHighlight = plan;
         this.#planTerm = term === "month" ? "month" : "year";
       }
@@ -25712,7 +25731,6 @@ ${body}\r
      */
     async buy(product) {
       if (this.#buying || !this.#sync.currentUser) return;
-      if (!this.#confirmLosingSharing(product)) return;
       this.#payments ??= this.#sync.payments();
       this.#buying = product;
       this.#modal.refresh();
@@ -25722,7 +25740,7 @@ ${body}\r
         this.#coupon = "";
         this.#couponApplied = null;
         this.#couponOpen = false;
-        this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : product === "drive_backup" ? "Payment received \u2014 scheduled backups are on" : "Payment received \u2014 your plan is updated");
+        this.#toast.show(product === "ai_pack" ? "Payment received \u2014 AI credits added" : product === "drive_backup" ? "Payment received \u2014 Pocket Plus is on: scheduled backups" : "Payment received \u2014 your plan is updated");
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
       } finally {
@@ -25730,27 +25748,6 @@ ${body}\r
         await this.#refreshPlanInfo();
         this.#modal.refresh();
       }
-    }
-    /**
-     * Buying a plan without sharing (Sync) while sharing with family — during
-     * the Full trial, instead of Family, or after either has ended with family
-     * members still set up: they lose (or stay without) the shared space, in
-     * the app and on Telegram, so ask first.
-     * @param {string} product
-     * @returns {boolean} whether to go ahead
-     */
-    #confirmLosingSharing(product) {
-      const plan = this.getPlan();
-      const item = this.#paymentOffers?.products?.find((o) => o.product === product);
-      const target = this.#planCatalogue?.find((p) => p.code === item?.plan);
-      const current = this.#planCatalogue?.find((p) => p.code === plan?.plan);
-      if (!target || target.sharing) return true;
-      const shared = (this.#store.getState().family || []).filter((m) => m.email && (m.permissions || []).length).length;
-      const sharingNow = plan.state === "active" && !!current?.sharing;
-      if (!shared && !sharingNow) return true;
-      const trial = sharingNow && plan.term === "trial" ? " The rest of your trial is not carried over." : "";
-      const effect = sharingNow ? "the people you share with lose access to your shared space today" : "the people you shared with stay without access to your shared space, in the app and on Telegram";
-      return confirm(`${target.name} has no family sharing. If you buy it, ${effect} (their own books stay, and what they added stays in your book).${trial} Choose Family to keep sharing. Buy ${target.name} anyway?`);
     }
     /**
      * Moves to a cheaper plan for free; the time left becomes days on it.

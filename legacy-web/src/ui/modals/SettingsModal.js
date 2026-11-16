@@ -147,9 +147,9 @@ export class SettingsModal {
               <div class="font-medium text-sm">Cloud Sync &amp; Multi-device</div>
               <div class="text-xs text-zinc-500">
                 ${isSaaS
-                  ? (!sbUser ? 'Sign in to choose a plan. Sync and Family keep all your devices in sync.'
+                  ? (!sbUser ? 'Sign in to choose a plan. Pocket Pro keeps all your devices in sync.'
                      : window.__app.getPlan().can('sync') ? 'All your devices stay in sync.'
-                     : 'Signed in. Your book stays on this device; cloud sync comes with Sync and Family.')
+                     : 'Signed in. Your book stays on this device; cloud sync comes with Pocket Pro.')
                   : 'Connect your own free <a href="https://supabase.com" target="_blank" class="underline">Supabase</a> project. All your devices stay in sync in real time.'}
               </div>
             </div>
@@ -350,9 +350,9 @@ export class SettingsModal {
           </select>` : `
           <div class="flex items-start gap-3 mb-3 p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 drive-unlock">
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium">Scheduled backups</div>
+              <div class="text-sm font-medium">Pocket Plus · scheduled backups</div>
               <div class="text-xs text-zinc-500 leading-relaxed">
-                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ''}; included in Sync and Family.
+                Daily, weekly or monthly, and automatic if you like. A one-time add-on${d.offer ? ` of ${this.#esc(d.offer.price)}` : ''}; included in Pocket Pro.
               </div>
             </div>
             <button type="button" class="btn btn-primary text-xs drive-unlock-buy" onclick="window.__app.driveUnlock()" ${d.busy || d.offer?.buying ? 'disabled' : ''}>

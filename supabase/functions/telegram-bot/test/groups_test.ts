@@ -123,7 +123,7 @@ console.log('\ngroup summaries');
   await say('/summary on', 33);
   ok('G1 someone not linked: told to /link privately first', /\/link/.test(tg.last) && !store.groupsMap.size);
   await say('/summary on', 22);
-  ok('G2 no Family plan: refused', /Family plan/.test(tg.last) && !store.groupsMap.size, tg.last);
+  ok('G2 no Pocket Pro: refused', /Pocket Pro/.test(tg.last) && !store.groupsMap.size, tg.last);
   await say('/summary@PocketBot on');
   const g = store.groupsMap.get(GROUP);
   ok('G3 the owner turns it on: tied to their one space with accounts', g?.owner_id === OWNER && g.space_id === 'sp1' && tg.sent.some((m) => /will get summaries of <b>Shakirs/.test(m.text) && /personal accounts never are/.test(m.text)));

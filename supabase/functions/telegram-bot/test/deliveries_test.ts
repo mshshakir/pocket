@@ -232,7 +232,7 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
   const bot = new DeliveryBot(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clock, rates as never);
   await bot.handleCallback({ id: 'cb', from: { id: HER }, data: 'dv:1:0:+', message: { message_id: 1, chat: { id: HER, type: 'private' } } });
   ok('T3b her tap: "Not available on your plan", the reason in her chat, nothing changed',
-    tg.answers.at(-1) === 'Not available on your plan' && /Family plan you log under has ended/.test(tg.sent.at(-1)!.text) && !dl.changes.length, tg.sent.at(-1)!.text);
+    tg.answers.at(-1) === 'Not available on your plan' && /Pocket Pro plan you log under has ended/.test(tg.sent.at(-1)!.text) && !dl.changes.length, tg.sent.at(-1)!.text);
   await bot.dues(links.get(ME)!, ME);
   ok('T3b /dues on a lapsed plan gives the plan message', /logging here is paused|part of Pocket/.test(tg.sent.at(-1)!.text), tg.sent.at(-1)!.text);
 }

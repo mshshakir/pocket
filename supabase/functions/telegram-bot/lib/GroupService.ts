@@ -65,7 +65,7 @@ export class GroupService {
     '',
     'Entries are still sent to me in a private chat.',
     '',
-    '/summary on  start (for the space\'s owner, on the Family plan)',
+    '/summary on  start (for the space\'s owner, on Pocket Pro)',
     '/summary  what this group gets',
     '/summary now  today so far',
     '/summary time 8:30pm  change the time · a morning time (e.g. 7am) sums up the day before',
@@ -176,7 +176,7 @@ export class GroupService {
       return void await this.#say(at, 'This group already gets summaries from another Pocket account. They can turn them off with /summary off.');
     }
     if (!(await PlanAccess.load(this.#store, link.user_id)).canShare) {
-      return void await this.#say(at, 'Group summaries come with the Family plan. Open Pocket → Settings → Your plan.');
+      return void await this.#say(at, 'Group summaries come with Pocket Pro. Open Pocket → Settings → Your plan.');
     }
     const spaces = (await this.#store.spacesOf(link.user_id)).filter((s) => s.accounts > 0);
     if (!spaces.length) {
@@ -282,7 +282,7 @@ export class GroupService {
   async #status(at: Place, group: GroupLink | null): Promise<void> {
     if (!group) {
       return void await this.#say(at,
-        'This group doesn\'t get Pocket summaries yet. The owner of a shared space (on the Family plan) can send /summary on here.');
+        'This group doesn\'t get Pocket summaries yet. The owner of a shared space (on Pocket Pro) can send /summary on here.');
     }
     const space = (await this.#store.spacesOf(group.owner_id)).find((s) => s.id === group.space_id);
     const onOff = (b: boolean) => (b ? 'on' : 'off');
