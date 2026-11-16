@@ -43,6 +43,9 @@ console.log('\nPlan link suite');
   await wait(1000);
   ok('L1 the link is taken off the address', w.location.hash === '');
   ok('L1 the chosen plan is kept for after sign-in', w.sessionStorage.getItem('pocket.pendingPlans') === 'family_year');
+  const g = boot('#plans=group_year');
+  await wait(1000);
+  ok('L1 the Pocket Pro Group link is kept the same way', g.sessionStorage.getItem('pocket.pendingPlans') === 'group_year');
   ok('L1 signed out: the sign-in window opens', w.__app && /sign in|email/i.test(w.document.body.textContent));
 }
 {

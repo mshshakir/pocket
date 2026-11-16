@@ -97,10 +97,28 @@ export class PlanService {
 
   /** The cloud price list (plans table), for showing options. */
   async catalogue(client) {
-    const { data, error } = await client.from('plans').select('code, name, seats, sync, telegram, sharing, monthly_paise, yearly_paise, trial_paise, trial_days, sort, active')
+    const { data, error } = await client.from('plans').select('code, name, seats, sync, telegram, sharing, monthly_paise, yearly_paise, trial_paise, trial_days, sort, active, group_size')
       .eq('active', true).order('sort');
     if (error) throw error;
     return data ?? [];
+  }
+
+  // ── Pocket Pro Group ────────────────────────────────────────────────────
+
+  /** The group card: organiser {role, size, endsAt, changesLeft, members} or member {role, ownerName, ownerEmail, endsAt}. */
+  groupState()        { return this.#groupCall('pocket_group_state'); }
+  /** Add someone by email (organiser). */
+  groupAdd(email)     { return this.#groupCall('pocket_group_add', { p_email: email }); }
+  /** Remove someone (organiser); removing a person who joined uses one change. */
+  groupRemove(email)  { return this.#groupCall('pocket_group_remove', { p_email: email }); }
+  /** Leave the group (member). */
+  groupLeave()        { return this.#groupCall('pocket_group_leave'); }
+
+  /** One group call; the server's refusal (a sentence for the person) becomes the error message. */
+  async #groupCall(fn, args) {
+    const { data, error } = await this.#rpc(fn, args);
+    if (error) throw new Error(error.code === 'PG001' && error.message ? error.message : 'Pocket couldn\'t reach the server. Please try again.');
+    return data ?? { role: null };
   }
 
   /** @param {any} err */

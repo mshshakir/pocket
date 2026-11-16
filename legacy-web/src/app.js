@@ -237,6 +237,8 @@ export class Application {
   #couponError       = '';
   #couponChecking    = false;
   #planHighlight     = null;
+  /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
+  #groupState        = null;
   static #PENDING_PLANS = 'pocket.pendingPlans';
   /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
   #payments          = null;
@@ -877,9 +879,65 @@ export class Application {
   get planUi() {
     const term = this.#planTerm ?? (this.getPlan()?.term === 'month' ? 'month' : 'year');
     return {
-      term, couponOpen: this.#couponOpen, highlight: this.#planHighlight,
+      term, couponOpen: this.#couponOpen, highlight: this.#planHighlight, group: this.#groupState,
       couponApplied: this.#couponApplied, couponError: this.#couponError, couponChecking: this.#couponChecking,
     };
+  }
+
+  // ── Pocket Pro Group ─────────────────────────────────────────────────────
+
+  /** Add someone to the group by email (organiser). */
+  async groupAdd(ev) {
+    ev?.preventDefault?.();
+    const input = ev?.target?.querySelector?.('input[name=email]');
+    const email = (input?.value || '').trim();
+    if (!email) return;
+    try {
+      this.#groupState = await this.#sync.groupAdd(email);
+      this.#toast.show(`Added ${email}. Send them the invite.`);
+      this.#modal.refresh();
+      this.groupInvite(email);
+    } catch (e) { this.#toast.show(e.message); }
+  }
+
+  /**
+   * Remove someone (organiser). A place still waiting is free to fix; someone
+   * who joined loses Pocket Pro and it uses one of this year's changes.
+   */
+  async groupRemove(email, joined) {
+    const left = this.#groupState?.changesLeft ?? 0;
+    const ask = joined
+      ? `Remove ${email}? They go back to Free (nothing is deleted) and this uses 1 of your ${left} change${left === 1 ? '' : 's'} left this year.`
+      : `Remove ${email}? They haven't joined yet, so this is free.`;
+    if (!confirm(ask)) return;
+    try {
+      this.#groupState = await this.#sync.groupRemove(email);
+      this.#toast.show('Removed from your group');
+      this.#modal.refresh();
+    } catch (e) { this.#toast.show(e.message); }
+  }
+
+  /** Send the invite message (share sheet on phones, else copied). */
+  async groupInvite(email) {
+    const name = this.#sync.currentUser?.user_metadata?.full_name || 'I';
+    const link = new URL('app.html#signin', document.baseURI).href;
+    const text = `${name === 'I' ? 'I\'ve' : `${name} has`} added you to Pocket Pro. Open ${link} and sign in with Google as ${email} — your book is private.`;
+    try {
+      if (navigator.share) { await navigator.share({ title: 'Pocket Pro', text }); return; }
+      await navigator.clipboard.writeText(text);
+      this.#toast.show('Invite copied — paste it in WhatsApp or a message');
+    } catch (_) { /* closed the share sheet */ }
+  }
+
+  /** Leave a group you were added to (member). */
+  async groupLeave() {
+    const who = this.getPlan()?.group?.ownerName || 'the organiser';
+    if (!confirm(`Leave ${who}'s Pocket Pro Group? You go back to Free; nothing is deleted.`)) return;
+    try {
+      await this.#sync.groupLeave();
+      await this.#refreshPlanInfo();
+      this.#toast.show('You left the group');
+    } catch (e) { this.#toast.show(e.message); }
   }
 
   /** Checks the typed code and shows every price with it applied (or why it can't be used). */
@@ -1019,6 +1077,7 @@ export class Application {
       this.#sync.planCatalogue().catch(() => []),
     ]);
     this.#planCatalogue = catalogue;
+    this.#groupState = plan?.group?.role === 'organiser' ? await this.#sync.groupState().catch(() => null) : null;
     this.#payments ??= this.#sync.payments();
     let offers = null;
     if (plan?.paymentsOpen) {

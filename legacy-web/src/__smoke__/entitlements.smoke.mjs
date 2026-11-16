@@ -85,6 +85,11 @@ const lapsed = { ...grace, plan: 'free', planName: 'Free', state: 'lapsed', acce
   const set = Entitlements.from({ plan: 'free', state: 'free', aiCredits: 20, aiCosts: { scan: 1, voice: 2, voiceSeconds: 60 } });
   ok('AI costs follow the server, and the 20 free credits show as the balance', set.aiCosts.scan === 1 && set.aiCosts.voiceSeconds === 60 && set.aiCredits === 20 && /uses 1 credit;/.test(set.aiCostLine));
   ok('scheduled backups: off unless the server says so', !free.backup && !set.backup && Entitlements.from({ plan: 'free', state: 'free', backup: true }).backup && !Entitlements.from({ plan: 'free', state: 'free', backup: 'yes' }).backup);
+  const org = Entitlements.from({ plan: 'group', planName: 'Pocket Pro Group', state: 'active', group: { role: 'organiser', size: 3 } });
+  const mem = Entitlements.from({ plan: 'family', planName: 'Pocket Pro', state: 'active', source: 'group', group: { role: 'member', ownerName: 'Mufaddal', ownerEmail: 'm@example.com' } });
+  ok('group: organiser and member read from the server; anything else is no group',
+    org.group.role === 'organiser' && org.group.size === 3 && mem.group.role === 'member' && mem.group.ownerName === 'Mufaddal' && mem.group.ownerEmail === 'm@example.com'
+    && free.group === null && Entitlements.from({ plan: 'free', state: 'free', group: { role: 'admin' } }).group === null);
   const odd = Entitlements.from({ plan: 'free', state: 'free', aiCosts: { scan: 0, voice: 'x' } });
   ok('odd costs from the server fall back to the defaults', odd.aiCosts.scan === 5 && odd.aiCosts.voice === 1 && odd.aiCosts.voiceSeconds === 30);
 }

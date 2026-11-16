@@ -183,6 +183,12 @@ export class SyncService {
     return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
   }
 
+  /** Pocket Pro Group (the signed-in person's group card and its changes). */
+  groupState()       { return this.#user ? this.#plan.groupState() : Promise.resolve({ role: null }); }
+  groupAdd(email)    { return this.#plan.groupAdd(email); }
+  groupRemove(email) { return this.#plan.groupRemove(email); }
+  groupLeave()       { return this.#plan.groupLeave(); }
+
   /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
   aiGateway() {
     return new AiGateway(() => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null));

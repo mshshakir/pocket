@@ -6769,6 +6769,17 @@ RULES:
   var Entitlements = class _Entitlements {
     /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
     static AI_COSTS = Object.freeze({ scan: 5, voice: 1, voiceSeconds: 30 });
+    /**
+     * Pocket Pro Group: the organiser ({role, size}) or a member ({role,
+     * ownerName, ownerEmail}); null otherwise or when the answer is odd.
+     */
+    static #group(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      const text = (v) => typeof v === "string" ? v.slice(0, 200) : "";
+      if (raw.role === "organiser") return { role: "organiser", size: Number.isInteger(raw.size) && raw.size > 1 ? raw.size : 3 };
+      if (raw.role === "member") return { role: "member", ownerName: text(raw.ownerName), ownerEmail: text(raw.ownerEmail) };
+      return null;
+    }
     /** The server's costs, each a whole number above zero, else the default. */
     static #costs(raw) {
       const pick = (k) => Number.isInteger(raw?.[k]) && raw[k] > 0 ? raw[k] : _Entitlements.AI_COSTS[k];
@@ -6803,6 +6814,7 @@ RULES:
         trialAvailable: true,
         paymentsOpen: false,
         backup: false,
+        group: null,
         aiCosts: { ..._Entitlements.AI_COSTS }
       });
     }
@@ -6844,6 +6856,7 @@ RULES:
         trialAvailable: raw.trialAvailable !== false,
         paymentsOpen: raw.paymentsOpen === true,
         backup: raw.backup === true,
+        group: _Entitlements.#group(raw.group),
         aiCosts: _Entitlements.#costs(raw.aiCosts)
       });
     }
@@ -6890,6 +6903,10 @@ RULES:
     /** Online payment is switched on (billing_settings.payments_enabled). */
     get paymentsOpen() {
       return this.#data.paymentsOpen;
+    }
+    /** Pocket Pro Group: {role: 'organiser', size} or {role: 'member', ownerName, ownerEmail}, else null. */
+    get group() {
+      return this.#data.group ? { ...this.#data.group } : null;
     }
     /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
     get backup() {
@@ -7050,9 +7067,32 @@ RULES:
     }
     /** The cloud price list (plans table), for showing options. */
     async catalogue(client) {
-      const { data, error } = await client.from("plans").select("code, name, seats, sync, telegram, sharing, monthly_paise, yearly_paise, trial_paise, trial_days, sort, active").eq("active", true).order("sort");
+      const { data, error } = await client.from("plans").select("code, name, seats, sync, telegram, sharing, monthly_paise, yearly_paise, trial_paise, trial_days, sort, active, group_size").eq("active", true).order("sort");
       if (error) throw error;
       return data ?? [];
+    }
+    // ── Pocket Pro Group ────────────────────────────────────────────────────
+    /** The group card: organiser {role, size, endsAt, changesLeft, members} or member {role, ownerName, ownerEmail, endsAt}. */
+    groupState() {
+      return this.#groupCall("pocket_group_state");
+    }
+    /** Add someone by email (organiser). */
+    groupAdd(email) {
+      return this.#groupCall("pocket_group_add", { p_email: email });
+    }
+    /** Remove someone (organiser); removing a person who joined uses one change. */
+    groupRemove(email) {
+      return this.#groupCall("pocket_group_remove", { p_email: email });
+    }
+    /** Leave the group (member). */
+    groupLeave() {
+      return this.#groupCall("pocket_group_leave");
+    }
+    /** One group call; the server's refusal (a sentence for the person) becomes the error message. */
+    async #groupCall(fn, args) {
+      const { data, error } = await this.#rpc(fn, args);
+      if (error) throw new Error(error.code === "PG001" && error.message ? error.message : "Pocket couldn't reach the server. Please try again.");
+      return data ?? { role: null };
     }
     /** @param {any} err */
     static isPlanError(err) {
@@ -7402,6 +7442,19 @@ RULES:
     /** Ask the server for the plan again (e.g. when Settings opens). */
     refreshPlan() {
       return this.#sb && this.#user ? this.#plan.refresh() : Promise.resolve(this.#plan.current);
+    }
+    /** Pocket Pro Group (the signed-in person's group card and its changes). */
+    groupState() {
+      return this.#user ? this.#plan.groupState() : Promise.resolve({ role: null });
+    }
+    groupAdd(email) {
+      return this.#plan.groupAdd(email);
+    }
+    groupRemove(email) {
+      return this.#plan.groupRemove(email);
+    }
+    groupLeave() {
+      return this.#plan.groupLeave();
     }
     /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
     aiGateway() {
@@ -11893,6 +11946,7 @@ This replaces your current grouping.`
         </div>
         <div class="text-xs text-zinc-500 leading-relaxed">${this.#status(plan)}</div>
         ${this.#details(plan)}
+        ${this.#groupCard(plan, ui.group)}
         <div class="grid grid-cols-1 gap-2 mt-3">
           <button class="btn ${plan.state === "grace" ? "btn-primary" : "btn-outline"} justify-center" onclick="window.__app.downloadMyData()">
             <i data-lucide="download"></i> Download my data
@@ -11981,14 +12035,20 @@ This replaces your current grouping.`
       </div>`;
     }
     /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
-    #planBox(p, plan, term, offers, buying, highlight) {
-      const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial";
+    #planBox(p, plan, chosen, offers, buying, highlight) {
+      const term = chosen === "month" && p.monthly_paise == null && p.yearly_paise != null ? "year" : chosen;
+      const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial" && plan.group?.role !== "member";
       const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
       const listPaise = term === "month" ? p.monthly_paise : p.yearly_paise;
       const price = product ? _PlanCard.#price(product) : listPaise != null ? _PlanCard.#inr(listPaise) : null;
       const perMonth = term === "year" && listPaise != null ? _PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
       const save = term === "year" ? _PlanCard.#saving(p) : 0;
-      const features = [
+      const features = p.group_size ? [
+        `For ${p.group_size} people, from any household: one pays, adds the others by email`,
+        "Each person gets their own Pocket Pro, with a private book",
+        "Sync, Telegram, scheduled backups and household sharing for each",
+        "Yearly only"
+      ] : [
         p.sync && "Cloud sync on all your devices",
         p.telegram && "Log by Telegram, voice or receipt scan",
         p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
@@ -11998,13 +12058,13 @@ This replaces your current grouping.`
       const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
       const button = !offers ? "" : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}`, buying, true, "w-full justify-center mt-3") + (product.switchDays ? `<div class="plan-switch-note">+ ${_PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? "plan")}</div>` : "");
       const trial = this.#trialLink(p, plan, offers, buying);
-      const popular = p.sharing && !current;
+      const popular = p.sharing && !p.group_size && !current;
       return `
       <div class="plan-box ${current ? "plan-current" : ""} ${highlight === p.code ? "plan-highlight" : ""}" id="plan-${Html.escape(p.code)}">
         <div class="flex items-start justify-between gap-2">
           <div>
             <div class="font-semibold flex items-center gap-2 flex-wrap">${Html.escape(p.name)}
-              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : ""}</div>
+              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : p.group_size ? `<span class="plan-tag">${p.group_size} people</span>` : ""}</div>
             ${save ? `<div class="plan-save mt-1 inline-block">save ${save}% vs monthly</div>` : ""}
           </div>
           <div class="text-right">
@@ -12016,6 +12076,62 @@ This replaces your current grouping.`
         <ul class="plan-features">${features.map((f) => `<li><i data-lucide="check"></i>${Html.escape(f)}</li>`).join("")}</ul>
         ${button}
         ${trial}
+      </div>`;
+    }
+    /**
+     * Pocket Pro Group. Organiser: who is in the group (Joined / Waiting), add
+     * by email, invite, remove, changes left. Member: who manages it, and Leave.
+     * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
+     * @param {object|null|undefined} g  pocket_group_state(), or null while loading
+     */
+    #groupCard(plan, g) {
+      const role = plan.group?.role;
+      if (!role) return "";
+      if (role === "member") {
+        const who = plan.group;
+        return `
+        <div class="plan-box mt-3 group-member">
+          <div class="flex items-center gap-2">
+            <i data-lucide="user-check" style="width:16px;height:16px" class="text-zinc-500"></i>
+            <div class="min-w-0">
+              <div class="text-sm font-medium">Managed by ${Html.escape(who.ownerName || who.ownerEmail)}</div>
+              <div class="text-xs text-zinc-500 truncate">${Html.escape(who.ownerEmail)}</div>
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500 mt-2 leading-relaxed">You're on Pocket Pro through their Pocket Pro Group. Your book is private: they can't see your entries.</div>
+          <button class="btn btn-ghost w-full justify-center text-xs text-rose-500 mt-2 group-leave" onclick="window.__app.groupLeave()">Leave group</button>
+        </div>`;
+      }
+      if (!g || g.role !== "organiser") return '<div class="text-xs text-zinc-400 mt-3">Loading your group\u2026</div>';
+      const places = Math.max(0, (g.size || 3) - 1 - (g.members?.length || 0));
+      const row = (m) => `
+      <div class="flex items-center gap-2 py-2 border-t border-zinc-100 dark:border-zinc-800 group-row">
+        <i data-lucide="${m.joined ? "user-check" : "clock"}" style="width:15px;height:15px" class="${m.joined ? "text-emerald-600" : "text-amber-500"}"></i>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs truncate">${Html.escape(m.email)}</div>
+          <div class="text-[11px] ${m.joined ? "text-emerald-600" : "text-amber-600"}">${m.joined ? "Joined" : "Waiting \xB7 not signed in yet"}</div>
+        </div>
+        ${m.joined ? "" : `<button class="btn btn-ghost px-2 group-invite" title="Send invite" aria-label="Send invite to ${Html.escape(m.email)}" onclick="window.__app.groupInvite('${Html.escape(m.email)}')"><i data-lucide="send"></i></button>`}
+        <button class="btn btn-ghost px-2 group-remove" title="${m.joined ? "Replace or remove" : "Remove (free)"}" aria-label="Remove ${Html.escape(m.email)}" onclick="window.__app.groupRemove('${Html.escape(m.email)}', ${m.joined})"><i data-lucide="x"></i></button>
+      </div>`;
+      return `
+      <div class="plan-box mt-3 group-organiser">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="text-sm font-medium">Your group</div>
+          <span class="text-[11px] text-zinc-500">${(g.members?.length || 0) + 1} of ${g.size || 3}</span>
+        </div>
+        <div class="flex items-center gap-2 py-2">
+          <i data-lucide="crown" style="width:15px;height:15px" class="text-zinc-500"></i>
+          <div class="text-xs flex-1">You \xB7 organiser</div>
+        </div>
+        ${(g.members || []).map(row).join("")}
+        ${places > 0 ? `
+        <form class="flex gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 group-add" onsubmit="window.__app.groupAdd(event)">
+          <input class="input text-sm" name="email" type="email" required placeholder="their.name@gmail.com" autocomplete="off">
+          <button class="btn btn-primary text-xs" type="submit">Add</button>
+        </form>
+        <div class="text-[11px] text-zinc-500 mt-1">${places} place${places === 1 ? "" : "s"} left. They sign in to Pocket with this Google account to get Pocket Pro.</div>` : ""}
+        <div class="text-[11px] text-zinc-400 mt-2">Changes left this year: ${g.changesLeft ?? 0}. A waiting place can be fixed for free; replacing someone who joined uses a change.</div>
       </div>`;
     }
     /** Moving to a cheaper plan: free, the time left becomes days on it. */
@@ -25046,6 +25162,8 @@ ${body}\r
     #couponError = "";
     #couponChecking = false;
     #planHighlight = null;
+    /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
+    #groupState = null;
     static #PENDING_PLANS = "pocket.pendingPlans";
     /** @type {import('./domain/billing/PaymentService.js').PaymentService|null} */
     #payments = null;
@@ -25633,10 +25751,70 @@ ${body}\r
         term,
         couponOpen: this.#couponOpen,
         highlight: this.#planHighlight,
+        group: this.#groupState,
         couponApplied: this.#couponApplied,
         couponError: this.#couponError,
         couponChecking: this.#couponChecking
       };
+    }
+    // ── Pocket Pro Group ─────────────────────────────────────────────────────
+    /** Add someone to the group by email (organiser). */
+    async groupAdd(ev) {
+      ev?.preventDefault?.();
+      const input = ev?.target?.querySelector?.("input[name=email]");
+      const email = (input?.value || "").trim();
+      if (!email) return;
+      try {
+        this.#groupState = await this.#sync.groupAdd(email);
+        this.#toast.show(`Added ${email}. Send them the invite.`);
+        this.#modal.refresh();
+        this.groupInvite(email);
+      } catch (e) {
+        this.#toast.show(e.message);
+      }
+    }
+    /**
+     * Remove someone (organiser). A place still waiting is free to fix; someone
+     * who joined loses Pocket Pro and it uses one of this year's changes.
+     */
+    async groupRemove(email, joined) {
+      const left = this.#groupState?.changesLeft ?? 0;
+      const ask = joined ? `Remove ${email}? They go back to Free (nothing is deleted) and this uses 1 of your ${left} change${left === 1 ? "" : "s"} left this year.` : `Remove ${email}? They haven't joined yet, so this is free.`;
+      if (!confirm(ask)) return;
+      try {
+        this.#groupState = await this.#sync.groupRemove(email);
+        this.#toast.show("Removed from your group");
+        this.#modal.refresh();
+      } catch (e) {
+        this.#toast.show(e.message);
+      }
+    }
+    /** Send the invite message (share sheet on phones, else copied). */
+    async groupInvite(email) {
+      const name = this.#sync.currentUser?.user_metadata?.full_name || "I";
+      const link = new URL("app.html#signin", document.baseURI).href;
+      const text = `${name === "I" ? "I've" : `${name} has`} added you to Pocket Pro. Open ${link} and sign in with Google as ${email} \u2014 your book is private.`;
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: "Pocket Pro", text });
+          return;
+        }
+        await navigator.clipboard.writeText(text);
+        this.#toast.show("Invite copied \u2014 paste it in WhatsApp or a message");
+      } catch (_) {
+      }
+    }
+    /** Leave a group you were added to (member). */
+    async groupLeave() {
+      const who = this.getPlan()?.group?.ownerName || "the organiser";
+      if (!confirm(`Leave ${who}'s Pocket Pro Group? You go back to Free; nothing is deleted.`)) return;
+      try {
+        await this.#sync.groupLeave();
+        await this.#refreshPlanInfo();
+        this.#toast.show("You left the group");
+      } catch (e) {
+        this.#toast.show(e.message);
+      }
     }
     /** Checks the typed code and shows every price with it applied (or why it can't be used). */
     async applyCoupon() {
@@ -25791,6 +25969,7 @@ ${body}\r
         this.#sync.planCatalogue().catch(() => [])
       ]);
       this.#planCatalogue = catalogue;
+      this.#groupState = plan?.group?.role === "organiser" ? await this.#sync.groupState().catch(() => null) : null;
       this.#payments ??= this.#sync.payments();
       let offers = null;
       if (plan?.paymentsOpen) {

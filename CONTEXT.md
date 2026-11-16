@@ -56,6 +56,18 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · Pocket Pro Group** (migration `0046_pocket_pro_group`, applied). Plan `group`: ₹1,999/year
+  (yearly only), `plans.group_size` 3. The organiser adds 2 people by email (`group_members`, kept with
+  `removed_at`, one active group per email); each gets their own Pocket Pro on a private book. Access goes
+  through `pocket_effective_plan(user)` = own plan if active/grace, else the group's Pocket Pro (code
+  `family`, group's end date), else own lapsed plan; `pocket_own_access`, `pocket_guard_sharing` and
+  `pocket_entitlements_for` (now with `group: {role, …}`) read it, so the guards, the app and the bot agree.
+  A place is "Joined" once that person opens Pocket signed in (`pocket_entitlements()` stamps it); removing
+  a joined person uses one of `billing_settings.group_changes_per_year` (2) per 365 days (`group_changes`);
+  members can leave. RPCs `pocket_group_state/add/remove/leave` (authenticated). App: `PlanCard.#groupCard`
+  (organiser list + add + invite + remove; member "Managed by …" + Leave), group plan box (yearly price
+  under Monthly too), homepage card, `app.html#plans=group_year`. Admin can give `group`. Habit programme
+  now includes 3 months of Pocket Pro (was Sync).
 - **2026-11-16 · Pocket Pro and Pocket Plus** (migration `0045_pocket_pro`, applied). One paid plan: code
   `family` (kept so nothing breaks) renamed **Pocket Pro** — ₹99/month, ₹999/year, 5 people, sync + Telegram +
   sharing; **introductory offer** = the `family_trial` product, 90 days for ₹149, once per account. Plan `sync`

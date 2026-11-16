@@ -28,6 +28,7 @@ export class PlanCard {
         </div>
         <div class="text-xs text-zinc-500 leading-relaxed">${this.#status(plan)}</div>
         ${this.#details(plan)}
+        ${this.#groupCard(plan, ui.group)}
         <div class="grid grid-cols-1 gap-2 mt-3">
           <button class="btn ${plan.state === 'grace' ? 'btn-primary' : 'btn-outline'} justify-center" onclick="window.__app.downloadMyData()">
             <i data-lucide="download"></i> Download my data
@@ -128,14 +129,21 @@ export class PlanCard {
   }
 
   /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
-  #planBox(p, plan, term, offers, buying, highlight) {
-    const current = plan.plan === p.code && plan.state === 'active' && plan.term !== 'trial';
+  #planBox(p, plan, chosen, offers, buying, highlight) {
+    // A plan sold yearly only shows its yearly price under Monthly too.
+    const term = chosen === 'month' && p.monthly_paise == null && p.yearly_paise != null ? 'year' : chosen;
+    const current = plan.plan === p.code && plan.state === 'active' && plan.term !== 'trial' && plan.group?.role !== 'member';
     const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
     const listPaise = term === 'month' ? p.monthly_paise : p.yearly_paise;
     const price = product ? PlanCard.#price(product) : listPaise != null ? PlanCard.#inr(listPaise) : null;
     const perMonth = term === 'year' && listPaise != null ? PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
     const save = term === 'year' ? PlanCard.#saving(p) : 0;
-    const features = [
+    const features = p.group_size ? [
+      `For ${p.group_size} people, from any household: one pays, adds the others by email`,
+      'Each person gets their own Pocket Pro, with a private book',
+      'Sync, Telegram, scheduled backups and household sharing for each',
+      'Yearly only',
+    ] : [
       p.sync && 'Cloud sync on all your devices',
       p.telegram && 'Log by Telegram, voice or receipt scan',
       p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
@@ -150,13 +158,13 @@ export class PlanCard {
       : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}`, buying, true, 'w-full justify-center mt-3')
         + (product.switchDays ? `<div class="plan-switch-note">+ ${PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? 'plan')}</div>` : '');
     const trial = this.#trialLink(p, plan, offers, buying);
-    const popular = p.sharing && !current;
+    const popular = p.sharing && !p.group_size && !current;
     return `
       <div class="plan-box ${current ? 'plan-current' : ''} ${highlight === p.code ? 'plan-highlight' : ''}" id="plan-${Html.escape(p.code)}">
         <div class="flex items-start justify-between gap-2">
           <div>
             <div class="font-semibold flex items-center gap-2 flex-wrap">${Html.escape(p.name)}
-              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : ''}</div>
+              ${current ? '<span class="plan-tag plan-tag-current">Your plan</span>' : popular ? '<span class="plan-tag">Best for families</span>' : p.group_size ? `<span class="plan-tag">${p.group_size} people</span>` : ''}</div>
             ${save ? `<div class="plan-save mt-1 inline-block">save ${save}% vs monthly</div>` : ''}
           </div>
           <div class="text-right">
@@ -168,6 +176,63 @@ export class PlanCard {
         <ul class="plan-features">${features.map((f) => `<li><i data-lucide="check"></i>${Html.escape(f)}</li>`).join('')}</ul>
         ${button}
         ${trial}
+      </div>`;
+  }
+
+  /**
+   * Pocket Pro Group. Organiser: who is in the group (Joined / Waiting), add
+   * by email, invite, remove, changes left. Member: who manages it, and Leave.
+   * @param {import('../../domain/billing/Entitlements.js').Entitlements} plan
+   * @param {object|null|undefined} g  pocket_group_state(), or null while loading
+   */
+  #groupCard(plan, g) {
+    const role = plan.group?.role;
+    if (!role) return '';
+    if (role === 'member') {
+      const who = plan.group;
+      return `
+        <div class="plan-box mt-3 group-member">
+          <div class="flex items-center gap-2">
+            <i data-lucide="user-check" style="width:16px;height:16px" class="text-zinc-500"></i>
+            <div class="min-w-0">
+              <div class="text-sm font-medium">Managed by ${Html.escape(who.ownerName || who.ownerEmail)}</div>
+              <div class="text-xs text-zinc-500 truncate">${Html.escape(who.ownerEmail)}</div>
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500 mt-2 leading-relaxed">You're on Pocket Pro through their Pocket Pro Group. Your book is private: they can't see your entries.</div>
+          <button class="btn btn-ghost w-full justify-center text-xs text-rose-500 mt-2 group-leave" onclick="window.__app.groupLeave()">Leave group</button>
+        </div>`;
+    }
+    if (!g || g.role !== 'organiser') return '<div class="text-xs text-zinc-400 mt-3">Loading your group…</div>';
+    const places = Math.max(0, (g.size || 3) - 1 - (g.members?.length || 0));
+    const row = (m) => `
+      <div class="flex items-center gap-2 py-2 border-t border-zinc-100 dark:border-zinc-800 group-row">
+        <i data-lucide="${m.joined ? 'user-check' : 'clock'}" style="width:15px;height:15px" class="${m.joined ? 'text-emerald-600' : 'text-amber-500'}"></i>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs truncate">${Html.escape(m.email)}</div>
+          <div class="text-[11px] ${m.joined ? 'text-emerald-600' : 'text-amber-600'}">${m.joined ? 'Joined' : 'Waiting · not signed in yet'}</div>
+        </div>
+        ${m.joined ? '' : `<button class="btn btn-ghost px-2 group-invite" title="Send invite" aria-label="Send invite to ${Html.escape(m.email)}" onclick="window.__app.groupInvite('${Html.escape(m.email)}')"><i data-lucide="send"></i></button>`}
+        <button class="btn btn-ghost px-2 group-remove" title="${m.joined ? 'Replace or remove' : 'Remove (free)'}" aria-label="Remove ${Html.escape(m.email)}" onclick="window.__app.groupRemove('${Html.escape(m.email)}', ${m.joined})"><i data-lucide="x"></i></button>
+      </div>`;
+    return `
+      <div class="plan-box mt-3 group-organiser">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="text-sm font-medium">Your group</div>
+          <span class="text-[11px] text-zinc-500">${(g.members?.length || 0) + 1} of ${g.size || 3}</span>
+        </div>
+        <div class="flex items-center gap-2 py-2">
+          <i data-lucide="crown" style="width:15px;height:15px" class="text-zinc-500"></i>
+          <div class="text-xs flex-1">You · organiser</div>
+        </div>
+        ${(g.members || []).map(row).join('')}
+        ${places > 0 ? `
+        <form class="flex gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 group-add" onsubmit="window.__app.groupAdd(event)">
+          <input class="input text-sm" name="email" type="email" required placeholder="their.name@gmail.com" autocomplete="off">
+          <button class="btn btn-primary text-xs" type="submit">Add</button>
+        </form>
+        <div class="text-[11px] text-zinc-500 mt-1">${places} place${places === 1 ? '' : 's'} left. They sign in to Pocket with this Google account to get Pocket Pro.</div>` : ''}
+        <div class="text-[11px] text-zinc-400 mt-2">Changes left this year: ${g.changesLeft ?? 0}. A waiting place can be fixed for free; replacing someone who joined uses a change.</div>
       </div>`;
   }
 

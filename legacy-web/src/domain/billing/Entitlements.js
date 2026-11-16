@@ -22,6 +22,18 @@ export class Entitlements {
   /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
   static AI_COSTS = Object.freeze({ scan: 5, voice: 1, voiceSeconds: 30 });
 
+  /**
+   * Pocket Pro Group: the organiser ({role, size}) or a member ({role,
+   * ownerName, ownerEmail}); null otherwise or when the answer is odd.
+   */
+  static #group(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const text = (v) => (typeof v === 'string' ? v.slice(0, 200) : '');
+    if (raw.role === 'organiser') return { role: 'organiser', size: Number.isInteger(raw.size) && raw.size > 1 ? raw.size : 3 };
+    if (raw.role === 'member') return { role: 'member', ownerName: text(raw.ownerName), ownerEmail: text(raw.ownerEmail) };
+    return null;
+  }
+
   /** The server's costs, each a whole number above zero, else the default. */
   static #costs(raw) {
     const pick = (k) => (Number.isInteger(raw?.[k]) && raw[k] > 0 ? raw[k] : Entitlements.AI_COSTS[k]);
@@ -48,6 +60,7 @@ export class Entitlements {
       seats: 1, seatsUsed: 1, coveredBy: [], aiCredits: 0, aiUnlimited: false, trialAvailable: true,
       paymentsOpen: false,
       backup: false,
+      group: null,
       aiCosts: { ...Entitlements.AI_COSTS },
     });
   }
@@ -90,6 +103,7 @@ export class Entitlements {
       trialAvailable: raw.trialAvailable !== false,
       paymentsOpen: raw.paymentsOpen === true,
       backup: raw.backup === true,
+      group: Entitlements.#group(raw.group),
       aiCosts: Entitlements.#costs(raw.aiCosts),
     });
   }
@@ -110,6 +124,9 @@ export class Entitlements {
   get trialAvailable() { return this.#data.trialAvailable; }
   /** Online payment is switched on (billing_settings.payments_enabled). */
   get paymentsOpen()   { return this.#data.paymentsOpen; }
+  /** Pocket Pro Group: {role: 'organiser', size} or {role: 'member', ownerName, ownerEmail}, else null. */
+  get group()          { return this.#data.group ? { ...this.#data.group } : null; }
+
   /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
   get backup()         { return this.#data.backup; }
   /** Credits a scan costs, and a voice entry per `voiceSeconds` of recording. @returns {{scan: number, voice: number, voiceSeconds: number}} */

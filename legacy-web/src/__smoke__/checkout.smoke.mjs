@@ -146,6 +146,25 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   const intro = card.html(free({ paymentsOpen: true }), [catalogue[0], { ...catalogue[2], trial_days: 90, trial_paise: 14900 }],
     { products: [p('family_trial', 'family', 'trial', 14900), p('family_month', 'family', 'month', 9900), p('family_year', 'family', 'year', 99900)] });
   ok('C6 a 90-day offer reads "the first 3 months"', intro.includes('or start with the first 3 months for ₹149'));
+  const groupPlan = { code: 'group', name: 'Pocket Pro Group', sync: true, telegram: true, sharing: true, seats: 5, monthly_paise: null, yearly_paise: 199900, group_size: 3 };
+  const withGroup = { products: [...offers().products, p('group_year', 'group', 'year', 199900)] };
+  const monthView = card.html(free({ paymentsOpen: true }), [...catalogue, groupPlan], withGroup, null, '', { term: 'month' });
+  ok('G1 Pocket Pro Group is offered for ₹1,999 a year even under Monthly, for 3 people each with their own Pro',
+     monthView.includes('id="plan-group"') && monthView.includes("buy('group_year')") && monthView.includes('₹1,999') && /3 people/.test(monthView) && /own Pocket Pro, with a private book/.test(monthView));
+  const organiser = Entitlements.from({ plan: 'group', planName: 'Pocket Pro Group', state: 'active', term: 'year', paymentsOpen: true, group: { role: 'organiser', size: 3 } });
+  const g = { role: 'organiser', size: 3, changesLeft: 2, members: [{ email: 'ali@example.com', joined: true }, { email: 'sara@example.com', joined: false }] };
+  const orgHtml = card.html(organiser, [...catalogue, groupPlan], withGroup, null, '', { group: g });
+  ok('G2 organiser: "Your group" shows 3 of 3, who joined and who is waiting, invite for the waiting one, remove for both, changes left',
+     /Your group/.test(orgHtml) && /3 of 3/.test(orgHtml) && /ali@example\.com[\s\S]*Joined/.test(orgHtml) && /sara@example\.com[\s\S]*Waiting/.test(orgHtml)
+     && (orgHtml.match(/groupInvite\(/g) || []).length === 1 && (orgHtml.match(/groupRemove\(/g) || []).length === 2 && /Changes left this year: 2/.test(orgHtml) && !orgHtml.includes('group-add'));
+  const oneLeft = card.html(organiser, [...catalogue, groupPlan], withGroup, null, '', { group: { ...g, members: [g.members[0]] } });
+  ok('G2 with a place free: an email box and Add', oneLeft.includes('group-add') && /1 place left/.test(oneLeft));
+  ok('G2 while the group is loading it says so', /Loading your group/.test(card.html(organiser, catalogue, null, null, '', {})));
+  const member = Entitlements.from({ plan: 'family', planName: 'Pocket Pro', state: 'active', term: 'year', source: 'group', paymentsOpen: true,
+    access: { sync: 'write', telegram: 'write', sharing: 'write' }, group: { role: 'member', ownerName: 'Mufaddal Shakir', ownerEmail: 'mshshakir@gmail.com' } });
+  const memHtml = card.html(member, [...catalogue, groupPlan], withGroup);
+  ok('G3 member: managed by the organiser\'s name and email, private book, a Leave button; Pocket Pro is not marked as "Your plan" to buy more of',
+     /Managed by Mufaddal Shakir/.test(memHtml) && memHtml.includes('mshshakir@gmail.com') && /can't see your entries/.test(memHtml) && memHtml.includes('groupLeave()') && !/Add 1 year/.test(memHtml));
   const life = card.html(Entitlements.from({ plan: 'family', state: 'active', term: 'lifetime', aiUnlimited: true, paymentsOpen: true }), catalogue, offers());
   ok('C6 for life with unlimited AI: nothing to buy', !life.includes('__app.buy('));
 }

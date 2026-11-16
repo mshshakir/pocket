@@ -10,7 +10,8 @@ export class UsersView extends AdminView {
   #users = [];
   #search = '';
   #open = null;   // the email whose actions are shown
-  #plans = ['sync', 'family'];
+  /** Plans the admin can give: code → name (Sync was retired on 16 Nov 2026). */
+  #plans = [['family', 'Pocket Pro'], ['group', 'Pocket Pro Group']];
 
   get title() { return 'Users'; }
 
@@ -55,7 +56,7 @@ export class UsersView extends AdminView {
 
   #manage(u) {
     const email = Format.esc(u.email);
-    const planOpts = this.#plans.map((p) => `<option value="${p}" ${u.plan === p ? 'selected' : ''}>${p}</option>`).join('');
+    const planOpts = this.#plans.map(([code, name]) => `<option value="${code}" ${u.plan === code ? 'selected' : ''}>${name}</option>`).join('');
     return `
       <div class="manage">
         <form data-form="set_plan" data-email="${email}" class="mini">

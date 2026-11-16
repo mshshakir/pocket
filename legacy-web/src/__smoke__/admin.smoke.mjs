@@ -84,9 +84,9 @@ const formOf = (html, selector) => {
   h = v.html();
   ok('A2 Manage opens the actions for that person', h.includes('data-form="set_plan" data-email="b@x.com"') && h.includes('Give plan'));
   const f = formOf(h, 'form[data-form="set_plan"]');
-  f.form.querySelector('[name=plan]').value = 'sync'; f.form.querySelector('[name=term]').value = 'year';
+  f.form.querySelector('[name=plan]').value = 'group'; f.form.querySelector('[name=term]').value = 'year';
   await v.act('set_plan', f.form, f.data());
-  ok('A2 giving a plan calls the server', JSON.stringify(calls.find((c) => c[0] === 'userAction')) === JSON.stringify(['userAction', 'b@x.com', 'set_plan', { plan: 'sync', term: 'year', note: '' }]), JSON.stringify(calls));
+  ok('A2 giving a plan calls the server', JSON.stringify(calls.find((c) => c[0] === 'userAction')) === JSON.stringify(['userAction', 'b@x.com', 'set_plan', { plan: 'group', term: 'year', note: '' }]), JSON.stringify(calls));
   const g = formOf(v.html(), 'form[data-form="grant_ai"]');
   g.form.querySelector('[name=credits]').value = '500';
   await v.act('grant_ai', g.form, g.data());
