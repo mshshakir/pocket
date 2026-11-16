@@ -324,7 +324,8 @@ export class SettingsModal {
               (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
               ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
               and the files never pass through Pocket's servers. When a backup is due, Pocket shows
-              <b>Back up now</b> the next time you open it — one tap saves it.
+              <b>Back up now</b> the next time you open it — one tap saves it. Or switch on
+              <b>Back up automatically</b> and Pocket saves it by itself when you open it.
             </div>
           </details>`;
     if (!d.connected) {
@@ -346,6 +347,19 @@ export class SettingsModal {
           <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
             ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? 'selected' : ''}>${c.label}</option>`).join('')}
           </select>
+          ${d.automaticOffered || d.automatic ? `
+          <div class="flex items-start gap-3 mb-3 drive-auto">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium">Back up automatically</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                ${d.automatic
+                  ? 'On. When a backup is due, Pocket saves it by itself the next time you open it.'
+                  : 'Off. When a backup is due, Pocket asks you to tap Back up now. Turn on to let it save by itself; Google will ask you once more to allow it.'}
+              </div>
+            </div>
+            <button type="button" role="switch" aria-checked="${d.automatic}" class="btn ${d.automatic ? 'btn-primary' : 'btn-outline'} text-xs drive-auto-toggle"
+                    onclick="window.__app.driveSetAutomatic(${!d.automatic})" ${d.busy ? 'disabled' : ''}>${d.automatic ? 'On' : 'Off'}</button>
+          </div>` : ''}
           <div class="grid grid-cols-2 gap-2">
             <button class="btn btn-primary justify-center drive-now" onclick="window.__app.driveBackupNow()" ${d.busy ? 'disabled' : ''}>
               <i data-lucide="cloud-upload"></i> ${d.busy ? 'Backing up…' : 'Back up now'}

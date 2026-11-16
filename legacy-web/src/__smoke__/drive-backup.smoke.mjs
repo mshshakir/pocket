@@ -16,6 +16,11 @@
  *   U8  another person's book on this device is "not connected" (never saved into this Drive)
  *   U9  Disconnect forgets the link; files stay in Drive
  *   U10 the folder deleted by the person is made again on the next backup
+ *   A1  automatic backups are opt-in: off after Connect; the switch shows only when the server offers it
+ *   A2  switching on asks Google once more; then a due backup saves by itself when Pocket opens — no window, no box
+ *   A3  not again within half an hour, nor from a second tab; switching off goes back to the Back up now box
+ *   A4  Google withdrew the permission: automatic turns itself off and the box asks for a tap
+ *   A5  Google gave no lasting permission, or the window was closed: stays off, says why
  *
  * Run: node src/__smoke__/drive-backup.smoke.mjs
  */
@@ -304,6 +309,70 @@ const notice = (w) => w.document.querySelector('.app-notice-backup');
   await wait(80);
   ok('U8 the guest who linked it is still connected, and a daily backup is due', same.w.__app.driveStatus().connected && same.w.__app.driveStatus().due && !!notice(same.w));
   ok('U8 the next Google window pre-selects the linked account', await (async () => { await same.w.__app.driveBackupNow(); return same.g.lastHint === 'me@example.com'; })());
+}
+
+{
+  const none = boot();
+  none.g.automatic = false;
+  await wait(80);
+  await dataTab(none.w);
+  await none.w.__app.driveConnect();
+  await wait(20);
+  ok('A1 the server has no secret: no automatic switch, backups ask for a tap as before', !none.w.document.querySelector('.drive-auto') && !none.w.__app.driveStatus().automatic && !!notice(none.w));
+
+  const { w, g } = boot();
+  await wait(80);
+  const app = w.__app;
+  await dataTab(w);
+  await app.driveConnect();
+  await until(() => !!w.document.querySelector('.drive-auto'));
+  const toggle = () => w.document.querySelector('.drive-auto-toggle');
+  ok('A1 after Connect, automatic is off; the switch is offered and says what it does', !app.driveStatus().automatic && toggle()?.textContent.trim() === 'Off' && toggle().getAttribute('aria-checked') === 'false' && /asks you to tap/.test(w.document.querySelector('.drive-auto').textContent) && !JSON.parse(w.localStorage.getItem('pocket.v1.drive')).refreshToken);
+  ok('A1 with it off, a due backup shows the box and nothing is saved by itself', !!notice(w) && g.namesIn(g.folderId()).length === 0);
+
+  const windows = g.windowsOpened;
+  await app.driveSetAutomatic(true);
+  await until(() => g.namesIn(g.folderId()).length === 2);
+  ok('A2 switching on opens Google\'s window once and keeps the lasting permission on this device only', g.windowsOpened === windows + 1 && g.lastHint === 'me@example.com' && /^rt-/.test(JSON.parse(w.localStorage.getItem('pocket.v1.drive')).refreshToken) && g.authCalls.includes('exchange'));
+  ok('A2 the due backup is then saved by itself, the box goes and the switch reads On', g.namesIn(g.folderId()).length === 2 && !notice(w) && toggle().textContent.trim() === 'On' && /saves it by itself/.test(w.document.querySelector('.drive-auto').textContent));
+
+  // a later visit: a new page, the same device storage, a backup due
+  const carry = (lastAt, extra = {}) => ({ 'pocket.v1.drive': JSON.stringify({ ...JSON.parse(w.localStorage.getItem('pocket.v1.drive')), lastAt }), ...extra });
+  const old = new Date(Date.now() - 9 * 86_400_000).toISOString();
+  const later = boot({ drive: g, storage: carry(old) });
+  await until(() => g.namesIn(g.folderId()).length === 4, 3000);
+  ok('A2 next visit with a backup due: saved with no Google window and no box', g.namesIn(g.folderId()).length === 4 && g.windowsOpened === windows + 1 && !notice(later.w) && g.authCalls.includes('refresh') && /Backed up to Google Drive/.test(toast(later.w)), `${g.namesIn(g.folderId()).length} files`);
+  ok('A2 the icon is green again afterwards', /hsl\(142/.test(later.w.document.querySelector('.status-icon-backup')?.innerHTML || ''));
+
+  const stamp = later.w.localStorage.getItem('pocket.v1.drive.auto');
+  const second = boot({ drive: g, storage: carry(old, { 'pocket.v1.drive.auto': stamp }) });
+  await wait(300);
+  ok('A3 another tab (or a reopen within half an hour) does not save a second copy', g.namesIn(g.folderId()).length === 4 && !notice(second.w));
+  const hourAgo = String(Date.now() - 31 * 60_000);
+  await wait(1100);
+  const third = boot({ drive: g, storage: carry(old, { 'pocket.v1.drive.auto': hourAgo }) });
+  await until(() => g.namesIn(g.folderId()).length === 6, 3000);
+  ok('A3 after half an hour it tries again', g.namesIn(g.folderId()).length === 6);
+  third.w.localStorage.setItem('pocket.v1.drive', carry(old)['pocket.v1.drive']);
+  third.w.__app.driveSetAutomatic(false);
+  ok('A3 switching off forgets the permission on the device and the Back up now box is back', !JSON.parse(third.w.localStorage.getItem('pocket.v1.drive')).refreshToken && !third.w.__app.driveStatus().automatic && !!notice(third.w));
+
+  g.withdrawAccess();
+  await wait(1100);
+  const gone = boot({ drive: g, storage: carry(old) });
+  await until(() => gone.w.__app && !gone.w.__app.driveStatus().automatic, 3000);
+  ok('A4 Google withdrew the permission: automatic turns itself off, nothing saved, the box asks for a tap', !gone.w.__app.driveStatus().automatic && gone.w.__app.driveStatus().connected && g.namesIn(g.folderId()).length === 6 && !!notice(gone.w));
+
+  const shy = boot();
+  await wait(80);
+  await dataTab(shy.w);
+  await shy.w.__app.driveConnect();
+  shy.g.givesRefreshToken = false;
+  await shy.w.__app.driveSetAutomatic(true);
+  ok('A5 Google gave no lasting permission: stays off and says how to fix it', !shy.w.__app.driveStatus().automatic && /myaccount\.google\.com\/permissions/.test(toast(shy.w)), toast(shy.w));
+  shy.g.givesRefreshToken = true; shy.g.window = 'closed';
+  await shy.w.__app.driveSetAutomatic(true);
+  ok('A5 Google\'s window closed: stays off, the switch works again', !shy.w.__app.driveStatus().automatic && /closed before it finished/.test(toast(shy.w)) && !shy.w.document.querySelector('.drive-auto-toggle')?.disabled);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

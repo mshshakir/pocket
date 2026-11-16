@@ -3,7 +3,9 @@
  * backup talks to, for the smoke suites:
  *
  *   signIn()   Google Identity Services' token window (window.google.accounts.oauth2)
- *   fetch()    the Drive v3 REST calls DriveClient makes: about, files.list (q=),
+ *              and its code window (initCodeClient), used for automatic backups
+ *   fetch()    Pocket's drive-auth function (status / exchange / refresh), and
+ *              the Drive v3 REST calls DriveClient makes: about, files.list (q=),
  *              files.create (folder), multipart and resumable uploads, alt=media,
  *              files.get, files.delete
  *
@@ -21,6 +23,14 @@ export class FakeGoogleDrive {
   /** Answer the next Drive call with this status once (e.g. 401, 403). */
   failNext = null;
   full = false;
+  /** Whether the drive-auth function offers automatic backups (its secret is set). */
+  automatic = true;
+  /** Calls to the drive-auth function, by action. */
+  authCalls = [];
+  /** Whether Google hands a refresh token with the code (it may not on a repeat consent). */
+  givesRefreshToken = true;
+  #refreshTokens = new Set();
+  #codes = new Set();
 
   #seq = 0;
   #token = 0;
@@ -43,8 +53,44 @@ export class FakeGoogleDrive {
           }, 0);
         },
       }),
+      initCodeClient: (cfg) => ({
+        requestCode: () => {
+          this.windowsOpened++;
+          this.lastHint = cfg.login_hint;
+          setTimeout(() => {
+            if (this.window === 'closed') return cfg.error_callback({ type: 'popup_closed' });
+            if (this.window === 'blocked') return cfg.error_callback({ type: 'popup_failed_to_open' });
+            const code = `code-${++this.#token}`;
+            this.#codes.add(code);
+            cfg.callback({ code, scope: cfg.scope });
+          }, 0);
+        },
+      }),
       revoke: (token, done) => { this.#valid.delete(token); done?.(); },
     } } };
+  }
+
+  /** The person removed Pocket's access in their Google account: refresh tokens stop working. */
+  withdrawAccess() { this.#refreshTokens.clear(); this.#valid.clear(); }
+
+  /** Pocket's drive-auth function. */
+  #auth(init) {
+    const body = JSON.parse(init.body);
+    this.authCalls.push(body.action);
+    if (body.action === 'status') return FakeGoogleDrive.#res(200, { automatic: this.automatic });
+    if (!this.automatic) return FakeGoogleDrive.#res(503, { error: 'not_configured' });
+    const access = () => { const t = `tok-${++this.#token}`; this.#valid.add(t); return t; };
+    if (body.action === 'exchange') {
+      if (!this.#codes.delete(body.code)) return FakeGoogleDrive.#res(401, { error: 'invalid_grant' });
+      const refreshToken = this.givesRefreshToken ? `rt-${++this.#token}` : null;
+      if (refreshToken) this.#refreshTokens.add(refreshToken);
+      return FakeGoogleDrive.#res(200, { accessToken: access(), expiresIn: 3600, refreshToken });
+    }
+    if (body.action === 'refresh') {
+      if (!this.#refreshTokens.has(body.refreshToken)) return FakeGoogleDrive.#res(401, { error: 'invalid_grant' });
+      return FakeGoogleDrive.#res(200, { accessToken: access(), expiresIn: 3600 });
+    }
+    return FakeGoogleDrive.#res(400, { error: 'unknown_action' });
   }
 
   /** Make every token handed out so far stale (as after an hour). */
@@ -69,6 +115,7 @@ export class FakeGoogleDrive {
   /** window.fetch for the page (Drive calls only; anything else is "offline"). */
   fetch = async (url, init = {}) => {
     const u = new URL(String(url));
+    if (u.pathname === '/functions/v1/drive-auth') return this.#auth(init);
     if (u.hostname !== 'www.googleapis.com') throw new Error('offline');
     const method = (init.method || 'GET').toUpperCase();
     this.requests.push(`${method} ${u.pathname}${u.searchParams.get('uploadType') ? `?uploadType=${u.searchParams.get('uploadType')}` : ''}`);

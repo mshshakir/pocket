@@ -55,6 +55,14 @@ jobs:
       - name: Deploy payments
         run: supabase functions deploy payments --remote="$PROJECT_REF" --no-verify-jwt --yes
 
+      # Automatic Google Drive backups: swaps Google sign-in codes and refresh
+      # tokens for access tokens and stores nothing. People on the free plan
+      # never sign in to Pocket, so the sign-in check is off; the function only
+      # answers pages on Pocket's own site. Needs the GOOGLE_DRIVE_CLIENT_SECRET
+      # function secret (without it the app just asks for a tap when a backup is due).
+      - name: Deploy drive-auth
+        run: supabase functions deploy drive-auth --remote="$PROJECT_REF" --no-verify-jwt --yes
+
       # Daily/weekly summaries for Telegram groups tied to a shared space.
       # Called hourly by pg_cron (migration 0022); it decides what's due and
       # posts each summary once, so it needs no sign-in check or secret.

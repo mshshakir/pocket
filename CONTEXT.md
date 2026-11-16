@@ -74,10 +74,17 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
   (`lastOnlineAt`); backup green → amber over the chosen period (`BackupSchedule.progress`), → red one more
   period overdue, with a dot once due. Boxes: offline the first time only; backup each time one falls due
   (closed = stays away, returns after 3 days); tap an icon to reopen; state in `pocket.v1.notices`.
-  A schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
+  *Automatic backups (opt-in switch in the Drive card):* edge function `supabase/functions/drive-auth`
+  (`DriveAuthHandler`, `GoogleOAuth`; `--no-verify-jwt`, answers only Pocket's origins, stores nothing; needs the
+  `GOOGLE_DRIVE_CLIENT_SECRET` function secret — without it `status` says `automatic:false` and the switch is
+  hidden). `core/DriveAuthBroker` calls it; `GoogleTokenClient.authorizeOffline()` (code pop-up) gets a refresh
+  token kept in `pocket.v1.drive.refreshToken` on the device only; with it, a due backup runs by itself when
+  the app is opened (`Application.#automaticBackup`, one try per 30 min across tabs via `pocket.v1.drive.auto`);
+  Google refusing the refresh token switches automatic off. Deno test `drive-auth/test/handler_test.ts` (18).
+  Without the switch, a schedule cannot run by itself (a closed site can't run; Google's window needs a tap):
   when due, the note above the page offers **Back up now**. **Needs `GOOGLE_DRIVE_CLIENT_ID` in
   `data/constants.js`** (public OAuth client ID; the card is hidden while empty). Tests: `pwa.smoke.mjs` (39),
-  `drive-backup.smoke.mjs` (58, with `FakeGoogleDrive.mjs`), and `npm run smoke:offline` (13, real Chrome:
+  `drive-backup.smoke.mjs` (72, with `FakeGoogleDrive.mjs`), and `npm run smoke:offline` (13, real Chrome:
   installs the worker, stops the servers, the app still opens, a new release replaces the old copy).
 - **2026-11-14 · Telegram group summaries:** migration 0022 (`telegram_groups`, `pocket_group_claim`,
   `pocket_space_summary` — only the space's own accounts, expense/income, no transfers; pg_cron job

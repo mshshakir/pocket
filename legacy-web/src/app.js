@@ -127,11 +127,12 @@ import { AppNotices }           from './ui/components/AppNotices.js';
 import { PwaService }           from './core/PwaService.js';
 import { Repository }           from './core/Repository.js';
 import { GoogleTokenClient }    from './core/GoogleTokenClient.js';
+import { DriveAuthBroker }      from './core/DriveAuthBroker.js';
 import { DriveClient }          from './domain/services/DriveClient.js';
 import { DriveBackupService }   from './domain/services/DriveBackupService.js';
 import { BackupFiles }          from './domain/services/BackupFiles.js';
 import { DriveRestoreModal }    from './ui/modals/DriveRestoreModal.js';
-import { GOOGLE_DRIVE_CLIENT_ID } from './data/constants.js';
+import { GOOGLE_DRIVE_CLIENT_ID, APP_SUPABASE_URL, APP_SUPABASE_KEY } from './data/constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV import constants (kept local — not re-exported)
@@ -216,6 +217,10 @@ export class Application {
   #driveBackup       = null;
   /** @type {DriveRestoreModal|null} */
   #driveRestoreModal = null;
+  /** Whether the server offers automatic backups; null until asked (when Settings opens). */
+  #driveAutoOffered  = null;
+  /** An automatic backup failed this visit, so the "backup due" box asks for a tap instead. */
+  #driveAutoFailed   = false;
   /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
   #planCatalogue     = null;
   /** What's for sale for this person (payments function), when payment is open; null otherwise. */
@@ -661,7 +666,14 @@ export class Application {
     }
     if (name === 'settings') {
       this.#refreshPlanInfo();
-      if (this.driveStatus().available && this.#pwa?.online !== false) this.#driveBackup.warm();
+      if (this.driveStatus().available && this.#pwa?.online !== false) {
+        this.#driveBackup.warm();
+        this.#driveBackup.automaticOffered().then((yes) => {
+          if (yes === this.#driveAutoOffered) return;
+          this.#driveAutoOffered = yes;
+          if (this.#modal.active === 'settings') this.#modal.refresh();
+        });
+      }
     }
     // debtPayment needs to route to DebtModal in payment mode
     if (name === 'debtPayment') {
@@ -5014,6 +5026,12 @@ export class Application {
       clientId: window.POCKET_GOOGLE_CLIENT_ID ?? GOOGLE_DRIVE_CLIENT_ID,
       scope: DriveClient.SCOPE,
       win: window,
+      // Automatic backups (opt-in) go through Pocket's drive-auth function.
+      broker: new DriveAuthBroker({
+        url: APP_SUPABASE_URL ? `${APP_SUPABASE_URL}/functions/v1/drive-auth` : '',
+        apiKey: APP_SUPABASE_KEY,
+        fetch: (...a) => window.fetch(...a),
+      }),
     });
     this.#driveBackup = new DriveBackupService({
       tokens,
@@ -5039,8 +5057,11 @@ export class Application {
   #refreshNotices() {
     if (!this.#notices) return;
     const drive = this.driveStatus();
-    if (drive.connected && drive.due && this.#pwa?.online !== false) this.#driveBackup.warm();
+    const online = this.#pwa?.online !== false;
+    if (drive.connected && drive.due && online && !drive.automatic) this.#driveBackup.warm();
     this.#notices.show({
+      // Automatic backups look after a due backup themselves; the box asks only if that failed.
+      backupAsk: !drive.automatic || this.#driveAutoFailed,
       online: this.#pwa?.online !== false,
       syncs: !!this.#sync.currentUser,
       // A schedule is set: the top-bar icon shows how fresh the last backup is.
@@ -5051,6 +5072,26 @@ export class Application {
       backupBusy: drive.busy,
       lastAt: drive.lastAt,
     });
+    if (online && !this.#lockState()) this.#automaticBackup();
+  }
+
+  /** Automatic backups (opt-in): when one is due, save it without being asked. */
+  async #automaticBackup() {
+    // Not before the sign-in check and first sync have settled: the book may still be loading.
+    if (DemoMode.active || !this.#sessionChecked || !this.#driveBackup?.available) return;
+    const owner = Repository.storedOwner();
+    if (!this.#driveBackup.claimAutomaticRun(owner)) return;
+    const running = this.#driveBackup.backup({ owner, state: this.#store.getState(), csv: this.#ledgerCsv('all') });
+    this.#driveChanged();
+    try {
+      await running;
+      this.#driveAutoFailed = false;
+      this.#toast.show('Backed up to Google Drive');
+    } catch (e) {
+      this.#driveAutoFailed = true;
+      console.warn('[Drive backup] automatic backup failed:', e);
+    }
+    this.#driveChanged();
   }
 
   /** For Settings → General: can Pocket be installed here, and how. */
@@ -5073,12 +5114,13 @@ export class Application {
   driveStatus() {
     const svc = this.#driveBackup;
     if (!svc || !svc.available || DemoMode.active) {
-      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, progress: null, daysLeft: null, busy: false, keep: DriveBackupService.KEEP };
+      return { available: false, connected: false, email: '', frequency: 'off', lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
     }
     const st = svc.status(Repository.storedOwner());
     return {
       available: true, connected: st.connected, email: st.email, frequency: st.schedule.key,
       lastAt: st.lastAt, due: st.due, progress: st.progress, daysLeft: st.daysLeft,
+      automatic: st.automatic, automaticOffered: this.#driveAutoOffered === true,
       busy: svc.busy, keep: DriveBackupService.KEEP,
     };
   }
@@ -5100,6 +5142,26 @@ export class Application {
   driveSetFrequency(value) {
     this.#driveBackup.setFrequency(Repository.storedOwner(), value);
     this.#driveChanged();
+  }
+
+  /**
+   * Switch automatic backups on or off (Settings → Data). On asks Google for
+   * lasting permission in its window; off forgets it on this device.
+   * @param {boolean} on
+   */
+  async driveSetAutomatic(on) {
+    const owner = Repository.storedOwner();
+    if (!on) {
+      this.#driveBackup.disableAutomatic(owner);
+      this.#toast.show('Automatic backups are off');
+      this.#driveChanged();
+      return;
+    }
+    await this.#driveJob(async () => {
+      await this.#driveBackup.enableAutomatic(owner);
+      this.#driveAutoFailed = false;
+      this.#toast.show('Automatic backups are on');
+    });
   }
 
   /** Save a backup now (from Settings or the "backup due" note). Opens Google's window if needed. */
@@ -5574,6 +5636,8 @@ export class Application {
     // the reference rather than leave the controller holding a detached node.
     this.#swipe?.reset();
     this.#renderSpaceBar();
+    // Network / backup icons and notes; also starts an automatic backup that is due.
+    this.#refreshNotices();
     // Inject live shared data so views can read state._sharedData
     const state = this.#store.getState();
     state._sharedData        = this.#sync.sharedData;

@@ -19675,10 +19675,11 @@ This replaces your current grouping.`
     /** Boxes opened by tapping their icon; they stay until closed. */
     #opened = { offline: false, backup: false };
     /**
-     * backupOn: a schedule is set; backupProgress: 0 = just backed up, 1 = due, 2 = a period overdue.
+     * backupOn: a schedule is set; backupProgress: 0 = just backed up, 1 = due, 2 = a period overdue;
+     * backupAsk: false while automatic backups are looking after a due backup (no box needed).
      * @type {{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}}
      */
-    #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupBusy: false, lastAt: null };
+    #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
     /**
      * @param {HTMLElement|null} el  where the boxes go
      * @param {object} [deps]
@@ -19787,7 +19788,7 @@ This replaces your current grouping.`
       const s = this.#state;
       const seen = this.#remembered();
       if (kind === "offline") return this.#opened.offline || !s.online && !seen.offlineSeen;
-      return s.backupOn && (this.#opened.backup || s.backupDue && !this.#backupClosed(seen.backupClosed));
+      return s.backupOn && (this.#opened.backup || s.backupDue && s.backupAsk !== false && !this.#backupClosed(seen.backupClosed));
     }
     /** Closed for this same due backup, and not long enough ago to remind again. */
     #backupClosed(closed) {
@@ -20247,7 +20248,8 @@ This replaces your current grouping.`
               (Pocket restores from this) and a CSV of every transaction (opens in any spreadsheet). The newest
               ${d.keep} backups are kept. Pocket can only see the files it saved there, nothing else in your Drive,
               and the files never pass through Pocket's servers. When a backup is due, Pocket shows
-              <b>Back up now</b> the next time you open it \u2014 one tap saves it.
+              <b>Back up now</b> the next time you open it \u2014 one tap saves it. Or switch on
+              <b>Back up automatically</b> and Pocket saves it by itself when you open it.
             </div>
           </details>`;
       if (!d.connected) {
@@ -20269,6 +20271,17 @@ This replaces your current grouping.`
           <select class="select mb-2 drive-frequency" onchange="window.__app.driveSetFrequency(this.value)">
             ${BackupSchedule.choices().map((c) => `<option value="${c.key}" ${c.key === d.frequency ? "selected" : ""}>${c.label}</option>`).join("")}
           </select>
+          ${d.automaticOffered || d.automatic ? `
+          <div class="flex items-start gap-3 mb-3 drive-auto">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium">Back up automatically</div>
+              <div class="text-xs text-zinc-500 leading-relaxed">
+                ${d.automatic ? "On. When a backup is due, Pocket saves it by itself the next time you open it." : "Off. When a backup is due, Pocket asks you to tap Back up now. Turn on to let it save by itself; Google will ask you once more to allow it."}
+              </div>
+            </div>
+            <button type="button" role="switch" aria-checked="${d.automatic}" class="btn ${d.automatic ? "btn-primary" : "btn-outline"} text-xs drive-auto-toggle"
+                    onclick="window.__app.driveSetAutomatic(${!d.automatic})" ${d.busy ? "disabled" : ""}>${d.automatic ? "On" : "Off"}</button>
+          </div>` : ""}
           <div class="grid grid-cols-2 gap-2">
             <button class="btn btn-primary justify-center drive-now" onclick="window.__app.driveBackupNow()" ${d.busy ? "disabled" : ""}>
               <i data-lucide="cloud-upload"></i> ${d.busy ? "Backing up\u2026" : "Back up now"}
@@ -23958,6 +23971,10 @@ This replaces your current grouping.`
     #expiresAt = 0;
     /** The Google account to pre-select in Google's window (an email). */
     #account = "";
+    /** @type {import('./DriveAuthBroker.js').DriveAuthBroker|null} */
+    #broker;
+    /** Set while automatic backups are on: lets token() work without a window. */
+    #refreshToken = "";
     /** @type {Promise<void>|null} */
     #loading = null;
     /**
@@ -23965,11 +23982,54 @@ This replaces your current grouping.`
      * @param {string} deps.clientId  the OAuth client ID (public; empty = not set up)
      * @param {string} deps.scope
      * @param {Window} [deps.win]
+     * @param {import('./DriveAuthBroker.js').DriveAuthBroker|null} [deps.broker]  for automatic mode
      */
-    constructor({ clientId, scope, win = globalThis }) {
+    constructor({ clientId, scope, win = globalThis, broker = null }) {
       this.#clientId = (clientId || "").trim();
       this.#scope = scope;
       this.#win = win;
+      this.#broker = broker;
+    }
+    /** @param {string} token  the device's refresh token, or '' when automatic backups are off */
+    set refreshToken(token) {
+      if ((token || "") !== this.#refreshToken) this.forget();
+      this.#refreshToken = token || "";
+    }
+    /** Whether token() can work with nobody there to tap. */
+    get unattended() {
+      return !!this.#refreshToken && !!this.#broker;
+    }
+    /** Whether the server offers automatic mode. @returns {Promise<boolean>} */
+    automaticOffered() {
+      return this.configured && this.#broker ? this.#broker.available() : Promise.resolve(false);
+    }
+    /**
+     * Ask Google for lasting permission, for automatic backups. Opens Google's
+     * window (call from a tap).
+     * @returns {Promise<string>} the refresh token to keep on the device
+     */
+    async authorizeOffline() {
+      if (!this.configured || !this.#broker) throw new GoogleAuthError("not_configured", "Automatic backups aren't available right now.");
+      await this.#load();
+      const oauth = this.#win.google?.accounts?.oauth2;
+      if (!oauth?.initCodeClient) throw new GoogleAuthError("unavailable", "Could not reach Google. Check your connection and try again.");
+      const code = await new Promise((resolve, reject) => {
+        oauth.initCodeClient({
+          client_id: this.#clientId,
+          scope: this.#scope,
+          ux_mode: "popup",
+          ...this.#account ? { login_hint: this.#account } : {},
+          callback: (res) => res?.code ? resolve(res.code) : reject(GoogleAuthError.from(res)),
+          error_callback: (err) => reject(GoogleAuthError.from(err))
+        }).requestCode();
+      });
+      const answer = await this.#broker.exchange(code);
+      if (!answer.refreshToken) {
+        throw new GoogleAuthError("no_refresh_token", "Google didn't give lasting permission. Remove Pocket at myaccount.google.com/permissions, then try again.");
+      }
+      this.#refreshToken = answer.refreshToken;
+      this.#keep(answer.accessToken, answer.expiresIn);
+      return answer.refreshToken;
     }
     /** Whether a client ID has been set, i.e. the feature can be offered. */
     get configured() {
@@ -23990,6 +24050,11 @@ This replaces your current grouping.`
     async token() {
       const hint = this.#account;
       if (this.ready) return this.#token;
+      if (this.unattended) {
+        const fresh = await this.#broker.refresh(this.#refreshToken);
+        this.#keep(fresh.accessToken, fresh.expiresIn);
+        return this.#token;
+      }
       if (!this.configured) throw new GoogleAuthError("not_configured", "Google Drive backup is not set up yet");
       await this.#load();
       const oauth = this.#win.google?.accounts?.oauth2;
@@ -24008,9 +24073,12 @@ This replaces your current grouping.`
       if (!String(answer.scope || this.#scope).split(" ").includes(this.#scope)) {
         throw new GoogleAuthError("scope_denied", "Pocket needs permission to save files to your Google Drive. Please tick that box and try again.");
       }
-      this.#token = answer.access_token;
-      this.#expiresAt = Date.now() + Math.max(0, Number(answer.expires_in) || 0) * 1e3 - _GoogleTokenClient.#MARGIN_MS;
+      this.#keep(answer.access_token, answer.expires_in);
       return this.#token;
+    }
+    #keep(token, expiresIn) {
+      this.#token = token;
+      this.#expiresAt = Date.now() + Math.max(0, Number(expiresIn) || 0) * 1e3 - _GoogleTokenClient.#MARGIN_MS;
     }
     /**
      * Fetch Google's sign-in library ahead of the tap that will need it, so its
@@ -24073,6 +24141,82 @@ This replaces your current grouping.`
         return new _GoogleAuthError("blocked", "Your browser blocked the Google window. Allow pop-ups for Pocket and try again.");
       }
       return new _GoogleAuthError(type, "Google sign-in did not finish. Please try again.");
+    }
+  };
+
+  // src/core/DriveAuthBroker.js
+  var DriveAuthBroker = class {
+    #url;
+    #apiKey;
+    #fetch;
+    /** @type {Promise<boolean>|null} */
+    #offered = null;
+    /**
+     * @param {object} deps
+     * @param {string} deps.url      the function's address (…/functions/v1/drive-auth); empty = none
+     * @param {string} [deps.apiKey] the project's publishable key
+     * @param {typeof fetch} [deps.fetch]
+     */
+    constructor({ url, apiKey = "", fetch: fetch2 = (...a) => globalThis.fetch(...a) }) {
+      this.#url = url || "";
+      this.#apiKey = apiKey;
+      this.#fetch = fetch2;
+    }
+    /**
+     * Whether the server can do automatic backups (the function is deployed and
+     * its secret is set). Asked once per visit; "no" on any failure.
+     * @returns {Promise<boolean>}
+     */
+    available() {
+      if (!this.#url) return Promise.resolve(false);
+      if (!this.#offered) {
+        this.#offered = this.#post({ action: "status" }).then((r) => r.automatic === true, () => false);
+        this.#offered.then((yes) => {
+          if (!yes) this.#offered = null;
+        });
+      }
+      return this.#offered;
+    }
+    /**
+     * The code from Google's sign-in window → tokens.
+     * @param {string} code
+     * @returns {Promise<{accessToken: string, expiresIn: number, refreshToken: string|null}>}
+     */
+    exchange(code) {
+      return this.#post({ action: "exchange", code });
+    }
+    /**
+     * A refresh token → a fresh access token.
+     * @param {string} refreshToken
+     * @returns {Promise<{accessToken: string, expiresIn: number}>}
+     */
+    refresh(refreshToken) {
+      return this.#post({ action: "refresh", refreshToken });
+    }
+    async #post(body) {
+      let res;
+      try {
+        res = await this.#fetch(this.#url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...this.#apiKey ? { apikey: this.#apiKey } : {} },
+          body: JSON.stringify(body)
+        });
+      } catch (_) {
+        throw new GoogleAuthError("unavailable", "Could not reach Pocket's server. Check your connection and try again.");
+      }
+      let json = {};
+      try {
+        json = await res.json();
+      } catch (_) {
+      }
+      if (res.ok) return json;
+      if (res.status === 401 && json.error === "scope_denied") {
+        throw new GoogleAuthError("scope_denied", "Pocket needs permission to save files to your Google Drive. Please tick that box and try again.");
+      }
+      if (res.status === 401) {
+        throw new GoogleAuthError("reconnect", "Google no longer allows automatic backups for this device. Turn them on again in Settings.");
+      }
+      throw new GoogleAuthError("unavailable", "Automatic backups aren't available right now. Please try again later.");
     }
   };
 
@@ -24318,6 +24462,10 @@ ${body}\r
     static FOLDER = "Pocket backups";
     static KEEP = 10;
     static #KEY = "pocket.v1.drive";
+    /** When an automatic backup last started on this device (any tab). */
+    static #AUTO_KEY = "pocket.v1.drive.auto";
+    /** After an automatic try, wait this long before another (also stops two tabs both saving). */
+    static #AUTO_GAP_MS = 30 * 6e4;
     /** The owner recorded for a book nobody has signed in to. */
     static GUEST = "guest";
     #tokens;
@@ -24352,7 +24500,8 @@ ${body}\r
     /**
      * Where things stand for this book.
      * @param {string|null} owner  whose book is on the device (a user id), or null for a guest's
-     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null}}
+     * @returns {{connected: boolean, email: string, schedule: BackupSchedule, lastAt: string|null, due: boolean, progress: number|null, daysLeft: number|null, automatic: boolean}}
+     *   automatic: backups run by themselves (the person switched it on)
      *   progress: how far through the period the last backup is (see BackupSchedule.progress)
      */
     status(owner) {
@@ -24365,7 +24514,8 @@ ${body}\r
         lastAt: s?.lastAt || null,
         due: !!s && schedule.isDue(s.lastAt, this.#now()),
         progress: s ? schedule.progress(s.lastAt, this.#now()) : null,
-        daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null
+        daysLeft: s ? schedule.daysLeft(s.lastAt, this.#now()) : null,
+        automatic: !!s?.refreshToken
       };
     }
     /**
@@ -24390,12 +24540,53 @@ ${body}\r
         return this.status(owner);
       });
     }
+    /** Whether automatic backups can be offered (the server side is set up). @returns {Promise<boolean>} */
+    automaticOffered() {
+      return this.#tokens.automaticOffered();
+    }
+    /**
+     * Switch automatic backups on. Opens Google's window once more (call from a tap).
+     * @param {string|null} owner
+     */
+    async enableAutomatic(owner) {
+      return this.#exclusive(async () => {
+        const s = this.#linked(owner);
+        const refreshToken = await this.#tokens.authorizeOffline();
+        this.#save({ ...s, refreshToken });
+      });
+    }
+    /** Switch automatic backups off: the lasting permission is forgotten on this device. */
+    disableAutomatic(owner) {
+      const s = this.#settingsFor(owner);
+      if (!s) return;
+      const { refreshToken: _dropped, ...rest } = s;
+      this.#save(rest);
+      this.#tokens.refreshToken = "";
+    }
+    /**
+     * Whether an automatic backup should start now: switched on, due, and no
+     * other try (in any tab) in the last half hour. Claims the turn if so.
+     * @param {string|null} owner
+     */
+    claimAutomaticRun(owner) {
+      const st = this.status(owner);
+      if (!st.automatic || !st.due || this.#busy) return false;
+      const last = Number(this.#read(_DriveBackupService.#AUTO_KEY)) || 0;
+      const now = this.#now().getTime();
+      if (now - last < _DriveBackupService.#AUTO_GAP_MS && now >= last) return false;
+      try {
+        this.#storage.setItem(_DriveBackupService.#AUTO_KEY, String(now));
+      } catch (_) {
+      }
+      return true;
+    }
     /** Unlink. Backups already in Drive stay there. */
     async disconnect() {
       try {
         this.#storage.removeItem(_DriveBackupService.#KEY);
       } catch (_) {
       }
+      this.#tokens.refreshToken = "";
       await this.#tokens.revoke();
       this.#tokens.account = "";
     }
@@ -24413,12 +24604,17 @@ ${body}\r
     async backup({ owner, state, csv }) {
       return this.#exclusive(async () => {
         const s = this.#linked(owner);
-        const folderId = await this.#folder(s);
-        const { stamp, files } = BackupFiles.make(state, csv, this.#now());
-        for (const file of files) await this.#drive.upload({ folderId, name: file.name, mime: file.mime, body: file.body });
-        this.#save({ ...s, folderId, lastAt: this.#now().toISOString() });
-        const removed = await this.#prune(folderId).catch(() => 0);
-        return { stamp, removed };
+        try {
+          const folderId = await this.#folder(s);
+          const { stamp, files } = BackupFiles.make(state, csv, this.#now());
+          for (const file of files) await this.#drive.upload({ folderId, name: file.name, mime: file.mime, body: file.body });
+          this.#save({ ...this.#settingsFor(owner), folderId, lastAt: this.#now().toISOString() });
+          const removed = await this.#prune(folderId).catch(() => 0);
+          return { stamp, removed };
+        } catch (e) {
+          if (e instanceof GoogleAuthError && e.code === "reconnect") this.disableAutomatic(owner);
+          throw e;
+        }
       });
     }
     /**
@@ -24468,6 +24664,7 @@ ${body}\r
       const s = this.#settingsFor(owner);
       if (!s) throw new Error("Connect Google Drive first");
       this.#tokens.account = s.email;
+      this.#tokens.refreshToken = s.refreshToken || "";
       return s;
     }
     /** The saved link, only if it was made for this book's owner. */
@@ -24480,6 +24677,13 @@ ${body}\r
       }
       if (!s || typeof s !== "object" || !s.folderId) return null;
       return s.owner === _DriveBackupService.#ownerKey(owner) ? s : null;
+    }
+    #read(key) {
+      try {
+        return this.#storage.getItem(key);
+      } catch (_) {
+        return null;
+      }
     }
     #save(settings) {
       try {
@@ -24696,6 +24900,10 @@ ${body}\r
     #driveBackup = null;
     /** @type {DriveRestoreModal|null} */
     #driveRestoreModal = null;
+    /** Whether the server offers automatic backups; null until asked (when Settings opens). */
+    #driveAutoOffered = null;
+    /** An automatic backup failed this visit, so the "backup due" box asks for a tap instead. */
+    #driveAutoFailed = false;
     /** Plans on offer (the plans table), loaded when Settings opens; null until then. */
     #planCatalogue = null;
     /** What's for sale for this person (payments function), when payment is open; null otherwise. */
@@ -25075,7 +25283,14 @@ ${body}\r
       }
       if (name === "settings") {
         this.#refreshPlanInfo();
-        if (this.driveStatus().available && this.#pwa?.online !== false) this.#driveBackup.warm();
+        if (this.driveStatus().available && this.#pwa?.online !== false) {
+          this.#driveBackup.warm();
+          this.#driveBackup.automaticOffered().then((yes) => {
+            if (yes === this.#driveAutoOffered) return;
+            this.#driveAutoOffered = yes;
+            if (this.#modal.active === "settings") this.#modal.refresh();
+          });
+        }
       }
       if (name === "debtPayment") {
         this.#modal.open("debtPayment", { ...opts, mode: "payment" });
@@ -29263,7 +29478,13 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       const tokens = new GoogleTokenClient({
         clientId: window.POCKET_GOOGLE_CLIENT_ID ?? GOOGLE_DRIVE_CLIENT_ID,
         scope: DriveClient.SCOPE,
-        win: window
+        win: window,
+        // Automatic backups (opt-in) go through Pocket's drive-auth function.
+        broker: new DriveAuthBroker({
+          url: APP_SUPABASE_URL ? `${APP_SUPABASE_URL}/functions/v1/drive-auth` : "",
+          apiKey: APP_SUPABASE_KEY,
+          fetch: (...a) => window.fetch(...a)
+        })
       });
       this.#driveBackup = new DriveBackupService({
         tokens,
@@ -29289,8 +29510,11 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     #refreshNotices() {
       if (!this.#notices) return;
       const drive = this.driveStatus();
-      if (drive.connected && drive.due && this.#pwa?.online !== false) this.#driveBackup.warm();
+      const online = this.#pwa?.online !== false;
+      if (drive.connected && drive.due && online && !drive.automatic) this.#driveBackup.warm();
       this.#notices.show({
+        // Automatic backups look after a due backup themselves; the box asks only if that failed.
+        backupAsk: !drive.automatic || this.#driveAutoFailed,
         online: this.#pwa?.online !== false,
         syncs: !!this.#sync.currentUser,
         // A schedule is set: the top-bar icon shows how fresh the last backup is.
@@ -29301,6 +29525,24 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         backupBusy: drive.busy,
         lastAt: drive.lastAt
       });
+      if (online && !this.#lockState()) this.#automaticBackup();
+    }
+    /** Automatic backups (opt-in): when one is due, save it without being asked. */
+    async #automaticBackup() {
+      if (DemoMode.active || !this.#sessionChecked || !this.#driveBackup?.available) return;
+      const owner = Repository.storedOwner();
+      if (!this.#driveBackup.claimAutomaticRun(owner)) return;
+      const running = this.#driveBackup.backup({ owner, state: this.#store.getState(), csv: this.#ledgerCsv("all") });
+      this.#driveChanged();
+      try {
+        await running;
+        this.#driveAutoFailed = false;
+        this.#toast.show("Backed up to Google Drive");
+      } catch (e) {
+        this.#driveAutoFailed = true;
+        console.warn("[Drive backup] automatic backup failed:", e);
+      }
+      this.#driveChanged();
     }
     /** For Settings → General: can Pocket be installed here, and how. */
     installInfo() {
@@ -29320,7 +29562,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     driveStatus() {
       const svc = this.#driveBackup;
       if (!svc || !svc.available || DemoMode.active) {
-        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, progress: null, daysLeft: null, busy: false, keep: DriveBackupService.KEEP };
+        return { available: false, connected: false, email: "", frequency: "off", lastAt: null, due: false, progress: null, daysLeft: null, automatic: false, automaticOffered: false, busy: false, keep: DriveBackupService.KEEP };
       }
       const st = svc.status(Repository.storedOwner());
       return {
@@ -29332,6 +29574,8 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         due: st.due,
         progress: st.progress,
         daysLeft: st.daysLeft,
+        automatic: st.automatic,
+        automaticOffered: this.#driveAutoOffered === true,
         busy: svc.busy,
         keep: DriveBackupService.KEEP
       };
@@ -29351,6 +29595,25 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     driveSetFrequency(value) {
       this.#driveBackup.setFrequency(Repository.storedOwner(), value);
       this.#driveChanged();
+    }
+    /**
+     * Switch automatic backups on or off (Settings → Data). On asks Google for
+     * lasting permission in its window; off forgets it on this device.
+     * @param {boolean} on
+     */
+    async driveSetAutomatic(on) {
+      const owner = Repository.storedOwner();
+      if (!on) {
+        this.#driveBackup.disableAutomatic(owner);
+        this.#toast.show("Automatic backups are off");
+        this.#driveChanged();
+        return;
+      }
+      await this.#driveJob(async () => {
+        await this.#driveBackup.enableAutomatic(owner);
+        this.#driveAutoFailed = false;
+        this.#toast.show("Automatic backups are on");
+      });
     }
     /** Save a backup now (from Settings or the "backup due" note). Opens Google's window if needed. */
     async driveBackupNow() {
@@ -29829,6 +30092,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       }
       this.#swipe?.reset();
       this.#renderSpaceBar();
+      this.#refreshNotices();
       const state = this.#store.getState();
       state._sharedData = this.#sync.sharedData;
       state._currentUserEmail = this.#sync.currentUser?.email || null;

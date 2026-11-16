@@ -8,6 +8,11 @@
  *
  * Because Google shows a window, token() must be called from a tap (a button
  * handler). Once approved, later windows close by themselves in a moment.
+ *
+ * Automatic mode (opt-in): authorizeOffline() asks Google, through Pocket's
+ * drive-auth function (DriveAuthBroker), for a refresh token. While one is
+ * set, token() gets a fresh access token from it with no window and no tap.
+ * The caller keeps the refresh token (on the device) and passes it in.
  */
 export class GoogleTokenClient {
   static #SCRIPT = 'https://accounts.google.com/gsi/client';
@@ -21,6 +26,10 @@ export class GoogleTokenClient {
   #expiresAt = 0;
   /** The Google account to pre-select in Google's window (an email). */
   #account = '';
+  /** @type {import('./DriveAuthBroker.js').DriveAuthBroker|null} */
+  #broker;
+  /** Set while automatic backups are on: lets token() work without a window. */
+  #refreshToken = '';
   /** @type {Promise<void>|null} */
   #loading = null;
 
@@ -29,11 +38,56 @@ export class GoogleTokenClient {
    * @param {string} deps.clientId  the OAuth client ID (public; empty = not set up)
    * @param {string} deps.scope
    * @param {Window} [deps.win]
+   * @param {import('./DriveAuthBroker.js').DriveAuthBroker|null} [deps.broker]  for automatic mode
    */
-  constructor({ clientId, scope, win = globalThis }) {
+  constructor({ clientId, scope, win = globalThis, broker = null }) {
     this.#clientId = (clientId || '').trim();
     this.#scope = scope;
     this.#win = win;
+    this.#broker = broker;
+  }
+
+  /** @param {string} token  the device's refresh token, or '' when automatic backups are off */
+  set refreshToken(token) {
+    if ((token || '') !== this.#refreshToken) this.forget();
+    this.#refreshToken = token || '';
+  }
+
+  /** Whether token() can work with nobody there to tap. */
+  get unattended() { return !!this.#refreshToken && !!this.#broker; }
+
+  /** Whether the server offers automatic mode. @returns {Promise<boolean>} */
+  automaticOffered() {
+    return this.configured && this.#broker ? this.#broker.available() : Promise.resolve(false);
+  }
+
+  /**
+   * Ask Google for lasting permission, for automatic backups. Opens Google's
+   * window (call from a tap).
+   * @returns {Promise<string>} the refresh token to keep on the device
+   */
+  async authorizeOffline() {
+    if (!this.configured || !this.#broker) throw new GoogleAuthError('not_configured', 'Automatic backups aren\'t available right now.');
+    await this.#load();
+    const oauth = this.#win.google?.accounts?.oauth2;
+    if (!oauth?.initCodeClient) throw new GoogleAuthError('unavailable', 'Could not reach Google. Check your connection and try again.');
+    const code = await new Promise((resolve, reject) => {
+      oauth.initCodeClient({
+        client_id: this.#clientId,
+        scope: this.#scope,
+        ux_mode: 'popup',
+        ...(this.#account ? { login_hint: this.#account } : {}),
+        callback: (res) => (res?.code ? resolve(res.code) : reject(GoogleAuthError.from(res))),
+        error_callback: (err) => reject(GoogleAuthError.from(err)),
+      }).requestCode();
+    });
+    const answer = await this.#broker.exchange(code);
+    if (!answer.refreshToken) {
+      throw new GoogleAuthError('no_refresh_token', 'Google didn\'t give lasting permission. Remove Pocket at myaccount.google.com/permissions, then try again.');
+    }
+    this.#refreshToken = answer.refreshToken;
+    this.#keep(answer.accessToken, answer.expiresIn);
+    return answer.refreshToken;
   }
 
   /** Whether a client ID has been set, i.e. the feature can be offered. */
@@ -52,6 +106,11 @@ export class GoogleTokenClient {
   async token() {
     const hint = this.#account;
     if (this.ready) return this.#token;
+    if (this.unattended) {
+      const fresh = await this.#broker.refresh(this.#refreshToken);
+      this.#keep(fresh.accessToken, fresh.expiresIn);
+      return this.#token;
+    }
     if (!this.configured) throw new GoogleAuthError('not_configured', 'Google Drive backup is not set up yet');
     await this.#load();
     const oauth = this.#win.google?.accounts?.oauth2;
@@ -70,9 +129,13 @@ export class GoogleTokenClient {
     if (!String(answer.scope || this.#scope).split(' ').includes(this.#scope)) {
       throw new GoogleAuthError('scope_denied', 'Pocket needs permission to save files to your Google Drive. Please tick that box and try again.');
     }
-    this.#token = answer.access_token;
-    this.#expiresAt = Date.now() + Math.max(0, Number(answer.expires_in) || 0) * 1000 - GoogleTokenClient.#MARGIN_MS;
+    this.#keep(answer.access_token, answer.expires_in);
     return this.#token;
+  }
+
+  #keep(token, expiresIn) {
+    this.#token = token;
+    this.#expiresAt = Date.now() + Math.max(0, Number(expiresIn) || 0) * 1000 - GoogleTokenClient.#MARGIN_MS;
   }
 
   /**

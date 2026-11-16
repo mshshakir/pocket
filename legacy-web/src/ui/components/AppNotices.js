@@ -40,10 +40,11 @@ export class AppNotices {
   /** Boxes opened by tapping their icon; they stay until closed. */
   #opened = { offline: false, backup: false };
   /**
-   * backupOn: a schedule is set; backupProgress: 0 = just backed up, 1 = due, 2 = a period overdue.
+   * backupOn: a schedule is set; backupProgress: 0 = just backed up, 1 = due, 2 = a period overdue;
+   * backupAsk: false while automatic backups are looking after a due backup (no box needed).
    * @type {{online: boolean, syncs: boolean, backupOn: boolean, backupProgress: number|null, backupDaysLeft: number|null, backupDue: boolean, backupBusy: boolean, lastAt: string|null}}
    */
-  #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupBusy: false, lastAt: null };
+  #state = { online: true, syncs: false, backupOn: false, backupProgress: null, backupDaysLeft: null, backupDue: false, backupAsk: true, backupBusy: false, lastAt: null };
 
   /**
    * @param {HTMLElement|null} el  where the boxes go
@@ -163,7 +164,7 @@ export class AppNotices {
     const s = this.#state;
     const seen = this.#remembered();
     if (kind === 'offline') return this.#opened.offline || (!s.online && !seen.offlineSeen);
-    return s.backupOn && (this.#opened.backup || (s.backupDue && !this.#backupClosed(seen.backupClosed)));
+    return s.backupOn && (this.#opened.backup || (s.backupDue && s.backupAsk !== false && !this.#backupClosed(seen.backupClosed)));
   }
 
   /** Closed for this same due backup, and not long enough ago to remind again. */
