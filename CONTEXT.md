@@ -56,6 +56,29 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-16 · The ₹30-a-month promise (built, switched off) and AI credits that expire** (migrations 0047, 0048).
+  Owner's rules: adding entries needs ₹30 a month by auto-debit, a paid plan, family cover, or an approved
+  request to use Pocket free (approval lasts 6 months; up to 20 entries while a request waits). Each paid month
+  gives 150 AI credits that expire after 1 month; everyone's 20 welcome credits expire 6 months after they were
+  given; credits that expire soonest are spent first (packs still last a year; admin grants never expire).
+  Current free users are included from launch.
+  - Database: `ai_credit_ledger.expires_at`; `pocket_ai_batches` replays the ledger to work out what is left
+    (the 0026 hourly expiry job now does nothing; old `exp:` rows are skipped); `pocket_promise_credits(user, ref)`
+    for the future auto-debit webhook; table `free_requests` with `pocket_free_request_send`,
+    `pocket_adm_free_requests`, `pocket_adm_free_request_set`; `pocket_entry_access` → `entries` in
+    `pocket_entitlements()`, plus `aiExpiring`; `pocket_promise_rule()` readable without signing in; plan
+    `promise` (Pocket Promise, ₹30/month) added inactive.
+  - **Switch:** `billing_settings.promise_required` (false). Turn it on only once Razorpay subscriptions
+    (auto-debit) are live: `update billing_settings set promise_required = true where id;`. Until then nothing
+    changes for anyone, and the homepage wording stays hidden (it reads the same switch).
+  - App: `EntryAccess` (domain/billing), `PromiseModal` (the promise, the request form, "sent"), the gate in
+    `openModal` for new entries/trades/debts/payments, `submitTx` and `commitImport`; the sample book never asks.
+    Plan card shows "Using Pocket free until …" and credits about to expire. Admin: **Free requests** tab.
+  - Homepage: `#promise` section and the Free card's ₹30 price, shown by `src/web/PromiseSection.js` only when
+    the switch is on. Tests: `promise.smoke.mjs` (35).
+  - Still to do at launch: Razorpay subscription for ₹30/month calling `pocket_promise_credits` each charge;
+    recurring-payment wording in terms.html and refunds.html.
+
 - **2026-11-16 · Pocket Pro Group** (migration `0046_pocket_pro_group`, applied). Plan `group`: ₹1,999/year
   (yearly only), `plans.group_size` 3. The organiser adds 2 people by email (`group_members`, kept with
   `removed_at`, one active group per email); each gets their own Pocket Pro on a private book. Access goes

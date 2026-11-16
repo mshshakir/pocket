@@ -132,6 +132,8 @@ import { DriveClient }          from './domain/services/DriveClient.js';
 import { DriveBackupService }   from './domain/services/DriveBackupService.js';
 import { BackupFiles }          from './domain/services/BackupFiles.js';
 import { DriveRestoreModal }    from './ui/modals/DriveRestoreModal.js';
+import { PromiseModal }         from './ui/modals/PromiseModal.js';
+import { EntryAccess }          from './domain/billing/EntryAccess.js';
 import { GOOGLE_DRIVE_CLIENT_ID, APP_SUPABASE_URL, APP_SUPABASE_KEY } from './data/constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -217,6 +219,10 @@ export class Application {
   #driveBackup       = null;
   /** @type {DriveRestoreModal|null} */
   #driveRestoreModal = null;
+  /** @type {PromiseModal|null} the ₹30 promise and asking to use Pocket free */
+  #promiseModal      = null;
+  /** The promise rule as anyone may read it ({required, promisePaise, …}), for people not signed in. */
+  #promiseRule       = null;
   /** Whether the server offers automatic backups; null until asked (when Settings opens). */
   #driveAutoOffered  = null;
   /** An automatic backup failed this visit, so the "backup due" box asks for a tap instead. */
@@ -671,6 +677,7 @@ export class Application {
         sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id },
       });
     }
+    if (Application.#addsEntry(name, opts) && !this.#entryGate()) return;
     if (name === 'settings') {
       this.#refreshPlanInfo();
       if (this.driveStatus().available && this.#pwa?.online !== false) {
@@ -1497,6 +1504,8 @@ export class Application {
       }
       return;
     }
+
+    if (!id && !this.#entryGate()) return;
 
     // A transfer moves money OUT of the source account, so the amount can only
     // be denominated in that account's currency. The FX panel always derived
@@ -5135,6 +5144,16 @@ export class Application {
     });
     this.#modal.register('driveRestore', this.#driveRestoreModal);
 
+    this.#promiseModal = new PromiseModal({
+      access: () => this.#entryAccess(),
+      person: () => ({ name: this.#sync.currentUser?.user_metadata?.full_name || this.#store.getState().user?.name || '' }),
+      redraw: () => { if (this.#modal.active === 'promise') { this.#modal.refresh(); lucide?.createIcons?.(); } },
+    });
+    this.#modal.register('promise', this.#promiseModal);
+    this.#promiseRule = Application.#storedPromiseRule();
+    this.#loadPromiseRule();
+    this.#bus.on('auth:changed', () => this.#loadPromiseRule());
+
     this.#bus.on('session:known', () => this.#refreshNotices());
     this.#bus.on('auth:changed', () => this.#refreshNotices());
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.#refreshNotices(); });
@@ -5292,6 +5311,76 @@ export class Application {
       });
       this.#toast.show('Backed up to Google Drive');
     });
+  }
+
+  // ── The ₹30 promise (migration 0047) ──────────────────────────────────
+
+  /** Whether opening this modal starts a new entry; if so, EntryAccess is asked first. */
+  static #addsEntry(name, opts = {}) {
+    switch (name) {
+      case 'transaction': return !opts.id && !opts.editTxId && !opts.sharedTxMode;
+      case 'debt':        return !opts.id;
+      case 'trade':       return ['buy', 'sell', 'dividend'].includes(opts.mode);
+      case 'debtPayment': case 'settle': case 'payBill': case 'reimbursement': return true;
+      default:            return false;
+    }
+  }
+  static #PROMISE_KEY = 'pocket.v1.promise';
+
+  static #storedPromiseRule() {
+    try { return JSON.parse(window.localStorage.getItem(Application.#PROMISE_KEY) || 'null'); } catch { return null; }
+  }
+
+  /** Reads whether the promise is required (anyone may), and remembers it for offline visits. */
+  async #loadPromiseRule() {
+    if (DemoMode.active) return;
+    const rule = await this.#sync.promiseRule().catch(() => null);
+    if (!rule) return;
+    this.#promiseRule = rule;
+    try { window.localStorage.setItem(Application.#PROMISE_KEY, JSON.stringify(rule)); } catch { /* storage full or blocked */ }
+  }
+
+  /** May this person add entries now? The sample book never asks. */
+  #entryAccess() {
+    if (DemoMode.active) return EntryAccess.off();
+    if (this.#sync.currentUser) return this.#sync.plan.entries;
+    return this.#promiseRule?.required === true ? EntryAccess.signedOut(this.#promiseRule) : EntryAccess.off();
+  }
+
+  /**
+   * Checks before `count` new entries are added; when they may not be, opens
+   * the promise and returns false.
+   */
+  #entryGate(count = 1) {
+    const verdict = this.#entryAccess().check(this.#store.getState().transactions, count);
+    if (verdict.ok) return true;
+    this.#promiseModal.open({ reason: verdict.reason });
+    this.#modal.open('promise', {});
+    lucide?.createIcons?.();
+    return false;
+  }
+
+  /** "Keep my promise": the monthly auto-debit, once Razorpay subscriptions are live. */
+  promiseStart() {
+    this.#toast.show('Monthly auto-debit is being set up. Until then, ask to use Pocket free.');
+  }
+
+  promiseAsk()  { this.#promiseModal.show('request'); }
+  promiseBack() { this.#promiseModal.show('promise'); }
+
+  /** Sends the request to use Pocket free. */
+  async freeRequestSend(event) {
+    event.preventDefault();
+    const fd = new FormData(event.target);
+    this.#promiseModal.sending = true;
+    try {
+      await this.#sync.freeRequestSend(String(fd.get('name') || ''), String(fd.get('reason') || ''));
+      this.#promiseModal.sending = false;
+      this.#promiseModal.show('sent');
+    } catch (e) {
+      this.#promiseModal.sending = false;
+      this.#promiseModal.show('request', e?.message || 'Pocket couldn\'t send that. Please try again.');
+    }
   }
 
   openDriveRestore() {
@@ -5570,6 +5659,7 @@ export class Application {
   commitImport() {
     const plan = this.#importPlan;
     if (!plan) return;
+    if (!this.#entryGate(plan.txDrafts?.length || 1)) return;
     const replaceEl       = document.getElementById('importReplace');
     const includeDupesEl  = document.getElementById('importIncludeDupes');
     const replace         = replaceEl?.checked;

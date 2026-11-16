@@ -114,6 +114,22 @@ export class PlanService {
   /** Leave the group (member). */
   groupLeave()        { return this.#groupCall('pocket_group_leave'); }
 
+  // ── The ₹30 promise ─────────────────────────────────────────────────────
+
+  /** Ask to use Pocket free. Returns the request ({status, at}); a refusal is a sentence for the person. */
+  async freeRequestSend(name, reason) {
+    const { data, error } = await this.#rpc('pocket_free_request_send', { p_name: name, p_reason: reason });
+    if (error) throw new Error(error.code === 'PG001' && error.message ? error.message : 'Pocket couldn\'t reach the server. Please try again.');
+    await this.refresh().catch(() => {});
+    return data;
+  }
+
+  /** Whether adding entries needs the promise, as anyone (signed in or not) may read it. null if unknown. */
+  async promiseRule() {
+    const { data, error } = await this.#rpc('pocket_promise_rule');
+    return error || !data || typeof data !== 'object' ? null : data;
+  }
+
   /** One group call; the server's refusal (a sentence for the person) becomes the error message. */
   async #groupCall(fn, args) {
     const { data, error } = await this.#rpc(fn, args);

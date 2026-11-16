@@ -189,6 +189,10 @@ export class SyncService {
   groupRemove(email) { return this.#plan.groupRemove(email); }
   groupLeave()       { return this.#plan.groupLeave(); }
 
+  /** The ₹30 promise: ask to use Pocket free (signed in), and the rule as anyone can read it. */
+  freeRequestSend(name, reason) { return this.#plan.freeRequestSend(name, reason); }
+  promiseRule()      { return this.#sb ? this.#plan.promiseRule() : Promise.resolve(null); }
+
   /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
   aiGateway() {
     return new AiGateway(() => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null));

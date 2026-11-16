@@ -18,6 +18,8 @@
  * in a Family owner's shared space, the owner's unlimited flag, then their
  * pool, then your own credits.
  */
+import { EntryAccess } from './EntryAccess.js';
+
 export class Entitlements {
   /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
   static AI_COSTS = Object.freeze({ scan: 5, voice: 1, voiceSeconds: 30 });
@@ -32,6 +34,13 @@ export class Entitlements {
     if (raw.role === 'organiser') return { role: 'organiser', size: Number.isInteger(raw.size) && raw.size > 1 ? raw.size : 3 };
     if (raw.role === 'member') return { role: 'member', ownerName: text(raw.ownerName), ownerEmail: text(raw.ownerEmail) };
     return null;
+  }
+
+  /** The next AI credits to expire: {credits, at}, or null. */
+  static #expiring(raw) {
+    if (!raw || !Number.isInteger(raw.credits) || raw.credits <= 0) return null;
+    if (typeof raw.at !== 'string' || Number.isNaN(Date.parse(raw.at))) return null;
+    return { credits: raw.credits, at: raw.at };
   }
 
   /** The server's costs, each a whole number above zero, else the default. */
@@ -62,6 +71,8 @@ export class Entitlements {
       backup: false,
       group: null,
       aiCosts: { ...Entitlements.AI_COSTS },
+      entries: EntryAccess.off().toJSON(),
+      aiExpiring: null,
     });
   }
 
@@ -105,6 +116,8 @@ export class Entitlements {
       backup: raw.backup === true,
       group: Entitlements.#group(raw.group),
       aiCosts: Entitlements.#costs(raw.aiCosts),
+      entries: EntryAccess.from(raw.entries).toJSON(),
+      aiExpiring: Entitlements.#expiring(raw.aiExpiring),
     });
   }
 
@@ -126,6 +139,11 @@ export class Entitlements {
   get paymentsOpen()   { return this.#data.paymentsOpen; }
   /** Pocket Pro Group: {role: 'organiser', size} or {role: 'member', ownerName, ownerEmail}, else null. */
   get group()          { return this.#data.group ? { ...this.#data.group } : null; }
+
+  /** May this person add entries (the ₹30 promise, migration 0047). */
+  get entries()        { return EntryAccess.from(this.#data.entries); }
+  /** The next AI credits to expire: {credits, at: Date}, or null. */
+  get aiExpiring()     { return this.#data.aiExpiring ? { credits: this.#data.aiExpiring.credits, at: new Date(this.#data.aiExpiring.at) } : null; }
 
   /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
   get backup()         { return this.#data.backup; }

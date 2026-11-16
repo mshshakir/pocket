@@ -6765,6 +6765,125 @@ RULES:
     }
   };
 
+  // src/domain/billing/EntryAccess.js
+  var EntryAccess = class _EntryAccess {
+    static WHY = Object.freeze(["off", "plan", "family", "free", "waiting", "none"]);
+    #d;
+    /** @param {object} d  validated data, see from() */
+    constructor(d) {
+      this.#d = Object.freeze(d);
+    }
+    /** Nothing required: the answer before the server says otherwise. */
+    static off() {
+      return new _EntryAccess({
+        required: false,
+        why: "off",
+        waitLimit: 20,
+        waitingSince: null,
+        freeUntil: null,
+        request: null,
+        promisePaise: 3e3,
+        promiseCredits: 150,
+        promiseCreditDays: 30
+      });
+    }
+    /**
+     * The rule is on but the person isn't signed in.
+     * @param {object} [base]  promise price and credits from an earlier answer
+     */
+    static signedOut(base = {}) {
+      return new _EntryAccess({ ..._EntryAccess.off().toJSON(), ..._EntryAccess.#prices(base), required: true, why: "signed_out" });
+    }
+    /** Builds from the server's `entries`. Anything odd counts as not required, never as blocked. */
+    static from(raw) {
+      if (!raw || typeof raw !== "object" || raw.required !== true) return _EntryAccess.off();
+      const date = (v) => typeof v === "string" && !Number.isNaN(Date.parse(v)) ? v : null;
+      const req = raw.request && typeof raw.request === "object" ? {
+        status: ["pending", "approved", "declined", "expired"].includes(raw.request.status) ? raw.request.status : null,
+        at: date(raw.request.at),
+        validUntil: date(raw.request.validUntil)
+      } : null;
+      return new _EntryAccess({
+        required: true,
+        why: _EntryAccess.WHY.includes(raw.why) ? raw.why : "none",
+        waitLimit: Number.isInteger(raw.waitLimit) && raw.waitLimit >= 0 ? raw.waitLimit : 20,
+        waitingSince: date(raw.waitingSince),
+        freeUntil: date(raw.freeUntil),
+        request: req,
+        ..._EntryAccess.#prices(raw)
+      });
+    }
+    static #prices(raw) {
+      const whole = (v, d) => Number.isInteger(v) && v > 0 ? v : d;
+      return {
+        promisePaise: whole(raw?.promisePaise, 3e3),
+        promiseCredits: whole(raw?.promiseCredits, 150),
+        promiseCreditDays: whole(raw?.promiseCreditDays, 30)
+      };
+    }
+    get required() {
+      return this.#d.required;
+    }
+    /** 'off' | 'plan' | 'family' | 'free' | 'waiting' | 'none' | 'signed_out' */
+    get why() {
+      return this.#d.why;
+    }
+    get waitLimit() {
+      return this.#d.waitLimit;
+    }
+    get waitingSince() {
+      return this.#d.waitingSince ? new Date(this.#d.waitingSince) : null;
+    }
+    get freeUntil() {
+      return this.#d.freeUntil ? new Date(this.#d.freeUntil) : null;
+    }
+    /** The latest request: {status: 'pending'|'approved'|'declined'|'expired', at, validUntil}, or null. */
+    get request() {
+      return this.#d.request ? { ...this.#d.request } : null;
+    }
+    get promiseRupees() {
+      return Math.round(this.#d.promisePaise / 100);
+    }
+    get promiseCredits() {
+      return this.#d.promiseCredits;
+    }
+    get promiseCreditDays() {
+      return this.#d.promiseCreditDays;
+    }
+    /** Entries added since the request was sent (createdAt on or after it). */
+    addedWhileWaiting(transactions) {
+      const since = this.waitingSince;
+      if (!since) return 0;
+      return (transactions || []).filter((t) => t?.createdAt && Date.parse(t.createdAt) >= since.getTime()).length;
+    }
+    /** How many more may be added while the request waits. */
+    waitLeft(transactions) {
+      return Math.max(0, this.#d.waitLimit - this.addedWhileWaiting(transactions));
+    }
+    /**
+     * May `count` new entries be added now?
+     * @returns {{ok: true} | {ok: false, reason: 'none'|'wait_full'|'signed_out'}}
+     */
+    check(transactions, count = 1) {
+      switch (this.#d.why) {
+        case "off":
+        case "plan":
+        case "family":
+        case "free":
+          return { ok: true };
+        case "waiting":
+          return this.waitLeft(transactions) >= count ? { ok: true } : { ok: false, reason: "wait_full" };
+        case "signed_out":
+          return { ok: false, reason: "signed_out" };
+        default:
+          return { ok: false, reason: "none" };
+      }
+    }
+    toJSON() {
+      return JSON.parse(JSON.stringify(this.#d));
+    }
+  };
+
   // src/domain/billing/Entitlements.js
   var Entitlements = class _Entitlements {
     /** What AI costs until the server says otherwise (billing_settings, migration 0043). */
@@ -6779,6 +6898,12 @@ RULES:
       if (raw.role === "organiser") return { role: "organiser", size: Number.isInteger(raw.size) && raw.size > 1 ? raw.size : 3 };
       if (raw.role === "member") return { role: "member", ownerName: text(raw.ownerName), ownerEmail: text(raw.ownerEmail) };
       return null;
+    }
+    /** The next AI credits to expire: {credits, at}, or null. */
+    static #expiring(raw) {
+      if (!raw || !Number.isInteger(raw.credits) || raw.credits <= 0) return null;
+      if (typeof raw.at !== "string" || Number.isNaN(Date.parse(raw.at))) return null;
+      return { credits: raw.credits, at: raw.at };
     }
     /** The server's costs, each a whole number above zero, else the default. */
     static #costs(raw) {
@@ -6815,7 +6940,9 @@ RULES:
         paymentsOpen: false,
         backup: false,
         group: null,
-        aiCosts: { ..._Entitlements.AI_COSTS }
+        aiCosts: { ..._Entitlements.AI_COSTS },
+        entries: EntryAccess.off().toJSON(),
+        aiExpiring: null
       });
     }
     /**
@@ -6857,7 +6984,9 @@ RULES:
         paymentsOpen: raw.paymentsOpen === true,
         backup: raw.backup === true,
         group: _Entitlements.#group(raw.group),
-        aiCosts: _Entitlements.#costs(raw.aiCosts)
+        aiCosts: _Entitlements.#costs(raw.aiCosts),
+        entries: EntryAccess.from(raw.entries).toJSON(),
+        aiExpiring: _Entitlements.#expiring(raw.aiExpiring)
       });
     }
     get plan() {
@@ -6907,6 +7036,14 @@ RULES:
     /** Pocket Pro Group: {role: 'organiser', size} or {role: 'member', ownerName, ownerEmail}, else null. */
     get group() {
       return this.#data.group ? { ...this.#data.group } : null;
+    }
+    /** May this person add entries (the ₹30 promise, migration 0047). */
+    get entries() {
+      return EntryAccess.from(this.#data.entries);
+    }
+    /** The next AI credits to expire: {credits, at: Date}, or null. */
+    get aiExpiring() {
+      return this.#data.aiExpiring ? { credits: this.#data.aiExpiring.credits, at: new Date(this.#data.aiExpiring.at) } : null;
     }
     /** Scheduled and automatic Google Drive backups: the add-on was bought, or a paid plan includes it. */
     get backup() {
@@ -7087,6 +7224,20 @@ RULES:
     /** Leave the group (member). */
     groupLeave() {
       return this.#groupCall("pocket_group_leave");
+    }
+    // ── The ₹30 promise ─────────────────────────────────────────────────────
+    /** Ask to use Pocket free. Returns the request ({status, at}); a refusal is a sentence for the person. */
+    async freeRequestSend(name, reason) {
+      const { data, error } = await this.#rpc("pocket_free_request_send", { p_name: name, p_reason: reason });
+      if (error) throw new Error(error.code === "PG001" && error.message ? error.message : "Pocket couldn't reach the server. Please try again.");
+      await this.refresh().catch(() => {
+      });
+      return data;
+    }
+    /** Whether adding entries needs the promise, as anyone (signed in or not) may read it. null if unknown. */
+    async promiseRule() {
+      const { data, error } = await this.#rpc("pocket_promise_rule");
+      return error || !data || typeof data !== "object" ? null : data;
     }
     /** One group call; the server's refusal (a sentence for the person) becomes the error message. */
     async #groupCall(fn, args) {
@@ -7455,6 +7606,13 @@ RULES:
     }
     groupLeave() {
       return this.#plan.groupLeave();
+    }
+    /** The ₹30 promise: ask to use Pocket free (signed in), and the rule as anyone can read it. */
+    freeRequestSend(name, reason) {
+      return this.#plan.freeRequestSend(name, reason);
+    }
+    promiseRule() {
+      return this.#sb ? this.#plan.promiseRule() : Promise.resolve(null);
     }
     /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
     aiGateway() {
@@ -11989,6 +12147,9 @@ This replaces your current grouping.`
         rows.push(["Shared space", `${Html.escape(c.ownerEmail)}'s Pocket Pro${c.access === "read" ? " (ended, read-only)" : ""}`]);
       }
       rows.push(["AI scans & voice", this.#ai(plan)]);
+      const entries = plan.entries;
+      if (entries.why === "free" && entries.freeUntil) rows.push(["Using Pocket free", `until ${_PlanCard.#day(entries.freeUntil)}`]);
+      if (entries.why === "waiting") rows.push(["Request to use free", "waiting for a reply"]);
       return `
       <div class="mt-2 divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
         ${rows.map(([k, v]) => `
@@ -12003,7 +12164,13 @@ This replaces your current grouping.`
       const pools = plan.coveredBy.filter((c) => c.access === "write" && (c.aiUnlimited || c.aiCredits > 0));
       const parts = [`${own.toLocaleString()} credit${own === 1 ? "" : "s"}${plan.can("sharing") ? " (family pool)" : ""}`];
       for (const c of pools) parts.push(`${c.aiUnlimited ? "unlimited" : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
-      return parts.join(" \xB7 ");
+      const soon = plan.aiExpiring;
+      const expiry = soon ? `<div class="text-zinc-400 ai-expiring">${soon.credits.toLocaleString()} expire ${_PlanCard.#day(soon.at)}</div>` : "";
+      return parts.join(" \xB7 ") + expiry;
+    }
+    /** e.g. "16 Dec 2026" */
+    static #day(d) {
+      return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
     }
     /**
      * The plans on offer: a Monthly / Yearly switch, then one card per plan with
@@ -25026,6 +25193,114 @@ ${body}\r
     }
   };
 
+  // src/ui/modals/PromiseModal.js
+  var PromiseModal = class _PromiseModal {
+    /** @type {() => import('../../domain/billing/EntryAccess.js').EntryAccess} */
+    #access;
+    /** @type {() => {name: string}} */
+    #person;
+    /** @type {() => void} */
+    #redraw;
+    /** 'promise' | 'request' | 'sent' */
+    #page = "promise";
+    /** 'none' | 'wait_full' | 'signed_out' */
+    #reason = "none";
+    #error = "";
+    #sending = false;
+    /**
+     * @param {object} deps
+     * @param {() => any} deps.access   the person's EntryAccess now
+     * @param {() => {name: string}} deps.person  what to prefill
+     * @param {() => void} deps.redraw  re-draw this window
+     */
+    constructor({ access, person, redraw }) {
+      this.#access = access;
+      this.#person = person;
+      this.#redraw = redraw;
+    }
+    /** @param {{reason?: string, page?: string}} [opts] */
+    open(opts = {}) {
+      this.#reason = ["none", "wait_full", "signed_out"].includes(opts.reason) ? opts.reason : "none";
+      this.#page = opts.page === "request" ? "request" : "promise";
+      this.#error = "";
+      this.#sending = false;
+    }
+    /** @param {'promise'|'request'|'sent'} page */
+    show(page, error = "") {
+      this.#page = page;
+      this.#error = error;
+      this.#redraw();
+    }
+    set sending(on) {
+      this.#sending = !!on;
+      this.#redraw();
+    }
+    render() {
+      const body = this.#page === "request" ? this.#request() : this.#page === "sent" ? this.#sent() : this.#promise();
+      return `<div class="p-5 promise-modal">
+      <div class="sheet-header flex items-center justify-end">
+        <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close" title="Close"><i data-lucide="x"></i></button>
+      </div>${body}</div>`;
+    }
+    #promise() {
+      const a = this.#access();
+      const req = a.request;
+      const lead = this.#reason === "wait_full" ? `You've added ${a.waitLimit} entries while we read your request.` : req?.status === "declined" ? "We couldn't approve your request to use Pocket free." : req?.status === "expired" ? "Your free use of Pocket has ended. You can ask again." : "Before your first entry";
+      const action = this.#reason === "signed_out" ? `<button class="btn btn-primary w-full justify-center promise-signin" onclick="window.__app.openModal('auth')">Sign in to start</button>` : `<button class="btn btn-primary w-full justify-center promise-keep" onclick="window.__app.promiseStart()">Keep my promise \xB7 \u20B9${a.promiseRupees} a month</button>`;
+      const ask = this.#reason === "signed_out" || this.#reason === "wait_full" ? "" : `
+      <p class="text-sm text-zinc-500 mt-3 text-center">Can't pay \u20B9${a.promiseRupees}?
+        <button class="underline text-indigo-600 promise-ask" onclick="window.__app.promiseAsk()">Ask to use Pocket free</button></p>`;
+      return `
+      <div class="text-xs font-medium text-emerald-600 mb-1">${Html.escape(lead)}</div>
+      <h3 class="text-lg font-semibold mb-2">\u20B9${a.promiseRupees} a month. It isn't for us. It's for you.</h3>
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">Pocket works for people who write things down every day.
+        \u20B9${a.promiseRupees} a month is how you tell yourself you're one of them.</p>
+      <div class="border-y border-zinc-100 dark:border-zinc-800 py-2.5 mb-4 text-sm leading-7">
+        ${_PromiseModal.#line("check", `<b>Every rupee comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
+        ${_PromiseModal.#line("check", `About ${Math.floor(a.promiseCredits / 5)} receipt scans or ${a.promiseCredits} voice entries`)}
+        ${_PromiseModal.#line("clock", `Each month's credits last ${a.promiseCreditDays} days`)}
+        ${_PromiseModal.#line("gift", "Plus 20 welcome credits that last 6 months")}
+        ${_PromiseModal.#line("rotate-ccw", "Paid by auto-debit. Stop any time.")}
+      </div>
+      ${action}${ask}`;
+    }
+    #request() {
+      const p = this.#person();
+      const a = this.#access();
+      return `
+      <h3 class="text-lg font-semibold mb-1">Ask to use Pocket free</h3>
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">No one should stop looking after their money because of \u20B9${a.promiseRupees}.
+        Tell us in a line or two. Only the Pocket team reads it.</p>
+      <form onsubmit="window.__app.freeRequestSend(event)" class="space-y-3">
+        <label class="block"><span class="text-xs text-zinc-500">Your name</span>
+          <input name="name" class="input w-full" maxlength="120" required value="${Html.escape(p.name || "")}"></label>
+        <label class="block"><span class="text-xs text-zinc-500">Why would you like to use Pocket free?</span>
+          <textarea name="reason" class="input w-full" rows="3" maxlength="1000" required placeholder="I'm a student and saving for my fees"></textarea></label>
+        ${this.#error ? `<div class="text-sm text-rose-600 promise-error">${Html.escape(this.#error)}</div>` : ""}
+        <div class="text-xs text-zinc-500 bg-zinc-50 dark:bg-zinc-800/60 rounded-lg p-2.5 leading-relaxed">
+          Free use doesn't include the monthly ${a.promiseCredits} AI credits. You keep your 20 welcome credits, and can buy AI credits any time.
+          While we read your request, you can add up to ${a.waitLimit} entries.
+        </div>
+        <button class="btn btn-primary w-full justify-center" ${this.#sending ? "disabled" : ""}>${this.#sending ? "Sending\u2026" : "Send request"}</button>
+        <button type="button" class="btn btn-ghost w-full justify-center text-sm" onclick="window.__app.promiseBack()">Back</button>
+      </form>`;
+    }
+    #sent() {
+      const a = this.#access();
+      return `
+      <div class="text-center py-4">
+        <i data-lucide="mail-check" style="width:32px;height:32px" class="text-emerald-600 mx-auto mb-2"></i>
+        <h3 class="text-lg font-semibold mb-1">Request sent</h3>
+        <p class="text-sm text-zinc-500 mb-4 leading-relaxed">While we read it, you can add up to ${a.waitLimit} entries.
+          We'll let you know here once it's decided.</p>
+        <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Continue</button>
+      </div>`;
+    }
+    static #line(icon, html) {
+      return `<div class="flex items-start gap-2"><i data-lucide="${icon}" style="width:16px;height:16px;margin-top:6px" class="text-emerald-600 shrink-0"></i><span>${html}</span></div>`;
+    }
+  };
+
   // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
@@ -25142,6 +25417,10 @@ ${body}\r
     #driveBackup = null;
     /** @type {DriveRestoreModal|null} */
     #driveRestoreModal = null;
+    /** @type {PromiseModal|null} the ₹30 promise and asking to use Pocket free */
+    #promiseModal = null;
+    /** The promise rule as anyone may read it ({required, promisePaise, …}), for people not signed in. */
+    #promiseRule = null;
     /** Whether the server offers automatic backups; null until asked (when Settings opens). */
     #driveAutoOffered = null;
     /** An automatic backup failed this visit, so the "backup due" box asks for a tap instead. */
@@ -25529,6 +25808,7 @@ ${body}\r
           sharedTxMode: { shareIndex: this.#shareIndexForOwner(space.id), accountId: target.id, ownerId: space.id }
         });
       }
+      if (_Application.#addsEntry(name, opts) && !this.#entryGate()) return;
       if (name === "settings") {
         this.#refreshPlanInfo();
         if (this.driveStatus().available && this.#pwa?.online !== false) {
@@ -26360,6 +26640,7 @@ Leave empty to use your own name.`,
         }
         return;
       }
+      if (!id && !this.#entryGate()) return;
       const srcAcc = data.type === "transfer" ? state.accounts.find((a) => a.id === data.accountId) : null;
       const currency = srcAcc ? srcAcc.currency : data.currency;
       const minor = this.#fx.toMinor(data.amount, currency);
@@ -29837,6 +30118,20 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }
       });
       this.#modal.register("driveRestore", this.#driveRestoreModal);
+      this.#promiseModal = new PromiseModal({
+        access: () => this.#entryAccess(),
+        person: () => ({ name: this.#sync.currentUser?.user_metadata?.full_name || this.#store.getState().user?.name || "" }),
+        redraw: () => {
+          if (this.#modal.active === "promise") {
+            this.#modal.refresh();
+            lucide?.createIcons?.();
+          }
+        }
+      });
+      this.#modal.register("promise", this.#promiseModal);
+      this.#promiseRule = _Application.#storedPromiseRule();
+      this.#loadPromiseRule();
+      this.#bus.on("auth:changed", () => this.#loadPromiseRule());
       this.#bus.on("session:known", () => this.#refreshNotices());
       this.#bus.on("auth:changed", () => this.#refreshNotices());
       document.addEventListener("visibilitychange", () => {
@@ -29990,6 +30285,86 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         });
         this.#toast.show("Backed up to Google Drive");
       });
+    }
+    // ── The ₹30 promise (migration 0047) ──────────────────────────────────
+    /** Whether opening this modal starts a new entry; if so, EntryAccess is asked first. */
+    static #addsEntry(name, opts = {}) {
+      switch (name) {
+        case "transaction":
+          return !opts.id && !opts.editTxId && !opts.sharedTxMode;
+        case "debt":
+          return !opts.id;
+        case "trade":
+          return ["buy", "sell", "dividend"].includes(opts.mode);
+        case "debtPayment":
+        case "settle":
+        case "payBill":
+        case "reimbursement":
+          return true;
+        default:
+          return false;
+      }
+    }
+    static #PROMISE_KEY = "pocket.v1.promise";
+    static #storedPromiseRule() {
+      try {
+        return JSON.parse(window.localStorage.getItem(_Application.#PROMISE_KEY) || "null");
+      } catch {
+        return null;
+      }
+    }
+    /** Reads whether the promise is required (anyone may), and remembers it for offline visits. */
+    async #loadPromiseRule() {
+      if (DemoMode.active) return;
+      const rule = await this.#sync.promiseRule().catch(() => null);
+      if (!rule) return;
+      this.#promiseRule = rule;
+      try {
+        window.localStorage.setItem(_Application.#PROMISE_KEY, JSON.stringify(rule));
+      } catch {
+      }
+    }
+    /** May this person add entries now? The sample book never asks. */
+    #entryAccess() {
+      if (DemoMode.active) return EntryAccess.off();
+      if (this.#sync.currentUser) return this.#sync.plan.entries;
+      return this.#promiseRule?.required === true ? EntryAccess.signedOut(this.#promiseRule) : EntryAccess.off();
+    }
+    /**
+     * Checks before `count` new entries are added; when they may not be, opens
+     * the promise and returns false.
+     */
+    #entryGate(count = 1) {
+      const verdict = this.#entryAccess().check(this.#store.getState().transactions, count);
+      if (verdict.ok) return true;
+      this.#promiseModal.open({ reason: verdict.reason });
+      this.#modal.open("promise", {});
+      lucide?.createIcons?.();
+      return false;
+    }
+    /** "Keep my promise": the monthly auto-debit, once Razorpay subscriptions are live. */
+    promiseStart() {
+      this.#toast.show("Monthly auto-debit is being set up. Until then, ask to use Pocket free.");
+    }
+    promiseAsk() {
+      this.#promiseModal.show("request");
+    }
+    promiseBack() {
+      this.#promiseModal.show("promise");
+    }
+    /** Sends the request to use Pocket free. */
+    async freeRequestSend(event) {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      this.#promiseModal.sending = true;
+      try {
+        await this.#sync.freeRequestSend(String(fd.get("name") || ""), String(fd.get("reason") || ""));
+        this.#promiseModal.sending = false;
+        this.#promiseModal.show("sent");
+      } catch (e) {
+        this.#promiseModal.sending = false;
+        this.#promiseModal.show("request", e?.message || "Pocket couldn't send that. Please try again.");
+      }
     }
     openDriveRestore() {
       this.#modal.open("driveRestore", {});
@@ -30296,6 +30671,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     commitImport() {
       const plan = this.#importPlan;
       if (!plan) return;
+      if (!this.#entryGate(plan.txDrafts?.length || 1)) return;
       const replaceEl = document.getElementById("importReplace");
       const includeDupesEl = document.getElementById("importIncludeDupes");
       const replace = replaceEl?.checked;

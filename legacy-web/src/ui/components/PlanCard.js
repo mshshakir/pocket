@@ -78,6 +78,9 @@ export class PlanCard {
       rows.push(['Shared space', `${Html.escape(c.ownerEmail)}'s Pocket Pro${c.access === 'read' ? ' (ended, read-only)' : ''}`]);
     }
     rows.push(['AI scans & voice', this.#ai(plan)]);
+    const entries = plan.entries;
+    if (entries.why === 'free' && entries.freeUntil) rows.push(['Using Pocket free', `until ${PlanCard.#day(entries.freeUntil)}`]);
+    if (entries.why === 'waiting') rows.push(['Request to use free', 'waiting for a reply']);
     return `
       <div class="mt-2 divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
         ${rows.map(([k, v]) => `
@@ -93,7 +96,14 @@ export class PlanCard {
     const pools = plan.coveredBy.filter((c) => c.access === 'write' && (c.aiUnlimited || c.aiCredits > 0));
     const parts = [`${own.toLocaleString()} credit${own === 1 ? '' : 's'}${plan.can('sharing') ? ' (family pool)' : ''}`];
     for (const c of pools) parts.push(`${c.aiUnlimited ? 'unlimited' : c.aiCredits.toLocaleString()} in ${Html.escape(c.ownerEmail)}'s space`);
-    return parts.join(' · ');
+    const soon = plan.aiExpiring;
+    const expiry = soon ? `<div class="text-zinc-400 ai-expiring">${soon.credits.toLocaleString()} expire ${PlanCard.#day(soon.at)}</div>` : '';
+    return parts.join(' · ') + expiry;
+  }
+
+  /** e.g. "16 Dec 2026" */
+  static #day(d) {
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
   /**
