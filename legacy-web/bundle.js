@@ -11991,7 +11991,7 @@ This replaces your current grouping.`
       const features = [
         p.sync && "Cloud sync on all your devices",
         p.telegram && "Log by Telegram, voice or receipt scan",
-        p.sharing && `Share with up to ${p.seats - 1} family members`,
+        p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
         p.sharing && "Daily, monthly and yearly family summaries"
       ].filter(Boolean);
       const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;

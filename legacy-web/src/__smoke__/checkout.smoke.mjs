@@ -122,7 +122,7 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
      open.includes("buy('family_year')") && !open.includes("buy('family_month')") && openMonth.includes("buy('family_month')") && !openMonth.includes("buy('family_year')"));
   ok('C6 the switch shows how much yearly saves, and each plan its own saving',
      /plan-term on"[^>]*setPlanTerm\('year'\)/.test(open) && /save 51%/.test(open) && /save 37% vs monthly/.test(open) && /about ₹125 a month/.test(open));
-  ok('C6 each plan lists what it includes', /Share with up to 4 family members/.test(open) && /Cloud sync on all your devices/.test(open));
+  ok('C6 each plan lists what it includes', /Share a household book with your family \(up to 4 family members\)/.test(open) && /Cloud sync on all your devices/.test(open));
   ok('C6 a plan can be pointed out (website link)', /plan-highlight[^"]*" id="plan-family"/.test(card.html(free({ paymentsOpen: true }), catalogue, offers(), null, '', { highlight: 'family' })));
   ok('C6 payment open: trial, months, years and the AI pack can be bought',
      ['family_trial', 'sync_month', 'sync_year', 'family_month', 'family_year', 'ai_pack'].every((x) => buys.includes(x)), buys.join());
