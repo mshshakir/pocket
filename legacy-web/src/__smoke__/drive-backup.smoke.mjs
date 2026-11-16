@@ -120,7 +120,7 @@ function boot({ search = '', clientId = 'test-client', owner = null, drive = new
   window.fetch = drive.fetch;
   window.confirm = () => true;
   window.alert = () => {};
-  if (clientId) window.POCKET_GOOGLE_CLIENT_ID = clientId;
+  window.POCKET_GOOGLE_CLIENT_ID = clientId;
   window.eval(bundleSrc);
   return { w: window, g: drive };
 }
@@ -132,6 +132,9 @@ const notice = (w) => w.document.querySelector('.app-notice-backup');
   const { w } = boot({ clientId: '' });
   await wait(80);
   ok('U1 no client ID: no Google Drive card', !(await dataTab(w)).querySelector('.drive-backup'));
+  const own = boot({ clientId: undefined });
+  await wait(80);
+  ok('U1 Pocket\'s own client ID is built in: the card shows with Connect', !!(await dataTab(own.w)).querySelector('.drive-backup .drive-connect'));
   const demo = boot({ search: '?demo' });
   await wait(80);
   ok('U1 demo: no Google Drive card', !(await dataTab(demo.w)).querySelector('.drive-backup'));

@@ -1042,7 +1042,7 @@ var _PocketApp = (() => {
   });
   var APP_SUPABASE_URL = "https://nvsfxdnnakzfzsrsfftp.supabase.co";
   var APP_SUPABASE_KEY = "sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn";
-  var GOOGLE_DRIVE_CLIENT_ID = "";
+  var GOOGLE_DRIVE_CLIENT_ID = "555526225800-2aq7idv11et2m9r956ine6usgndmqr1f.apps.googleusercontent.com";
 
   // src/domain/services/IdGenerator.js
   var IdGenerator = class {
@@ -29261,7 +29261,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         }
       }).start();
       const tokens = new GoogleTokenClient({
-        clientId: window.POCKET_GOOGLE_CLIENT_ID || GOOGLE_DRIVE_CLIENT_ID,
+        clientId: window.POCKET_GOOGLE_CLIENT_ID ?? GOOGLE_DRIVE_CLIENT_ID,
         scope: DriveClient.SCOPE,
         win: window
       });

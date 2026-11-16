@@ -5011,7 +5011,7 @@ export class Application {
     }).start();
 
     const tokens = new GoogleTokenClient({
-      clientId: window.POCKET_GOOGLE_CLIENT_ID || GOOGLE_DRIVE_CLIENT_ID,
+      clientId: window.POCKET_GOOGLE_CLIENT_ID ?? GOOGLE_DRIVE_CLIENT_ID,
       scope: DriveClient.SCOPE,
       win: window,
     });

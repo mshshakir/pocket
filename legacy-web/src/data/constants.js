@@ -213,7 +213,8 @@ export const APP_SUPABASE_KEY = 'sb_publishable_dBQ3d82_7ktA5tEi2ZAJYg_xqHAAlCn'
  * (APIs & Services → Credentials → OAuth client ID → Web application, with
  * this site's address under "Authorised JavaScript origins"). It is a public
  * identifier, not a secret. Empty = the Google Drive backup card is hidden.
- * Someone hosting their own copy can instead set
- * window.POCKET_GOOGLE_CLIENT_ID in app.html.
+ * Someone hosting their own copy must use their own: set
+ * window.POCKET_GOOGLE_CLIENT_ID in app.html ('' switches the card off) —
+ * Google only accepts this one from Pocket's own address.
  */
-export const GOOGLE_DRIVE_CLIENT_ID = '';
+export const GOOGLE_DRIVE_CLIENT_ID = '555526225800-2aq7idv11et2m9r956ine6usgndmqr1f.apps.googleusercontent.com';
