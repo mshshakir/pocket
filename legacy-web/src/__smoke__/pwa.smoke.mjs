@@ -145,6 +145,7 @@ function boot() {
   await wait(10);
   const card = () => w.document.querySelector('[data-settings-tab="general"] .install-card');
   ok('A1 no offer from the browser: the card explains how to install by hand, no button', !!card() && !!card().querySelector('.install-steps') && !card().querySelector('.install-now'));
+  ok('A1 the install card comes first in Settings → General', w.document.querySelector('[data-settings-tab="general"]')?.firstElementChild === card());
   let prompted = 0;
   const offer = new w.Event('beforeinstallprompt');
   offer.prompt = async () => { prompted++; };

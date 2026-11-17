@@ -38,6 +38,8 @@ export class AdminApi {
   audit(limit = 300)         { return this.#session.rpc('pocket_adm_audit', { p_limit: limit }); }
   feedback(status = null, limit = 300) { return this.#session.rpc('pocket_adm_feedback', { p_status: status, p_limit: limit }); }
   freeRequests(status = null, limit = 300) { return this.#session.rpc('pocket_adm_free_requests', { p_status: status, p_limit: limit }); }
+  /** Auto-approve allowance for free requests: a new limit and/or reset the count (0060). */
+  setFreeAuto(limit = null, reset = false) { return this.#session.rpc('pocket_adm_free_auto', { p_limit: limit, p_reset: reset }); }
   setFreeRequest(id, status, note = null) { return this.#session.rpc('pocket_adm_free_request_set', { p_id: Number(id), p_status: status, p_note: note }); }
   setFeedback(id, status, note = null) { return this.#session.rpc('pocket_adm_feedback_set', { p_id: Number(id), p_status: status, p_note: note }); }
 }

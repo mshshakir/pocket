@@ -1,6 +1,6 @@
 /**
  * SettingsModal — App preferences in four tabs, so nothing needs a long scroll:
- *   General  currencies, defaults, date format, theme, Hijri calendar, install as an app
+ *   General  install as an app (first, until installed), currencies, defaults, date format, theme, Hijri calendar
  *   Account  sign-in and cloud sync, plan, AI
  *   Data     Google Drive backup, move in (CSV), export / import, reset, saved copies
  *   Help     feedback and feature requests
@@ -87,6 +87,7 @@ export class SettingsModal {
   #general(u, state) {
     const ccy = (cur) => CURRENCIES.map((c) => `<option value="${c}" ${cur === c ? 'selected' : ''}>${this.#fx.label(c)}</option>`).join('');
     return `
+        ${this.#install()}
         <div class="card-muted p-3 mb-3">
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -130,8 +131,7 @@ export class SettingsModal {
           </div>
         </div>
 
-        ${this.#renderHijriSection(u)}
-        ${this.#install()}`;
+        ${this.#renderHijriSection(u)}`;
   }
 
   /**

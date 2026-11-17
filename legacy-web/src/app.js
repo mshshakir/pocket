@@ -1002,7 +1002,8 @@ export class Application {
   /**
    * The website's pricing buttons link to app.html#plans=<product> (e.g.
    * family_year). Remember the choice (it must survive a Google sign-in
-   * round trip), then show the plan chooser with that plan and term picked.
+   * round trip), then show the plan chooser with that plan and term picked,
+   * and go straight on to paying for it (owner, 17 Nov 2026).
    */
   #takePlanLink() {
     const m = window.location.hash.match(/^#plans(?:=([a-z_]+))?$/);
@@ -1028,7 +1029,28 @@ export class Application {
       if (++tries < 30) setTimeout(scroll, 150);
     };
     setTimeout(scroll, 150);
+    this.#payFromLink(pending).catch(() => {});
   }
+
+  /**
+   * A website buy link: once the price is known, opens Razorpay for that item.
+   * If it can't be bought now (payments closed, trial used, already on a
+   * lifetime plan…), the chooser simply stays open on it.
+   * @param {string} pending  e.g. 'family_year', 'family_trial', 'group_year', 'plus'
+   */
+  async #payFromLink(pending) {
+    const product = pending === 'plus' ? 'drive_backup' : /^[a-z]+_(month|year|trial)$/.test(pending) ? pending : null;
+    if (!product || !this.#sync.currentUser) return;
+    await this.#refreshPlanInfo();
+    const item = this.#paymentOffers?.products?.find((o) => o.product === product && o.available);
+    if (!item || this.#buying) return;
+    await new Promise((ok) => setTimeout(ok, Application.PAY_FROM_LINK_DELAY_MS));
+    if (this.#modal.active !== 'settings') return; // they closed it meanwhile
+    await this.buy(product);
+  }
+
+  /** A short pause so the chosen plan is seen before Razorpay opens (tests set 0). */
+  static PAY_FROM_LINK_DELAY_MS = 600;
 
   /**
    * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
@@ -5390,6 +5412,9 @@ export class Application {
       default:            return false;
     }
   }
+  /** How long "Processing your request…" shows at least (tests set 0). */
+  static FREE_REQUEST_PAUSE_MS = 2000;
+
   static #PROMISE_KEY = 'pocket.v1.promise';
 
   static #storedPromiseRule() {
@@ -5451,11 +5476,17 @@ export class Application {
   async freeRequestSend(event) {
     event.preventDefault();
     const fd = new FormData(event.target);
+    const name = String(fd.get('name') || ''), reason = String(fd.get('reason') || '');
     this.#promiseModal.sending = true;
+    this.#promiseModal.show('processing');
+    const started = Date.now();
     try {
-      await this.#sync.freeRequestSend(String(fd.get('name') || ''), String(fd.get('reason') || ''));
+      const r = await this.#sync.freeRequestSend(name, reason);
+      // Let "Processing…" be seen, however quick the server is.
+      await new Promise((ok) => setTimeout(ok, Math.max(0, Application.FREE_REQUEST_PAUSE_MS - (Date.now() - started))));
       this.#promiseModal.sending = false;
-      this.#promiseModal.show('sent');
+      if (r?.status === 'approved') this.#promiseModal.approved(r.validUntil);
+      else this.#promiseModal.show('sent');
     } catch (e) {
       this.#promiseModal.sending = false;
       this.#promiseModal.show('request', e?.message || 'Pocket couldn\'t send that. Please try again.');

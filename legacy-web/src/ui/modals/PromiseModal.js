@@ -17,8 +17,10 @@ export class PromiseModal {
   #person;
   /** @type {() => void} */
   #redraw;
-  /** 'promise' | 'request' | 'sent' */
+  /** 'promise' | 'request' | 'processing' | 'approved' | 'sent' */
   #page = 'promise';
+  /** When an approved request's free use ends (the 'approved' page). @type {Date|null} */
+  #freeUntil = null;
   /** 'none' | 'wait_full' | 'signed_out' */
   #reason = 'none';
   #error = '';
@@ -44,17 +46,26 @@ export class PromiseModal {
     this.#sending = false;
   }
 
-  /** @param {'promise'|'request'|'sent'} page */
+  /** @param {'promise'|'request'|'processing'|'approved'|'sent'} page */
   show(page, error = '') {
     this.#page = page;
     this.#error = error;
     this.#redraw();
   }
 
+  /** The request was approved straight away: free use until `until`. */
+  approved(until) {
+    this.#freeUntil = until ? new Date(until) : null;
+    this.show('approved');
+  }
+
   set sending(on) { this.#sending = !!on; this.#redraw(); }
 
   render() {
-    const body = this.#page === 'request' ? this.#request() : this.#page === 'sent' ? this.#sent() : this.#promise();
+    const body = this.#page === 'request' ? this.#request()
+      : this.#page === 'processing' ? PromiseModal.#processing()
+      : this.#page === 'approved' ? this.#approved()
+      : this.#page === 'sent' ? this.#sent() : this.#promise();
     return `<div class="p-5 promise-modal">
       <div class="sheet-header flex items-center justify-end">
         <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close" title="Close"><i data-lucide="x"></i></button>
@@ -121,6 +132,28 @@ export class PromiseModal {
         <p class="text-sm text-zinc-500 mb-4 leading-relaxed">While we read it, you can add up to ${a.waitLimit} entries.
           We'll let you know here once it's decided.</p>
         <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Continue</button>
+      </div>`;
+  }
+
+  static #processing() {
+    return `
+      <div class="text-center py-8 promise-processing">
+        <i data-lucide="loader-circle" style="width:32px;height:32px" class="text-zinc-500 mx-auto mb-3 animate-spin"></i>
+        <h3 class="text-lg font-semibold mb-1">Processing your request…</h3>
+        <p class="text-sm text-zinc-500">This takes a few seconds</p>
+      </div>`;
+  }
+
+  #approved() {
+    const until = this.#freeUntil && !Number.isNaN(this.#freeUntil.getTime())
+      ? this.#freeUntil.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : null;
+    return `
+      <div class="text-center py-4 promise-approved">
+        <span class="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center mx-auto mb-3"><i data-lucide="check" style="width:26px;height:26px"></i></span>
+        <h3 class="text-lg font-semibold mb-1">You're approved</h3>
+        <p class="text-sm text-zinc-500 mb-1 leading-relaxed">Use Pocket free${until ? ` until <b class="text-zinc-900 dark:text-zinc-100">${Html.escape(until)}</b>` : ''}.</p>
+        <p class="text-xs text-zinc-400 mb-4">You keep your 20 welcome credits and can buy AI credits any time.</p>
+        <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Start recording</button>
       </div>`;
   }
 

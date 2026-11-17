@@ -20510,6 +20510,7 @@ This replaces your current grouping.`
     #general(u, state) {
       const ccy = (cur) => CURRENCIES.map((c) => `<option value="${c}" ${cur === c ? "selected" : ""}>${this.#fx.label(c)}</option>`).join("");
       return `
+        ${this.#install()}
         <div class="card-muted p-3 mb-3">
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -20551,8 +20552,7 @@ This replaces your current grouping.`
           </div>
         </div>
 
-        ${this.#renderHijriSection(u)}
-        ${this.#install()}`;
+        ${this.#renderHijriSection(u)}`;
     }
     /**
      * Deleting the account: a quiet "Delete my account" link, or, once asked,
@@ -25511,8 +25511,10 @@ ${body}\r
     #person;
     /** @type {() => void} */
     #redraw;
-    /** 'promise' | 'request' | 'sent' */
+    /** 'promise' | 'request' | 'processing' | 'approved' | 'sent' */
     #page = "promise";
+    /** When an approved request's free use ends (the 'approved' page). @type {Date|null} */
+    #freeUntil = null;
     /** 'none' | 'wait_full' | 'signed_out' */
     #reason = "none";
     #error = "";
@@ -25535,18 +25537,23 @@ ${body}\r
       this.#error = "";
       this.#sending = false;
     }
-    /** @param {'promise'|'request'|'sent'} page */
+    /** @param {'promise'|'request'|'processing'|'approved'|'sent'} page */
     show(page, error = "") {
       this.#page = page;
       this.#error = error;
       this.#redraw();
+    }
+    /** The request was approved straight away: free use until `until`. */
+    approved(until) {
+      this.#freeUntil = until ? new Date(until) : null;
+      this.show("approved");
     }
     set sending(on) {
       this.#sending = !!on;
       this.#redraw();
     }
     render() {
-      const body = this.#page === "request" ? this.#request() : this.#page === "sent" ? this.#sent() : this.#promise();
+      const body = this.#page === "request" ? this.#request() : this.#page === "processing" ? _PromiseModal.#processing() : this.#page === "approved" ? this.#approved() : this.#page === "sent" ? this.#sent() : this.#promise();
       return `<div class="p-5 promise-modal">
       <div class="sheet-header flex items-center justify-end">
         <button class="btn btn-ghost px-2.5" onclick="window.__app.closeModal()" aria-label="Close" title="Close"><i data-lucide="x"></i></button>
@@ -25604,6 +25611,25 @@ ${body}\r
         <p class="text-sm text-zinc-500 mb-4 leading-relaxed">While we read it, you can add up to ${a.waitLimit} entries.
           We'll let you know here once it's decided.</p>
         <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Continue</button>
+      </div>`;
+    }
+    static #processing() {
+      return `
+      <div class="text-center py-8 promise-processing">
+        <i data-lucide="loader-circle" style="width:32px;height:32px" class="text-zinc-500 mx-auto mb-3 animate-spin"></i>
+        <h3 class="text-lg font-semibold mb-1">Processing your request\u2026</h3>
+        <p class="text-sm text-zinc-500">This takes a few seconds</p>
+      </div>`;
+    }
+    #approved() {
+      const until = this.#freeUntil && !Number.isNaN(this.#freeUntil.getTime()) ? this.#freeUntil.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }) : null;
+      return `
+      <div class="text-center py-4 promise-approved">
+        <span class="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center mx-auto mb-3"><i data-lucide="check" style="width:26px;height:26px"></i></span>
+        <h3 class="text-lg font-semibold mb-1">You're approved</h3>
+        <p class="text-sm text-zinc-500 mb-1 leading-relaxed">Use Pocket free${until ? ` until <b class="text-zinc-900 dark:text-zinc-100">${Html.escape(until)}</b>` : ""}.</p>
+        <p class="text-xs text-zinc-400 mb-4">You keep your 20 welcome credits and can buy AI credits any time.</p>
+        <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Start recording</button>
       </div>`;
     }
     static #line(icon, html) {
@@ -26532,7 +26558,8 @@ ${body}\r
     /**
      * The website's pricing buttons link to app.html#plans=<product> (e.g.
      * family_year). Remember the choice (it must survive a Google sign-in
-     * round trip), then show the plan chooser with that plan and term picked.
+     * round trip), then show the plan chooser with that plan and term picked,
+     * and go straight on to paying for it (owner, 17 Nov 2026).
      */
     #takePlanLink() {
       const m = window.location.hash.match(/^#plans(?:=([a-z_]+))?$/);
@@ -26576,7 +26603,27 @@ ${body}\r
         if (++tries < 30) setTimeout(scroll, 150);
       };
       setTimeout(scroll, 150);
+      this.#payFromLink(pending).catch(() => {
+      });
     }
+    /**
+     * A website buy link: once the price is known, opens Razorpay for that item.
+     * If it can't be bought now (payments closed, trial used, already on a
+     * lifetime plan…), the chooser simply stays open on it.
+     * @param {string} pending  e.g. 'family_year', 'family_trial', 'group_year', 'plus'
+     */
+    async #payFromLink(pending) {
+      const product = pending === "plus" ? "drive_backup" : /^[a-z]+_(month|year|trial)$/.test(pending) ? pending : null;
+      if (!product || !this.#sync.currentUser) return;
+      await this.#refreshPlanInfo();
+      const item = this.#paymentOffers?.products?.find((o) => o.product === product && o.available);
+      if (!item || this.#buying) return;
+      await new Promise((ok) => setTimeout(ok, _Application.PAY_FROM_LINK_DELAY_MS));
+      if (this.#modal.active !== "settings") return;
+      await this.buy(product);
+    }
+    /** A short pause so the chosen plan is seen before Razorpay opens (tests set 0). */
+    static PAY_FROM_LINK_DELAY_MS = 600;
     /**
      * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
@@ -30753,6 +30800,8 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
           return false;
       }
     }
+    /** How long "Processing your request…" shows at least (tests set 0). */
+    static FREE_REQUEST_PAUSE_MS = 2e3;
     static #PROMISE_KEY = "pocket.v1.promise";
     static #storedPromiseRule() {
       try {
@@ -30821,11 +30870,16 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     async freeRequestSend(event) {
       event.preventDefault();
       const fd = new FormData(event.target);
+      const name = String(fd.get("name") || ""), reason = String(fd.get("reason") || "");
       this.#promiseModal.sending = true;
+      this.#promiseModal.show("processing");
+      const started = Date.now();
       try {
-        await this.#sync.freeRequestSend(String(fd.get("name") || ""), String(fd.get("reason") || ""));
+        const r = await this.#sync.freeRequestSend(name, reason);
+        await new Promise((ok) => setTimeout(ok, Math.max(0, _Application.FREE_REQUEST_PAUSE_MS - (Date.now() - started))));
         this.#promiseModal.sending = false;
-        this.#promiseModal.show("sent");
+        if (r?.status === "approved") this.#promiseModal.approved(r.validUntil);
+        else this.#promiseModal.show("sent");
       } catch (e) {
         this.#promiseModal.sending = false;
         this.#promiseModal.show("request", e?.message || "Pocket couldn't send that. Please try again.");
