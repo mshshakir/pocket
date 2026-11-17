@@ -81,7 +81,7 @@ export class AccountClosure {
     const rpc = this.#rpc();
     if (!rpc) throw new Error('Sign in first.');
     const { data, error } = await rpc(fn);
-    if (error) throw new Error('Pocket couldn\'t reach the server. Please try again.');
+    if (error) throw new Error(error.code === 'PG001' && error.message ? error.message : 'Pocket couldn\'t reach the server. Please try again.');
     return { pending: data?.pending === true, deleteAfter: data?.deleteAfter ? new Date(data.deleteAfter) : null };
   }
 }
