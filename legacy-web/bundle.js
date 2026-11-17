@@ -21696,7 +21696,7 @@ This replaces your current grouping.`
         </button>
 
         <div class="text-xs text-zinc-400 text-center">
-          ${isSaaS ? "Your data is encrypted and privately stored. Only you can access it." : "Your data is end-to-end owned by you. Stored in your own Supabase project."}
+          ${isSaaS ? `Your data is sent securely and stored encrypted. Other users can't see your book unless you share it. <a href="privacy.html" target="_blank" class="underline">Privacy</a>` : "Your data is end-to-end owned by you. Stored in your own Supabase project."}
         </div>
       </div>`;
     }

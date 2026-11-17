@@ -51,7 +51,8 @@ export class AuthModal {
 
         <div class="text-xs text-zinc-400 text-center">
           ${isSaaS
-            ? 'Your data is encrypted and privately stored. Only you can access it.'
+            // Must match privacy.html: encrypted in transit and at rest, not end-to-end.
+            ? 'Your data is sent securely and stored encrypted. Other users can\'t see your book unless you share it. <a href="privacy.html" target="_blank" class="underline">Privacy</a>'
             : 'Your data is end-to-end owned by you. Stored in your own Supabase project.'}
         </div>
       </div>`;
