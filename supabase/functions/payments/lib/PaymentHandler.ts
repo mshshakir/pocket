@@ -10,7 +10,14 @@
  *                         product 'programme' = the habit programme place offered to them, in full
  *                         (less the upfront discount); 'programme_half' = half now, confirming the
  *                         place; 'programme_rest' = the other half (migration 0051)
+ *                         For a plan that renews by itself (migration 0053: the ₹30 promise,
+ *                         Pocket Pro monthly/yearly, Group yearly) the answer is instead
+ *                         { kind: 'subscription', subscriptionId, keyId, amount, currency, name }:
+ *                         Checkout sets up auto-debit and takes the first payment. Coupons
+ *                         don't apply to auto-debit.
  *   verify { orderId, paymentId, signature } → { ok, applied }
+ *   verify { subscriptionId, paymentId, signature } → { ok, applied }  the first auto-debit charge
+ *   cancel {}           → { ok, cancelled }  stops auto-debit; the time paid for runs to its end
  *   switch { plan }     → { ok, applied, plan, days, endsAt }  moving down to a
  *                         cheaper plan: no payment, the time left becomes days there
  *
@@ -21,11 +28,15 @@
  * From Razorpay, POST /payments/webhook with X-Razorpay-Signature:
  *   payment.captured / order.paid → the order is applied (if the app's verify
  *   hasn't already). Applying is idempotent, so both paths are safe together.
+ *   subscription.charged → that charge is applied (first payment and renewals).
+ *   subscription.authenticated / activated / pending / halted / cancelled /
+ *   completed / paused / resumed → the subscription's status; when it stops,
+ *   the plan stops renewing.
  *
  * Errors are { error, code }: signed_out, bad_request, closed, not_allowed,
  * bad_coupon, not_set_up, bad_signature, not_yours, failed.
  */
-import type { PaymentStore, Quote } from './PaymentStore.ts';
+import type { PaymentStore, Quote, SubscriptionQuote } from './PaymentStore.ts';
 import { RazorpayError, type RazorpayClient } from './RazorpayClient.ts';
 import { Signature } from './Signature.ts';
 
@@ -45,6 +56,8 @@ export class PaymentHandler {
     trial_used: 'You\'ve already used your trial.',
     has_plan: 'The trial is for people without a plan.',
     has_backup: 'Scheduled backups are already switched on for your account.',
+    has_subscription: 'Auto-debit for this is already on.',
+    promise_not_needed: 'Your plan already lets you add entries, so the ₹30 promise isn\'t needed.',
     no_place: 'There is no programme place waiting for you to pay for.',
     no_rest: 'There is no second half of the programme fee left to pay.',
     no_credit: 'There\'s no paid time left on your plan to move.',
@@ -104,7 +117,8 @@ export class PaymentHandler {
         if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
         return await this.#order(userId, String(body.product ?? ''), code);
       }
-      case 'verify': return await this.#verify(userId, body);
+      case 'verify': return body.subscriptionId ? await this.#verifySubscription(userId, body) : await this.#verify(userId, body);
+      case 'cancel': return await this.#cancel(userId);
       case 'switch': return await this.#switch(userId, String(body.plan ?? ''));
       default: return this.#fail(400, 'bad_request', 'Unknown action.');
     }
@@ -115,6 +129,7 @@ export class PaymentHandler {
     const quotes = await Promise.all(products.map((p) => this.#store.quote(userId, p.product)));
     const listed = products.map((p, i) => ({
       ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason,
+      ...(p.term === 'month' || p.term === 'year' ? { renews: true } : {}),
       ...(quotes[i].switchDays ? { switchDays: quotes[i].switchDays, switchFrom: quotes[i].switchFrom } : {}),
     }));
     const switches = await this.#store.switchOptions(userId);
@@ -148,6 +163,8 @@ export class PaymentHandler {
   static readonly #CODE_FAULTS = new Set(['coupon_unknown', 'coupon_not_started', 'coupon_expired', 'coupon_used_up']);
 
   async #order(userId: string, product: string, coupon: string | null): Promise<Response> {
+    const renewing = await this.#store.subscriptionQuote(userId, product);
+    if (renewing.renewing) return await this.#subscribe(userId, renewing, product);
     const quote: Quote = await this.#store.quote(userId, product, coupon);
     if (!quote.ok) {
       const reason = quote.reason ?? '';
@@ -182,6 +199,67 @@ export class PaymentHandler {
     return this.#json(200, await this.#store.fulfil(orderId, paymentId));
   }
 
+  // ── auto-debit ──────────────────────────────────────────────────
+
+  async #subscribe(userId: string, q: SubscriptionQuote, product: string): Promise<Response> {
+    if (!q.ok) {
+      const reason = product.startsWith('promise_') && q.reason === 'has_plan' ? 'promise_not_needed' : q.reason ?? '';
+      return this.#fail(reason === 'closed' ? 503 : 409, reason === 'closed' ? 'closed' : 'not_allowed', PaymentHandler.#REFUSALS[reason] ?? 'Not available.');
+    }
+    if (!this.#razorpay) return this.#fail(503, 'not_set_up', 'Payments aren\'t set up yet. Please try again later.');
+    let sub;
+    try {
+      let planId = await this.#store.razorpayPlan(q.product!, q.amountPaise!);
+      if (!planId) {
+        const made = await this.#razorpay.createPlan(q.term!, q.amountPaise!, `Pocket · ${q.name}`);
+        planId = await this.#store.saveRazorpayPlan(q.product!, q.amountPaise!, made);
+      }
+      sub = await this.#razorpay.createSubscription(planId, q.totalCount ?? 120, { user_id: userId, product: q.product! });
+      await this.#store.saveSubscription(sub.id, userId, q, planId);
+    } catch (e) {
+      if (e instanceof RazorpayError) return this.#fail(502, 'failed', `${e.message} You weren't charged.`);
+      throw e;
+    }
+    return this.#json(200, {
+      kind: 'subscription', subscriptionId: sub.id, keyId: this.#razorpay.keyId,
+      amount: q.amountPaise, listAmount: q.amountPaise, currency: 'INR', name: q.name, renews: q.term,
+    });
+  }
+
+  async #verifySubscription(userId: string, body: Record<string, unknown>): Promise<Response> {
+    const subId = String(body.subscriptionId ?? ''), paymentId = String(body.paymentId ?? ''), signature = String(body.signature ?? '');
+    if (!subId || !paymentId) return this.#fail(400, 'bad_request', 'Missing payment details.');
+    if (!(await this.#checkout.matches(`${paymentId}|${subId}`, signature))) {
+      return this.#fail(400, 'bad_signature', 'The payment couldn\'t be confirmed. If you were charged, it will be applied shortly.');
+    }
+    if ((await this.#store.subscriptionOwner(subId)) !== userId) return this.#fail(403, 'not_yours', 'That payment belongs to another account.');
+    const r = await this.#store.charge(subId, paymentId, null);
+    await this.#cancelReplaced(r.cancel);
+    return this.#json(200, { ok: true, applied: r.applied });
+  }
+
+  async #cancel(userId: string): Promise<Response> {
+    const current = await this.#store.currentSubscription(userId);
+    if (!current) return this.#fail(409, 'not_allowed', 'There is no auto-debit to stop.');
+    if (!this.#razorpay) return this.#fail(503, 'not_set_up', 'Payments aren\'t set up yet. Please try again later.');
+    try {
+      await this.#razorpay.cancelSubscription(current.id);
+    } catch (e) {
+      if (e instanceof RazorpayError) return this.#fail(502, 'failed', `${e.message} Please try again.`);
+      throw e;
+    }
+    await this.#store.subscriptionStatus(current.id, 'cancelled');
+    return this.#json(200, { ok: true, cancelled: true });
+  }
+
+  /** Stops subscriptions a newer one replaced. A failure is logged, not shown: the person has paid for the new plan. */
+  async #cancelReplaced(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      try { await this.#razorpay?.cancelSubscription(id); }
+      catch (e) { console.error('[payments] cancelling replaced subscription failed', id, e); }
+    }
+  }
+
   // ── from Razorpay ───────────────────────────────────────────────
 
   async #webhookEvent(req: Request): Promise<Response> {
@@ -190,6 +268,7 @@ export class PaymentHandler {
       return this.#fail(401, 'bad_signature', 'Bad signature.');
     }
     const event = JSON.parse(raw);
+    if (typeof event?.event === 'string' && event.event.startsWith('subscription.')) return await this.#subscriptionEvent(event);
     const payment = event?.payload?.payment?.entity;
     const orderId: string | undefined = event?.payload?.order?.entity?.id ?? payment?.order_id;
     const paid = event?.event === 'order.paid' || (event?.event === 'payment.captured' && payment?.status === 'captured');
@@ -197,6 +276,20 @@ export class PaymentHandler {
     // Not one of Pocket's orders (another product on the same account): acknowledge and move on.
     if (!(await this.#store.ownerOf(orderId))) return this.#json(200, { ignored: true });
     return this.#json(200, await this.#store.fulfil(orderId, payment.id));
+  }
+
+  async #subscriptionEvent(event: Record<string, any>): Promise<Response> {
+    const sub = event?.payload?.subscription?.entity;
+    if (!sub?.id || !(await this.#store.subscriptionOwner(sub.id))) return this.#json(200, { ignored: true });
+    if (event.event === 'subscription.charged') {
+      const payment = event?.payload?.payment?.entity;
+      if (!payment?.id) return this.#json(200, { ignored: true });
+      const r = await this.#store.charge(sub.id, payment.id, Number.isInteger(payment.amount) ? payment.amount : null);
+      await this.#cancelReplaced(r.cancel);
+      return this.#json(200, { ok: true, applied: r.applied });
+    }
+    if (typeof sub.status === 'string') await this.#store.subscriptionStatus(sub.id, sub.status);
+    return this.#json(200, { ok: true });
   }
 
   /** A coupon code as typed, tidied; null when there is none; false when it can't be a code. */

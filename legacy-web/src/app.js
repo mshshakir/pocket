@@ -1048,6 +1048,27 @@ export class Application {
     }
   }
 
+  /** Stops auto-debit for the plan; it runs to the end of what's paid. */
+  async stopAutoDebit() {
+    if (this.#buying || !this.#sync.currentUser) return;
+    const ends = this.getPlan()?.endsAt;
+    const until = ends ? ` Your plan stays until ${new Date(ends).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.` : '';
+    if (!confirm(`Stop auto-debit? Nothing more will be charged.${until}`)) return;
+    this.#payments ??= this.#sync.payments();
+    this.#buying = 'stop';
+    this.#modal.refresh();
+    try {
+      await this.#payments.stopAutoDebit();
+      this.#toast.show('Auto-debit stopped');
+    } catch (e) {
+      this.#toast.show(e?.message || 'Couldn\'t stop auto-debit. Please try again.');
+    } finally {
+      this.#buying = null;
+      await this.#refreshPlanInfo();
+      this.#modal.refresh();
+    }
+  }
+
   /**
    * Moves to a cheaper plan for free; the time left becomes days on it.
    * Leaving a plan with sharing warns that family members lose the shared space.
@@ -5382,9 +5403,22 @@ export class Application {
     return false;
   }
 
-  /** "Keep my promise": the monthly auto-debit, once Razorpay subscriptions are live. */
-  promiseStart() {
-    this.#toast.show('Monthly auto-debit is being set up. Until then, ask to use Pocket free.');
+  /** "Keep my promise": ₹30 a month by auto-debit. */
+  async promiseStart() {
+    if (!this.#sync.currentUser) { this.openModal('auth'); return; }
+    if (this.#buying) return;
+    this.#payments ??= this.#sync.payments();
+    this.#buying = 'promise_month';
+    try {
+      await this.#payments.buy('promise_month', { email: this.#sync.currentUser.email });
+      await this.#refreshPlanInfo();
+      this.closeModal();
+      this.#toast.show('Promise kept: ₹30 a month. 150 AI credits added');
+    } catch (e) {
+      if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
+    } finally {
+      this.#buying = null;
+    }
   }
 
   promiseAsk()  { this.#promiseModal.show('request'); }

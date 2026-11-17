@@ -48,6 +48,25 @@ export interface Quote extends Partial<Product> {
   applicationId?: number; // the habit programme place being paid for
 }
 
+/** Auto-debit for a plan (migration 0053). renewing: false = not an auto-debit product. */
+export interface SubscriptionQuote {
+  ok: boolean;
+  renewing: boolean;
+  reason?: string;
+  product?: string;
+  plan?: string;
+  term?: 'month' | 'year';
+  amountPaise?: number;
+  name?: string;
+  totalCount?: number;
+}
+
+export interface Charge {
+  ok: boolean;
+  applied: boolean;
+  cancel: string[];  // the person's other renewing subscriptions, now replaced
+}
+
 export interface Fulfilment {
   ok: boolean;
   applied: boolean;
@@ -99,6 +118,46 @@ export class PaymentStore {
   /** Applies a paid order. Safe to repeat: the second call changes nothing. */
   async fulfil(orderId: string, paymentId: string): Promise<Fulfilment> {
     return (await this.#rpc('pocket_payment_fulfil', { p_order: orderId, p_payment: paymentId })) as Fulfilment;
+  }
+
+  // ── Auto-debit ─────────────────────────────────────────────────────────
+
+  async subscriptionQuote(userId: string, product: string): Promise<SubscriptionQuote> {
+    return (await this.#rpc('pocket_subscription_quote', { p_user: userId, p_product: product })) as SubscriptionQuote;
+  }
+
+  /** The Razorpay plan id for this product at this price, or null. */
+  async razorpayPlan(product: string, amountPaise: number): Promise<string | null> {
+    return (await this.#rpc('pocket_rp_plan_get', { p_product: product, p_amount: amountPaise })) as string | null;
+  }
+
+  /** Remembers a Razorpay plan id; returns the one kept (an earlier one wins). */
+  async saveRazorpayPlan(product: string, amountPaise: number, planId: string): Promise<string> {
+    return (await this.#rpc('pocket_rp_plan_save', { p_product: product, p_amount: amountPaise, p_plan_id: planId })) as string;
+  }
+
+  async saveSubscription(id: string, userId: string, quote: SubscriptionQuote, planId: string): Promise<void> {
+    await this.#rpc('pocket_subscription_save', { p_id: id, p_user: userId, p_quote: quote, p_rp_plan: planId });
+  }
+
+  /** Who started a subscription, or null when it isn't one of ours. */
+  async subscriptionOwner(id: string): Promise<string | null> {
+    return (await this.#rpc('pocket_subscription_owner', { p_id: id })) as string | null;
+  }
+
+  /** Applies one paid charge. Safe to repeat. */
+  async charge(subscriptionId: string, paymentId: string, amountPaise: number | null): Promise<Charge> {
+    const r = (await this.#rpc('pocket_subscription_charge', { p_sub: subscriptionId, p_payment: paymentId, p_amount: amountPaise ?? 0 })) as Charge;
+    return { ok: r.ok, applied: r.applied, cancel: Array.isArray(r.cancel) ? r.cancel : [] };
+  }
+
+  async subscriptionStatus(id: string, status: string): Promise<void> {
+    await this.#rpc('pocket_subscription_status', { p_sub: id, p_status: status });
+  }
+
+  /** The person's renewing subscription, or null. */
+  async currentSubscription(userId: string): Promise<{ id: string; product: string } | null> {
+    return (await this.#rpc('pocket_subscription_current', { p_user: userId })) as { id: string; product: string } | null;
   }
 
   async #rpc(fn: string, args: Record<string, unknown>): Promise<unknown> {

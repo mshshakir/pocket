@@ -62,6 +62,37 @@ class FakeStore {
     if (this.switchDays && p.term === 'month') return Promise.resolve({ ok: true, ...p, switchDays: this.switchDays, switchFrom: 'Family' });
     return Promise.resolve({ ok: true, ...p });
   }
+  // ── auto-debit (0053) ──
+  renewing = new Set<string>();
+  subRefusal: string | null = null;
+  rpPlans = new Map<string, string>();
+  subs = new Map<string, { user: string; product: string; status: string }>();
+  charges: string[] = [];
+  replaced: string[] = [];
+  subscriptionQuote(_u: string, product: string) {
+    if (!this.renewing.has(product)) return Promise.resolve({ ok: false, renewing: false });
+    if (this.subRefusal) return Promise.resolve({ ok: false, renewing: true, reason: this.subRefusal });
+    return Promise.resolve({ ok: true, renewing: true, product, plan: product.split('_')[0], term: product.endsWith('_year') ? 'year' : 'month',
+      amountPaise: product === 'promise_month' ? 3000 : 9900, name: 'Plan · monthly', totalCount: 120 });
+  }
+  razorpayPlan(product: string, amount: number) { return Promise.resolve(this.rpPlans.get(`${product}:${amount}`) ?? null); }
+  saveRazorpayPlan(product: string, amount: number, id: string) { this.rpPlans.set(`${product}:${amount}`, id); return Promise.resolve(id); }
+  saveSubscription(id: string, user: string, q: { product: string }) { this.subs.set(id, { user, product: q.product, status: 'created' }); return Promise.resolve(); }
+  subscriptionOwner(id: string) { return Promise.resolve(this.subs.get(id)?.user ?? null); }
+  charge(sub: string, payment: string) {
+    const key = `${sub}:${payment}`;
+    const applied = !this.charges.includes(key);
+    if (applied) this.charges.push(key);
+    const s = this.subs.get(sub)!; s.status = 'active';
+    const cancel = applied ? this.replaced.splice(0) : [];
+    return Promise.resolve({ ok: true, applied, cancel });
+  }
+  subscriptionStatus(id: string, status: string) { const s = this.subs.get(id); if (s) s.status = status; return Promise.resolve(); }
+  currentSubscription(user: string) {
+    for (const [id, s] of this.subs) if (s.user === user && ['active', 'authenticated'].includes(s.status)) return Promise.resolve({ id, product: s.product });
+    return Promise.resolve(null);
+  }
+
   saved: Quote[] = [];
   saveOrder(id: string, user: string, q: Quote) { this.saved.push(q); this.orders.set(id, { user, paid: false, product: q.product! }); return Promise.resolve(); }
   ownerOf(id: string) { return Promise.resolve(this.orders.get(id)?.user ?? null); }
@@ -245,6 +276,80 @@ console.log('\npayments function');
   ok('P31 nothing paid to move: refused', /no paid time/.test(none.error));
   const odd = await make(s).handle(app({ action: 'switch', plan: "x'; drop" }));
   ok('P32 an odd plan name never reaches the database', odd.status === 400 && s.switchedTo.length === 1);
+}
+
+// ── Auto-debit ────────────────────────────────────────────────────
+let subCalls: { url: string; body: Record<string, unknown> }[] = [];
+const subRazorpay = (status = 200) => new RazorpayClient('rzp_test_abc', KEY_SECRET, ((u: unknown, init?: RequestInit) => {
+  const url = String(u), body = JSON.parse(String(init?.body));
+  subCalls.push({ url, body });
+  const id = url.endsWith('/plans') ? `plan_${subCalls.length}` : url.includes('/cancel') ? url.split('/').at(-2) : `sub_${subCalls.length}`;
+  return Promise.resolve(new Response(JSON.stringify(status === 200 ? { id, status: url.includes('/cancel') ? 'cancelled' : 'created' } : { error: {} }), { status }));
+}) as typeof fetch);
+const subSig = (payment: string, sub: string, secret = KEY_SECRET) => new Signature(secret).sign(`${payment}|${sub}`);
+{
+  const s = new FakeStore(); s.renewing.add('promise_month'); subCalls = [];
+  const h = make(s, subRazorpay());
+  const res = await h.handle(app({ action: 'order', product: 'promise_month', code: 'TEN' }));
+  const j = await res.json();
+  ok('S1 a renewing plan starts auto-debit: a Razorpay plan, then a subscription, saved for this user',
+    j.kind === 'subscription' && j.subscriptionId === 'sub_2' && j.amount === 3000 && subCalls[0].url.endsWith('/plans')
+    && (subCalls[0].body.item as { amount: number }).amount === 3000 && subCalls[0].body.period === 'monthly'
+    && subCalls[1].body.plan_id === 'plan_1' && s.subs.get('sub_2')?.user === 'alice', JSON.stringify(j));
+  ok('S1 no one-time order is made, and the coupon is not used', !s.saved.length && !s.quotedWith.includes('TEN'));
+  await h.handle(app({ action: 'order', product: 'promise_month' }, 'bob'));
+  ok('S2 the Razorpay plan is made once and reused', subCalls.filter((c) => c.url.endsWith('/plans')).length === 1);
+
+  const forged = await h.handle(app({ action: 'verify', subscriptionId: 'sub_2', paymentId: 'pay_9', signature: 'beef' }));
+  ok('S3 a forged first payment is refused', forged.status === 400 && !s.charges.length);
+  const bobs = await h.handle(app({ action: 'verify', subscriptionId: 'sub_2', paymentId: 'pay_9', signature: await subSig('pay_9', 'sub_2') }, 'bob'));
+  ok('S4 someone else cannot claim my subscription', bobs.status === 403 && !s.charges.length);
+  const good = await h.handle(app({ action: 'verify', subscriptionId: 'sub_2', paymentId: 'pay_9', signature: await subSig('pay_9', 'sub_2') }));
+  ok('S5 the first payment is checked (payment|subscription) and applied', (await good.json()).applied === true && s.charges[0] === 'sub_2:pay_9');
+
+  const charged = await h.handle(await hook({ event: 'subscription.charged',
+    payload: { subscription: { entity: { id: 'sub_2', status: 'active' } }, payment: { entity: { id: 'pay_9', amount: 3000 } } } }));
+  ok('S6 the webhook for the same charge changes nothing', (await charged.json()).applied === false && s.charges.length === 1);
+  await h.handle(await hook({ event: 'subscription.charged',
+    payload: { subscription: { entity: { id: 'sub_2', status: 'active' } }, payment: { entity: { id: 'pay_10', amount: 3000 } } } }));
+  ok('S7 next month\'s charge from the webhook is applied', s.charges.includes('sub_2:pay_10'));
+  const stranger = await h.handle(await hook({ event: 'subscription.charged',
+    payload: { subscription: { entity: { id: 'sub_other' } }, payment: { entity: { id: 'pay_x' } } } }));
+  ok('S8 another product\'s subscription is ignored', (await stranger.json()).ignored === true);
+  await h.handle(await hook({ event: 'subscription.halted', payload: { subscription: { entity: { id: 'sub_2', status: 'halted' } } } }));
+  ok('S9 a halted subscription is recorded', s.subs.get('sub_2')?.status === 'halted');
+  const badHook = await h.handle(await hook({ event: 'subscription.charged', payload: {} }, 'wrong'));
+  ok('S10 a webhook with a bad signature is refused', badHook.status === 401);
+}
+{
+  const s = new FakeStore(); s.renewing.add('family_month'); subCalls = [];
+  const h = make(s, subRazorpay());
+  await h.handle(app({ action: 'order', product: 'family_month' }));
+  s.replaced.push('sub_old');
+  await h.handle(app({ action: 'verify', subscriptionId: 'sub_2', paymentId: 'pay_1', signature: await subSig('pay_1', 'sub_2') }));
+  ok('S11 moving to another renewing plan cancels the old one at Razorpay', subCalls.some((c) => c.url.endsWith('/subscriptions/sub_old/cancel')));
+  const res = await h.handle(app({ action: 'cancel' }));
+  ok('S12 cancel stops auto-debit at Razorpay and records it', (await res.json()).cancelled === true
+    && subCalls.some((c) => c.url.endsWith('/subscriptions/sub_2/cancel') && c.body.cancel_at_cycle_end === 0) && s.subs.get('sub_2')?.status === 'cancelled');
+  const again = await h.handle(app({ action: 'cancel' }));
+  ok('S13 nothing to cancel: said plainly', again.status === 409);
+}
+{
+  const s = new FakeStore(); s.renewing.add('promise_month'); s.subRefusal = 'has_plan';
+  const res = await make(s, subRazorpay()).handle(app({ action: 'order', product: 'promise_month' }));
+  ok('S14 the promise isn\'t needed on a plan that already allows entries', res.status === 409 && /isn't needed/.test((await res.json()).error));
+  s.subRefusal = 'has_subscription';
+  const dup = await make(s, subRazorpay()).handle(app({ action: 'order', product: 'promise_month' }));
+  ok('S15 auto-debit already on: refused', /already on/.test((await dup.json()).error));
+  s.subRefusal = null; subCalls = [];
+  const fail = await make(s, subRazorpay(400)).handle(app({ action: 'order', product: 'promise_month' }));
+  ok('S16 Razorpay refuses: nothing charged, said plainly', fail.status === 502 && /weren't charged/.test((await fail.json()).error));
+}
+{
+  const s = new FakeStore();
+  const j = await (await make(s).handle(app({ action: 'products' }))).json();
+  ok('S17 monthly and yearly products are marked as renewing', j.products.find((p: { product: string }) => p.product === 'sync_month').renews === true
+    && !('renews' in j.products.find((p: { product: string }) => p.product === 'ai_pack')));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

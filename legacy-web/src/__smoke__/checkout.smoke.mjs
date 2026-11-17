@@ -135,8 +135,8 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 while paying, buttons are disabled and the one in progress says so', /disabled/.test(busy) && busy.includes('Opening…'));
 
   const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
-  ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
-     syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
+  ok('C6 on Sync: "Renew by auto-debit" on your own plan, other plans say Switch, and switching is explained',
+     syncing.includes('Renew by auto-debit') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
 
   const withPlus = (o) => ({ products: [...o.products, { product: 'drive_backup', name: 'Pocket Plus', addon: 'drive_backup', amountPaise: 19900, available: true }] });
   const plusFree = card.html(free({ paymentsOpen: true }), catalogue, withPlus(offers()));
@@ -238,12 +238,29 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
     { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true } ] };
   const d = card.html(onFamily, catalogue, down, null, '', { term: 'year' });
   ok('C15 moving down: a free switch, no payment button for that plan', d.includes("__app.switchPlan('sync')") && /Switch to Sync · free/.test(d) && !d.includes("buy('sync_year')")
-     && /becomes about 9 months of Sync/.test(d) && /Add 1 year · ₹1,499/.test(d));
+     && /becomes about 9 months of Sync/.test(d) && /Renew by auto-debit · ₹1,499/.test(d));
   ok('C16 how long, in words', PlanCard.span(20) === '20 days' && PlanCard.span(273) === 'about 9 months' && PlanCard.span(820) === 'about 2 years 3 months' && PlanCard.span(365) === 'about 12 months');
   const s = server({ switch: () => ({ data: { ok: true, applied: true, plan: 'sync', days: 273, endsAt: '2027-08-15' }, error: null }) });
   const r = await new PaymentService(() => s.invoke, {}).switchPlan('sync');
   ok('C16 a switch is one call, no Razorpay window', s.sent.length === 1 && s.sent[0].action === 'switch' && s.sent[0].plan === 'sync' && r.days === 273);
 }
 
+// C20 auto-debit: renewing products say so; a renewing plan shows Stop instead of a button
+{
+  const card = new PlanCard();
+  const catalogue = [
+    { code: 'free', name: 'Free' },
+    { code: 'family', name: 'Family', sync: true, telegram: true, sharing: true, seats: 5, monthly_paise: 19900, yearly_paise: 149900 },
+  ];
+  const p = (product, term, amountPaise) => ({ product, plan: 'family', term, amountPaise, available: true, name: product, renews: true });
+  const withRenews = { products: [p('family_month', 'month', 19900), p('family_year', 'year', 149900)] };
+  const html = card.html(Entitlements.from({ plan: 'free', state: 'free', paymentsOpen: true }), catalogue, withRenews, null, '', {});
+  ok('C20 a renewing plan\'s button shows the price per term and says it renews', /Get Family · ₹1,499\/year/.test(html) && /Renews every year by auto-debit\. Stop any time\./.test(html));
+  ok('C20 the footer explains auto-debit and what stays one-time', /renew by auto-debit through Razorpay/.test(html) && /one-time payments/.test(html) && !/Nothing renews by itself/.test(html));
+  const renewing = Entitlements.from({ plan: 'family', planName: 'Family', paidPlan: 'family', term: 'year', state: 'active', endsAt: '2027-11-17T00:00:00Z', autoRenew: true,
+    access: { sync: 'write', telegram: 'write', sharing: 'write' }, seats: 5, seatsUsed: 1, paymentsOpen: true });
+  const mine = card.html(renewing, catalogue, withRenews, null, '', {});
+  ok('C20 on auto-debit: "Auto-debit is on" with Stop, and the status says when it renews', /Auto-debit is on/.test(mine) && mine.includes('__app.stopAutoDebit()') && /Renews by auto-debit on/.test(mine));
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

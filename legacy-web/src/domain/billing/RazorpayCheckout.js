@@ -21,22 +21,26 @@ export class RazorpayCheckout {
   }
 
   /**
-   * @param {{keyId: string, orderId: string, amount: number, currency: string, name: string, email?: string}} o
-   * @returns {Promise<{orderId: string, paymentId: string, signature: string}>}
+   * @param {{keyId: string, orderId?: string, subscriptionId?: string, amount: number, currency: string, name: string, email?: string}} o
+   * @returns {Promise<{orderId?: string, subscriptionId?: string, paymentId: string, signature: string}>}
    */
   async open(o) {
     await this.#load();
     return new Promise((resolve, reject) => {
+      // Auto-debit (a subscription) or a one-time order.
+      const target = o.subscriptionId
+        ? { subscription_id: o.subscriptionId }
+        : { order_id: o.orderId, amount: o.amount, currency: o.currency };
       const rzp = new this.#win.Razorpay({
         key: o.keyId,
-        order_id: o.orderId,
-        amount: o.amount,
-        currency: o.currency,
+        ...target,
         name: 'Pocket',
         description: o.name,
         prefill: o.email ? { email: o.email } : undefined,
         theme: { color: '#18181b' },
-        handler: (r) => resolve({ orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }),
+        handler: (r) => resolve(o.subscriptionId
+          ? { subscriptionId: r.razorpay_subscription_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }
+          : { orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }),
         modal: { ondismiss: () => reject(new PaymentError('Payment cancelled.', 'dismissed')) },
       });
       // A failed attempt keeps the window open so the person can retry another

@@ -56,6 +56,25 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-17 · Auto-debit (Razorpay Subscriptions)** (migration 0053). Razorpay approved; live keys set.
+  Renewing: the ₹30 promise (monthly), Pocket Pro (monthly/yearly), Pocket Pro Group (yearly). One-time:
+  Pocket Plus, AI packs, the 3-month offer, the habit programme. Auto-debit is charged at list price (no
+  sales/coupons).
+  - `payments` function: `order` for a renewing product makes (once) a Razorpay plan per product+price
+    (`razorpay_plans`), then a subscription (`razorpay_subscriptions`), and answers `{kind: 'subscription',
+    subscriptionId}`; `verify` with `subscriptionId` checks `payment|subscription`; `cancel` stops auto-debit
+    (cancel now; paid time runs to its end). Webhook: `subscription.charged` → `pocket_subscription_charge`
+    (each charge becomes a `payment_orders` row `sub:<payment>` through `pocket_payment_fulfil`, sets
+    `auto_renew`, adds the promise's 150 credits); other `subscription.*` → `pocket_subscription_status`
+    (stopping clears `auto_renew`). Moving to another renewing plan cancels the old subscription.
+  - **Razorpay dashboard:** the webhook must include the `subscription.*` events (charged, authenticated,
+    activated, pending, halted, cancelled, completed, paused, resumed). Subscriptions must be enabled on the
+    account.
+  - App: `RazorpayCheckout` opens with `subscription_id`; `PaymentService.stopAutoDebit()`; plan card shows
+    "Renews every month/year by auto-debit", "Auto-debit is on · Stop auto-debit"; the promise page's button
+    now pays ₹30/month. Terms, Refunds and the homepage FAQ describe auto-debit.
+  - Tests: payments Deno tests S1–S17; checkout C20.
+
 - **2026-11-16 · The ₹30-a-month promise (built, switched off) and AI credits that expire** (migrations 0047, 0048).
   Owner's rules: adding entries needs ₹30 a month by auto-debit, a paid plan, family cover, or an approved
   request to use Pocket free (approval lasts 6 months; up to 20 entries while a request waits). Each paid month

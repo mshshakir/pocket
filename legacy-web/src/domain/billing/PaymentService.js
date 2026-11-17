@@ -58,9 +58,17 @@ export class PaymentService {
   async buy(product, who = {}) {
     const code = (who.code ?? '').trim();
     const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}) });
+    // For a plan that renews, the server answers with a subscription instead
+    // of an order; Checkout sets up auto-debit and takes the first payment.
     const paid = await this.#checkout.open({ ...order, email: who.email });
     const result = await this.#call({ action: 'verify', ...paid });
     return { applied: result.applied === true };
+  }
+
+  /** Stops auto-debit; the time already paid for runs to its end. */
+  async stopAutoDebit() {
+    const r = await this.#call({ action: 'cancel' });
+    return { cancelled: r.cancelled === true };
   }
 
   async #call(body) {

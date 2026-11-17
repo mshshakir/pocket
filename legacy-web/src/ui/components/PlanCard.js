@@ -56,7 +56,7 @@ export class PlanCard {
       case 'active':
         if (plan.isLifetime) return 'Everything in your plan is included, with no end date.';
         if (plan.term === 'trial') return `Introductory offer until ${day(plan.endsAt)}.`;
-        return plan.endsAt ? `${plan.toJSON().autoRenew ? 'Renews' : 'Active until'} ${day(plan.endsAt)}.` : 'Active.';
+        return plan.endsAt ? `${plan.toJSON().autoRenew ? 'Renews by auto-debit on' : 'Active until'} ${day(plan.endsAt)}.` : 'Active.';
       case 'grace':
         return `Ended ${plan.endsAt ? `on ${day(plan.endsAt)}` : ''}. Your cloud copy is read-only until `
           + `<strong>${day(plan.graceUntil)}</strong>. Please download your data before then.`;
@@ -78,6 +78,11 @@ export class PlanCard {
       rows.push(['Shared space', `${Html.escape(c.ownerEmail)}'s Pocket Pro${c.access === 'read' ? ' (ended, read-only)' : ''}`]);
     }
     rows.push(['AI scans & voice', this.#ai(plan)]);
+    if (plan.plan === 'promise' && plan.state === 'active') {
+      rows.push(['Your ₹30 promise', plan.toJSON().autoRenew
+        ? 'Auto-debit on · <button class="underline plan-stop" onclick="window.__app.stopAutoDebit()">Stop</button>'
+        : 'Auto-debit stopped']);
+    }
     const entries = plan.entries;
     if (entries.why === 'free' && entries.freeUntil) rows.push(['Using Pocket free', `until ${PlanCard.#day(entries.freeUntil)}`]);
     if (entries.why === 'waiting') rows.push(['Request to use free', 'waiting for a reply']);
@@ -133,7 +138,7 @@ export class PlanCard {
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling
-          ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
+          ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : 'Online payment is coming soon.'}</div>
       </div>`;
   }
@@ -159,13 +164,18 @@ export class PlanCard {
       p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
       p.sharing && 'Daily, monthly and yearly family summaries',
     ].filter(Boolean);
-    const verb = current ? `Add 1 ${term}` : plan.isPaid && plan.state === 'active' && plan.term !== 'trial' ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
+    const renewing = current && plan.toJSON().autoRenew;
+    const verb = current ? 'Renew by auto-debit' : plan.isPaid && plan.state === 'active' && plan.term !== 'trial' ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
     const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
     const button = !offers ? ''
+      : renewing ? `<div class="plan-autodebit text-xs text-zinc-500 mt-3 flex items-center justify-between gap-2">
+          <span><i data-lucide="repeat" style="width:13px;height:13px;vertical-align:-2px"></i> Auto-debit is on</span>
+          <button class="btn btn-ghost text-xs plan-stop" ${buying ? 'disabled' : ''} onclick="window.__app.stopAutoDebit()">Stop auto-debit</button></div>`
       : down ? this.#switchDown(p, down, buying)
       : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === 'month' ? 'monthly' : 'yearly'}.</div>`
       : !product.available && product.reason === 'lifetime' ? ''
-      : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}`, buying, true, 'w-full justify-center mt-3')
+      : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ''}`, buying, true, 'w-full justify-center mt-3')
+        + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.</div>` : '')
         + (product.switchDays ? `<div class="plan-switch-note">+ ${PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? 'plan')}</div>` : '');
     const trial = this.#trialLink(p, plan, offers, buying);
     const popular = p.sharing && !p.group_size && !current;
