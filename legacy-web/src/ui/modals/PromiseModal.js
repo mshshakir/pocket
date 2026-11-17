@@ -7,6 +7,7 @@
  *   'signed_out'  the rule is on and they aren't signed in
  * Two pages: the promise itself, and the request form ("Ask to use Pocket free").
  */
+import { Money } from '../../core/Money.js';
 import { Html } from '../../core/Html.js';
 
 export class PromiseModal {
@@ -70,21 +71,21 @@ export class PromiseModal {
       : 'Before your first entry';
     const action = this.#reason === 'signed_out'
       ? `<button class="btn btn-primary w-full justify-center promise-signin" onclick="window.__app.openModal('auth')">Sign in to start</button>`
-      : `<button class="btn btn-primary w-full justify-center promise-keep" onclick="window.__app.promiseStart()">Keep my promise · ₹${a.promiseRupees} a month</button>`;
+      : `<button class="btn btn-primary w-full justify-center promise-keep" onclick="window.__app.promiseStart()">Keep my promise · ${a.promisePrice} a month</button>`;
     const ask = this.#reason === 'signed_out' || this.#reason === 'wait_full' ? '' : `
-      <p class="text-sm text-zinc-500 mt-3 text-center">Can't pay ₹${a.promiseRupees}?
+      <p class="text-sm text-zinc-500 mt-3 text-center">Can't pay ${a.promisePrice}?
         <button class="underline text-indigo-600 promise-ask" onclick="window.__app.promiseAsk()">Ask to use Pocket free</button></p>`;
     return `
       <div class="text-xs font-medium text-emerald-600 mb-1">${Html.escape(lead)}</div>
-      <h3 class="text-lg font-semibold mb-2">₹${a.promiseRupees} a month. It isn't for us. It's for you.</h3>
+      <h3 class="text-lg font-semibold mb-2">${a.promisePrice} a month. It isn't for us. It's for you.</h3>
       <p class="text-sm text-zinc-500 mb-3 leading-relaxed">Pocket works for people who write things down every day.
-        ₹${a.promiseRupees} a month is how you tell yourself you're one of them.</p>
+        ${a.promisePrice} a month is how you tell yourself you're one of them.</p>
       <div class="border-y border-zinc-100 dark:border-zinc-800 py-2.5 mb-4 text-sm leading-7">
-        ${PromiseModal.#line('check', `<b>Every rupee comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
+        ${PromiseModal.#line('check', `<b>Every ${Money.dollars ? 'cent' : 'rupee'} comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
         ${PromiseModal.#line('check', `About ${Math.floor(a.promiseCredits / 5)} receipt scans or ${a.promiseCredits} voice entries`)}
         ${PromiseModal.#line('clock', `Each month's credits last ${a.promiseCreditDays} days`)}
         ${PromiseModal.#line('gift', 'Plus 20 welcome credits that last 6 months')}
-        ${PromiseModal.#line('rotate-ccw', 'Paid by auto-debit. Stop any time.')}
+        ${PromiseModal.#line('rotate-ccw', Money.dollars ? 'Paid a month at a time. Nothing renews by itself.' : 'Paid by auto-debit. Stop any time.')}
       </div>
       ${action}${ask}`;
   }
@@ -94,7 +95,7 @@ export class PromiseModal {
     const a = this.#access();
     return `
       <h3 class="text-lg font-semibold mb-1">Ask to use Pocket free</h3>
-      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">No one should stop looking after their money because of ₹${a.promiseRupees}.
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">No one should stop looking after their money because of ${a.promisePrice}.
         Tell us in a line or two. Only the Pocket team reads it.</p>
       <form onsubmit="window.__app.freeRequestSend(event)" class="space-y-3">
         <label class="block"><span class="text-xs text-zinc-500">Your name</span>

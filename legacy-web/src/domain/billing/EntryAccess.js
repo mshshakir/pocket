@@ -10,6 +10,8 @@
  * and everything is allowed. A person who isn't signed in can't be checked,
  * so when the rule is on they are asked to sign in first.
  */
+import { Money } from '../../core/Money.js';
+
 export class EntryAccess {
   static WHY = Object.freeze(['off', 'plan', 'family', 'free', 'waiting', 'none']);
 
@@ -73,6 +75,8 @@ export class EntryAccess {
   /** The latest request: {status: 'pending'|'approved'|'declined'|'expired', at, validUntil}, or null. */
   get request()           { return this.#d.request ? { ...this.#d.request } : null; }
   get promiseRupees()     { return Math.round(this.#d.promisePaise / 100); }
+  /** The promise's price as shown here: "₹30" in India, "$1" elsewhere (Money). */
+  get promisePrice()      { return Money.format(Money.list('promise_month', this.#d.promisePaise)); }
   get promiseCredits()    { return this.#d.promiseCredits; }
   get promiseCreditDays() { return this.#d.promiseCreditDays; }
 

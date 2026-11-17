@@ -94,7 +94,17 @@ class FakeStore {
   }
 
   saved: Quote[] = [];
-  saveOrder(id: string, user: string, q: Quote) { this.saved.push(q); this.orders.set(id, { user, paid: false, product: q.product! }); return Promise.resolve(); }
+  charged: ({ currency: string; minor: number } | undefined)[] = [];
+  saveOrder(id: string, user: string, q: Quote, charged?: { currency: string; minor: number }) {
+    this.saved.push(q); this.charged.push(charged);
+    this.orders.set(id, { user, paid: false, product: q.product! }); return Promise.resolve();
+  }
+  // ── dollars (0059) ──
+  usd: Record<string, number> = { family_trial: 399, ai_pack: 200, promise_month: 100, programme: 9900 };
+  usdPrices() { return Promise.resolve(this.usd); }
+  productOf(id: string) { return Promise.resolve(this.orders.get(id)?.product ?? null); }
+  promised: string[] = [];
+  promiseCredits(user: string, payment: string) { this.promised.push(`${user}:${payment}`); return Promise.resolve(); }
   ownerOf(id: string) { return Promise.resolve(this.orders.get(id)?.user ?? null); }
   fulfil(id: string, payment: string) {
     const o = this.orders.get(id)!;
@@ -110,7 +120,7 @@ const razorpay = (status = 200) => new RazorpayClient('rzp_test_abc', KEY_SECRET
   const body = JSON.parse(String(init?.body));
   rzpCalls.push({ auth: (init?.headers as Record<string, string>).Authorization, body });
   return Promise.resolve(new Response(JSON.stringify(status === 200
-    ? { id: `order_${rzpCalls.length}`, amount: body.amount, currency: 'INR' }
+    ? { id: `order_${rzpCalls.length}`, amount: body.amount, currency: body.currency ?? 'INR' }
     : { error: { description: 'bad' } }), { status }));
 }) as typeof fetch);
 
@@ -362,6 +372,48 @@ const subSig = (payment: string, sub: string, secret = KEY_SECRET) => new Signat
   s.subRefusal = 'auto_debit_off';
   const off = await make(s, subRazorpay()).handle(app({ action: 'order', product: 'sync_month' }));
   ok('S18 the promise while auto-debit is off: said plainly', /isn't available yet/.test((await off.json()).error));
+}
+
+{
+  // Dollars (0059)
+  const s = new FakeStore(); s.renewing.add('sync_month');
+  const j = await (await make(s).handle(app({ action: 'products', currency: 'USD' }))).json();
+  const pack = j.products.find((p: { product: string }) => p.product === 'ai_pack');
+  ok('U1 dollar list: priced in cents, marked USD', j.currency === 'USD' && pack.amountPaise === 200 && pack.currency === 'USD', JSON.stringify(pack));
+  ok('U2 items with no dollar price are left out', !j.products.some((p: { product: string }) => p.product === 'sync_month'));
+  const c = await (await make(s).handle(app({ action: 'products', currency: 'USD', code: 'AIONLY' }))).json();
+  const cp = c.products.find((p: { product: string }) => p.product === 'ai_pack');
+  ok('U3 a code takes the same share off in dollars', cp.amountPaise === 100 && cp.listPaise === 200 && c.coupon.products.join() === 'ai_pack', JSON.stringify(cp));
+  rzpCalls = [];
+  const o = await (await make(s).handle(app({ action: 'order', product: 'ai_pack', currency: 'USD', code: 'AIONLY' }))).json();
+  ok('U4 the order goes to Razorpay in USD cents', rzpCalls[0]?.body.currency === 'USD' && rzpCalls[0]?.body.amount === 100 && o.currency === 'USD' && o.amount === 100 && o.listAmount === 200, JSON.stringify(o));
+  ok('U5 the order keeps the rupee quote and records the dollar charge', s.saved[0].amountPaise === 5000 && s.charged[0]?.currency === 'USD' && s.charged[0]?.minor === 100);
+  const no = await make(s).handle(app({ action: 'order', product: 'sync_month', currency: 'USD' }));
+  ok('U6 something with no dollar price isn\'t sold in dollars', no.status === 409);
+  rzpCalls = [];
+  const r = await (await make(s).handle(app({ action: 'order', product: 'family_trial' }))).json();
+  ok('U7 rupee orders are unchanged', rzpCalls[0]?.body.currency === 'INR' && r.amount === 5000);
+}
+{
+  const s = new FakeStore(); s.renewing.add('promise_month'); subCalls = []; rzpCalls = [];
+  const h = make(s, razorpay());
+  const o = await (await h.handle(app({ action: 'order', product: 'promise_month', currency: 'USD' }))).json();
+  ok('U8 the promise in dollars: a one-time $1 order, no auto-debit', o.orderId && o.amount === 100 && o.currency === 'USD' && !o.kind, JSON.stringify(o));
+  const res = await (await h.handle(app({ action: 'verify', orderId: o.orderId, paymentId: 'pay_u', signature: await checkoutSig(o.orderId, 'pay_u') }))).json();
+  ok('U9 paying it applies the month and adds the promise\'s AI credits once', res.applied === true && s.promised.join() === 'alice:pay_u');
+  await h.handle(await hook({ event: 'order.paid', payload: { order: { entity: { id: o.orderId } }, payment: { entity: { id: 'pay_u', status: 'captured', order_id: o.orderId } } } }));
+  ok('U10 the webhook for the same payment adds nothing more', s.promised.length === 1);
+  s.subRefusal = 'has_plan';
+  const not = await make(s).handle(app({ action: 'order', product: 'promise_month', currency: 'USD' }));
+  ok('U11 the promise in dollars isn\'t sold to someone whose plan already allows entries', not.status === 409 && /isn't needed/.test((await not.json()).error));
+}
+{
+  const s = new FakeStore(); s.offered = true; rzpCalls = [];
+  const o = await (await make(s).handle(app({ action: 'order', product: 'programme', currency: 'USD' }))).json();
+  ok('U12 the programme place in dollars', rzpCalls[0]?.body.amount === 9900 && rzpCalls[0]?.body.currency === 'USD', JSON.stringify(o));
+  const ai = await (await make(s).handle(app({ action: 'order', product: 'ai_pack', currency: 'USD' }))).json();
+  const hv = await (await make(s).handle(app({ action: 'verify', orderId: ai.orderId, paymentId: 'pay_a', signature: await checkoutSig(ai.orderId, 'pay_a') }))).json();
+  ok('U13 an ordinary dollar purchase adds no promise credits', hv.applied === true && !s.promised.length);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

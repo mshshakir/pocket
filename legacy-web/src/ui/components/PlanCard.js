@@ -8,6 +8,7 @@
  * and says payment is coming.
  */
 import { Html } from '../../core/Html.js';
+import { Money } from '../../core/Money.js';
 
 export class PlanCard {
   /**
@@ -79,7 +80,7 @@ export class PlanCard {
     }
     rows.push(['AI scans & voice', this.#ai(plan)]);
     if (plan.plan === 'promise' && plan.state === 'active') {
-      rows.push(['Your ₹30 promise', plan.toJSON().autoRenew
+      rows.push([`Your ${plan.entries.promisePrice} promise`, plan.toJSON().autoRenew
         ? 'Auto-debit on · <button class="underline plan-stop" onclick="window.__app.stopAutoDebit()">Stop</button>'
         : 'Auto-debit stopped']);
     }
@@ -137,7 +138,9 @@ export class PlanCard {
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join('')}
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews)
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && offers.currency === 'USD'
+          ? `One-time payment by card through Razorpay, in US dollars. Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date. Your bank may add its own currency conversion fee.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
+          : selling && !offers.products.some((o) => o.renews)
           ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : selling
           ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
@@ -151,9 +154,12 @@ export class PlanCard {
     const term = chosen === 'month' && p.monthly_paise == null && p.yearly_paise != null ? 'year' : chosen;
     const current = plan.plan === p.code && plan.state === 'active' && plan.term !== 'trial' && plan.group?.role !== 'member';
     const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
-    const listPaise = term === 'month' ? p.monthly_paise : p.yearly_paise;
-    const price = product ? PlanCard.#price(product) : listPaise != null ? PlanCard.#inr(listPaise) : null;
-    const perMonth = term === 'year' && listPaise != null ? PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
+    const listPaise = Money.list(`${p.code}_${term}`, term === 'month' ? p.monthly_paise : p.yearly_paise);
+    const price = product ? PlanCard.#price(product) : listPaise != null ? Money.format(listPaise) : null;
+    const yearly = product?.amountPaise ?? listPaise;
+    const perMonth = term === 'year' && yearly != null
+      ? (product ? Money.ofItem(product, PlanCard.#perMonth(yearly, product.currency)) : Money.format(PlanCard.#perMonth(yearly, Money.currency())))
+      : null;
     const save = term === 'year' ? PlanCard.#saving(p) : 0;
     const features = p.group_size ? [
       `For ${p.group_size} people, from any household: one pays, adds the others by email`,
@@ -176,7 +182,7 @@ export class PlanCard {
       : down ? this.#switchDown(p, down, buying)
       : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === 'month' ? 'monthly' : 'yearly'}.</div>`
       : !product.available && product.reason === 'lifetime' ? ''
-      : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ''}`, buying, true, 'w-full justify-center mt-3')
+      : this.#button(product, `${verb} · ${Money.ofItem(product)}${product.renews ? `/${term}` : ''}`, buying, true, 'w-full justify-center mt-3')
         + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.
             <button class="underline plan-once" ${buying ? 'disabled' : ''} onclick="window.__app.buyOnce('${Html.escape(product.product)}')">Pay once instead</button></div>` : '')
         + (product.switchDays ? `<div class="plan-switch-note">+ ${PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? 'plan')}</div>` : '');
@@ -285,15 +291,23 @@ export class PlanCard {
     const product = offers?.products.find((o) => o.plan === p.code && o.term === 'trial');
     if (offers && (!product || !product.available)) return '';
     const span = p.trial_days % 30 === 0 ? `${p.trial_days / 30} month${p.trial_days === 30 ? '' : 's'}` : `${p.trial_days} days`;
-    const text = `or start with the first ${span} for ${product ? PlanCard.#price(product) : PlanCard.#inr(p.trial_paise)}`;
+    const listed = Money.list(`${p.code}_trial`, p.trial_paise);
+    if (!product && listed == null) return '';
+    const text = `or start with the first ${span} for ${product ? PlanCard.#price(product) : Money.format(listed)}`;
     if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
     return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? 'disabled' : ''} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? 'Opening…' : text}</button></div>`;
   }
 
   /** Percent saved by paying yearly instead of 12 monthly payments (0 when it can't be worked out). */
   static #saving(p) {
-    if (!p.monthly_paise || !p.yearly_paise) return 0;
-    return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
+    const month = Money.list(`${p.code}_month`, p.monthly_paise), year = Money.list(`${p.code}_year`, p.yearly_paise);
+    if (!month || !year) return 0;
+    return Math.max(0, Math.round((1 - year / (12 * month)) * 100));
+  }
+
+  /** A yearly price as "about … a month": whole rupees, or cents in dollars. */
+  static #perMonth(yearly, currency) {
+    return currency === 'USD' ? Math.round(yearly / 12) : Math.round(yearly / 1200) * 100;
   }
 
   /** Pocket Plus: scheduled Google Drive backups, bought once (hidden once someone has it, or on Pocket Pro). */
@@ -372,17 +386,13 @@ export class PlanCard {
   /** "You save ₹300 with LAUNCH20" under a price the code changed. */
   static #codeNote(o) {
     if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return '';
-    return `<div class="plan-code-note">You save ${PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
+    return `<div class="plan-code-note">You save ${Money.ofItem(o, o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
   }
 
   /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
   static #price(o) {
-    const now = PlanCard.#inr(o.amountPaise);
+    const now = Money.ofItem(o);
     if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
-    return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? 'Offer')}">${PlanCard.#inr(o.listPaise)}</s> ${now}`;
-  }
-
-  static #inr(paise) {
-    return (paise / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: paise % 100 ? 2 : 0 });
+    return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? 'Offer')}">${Money.ofItem(o, o.listPaise)}</s> ${now}`;
   }
 }

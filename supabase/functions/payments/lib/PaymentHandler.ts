@@ -35,12 +35,21 @@
  *   completed / paused / resumed → the subscription's status; when it stops,
  *   the plan stops renewing.
  *
+ * Dollars (migration 0059): with currency: 'USD' on products and order, items
+ * are priced from usd_prices (amountPaise/listPaise then hold cents, with
+ * currency: 'USD'), never renew, and are charged as one-time USD orders. The
+ * promise is then paid one month at a time. Items with no dollar price aren't
+ * listed or sold in dollars.
+ *
  * Errors are { error, code }: signed_out, bad_request, closed, not_allowed,
  * bad_coupon, not_set_up, bad_signature, not_yours, failed.
  */
 import type { PaymentStore, Quote, SubscriptionQuote } from './PaymentStore.ts';
 import { RazorpayError, type RazorpayClient } from './RazorpayClient.ts';
 import { Signature } from './Signature.ts';
+import { UsdPricing } from './UsdPricing.ts';
+
+type Currency = 'INR' | 'USD';
 
 export type UserLookup = (authorization: string) => Promise<string | null>;
 
@@ -113,12 +122,15 @@ export class PaymentHandler {
       case 'products': {
         const code = PaymentHandler.#code(body.code);
         if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
-        return await this.#products(userId, code);
+        const res = await this.#products(userId, code);
+        return PaymentHandler.#currency(body) === 'USD' ? await this.#inDollars(res) : res;
       }
       case 'order': {
         const code = PaymentHandler.#code(body.code);
         if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
-        return await this.#order(userId, String(body.product ?? ''), code, body.once === true);
+        const product = String(body.product ?? '');
+        if (PaymentHandler.#currency(body) === 'USD') return await this.#orderInDollars(userId, product, code);
+        return await this.#order(userId, product, code, body.once === true);
       }
       case 'verify': return body.subscriptionId ? await this.#verifySubscription(userId, body) : await this.#verify(userId, body);
       case 'cancel': return await this.#cancel(userId);
@@ -196,6 +208,78 @@ export class PaymentHandler {
     });
   }
 
+  // ── dollars ─────────────────────────────────────────────────────
+
+  /** The products answer re-priced in dollars; items without a dollar price are left out. */
+  async #inDollars(res: Response): Promise<Response> {
+    if (!res.ok) return res;
+    const data = await res.json() as { products: { product: string; amountPaise: number; listPaise?: number }[]; coupon?: { code: string; products: string[] } };
+    const usd = new UsdPricing(await this.#store.usdPrices());
+    const products = data.products.map((p) => usd.item(p)).filter((p) => p !== null);
+    const out: Record<string, unknown> = { ...data, currency: 'USD', products };
+    if (data.coupon) {
+      const fits = data.coupon.products.filter((p) => usd.has(p));
+      if (!fits.length) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_not_for_this);
+      out.coupon = { ...data.coupon, products: fits };
+    }
+    return this.#json(200, out);
+  }
+
+  /** A one-time USD order: rules and offers from the rupee quote, amount from usd_prices. */
+  async #orderInDollars(userId: string, product: string, coupon: string | null): Promise<Response> {
+    let quote: Quote;
+    if (product.startsWith('promise_')) {
+      // Paid a month at a time in dollars; the auto-debit quote carries the promise's rules.
+      const q = await this.#store.subscriptionQuote(userId, product);
+      if (!q.ok && q.reason !== 'auto_debit_off') {
+        const reason = q.reason === 'has_plan' ? 'promise_not_needed' : q.reason ?? 'unknown';
+        return this.#fail(reason === 'closed' ? 503 : 409, reason === 'closed' ? 'closed' : 'not_allowed', PaymentHandler.#REFUSALS[reason] ?? 'Not available.');
+      }
+      if (!q.amountPaise) return this.#fail(409, 'not_allowed', PaymentHandler.#REFUSALS.unknown);
+      quote = { ok: true, product, plan: q.plan, term: q.term, amountPaise: q.amountPaise, name: q.name };
+    } else {
+      quote = await this.#store.quote(userId, product, coupon);
+      if (!quote.ok) {
+        const reason = quote.reason ?? '';
+        const code = reason === 'closed' ? 'closed' : reason.startsWith('coupon_') ? 'bad_coupon' : 'not_allowed';
+        return this.#fail(reason === 'closed' ? 503 : 409, code, PaymentHandler.#REFUSALS[reason] ?? 'Not available.');
+      }
+    }
+    const usd = new UsdPricing(await this.#store.usdPrices());
+    const cents = usd.cents(product, quote.amountPaise!, quote.listPaise);
+    if (cents == null) return this.#fail(409, 'not_allowed', PaymentHandler.#REFUSALS.unknown);
+    const listCents = usd.cents(product, quote.listPaise ?? quote.amountPaise!) ?? cents;
+    if (!this.#razorpay) return this.#fail(503, 'not_set_up', 'Payments aren\'t set up yet. Please try again later.');
+
+    let order;
+    try {
+      const notes: Record<string, string> = { user_id: userId, product, currency: 'USD' };
+      if (quote.coupon) notes.coupon = quote.coupon;
+      order = await this.#razorpay.createOrder(cents, `pocket-${product}-${Date.now()}`, notes, 'USD');
+    } catch (e) {
+      if (e instanceof RazorpayError) return this.#fail(502, 'failed', `${e.message} You weren't charged.`);
+      throw e;
+    }
+    await this.#store.saveOrder(order.id, userId, quote, { currency: 'USD', minor: cents });
+    return this.#json(200, {
+      orderId: order.id, keyId: this.#razorpay.keyId, amount: order.amount, listAmount: listCents,
+      coupon: quote.coupon ?? null, currency: order.currency, name: quote.name,
+    });
+  }
+
+  /** Applies a paid order, plus the promise's AI credits when it was a month of the promise. */
+  async #fulfil(orderId: string, paymentId: string, userId: string) {
+    const r = await this.#store.fulfil(orderId, paymentId);
+    if (r.applied && (await this.#store.productOf(orderId))?.startsWith('promise_')) {
+      await this.#store.promiseCredits(userId, paymentId);
+    }
+    return r;
+  }
+
+  static #currency(body: Record<string, unknown>): Currency {
+    return body.currency === 'USD' ? 'USD' : 'INR';
+  }
+
   async #verify(userId: string, body: Record<string, unknown>): Promise<Response> {
     const orderId = String(body.orderId ?? ''), paymentId = String(body.paymentId ?? ''), signature = String(body.signature ?? '');
     if (!orderId || !paymentId) return this.#fail(400, 'bad_request', 'Missing payment details.');
@@ -203,7 +287,7 @@ export class PaymentHandler {
       return this.#fail(400, 'bad_signature', 'The payment couldn\'t be confirmed. If you were charged, it will be applied shortly.');
     }
     if ((await this.#store.ownerOf(orderId)) !== userId) return this.#fail(403, 'not_yours', 'That payment belongs to another account.');
-    return this.#json(200, await this.#store.fulfil(orderId, paymentId));
+    return this.#json(200, await this.#fulfil(orderId, paymentId, userId));
   }
 
   // ── auto-debit ──────────────────────────────────────────────────
@@ -281,8 +365,9 @@ export class PaymentHandler {
     const paid = event?.event === 'order.paid' || (event?.event === 'payment.captured' && payment?.status === 'captured');
     if (!paid || !orderId || !payment?.id) return this.#json(200, { ignored: true });
     // Not one of Pocket's orders (another product on the same account): acknowledge and move on.
-    if (!(await this.#store.ownerOf(orderId))) return this.#json(200, { ignored: true });
-    return this.#json(200, await this.#store.fulfil(orderId, payment.id));
+    const owner = await this.#store.ownerOf(orderId);
+    if (!owner) return this.#json(200, { ignored: true });
+    return this.#json(200, await this.#fulfil(orderId, payment.id, owner));
   }
 
   async #subscriptionEvent(event: Record<string, any>): Promise<Response> {

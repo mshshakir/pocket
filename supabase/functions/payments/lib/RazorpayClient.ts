@@ -30,8 +30,9 @@ export class RazorpayClient {
   }
 
   /** @throws RazorpayError */
-  async createOrder(amountPaise: number, receipt: string, notes: Record<string, string>): Promise<RazorpayOrder> {
-    const body = await this.#post('/orders', { amount: amountPaise, currency: 'INR', receipt: receipt.slice(0, 40), notes },
+  /** @param amount in the currency's smallest unit (paise, cents) */
+  async createOrder(amount: number, receipt: string, notes: Record<string, string>, currency: 'INR' | 'USD' = 'INR'): Promise<RazorpayOrder> {
+    const body = await this.#post('/orders', { amount, currency, receipt: receipt.slice(0, 40), notes },
       'Razorpay could not start the payment.');
     return { id: body.id, amount: body.amount, currency: body.currency };
   }

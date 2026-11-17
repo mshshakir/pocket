@@ -88,12 +88,17 @@ export class PaymentStore {
     return (await this.#rpc('pocket_payment_quote_with', { p_user: userId, p_product: product, p_code: code })) as Quote;
   }
 
-  async saveOrder(orderId: string, userId: string, q: Quote): Promise<void> {
+  /**
+   * @param charged what Razorpay was asked for, when it isn't the rupee
+   *   quote itself (a dollar order: currency 'USD', minor = cents)
+   */
+  async saveOrder(orderId: string, userId: string, q: Quote, charged?: { currency: 'USD'; minor: number }): Promise<void> {
     const { error } = await this.#admin.from('payment_orders').insert({
       id: orderId, user_id: userId, product: q.product, plan: q.plan ?? null, term: q.term ?? null,
       ai_credits: q.aiCredits ?? null, amount_paise: q.amountPaise, list_paise: q.listPaise ?? null,
       offer_ids: q.offerIds?.length ? q.offerIds : null, coupon_code: q.coupon ?? null,
       application_id: q.applicationId ?? null,
+      ...(charged ? { currency: charged.currency, charged_minor: charged.minor } : {}),
     });
     if (error) throw new Error(`saving the order failed: ${error.message}`);
   }
@@ -106,6 +111,25 @@ export class PaymentStore {
   /** Moves to a cheaper plan without paying; the time left becomes days there. */
   async switchPlan(userId: string, plan: string): Promise<Switched> {
     return (await this.#rpc('pocket_payment_switch', { p_user: userId, p_plan: plan })) as Switched;
+  }
+
+  /** Dollar prices in cents, by product (migration 0059). */
+  async usdPrices(): Promise<Record<string, number>> {
+    const { data, error } = await this.#admin.from('usd_prices').select('product, cents');
+    if (error) throw new Error(`reading dollar prices failed: ${error.message}`);
+    return Object.fromEntries(((data ?? []) as { product: string; cents: number }[]).map((r) => [r.product, r.cents]));
+  }
+
+  /** What an order was for, or null when it isn't one of ours. */
+  async productOf(orderId: string): Promise<string | null> {
+    const { data, error } = await this.#admin.from('payment_orders').select('product').eq('id', orderId).maybeSingle();
+    if (error) throw new Error(`reading the order failed: ${error.message}`);
+    return (data as { product: string } | null)?.product ?? null;
+  }
+
+  /** The promise's monthly AI credits for one paid month. Safe to repeat (keyed by the payment). */
+  async promiseCredits(userId: string, paymentId: string): Promise<void> {
+    await this.#rpc('pocket_promise_credits', { p_user: userId, p_ref: paymentId });
   }
 
   /** Who placed an order, or null when it isn't one of ours. */

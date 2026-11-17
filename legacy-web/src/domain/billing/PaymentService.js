@@ -8,8 +8,12 @@
  * Prices and rules live on the server (the `payments` function and the
  * database); the app never sends an amount. If the app loses the answer after
  * paying, Razorpay's webhook applies the payment anyway.
+ *
+ * Outside India's time zone everything is listed and charged in US dollars
+ * (Money.currency()); amounts then come back in cents with currency 'USD'.
  */
 import { PaymentError } from './PaymentError.js';
+import { Money } from '../../core/Money.js';
 
 export class PaymentService {
   #invoker;
@@ -20,9 +24,20 @@ export class PaymentService {
    *   supabase.functions.invoke for the signed-in person, or null when signed out
    * @param {{open: (o: object) => Promise<{orderId: string, paymentId: string, signature: string}>}} checkout
    */
-  constructor(invoker, checkout) {
+  #currency;
+
+  /**
+   * @param {() => ('INR'|'USD')} [currency]  which currency to list and charge in
+   */
+  constructor(invoker, checkout, currency = () => Money.currency()) {
     this.#invoker = invoker;
     this.#checkout = checkout;
+    this.#currency = currency;
+  }
+
+  /** {} in rupees (the default), { currency: 'USD' } in dollars. */
+  #inCurrency() {
+    return this.#currency() === 'USD' ? { currency: 'USD' } : {};
   }
 
   /**
@@ -34,8 +49,9 @@ export class PaymentService {
    */
   async offers(code = '') {
     const c = String(code ?? '').trim();
-    const data = await this.#call({ action: 'products', ...(c ? { code: c } : {}) });
+    const data = await this.#call({ action: 'products', ...(c ? { code: c } : {}), ...this.#inCurrency() });
     return { keyId: data.keyId ?? null, coupon: data.coupon ?? null, switches: data.switches ?? {},
+             currency: data.currency === 'USD' ? 'USD' : 'INR',
              products: Array.isArray(data.products) ? data.products : [] };
   }
 
@@ -57,7 +73,7 @@ export class PaymentService {
 
   async buy(product, who = {}) {
     const code = (who.code ?? '').trim();
-    const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}), ...(who.once ? { once: true } : {}) });
+    const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}), ...(who.once ? { once: true } : {}), ...this.#inCurrency() });
     // For a plan that renews, the server answers with a subscription instead
     // of an order; Checkout sets up auto-debit and takes the first payment.
     const paid = await this.#checkout.open({ ...order, email: who.email });

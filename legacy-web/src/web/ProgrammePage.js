@@ -13,6 +13,7 @@
  */
 import { Html } from '../core/Html.js';
 import { PaymentService } from '../domain/billing/PaymentService.js';
+import { Money } from '../core/Money.js';
 import { RazorpayCheckout } from '../domain/billing/RazorpayCheckout.js';
 import { ProgrammeBatches } from './ProgrammeBatches.js';
 
@@ -180,7 +181,7 @@ export class ProgrammePage {
         </div>
         <label class="flex items-start gap-3 text-sm text-zinc-700">
           <input type="checkbox" name="consent" class="mt-1" required ${this.#app && this.#app.status !== 'withdrawn' ? 'checked' : ''}>
-          <span>I agree to the programme terms: ₹5,000 for 6 weeks (₹4,500 if paid in full; or ₹2,500 now and ₹2,500 when the 6 weeks end), <b>not refundable once my place is confirmed</b>. If I pay half now, I will pay the second half when the 6 weeks end. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
+          <span>I agree to the programme terms: ${Money.dollars ? '$118 for 6 weeks ($99 if paid in full; or $59 now and $59 when the 6 weeks end)' : '₹5,000 for 6 weeks (₹4,500 if paid in full; or ₹2,500 now and ₹2,500 when the 6 weeks end)'}, <b>not refundable once my place is confirmed</b>. If I pay half now, I will pay the second half when the 6 weeks end. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
         </label>
         <div class="flex flex-wrap gap-3">
           <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : (this.#batches?.open ? 'Apply now' : this.#batches ? 'Join the waitlist' : 'Apply')}</button>
@@ -206,8 +207,8 @@ export class ProgrammePage {
     const a = this.#app;
     if (a.payPlan !== 'split' || a.restPaid || !a.paymentsOpen) return '';
     const b = a.batch ?? {};
-    const rest = b.restPaise ?? Math.ceil((b.pricePaise ?? 500000) / 2);
-    const inr = (p) => (p / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+    const rest = Money.dollars ? Money.usd('programme_rest') : b.restPaise ?? Math.ceil((b.pricePaise ?? 500000) / 2);
+    const inr = (p) => Money.format(p);
     const ended = !!b.endsOn && new Date() >= new Date(`${b.endsOn}T00:00:00`);
     const when = b.endsOn ? new Date(`${b.endsOn}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : 'the end of the programme';
     return `
@@ -223,7 +224,7 @@ export class ProgrammePage {
   #status() {
     const a = this.#app;
     const day = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : 'date to be confirmed');
-    const inr = (p) => (p / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+    const inr = (p) => Money.format(p);
     const head = (icon, title, text) => `
       <div class="flex items-start gap-3"><span class="w-10 h-10 rounded-xl grid place-items-center bg-emerald-50 text-emerald-700 shrink-0"><i data-lucide="${icon}"></i></span>
       <div><h2 class="text-lg font-bold">${title}</h2><p class="text-zinc-600 mt-1">${text}</p></div></div>`;
@@ -239,6 +240,9 @@ export class ProgrammePage {
         const upfront = b.upfrontPaise ?? full;
         const half = b.halfPaise ?? Math.floor(full / 2);
         const rest = b.restPaise ?? full - half;
+        // Outside India: the dollar prices (usd_prices; what the payments function charges).
+        const usd = Money.dollars ? { full: Money.usd('programme_full'), upfront: Money.usd('programme'), half: Money.usd('programme_half'), rest: Money.usd('programme_rest') } : null;
+        const [pFull, pUpfront, pHalf, pRest] = usd ? [usd.full, usd.upfront, usd.half, usd.rest] : [full, upfront, half, rest];
         const busy = this.#busy ? 'disabled' : '';
         main = head('party-popper', `A place is waiting for you in ${Html.escape(b.name ?? 'the next batch')}`,
           `It starts on <b>${day(b.startsOn)}</b>. Choose how to pay to confirm your place.${a.holdUntil ? ` <span class="programme-hold">We're holding it for you until <b>${ProgrammePage.#when(a.holdUntil)}</b>; after that it goes to the next person.</span>` : ''}`)
@@ -246,15 +250,15 @@ export class ProgrammePage {
             ? `<div class="mt-5 grid sm:grid-cols-2 gap-3">
                  <div class="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
                    <div class="font-semibold">Pay in full</div>
-                   <div class="text-2xl font-bold mt-1">${inr(upfront)}</div>
-                   ${upfront < full ? `<div class="text-xs text-emerald-700 mt-0.5">Save ${inr(full - upfront)}</div>` : ''}
-                   <button data-action="pay" data-product="programme" class="btn-main mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(upfront)}`}</button>
+                   <div class="text-2xl font-bold mt-1">${inr(pUpfront)}</div>
+                   ${pUpfront < pFull ? `<div class="text-xs text-emerald-700 mt-0.5">Save ${inr(pFull - pUpfront)}</div>` : ''}
+                   <button data-action="pay" data-product="programme" class="btn-main mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(pUpfront)}`}</button>
                  </div>
                  <div class="rounded-xl border border-zinc-200 bg-white p-4">
                    <div class="font-semibold">Half now, half at the end</div>
-                   <div class="text-2xl font-bold mt-1">${inr(half)} <span class="text-sm font-normal text-zinc-500">now</span></div>
-                   <div class="text-xs text-zinc-500 mt-0.5">${inr(rest)} when the 6 weeks end${b.endsOn ? ` (${day(b.endsOn)})` : ''}</div>
-                   <button data-action="pay" data-product="programme_half" class="btn-soft mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(half)} now`}</button>
+                   <div class="text-2xl font-bold mt-1">${inr(pHalf)} <span class="text-sm font-normal text-zinc-500">now</span></div>
+                   <div class="text-xs text-zinc-500 mt-0.5">${inr(pRest)} when the 6 weeks end${b.endsOn ? ` (${day(b.endsOn)})` : ''}</div>
+                   <button data-action="pay" data-product="programme_half" class="btn-soft mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(pHalf)} now`}</button>
                  </div>
                </div>
                <div class="mt-3"><input id="programmeCode" class="field max-w-[12rem] uppercase" placeholder="Code (optional)" maxlength="32" autocomplete="off"></div>

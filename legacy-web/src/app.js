@@ -14,6 +14,7 @@ import { Router }     from './core/Router.js';
 // ── Data ─────────────────────────────────────────────────────────────────────
 import { SeedFactory } from './data/seed.js';
 import { DemoMode } from './core/DemoMode.js';
+import { Money } from './core/Money.js';
 import { BookCleaner } from './domain/services/BookCleaner.js';
 import { StateMigrator } from './data/StateMigrator.js';
 import {
@@ -5305,7 +5306,7 @@ export class Application {
   #backupOffer() {
     const item = this.#paymentOffers?.products?.find((o) => o.product === 'drive_backup' && o.available);
     if (!item) return null;
-    return { price: `₹${(item.amountPaise / 100).toLocaleString('en-IN')}`, buying: this.#buying === 'drive_backup' };
+    return { price: Money.ofItem(item), buying: this.#buying === 'drive_backup' };
   }
 
   /** Buy scheduled and automatic backups (one-time). Needs a sign-in so the purchase is remembered. */
@@ -5434,7 +5435,8 @@ export class Application {
       await this.#payments.buy('promise_month', { email: this.#sync.currentUser.email });
       await this.#refreshPlanInfo();
       this.closeModal();
-      this.#toast.show('Promise kept: ₹30 a month. 150 AI credits added');
+      const access = this.getPlan()?.entries;
+      this.#toast.show(`Promise kept: ${access?.promisePrice ?? '₹30'} a month. ${access?.promiseCredits ?? 150} AI credits added`);
     } catch (e) {
       if (e?.code !== 'dismissed') this.#toast.show(e?.message || 'The payment didn\'t go through. Please try again.');
     } finally {

@@ -1900,6 +1900,75 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/core/Money.js
+  var Money = class _Money {
+    static #INDIA = /* @__PURE__ */ new Set(["Asia/Kolkata", "Asia/Calcutta"]);
+    /** Dollar list prices in cents, by product (keep in step with usd_prices). */
+    static #USD = Object.freeze({
+      family_month: 299,
+      family_year: 2499,
+      family_trial: 399,
+      group_year: 4999,
+      drive_backup: 499,
+      ai_pack: 200,
+      promise_month: 100,
+      programme_full: 11800,
+      programme: 9900,
+      programme_half: 5900,
+      programme_rest: 5900
+    });
+    /** For tests: a fixed time zone instead of the device's. @type {string|null} */
+    static zoneOverride = null;
+    /** The device's time zone, e.g. 'Asia/Kolkata' ('' when it can't be read). */
+    static zone() {
+      if (_Money.zoneOverride != null) return _Money.zoneOverride;
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      } catch (_) {
+        return "";
+      }
+    }
+    /** 'INR' in India's time zone, 'USD' anywhere else. An unreadable zone counts as India. */
+    static currency(zone = _Money.zone()) {
+      return !zone || _Money.#INDIA.has(zone) ? "INR" : "USD";
+    }
+    static get dollars() {
+      return _Money.currency() === "USD";
+    }
+    /**
+     * "₹1,499" / "$24.99"; whole amounts without decimals ("$2", "₹99").
+     * @param {number} minor  paise or cents
+     * @param {'INR'|'USD'} [currency]
+     */
+    static format(minor, currency = _Money.currency()) {
+      const usd = currency === "USD";
+      return (minor / 100).toLocaleString(usd ? "en-US" : "en-IN", {
+        style: "currency",
+        currency: usd ? "USD" : "INR",
+        maximumFractionDigits: minor % 100 ? 2 : 0
+      });
+    }
+    /**
+     * A list price in the shown currency, from the rupee price the plans table
+     * gives: the rupees in India, the dollar list price elsewhere (null when
+     * that product isn't sold in dollars).
+     * @param {string} product  e.g. 'family_year'
+     * @param {number|null|undefined} paise
+     */
+    static list(product, paise) {
+      if (!_Money.dollars) return paise ?? null;
+      return _Money.#USD[product] ?? null;
+    }
+    /** The dollar list price in cents (null when not sold in dollars). */
+    static usd(product) {
+      return _Money.#USD[product] ?? null;
+    }
+    /** An item from the payments function: written in its own currency. */
+    static ofItem(o, minor = o.amountPaise) {
+      return _Money.format(minor, o.currency === "USD" ? "USD" : "INR");
+    }
+  };
+
   // src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
@@ -6844,6 +6913,10 @@ RULES:
     get promiseRupees() {
       return Math.round(this.#d.promisePaise / 100);
     }
+    /** The promise's price as shown here: "₹30" in India, "$1" elsewhere (Money). */
+    get promisePrice() {
+      return Money.format(Money.list("promise_month", this.#d.promisePaise));
+    }
     get promiseCredits() {
       return this.#d.promiseCredits;
     }
@@ -7364,9 +7437,18 @@ RULES:
      *   supabase.functions.invoke for the signed-in person, or null when signed out
      * @param {{open: (o: object) => Promise<{orderId: string, paymentId: string, signature: string}>}} checkout
      */
-    constructor(invoker, checkout) {
+    #currency;
+    /**
+     * @param {() => ('INR'|'USD')} [currency]  which currency to list and charge in
+     */
+    constructor(invoker, checkout, currency = () => Money.currency()) {
       this.#invoker = invoker;
       this.#checkout = checkout;
+      this.#currency = currency;
+    }
+    /** {} in rupees (the default), { currency: 'USD' } in dollars. */
+    #inCurrency() {
+      return this.#currency() === "USD" ? { currency: "USD" } : {};
     }
     /**
      * What's for sale. With a coupon code, each item it applies to comes back
@@ -7377,11 +7459,12 @@ RULES:
      */
     async offers(code = "") {
       const c = String(code ?? "").trim();
-      const data = await this.#call({ action: "products", ...c ? { code: c } : {} });
+      const data = await this.#call({ action: "products", ...c ? { code: c } : {}, ...this.#inCurrency() });
       return {
         keyId: data.keyId ?? null,
         coupon: data.coupon ?? null,
         switches: data.switches ?? {},
+        currency: data.currency === "USD" ? "USD" : "INR",
         products: Array.isArray(data.products) ? data.products : []
       };
     }
@@ -7402,7 +7485,7 @@ RULES:
     }
     async buy(product, who = {}) {
       const code = (who.code ?? "").trim();
-      const order = await this.#call({ action: "order", product, ...code ? { code } : {}, ...who.once ? { once: true } : {} });
+      const order = await this.#call({ action: "order", product, ...code ? { code } : {}, ...who.once ? { once: true } : {}, ...this.#inCurrency() });
       const paid = await this.#checkout.open({ ...order, email: who.email });
       const result = await this.#call({ action: "verify", ...paid });
       return { applied: result.applied === true };
@@ -12173,7 +12256,7 @@ This replaces your current grouping.`
       }
       rows.push(["AI scans & voice", this.#ai(plan)]);
       if (plan.plan === "promise" && plan.state === "active") {
-        rows.push(["Your \u20B930 promise", plan.toJSON().autoRenew ? 'Auto-debit on \xB7 <button class="underline plan-stop" onclick="window.__app.stopAutoDebit()">Stop</button>' : "Auto-debit stopped"]);
+        rows.push([`Your ${plan.entries.promisePrice} promise`, plan.toJSON().autoRenew ? 'Auto-debit on \xB7 <button class="underline plan-stop" onclick="window.__app.stopAutoDebit()">Stop</button>' : "Auto-debit stopped"]);
       }
       const entries = plan.entries;
       if (entries.why === "free" && entries.freeUntil) rows.push(["Using Pocket free", `until ${_PlanCard.#day(entries.freeUntil)}`]);
@@ -12226,7 +12309,7 @@ This replaces your current grouping.`
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && offers.currency === "USD" ? `One-time payment by card through Razorpay, in US dollars. Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date. Your bank may add its own currency conversion fee.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
     }
     /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
@@ -12234,9 +12317,10 @@ This replaces your current grouping.`
       const term = chosen === "month" && p.monthly_paise == null && p.yearly_paise != null ? "year" : chosen;
       const current = plan.plan === p.code && plan.state === "active" && plan.term !== "trial" && plan.group?.role !== "member";
       const product = offers?.products.find((o) => o.plan === p.code && o.term === term);
-      const listPaise = term === "month" ? p.monthly_paise : p.yearly_paise;
-      const price = product ? _PlanCard.#price(product) : listPaise != null ? _PlanCard.#inr(listPaise) : null;
-      const perMonth = term === "year" && listPaise != null ? _PlanCard.#inr(Math.round((product?.amountPaise ?? listPaise) / 1200) * 100) : null;
+      const listPaise = Money.list(`${p.code}_${term}`, term === "month" ? p.monthly_paise : p.yearly_paise);
+      const price = product ? _PlanCard.#price(product) : listPaise != null ? Money.format(listPaise) : null;
+      const yearly = product?.amountPaise ?? listPaise;
+      const perMonth = term === "year" && yearly != null ? product ? Money.ofItem(product, _PlanCard.#perMonth(yearly, product.currency)) : Money.format(_PlanCard.#perMonth(yearly, Money.currency())) : null;
       const save = term === "year" ? _PlanCard.#saving(p) : 0;
       const features = p.group_size ? [
         `For ${p.group_size} people, from any household: one pays, adds the others by email`,
@@ -12254,7 +12338,7 @@ This replaces your current grouping.`
       const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
       const button = !offers ? "" : renewing ? `<div class="plan-autodebit text-xs text-zinc-500 mt-3 flex items-center justify-between gap-2">
           <span><i data-lucide="repeat" style="width:13px;height:13px;vertical-align:-2px"></i> Auto-debit is on</span>
-          <button class="btn btn-ghost text-xs plan-stop" ${buying ? "disabled" : ""} onclick="window.__app.stopAutoDebit()">Stop auto-debit</button></div>` : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ""}`, buying, true, "w-full justify-center mt-3") + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.
+          <button class="btn btn-ghost text-xs plan-stop" ${buying ? "disabled" : ""} onclick="window.__app.stopAutoDebit()">Stop auto-debit</button></div>` : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${Money.ofItem(product)}${product.renews ? `/${term}` : ""}`, buying, true, "w-full justify-center mt-3") + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.
             <button class="underline plan-once" ${buying ? "disabled" : ""} onclick="window.__app.buyOnce('${Html.escape(product.product)}')">Pay once instead</button></div>` : "") + (product.switchDays ? `<div class="plan-switch-note">+ ${_PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? "plan")}</div>` : "");
       const trial = this.#trialLink(p, plan, offers, buying);
       const popular = p.sharing && !p.group_size && !current;
@@ -12357,14 +12441,21 @@ This replaces your current grouping.`
       const product = offers?.products.find((o) => o.plan === p.code && o.term === "trial");
       if (offers && (!product || !product.available)) return "";
       const span = p.trial_days % 30 === 0 ? `${p.trial_days / 30} month${p.trial_days === 30 ? "" : "s"}` : `${p.trial_days} days`;
-      const text = `or start with the first ${span} for ${product ? _PlanCard.#price(product) : _PlanCard.#inr(p.trial_paise)}`;
+      const listed = Money.list(`${p.code}_trial`, p.trial_paise);
+      if (!product && listed == null) return "";
+      const text = `or start with the first ${span} for ${product ? _PlanCard.#price(product) : Money.format(listed)}`;
       if (!product) return `<div class="text-xs text-zinc-500 mt-2 text-center">${text}</div>`;
       return `<div class="mt-2 text-center"><button class="plan-trial" ${buying ? "disabled" : ""} onclick="window.__app.buy('${Html.escape(product.product)}')">${buying === product.product ? "Opening\u2026" : text}</button></div>`;
     }
     /** Percent saved by paying yearly instead of 12 monthly payments (0 when it can't be worked out). */
     static #saving(p) {
-      if (!p.monthly_paise || !p.yearly_paise) return 0;
-      return Math.max(0, Math.round((1 - p.yearly_paise / (12 * p.monthly_paise)) * 100));
+      const month = Money.list(`${p.code}_month`, p.monthly_paise), year = Money.list(`${p.code}_year`, p.yearly_paise);
+      if (!month || !year) return 0;
+      return Math.max(0, Math.round((1 - year / (12 * month)) * 100));
+    }
+    /** A yearly price as "about … a month": whole rupees, or cents in dollars. */
+    static #perMonth(yearly, currency) {
+      return currency === "USD" ? Math.round(yearly / 12) : Math.round(yearly / 1200) * 100;
     }
     /** Pocket Plus: scheduled Google Drive backups, bought once (hidden once someone has it, or on Pocket Pro). */
     #backupAddon(plan, offers, buying) {
@@ -12438,16 +12529,13 @@ This replaces your current grouping.`
     /** "You save ₹300 with LAUNCH20" under a price the code changed. */
     static #codeNote(o) {
       if (!o?.coupon || !o.listPaise || o.listPaise <= o.amountPaise) return "";
-      return `<div class="plan-code-note">You save ${_PlanCard.#inr(o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
+      return `<div class="plan-code-note">You save ${Money.ofItem(o, o.listPaise - o.amountPaise)} with ${Html.escape(o.coupon)}</div>`;
     }
     /** "₹1,499", or with a running sale "<s>₹1,499</s> ₹1,199" and the sale's name as a tooltip. */
     static #price(o) {
-      const now = _PlanCard.#inr(o.amountPaise);
+      const now = Money.ofItem(o);
       if (!o.listPaise || o.listPaise <= o.amountPaise) return now;
-      return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? "Offer")}">${_PlanCard.#inr(o.listPaise)}</s> ${now}`;
-    }
-    static #inr(paise) {
-      return (paise / 100).toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: paise % 100 ? 2 : 0 });
+      return `<s class="plan-was" title="${Html.escape(o.coupon ? `Code ${o.coupon}` : o.sale ?? "Offer")}">${Money.ofItem(o, o.listPaise)}</s> ${now}`;
     }
   };
 
@@ -24352,7 +24440,7 @@ This replaces your current grouping.`
           "sprout",
           "border-amber-200 bg-amber-50 text-amber-900",
           "Make recording a daily habit",
-          `${text} \u20B94,500 in full, or \u20B92,500 now and \u20B92,500 at the end.`,
+          `${text} ${Money.dollars ? "$99 in full, or $59 now and $59 at the end." : "\u20B94,500 in full, or \u20B92,500 now and \u20B92,500 at the end."}`,
           link("programme.html", "See the programme")
         );
       }
@@ -25468,21 +25556,21 @@ ${body}\r
       const a = this.#access();
       const req = a.request;
       const lead = this.#reason === "wait_full" ? `You've added ${a.waitLimit} entries while we read your request.` : req?.status === "declined" ? "We couldn't approve your request to use Pocket free." : req?.status === "expired" ? "Your free use of Pocket has ended. You can ask again." : "Before your first entry";
-      const action = this.#reason === "signed_out" ? `<button class="btn btn-primary w-full justify-center promise-signin" onclick="window.__app.openModal('auth')">Sign in to start</button>` : `<button class="btn btn-primary w-full justify-center promise-keep" onclick="window.__app.promiseStart()">Keep my promise \xB7 \u20B9${a.promiseRupees} a month</button>`;
+      const action = this.#reason === "signed_out" ? `<button class="btn btn-primary w-full justify-center promise-signin" onclick="window.__app.openModal('auth')">Sign in to start</button>` : `<button class="btn btn-primary w-full justify-center promise-keep" onclick="window.__app.promiseStart()">Keep my promise \xB7 ${a.promisePrice} a month</button>`;
       const ask = this.#reason === "signed_out" || this.#reason === "wait_full" ? "" : `
-      <p class="text-sm text-zinc-500 mt-3 text-center">Can't pay \u20B9${a.promiseRupees}?
+      <p class="text-sm text-zinc-500 mt-3 text-center">Can't pay ${a.promisePrice}?
         <button class="underline text-indigo-600 promise-ask" onclick="window.__app.promiseAsk()">Ask to use Pocket free</button></p>`;
       return `
       <div class="text-xs font-medium text-emerald-600 mb-1">${Html.escape(lead)}</div>
-      <h3 class="text-lg font-semibold mb-2">\u20B9${a.promiseRupees} a month. It isn't for us. It's for you.</h3>
+      <h3 class="text-lg font-semibold mb-2">${a.promisePrice} a month. It isn't for us. It's for you.</h3>
       <p class="text-sm text-zinc-500 mb-3 leading-relaxed">Pocket works for people who write things down every day.
-        \u20B9${a.promiseRupees} a month is how you tell yourself you're one of them.</p>
+        ${a.promisePrice} a month is how you tell yourself you're one of them.</p>
       <div class="border-y border-zinc-100 dark:border-zinc-800 py-2.5 mb-4 text-sm leading-7">
-        ${_PromiseModal.#line("check", `<b>Every rupee comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
+        ${_PromiseModal.#line("check", `<b>Every ${Money.dollars ? "cent" : "rupee"} comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
         ${_PromiseModal.#line("check", `About ${Math.floor(a.promiseCredits / 5)} receipt scans or ${a.promiseCredits} voice entries`)}
         ${_PromiseModal.#line("clock", `Each month's credits last ${a.promiseCreditDays} days`)}
         ${_PromiseModal.#line("gift", "Plus 20 welcome credits that last 6 months")}
-        ${_PromiseModal.#line("rotate-ccw", "Paid by auto-debit. Stop any time.")}
+        ${_PromiseModal.#line("rotate-ccw", Money.dollars ? "Paid a month at a time. Nothing renews by itself." : "Paid by auto-debit. Stop any time.")}
       </div>
       ${action}${ask}`;
     }
@@ -25491,7 +25579,7 @@ ${body}\r
       const a = this.#access();
       return `
       <h3 class="text-lg font-semibold mb-1">Ask to use Pocket free</h3>
-      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">No one should stop looking after their money because of \u20B9${a.promiseRupees}.
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">No one should stop looking after their money because of ${a.promisePrice}.
         Tell us in a line or two. Only the Pocket team reads it.</p>
       <form onsubmit="window.__app.freeRequestSend(event)" class="space-y-3">
         <label class="block"><span class="text-xs text-zinc-500">Your name</span>
@@ -30581,7 +30669,7 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     #backupOffer() {
       const item = this.#paymentOffers?.products?.find((o) => o.product === "drive_backup" && o.available);
       if (!item) return null;
-      return { price: `\u20B9${(item.amountPaise / 100).toLocaleString("en-IN")}`, buying: this.#buying === "drive_backup" };
+      return { price: Money.ofItem(item), buying: this.#buying === "drive_backup" };
     }
     /** Buy scheduled and automatic backups (one-time). Needs a sign-in so the purchase is remembered. */
     async driveUnlock() {
@@ -30715,7 +30803,8 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         await this.#payments.buy("promise_month", { email: this.#sync.currentUser.email });
         await this.#refreshPlanInfo();
         this.closeModal();
-        this.#toast.show("Promise kept: \u20B930 a month. 150 AI credits added");
+        const access = this.getPlan()?.entries;
+        this.#toast.show(`Promise kept: ${access?.promisePrice ?? "\u20B930"} a month. ${access?.promiseCredits ?? 150} AI credits added`);
       } catch (e) {
         if (e?.code !== "dismissed") this.#toast.show(e?.message || "The payment didn't go through. Please try again.");
       } finally {

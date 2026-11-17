@@ -11,6 +11,7 @@
  * The catch-up and programme offers share that pause.
  * What was put away, and when, is remembered on the device (pocket.v1.nudge).
  */
+import { Money } from '../../core/Money.js';
 import { Html } from '../../core/Html.js';
 
 export class HabitNudge {
@@ -82,7 +83,7 @@ export class HabitNudge {
         ? 'It\'s been a while since your last entry. Our 6-week habit programme helps you start again and make recording part of your day, with a short check-in every day.'
         : `You recorded on ${s.recordedDays} of the last ${s.window} days. Our 6-week habit programme helps you make it daily, with a short check-in every day.`;
       return box('sprout', 'border-amber-200 bg-amber-50 text-amber-900', 'Make recording a daily habit',
-        `${text} ₹4,500 in full, or ₹2,500 now and ₹2,500 at the end.`,
+        `${text} ${Money.dollars ? '$99 in full, or $59 now and $59 at the end.' : '₹4,500 in full, or ₹2,500 now and ₹2,500 at the end.'}`,
         link('programme.html', 'See the programme'));
     }
     if (s.kind === 'restDue') {

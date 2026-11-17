@@ -8,6 +8,7 @@
  * data-promise="off" ones appear while it is off. [data-promise-rupees] and
  * [data-promise-credits] are filled from the rule.
  */
+import { Money } from '../core/Money.js';
 import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../data/constants.js';
 
 export class PromiseSection {
@@ -41,9 +42,10 @@ export class PromiseSection {
       el.hidden = (el.dataset.promise === 'on') !== on;
     });
     if (!on) return;
-    const rupees = Number.isInteger(rule.promisePaise) ? Math.round(rule.promisePaise / 100) : 30;
+    const paise = Number.isInteger(rule.promisePaise) ? rule.promisePaise : 3000;
+    const price = Money.format(Money.list('promise_month', paise));
     const credits = Number.isInteger(rule.promiseCredits) ? rule.promiseCredits : 150;
-    this.#root.querySelectorAll('[data-promise-rupees]').forEach((el) => { el.textContent = String(rupees); });
+    this.#root.querySelectorAll('[data-promise-price]').forEach((el) => { el.textContent = price; });
     this.#root.querySelectorAll('[data-promise-credits]').forEach((el) => { el.textContent = String(credits); });
   }
 }

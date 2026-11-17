@@ -56,6 +56,8 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-17 · Prices in US dollars outside India** (migration 0059). India's time zone (Asia/Kolkata/Calcutta, or none readable) sees rupees; any other time zone sees dollars, with no switch (owner). `core/Money` decides and formats; `usd_prices` (cents per product) is the price list, mirrored in `Money` and in the website's `data-usd` attributes (`web/WebPrices`). The payments function takes `currency: 'USD'` on products/order: amounts come back in cents (`currency: 'USD'`), scaled by any rupee sale/code; dollar orders are always one-time (no auto-debit; the promise is $1 for one month, its 150 credits added on payment); `payment_orders.currency`/`charged_minor` record the charge while `amount_paise` keeps the rupee value for plan rules. Prices: Pro $2.99/mo · $24.99/yr, intro $3.99, Group $49.99/yr, Plus $4.99, AI pack $2, promise $1/mo, programme $99 full or $59 + $59. Terms/Refunds updated. Tests: `dollars.smoke.mjs`, payments Deno U1–U13.
+
 - **2026-11-17 · The ₹30 promise is ON** (migration 0058): `promise_required = true`, `auto_debit_enabled = true`.
   A lapsed promise asks again straight after its paid month (no 30-day grace); other plans keep their grace.
   Plans that renew also offer "Pay once instead". `app.html#promise` opens the promise directly.
