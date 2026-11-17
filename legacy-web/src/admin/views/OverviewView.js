@@ -5,6 +5,10 @@ import { Format } from '../Format.js';
 
 export class OverviewView extends AdminView {
   #s = null;
+  /** A one-time code for linking the admin bot (migration 0062), once asked for. */
+  #botCode = null;
+
+  static BOT = 'Shakirs_PocketAdminBot';
 
   get title() { return 'Overview'; }
 
@@ -54,6 +58,31 @@ export class OverviewView extends AdminView {
       </div>
       <div class="panel"><h3>Everyone by plan</h3>
         <table class="table"><thead><tr><th>Plan</th><th>State</th><th class="num">People</th></tr></thead><tbody>${planRows}</tbody></table>
+      </div>
+      ${this.#botPanel()}`;
+  }
+
+  /** Link the admin bot: a one-time code, valid 15 minutes. */
+  #botPanel() {
+    const c = this.#botCode;
+    const link = c ? `https://t.me/${OverviewView.BOT}?start=${encodeURIComponent(c.code)}` : '';
+    return `
+      <div class="panel admin-bot">
+        <h3>Admin bot on Telegram</h3>
+        <p class="muted small">Alerts for payments, free requests, programme applications and feedback, an evening summary, and /stats, /requests and /auto, in @${OverviewView.BOT}. Separate from the Pocket bot: it never sees anyone's entries.</p>
+        ${c ? `
+          <p>Open <a href="${link}" target="_blank" rel="noopener">${link}</a> and tap <b>Start</b>,
+             or send <code>/start ${Format.esc(c.code)}</code> to @${OverviewView.BOT}. The code works once, for 15 minutes.</p>
+          ${c.linked ? `<p class="muted small">Linked chats so far: ${c.linked}.</p>` : ''}`
+        : '<button data-action="bot-code" class="btn btn-sm">Link the admin bot</button>'}
       </div>`;
+  }
+
+  async act(action) {
+    if (action === 'bot-code') {
+      this.#botCode = await this.api.adminBotCode();
+      return true;
+    }
+    return false;
   }
 }

@@ -13,6 +13,8 @@ export class AdminApi {
 
   isAdmin()                  { return this.#session.rpc('pocket_is_admin'); }
   stats()                    { return this.#session.rpc('pocket_adm_stats'); }
+  /** A one-time code to link the admin bot on Telegram (0062). */
+  adminBotCode()             { return this.#session.rpc('pocket_adm_tg_code'); }
   users(search = '', limit = 200, offset = 0) {
     return this.#session.rpc('pocket_adm_users', { p_search: search || null, p_limit: limit, p_offset: offset });
   }

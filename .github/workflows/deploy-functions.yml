@@ -68,3 +68,10 @@ jobs:
       # posts each summary once, so it needs no sign-in check or secret.
       - name: Deploy telegram-summaries
         run: supabase functions deploy telegram-summaries --remote="$PROJECT_REF" --no-verify-jwt --yes
+
+      # The admin bot (@Shakirs_PocketAdminBot), separate from the Pocket bot.
+      # Telegram and pg_cron send no Supabase sign-in, so the gateway check is
+      # off; updates are checked by the webhook secret header, and the bot
+      # answers only chats linked to an admin. Needs TELEGRAM_ADMIN_BOT_TOKEN.
+      - name: Deploy telegram-admin
+        run: supabase functions deploy telegram-admin --remote="$PROJECT_REF" --no-verify-jwt --yes
