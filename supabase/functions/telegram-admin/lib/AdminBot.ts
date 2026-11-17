@@ -64,7 +64,7 @@ export class AdminBot {
     let summary = false;
     if (await this.#store.summaryDue()) {
       const html = await this.#statsHtml();
-      for (const c of chats) await this.#tg.send(c, `🌙 <b>Today's summary</b>\n\n${html}`);
+      for (const c of chats) await this.#tg.send(c, `🌙 <b>Evening summary</b>\n\n${html}`);
       summary = true;
     }
     return { sent: events.length, summary };
@@ -100,7 +100,8 @@ export class AdminBot {
     }
     const r = await this.#store.auto(chatId, /^\d+$/.test(a) ? Number(a) : null, a === 'reset');
     const left = Math.max(0, r.limit - r.used);
-    await this.#tg.send(chatId, `<b>Automatic approvals</b> ${r.used} of ${r.limit} used · ${left ? `${left} left` : 'used up: new requests wait for you'}${a === 'reset' ? '\nCount reset to 0.' : a ? `\nLimit set to ${r.limit}.` : ''}`);
+    const done = a === 'reset' ? '✅ Count reset to 0\n\n' : a ? `✅ Limit set to ${r.limit}\n\n` : '';
+    await this.#tg.send(chatId, `${done}🆓 <b>Automatic approvals</b>\n<b>${r.used}</b> of ${r.limit} used · ${left ? `${left} left` : 'used up: new requests wait for you'}`);
   }
 
   async #button(q: Record<string, any>): Promise<void> {
@@ -115,8 +116,8 @@ export class AdminBot {
     }
     const until = r.validUntil ? new Date(r.validUntil).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
     await this.#tg.edit(chatId, Number(q.message.message_id), status === 'approved'
-      ? `✅ <b>Approved</b> · ${AdminFormat.esc(r.name)} (${AdminFormat.esc(r.email)}) can use Pocket free until ${until}`
-      : `❌ <b>Declined</b> · ${AdminFormat.esc(r.name)} (${AdminFormat.esc(r.email)})`);
+      ? `✅ <b>Approved</b> until ${until}\n${AdminFormat.esc(r.name)} · ${AdminFormat.esc(r.email)}`
+      : `❌ <b>Declined</b>\n${AdminFormat.esc(r.name)} · ${AdminFormat.esc(r.email)}`);
     await this.#tg.answer(q.id, status === 'approved' ? 'Approved' : 'Declined');
   }
 }
