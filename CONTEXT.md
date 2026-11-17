@@ -56,6 +56,10 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-17 · The ₹30 promise is ON** (migration 0058): `promise_required = true`, `auto_debit_enabled = true`.
+  A lapsed promise asks again straight after its paid month (no 30-day grace); other plans keep their grace.
+  Plans that renew also offer "Pay once instead". `app.html#promise` opens the promise directly.
+
 - **2026-11-17 · Delete my account** (migrations 0055 applied, **0056 to be run by the owner** in the SQL
   Editor — it has DROP CONSTRAINT and DELETE). Settings → "Delete my account" (type DELETE): auto-debit
   stops, deletion is scheduled 7 days out (`account_deletions`, `billing_settings.account_delete_days`),
