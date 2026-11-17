@@ -56,6 +56,21 @@ Pocket, a personal-finance app. Root: `M:\BudgetApp\Budget App`.
 
 ## Recent changes
 
+- **2026-11-17 · Delete my account** (migrations 0055 applied, **0056 to be run by the owner** in the SQL
+  Editor — it has DROP CONSTRAINT and DELETE). Settings → "Delete my account" (type DELETE): auto-debit
+  stops, deletion is scheduled 7 days out (`account_deletions`, `billing_settings.account_delete_days`),
+  Settings shows the date and "Keep my account". `pocket_account_delete_due()` (daily job
+  `account-deletions`, 02:17 IST) deletes the plan, then `auth.users` (cascading the book, Telegram links,
+  credits, programme application) and rows without a foreign key (Pocket Plus, bill reminders, budget alerts,
+  delivery check-ins, feedback, free requests, Telegram steps, a group they organised; places in others'
+  groups are freed). Payment records stay: `payment_orders` loses its foreign keys to `auth.users` and
+  `programme_applications` and gains `email`. On the device, `AccountClosure` leaves a note
+  (`pocket.v1.closing`); once the date has passed and the account can't be signed in, the next start empties
+  the device (`SyncService.forgetDevice`). Privacy policy updated. Tests: `account-closure.smoke.mjs`.
+- **2026-11-17 · Auto-debit switch** (migration 0054): `billing_settings.auto_debit_enabled` (off). Razorpay
+  answered "No appropriate payment method found": recurring payments need their own activation. While off,
+  Pocket Pro and Group are one-time and the promise can't be bought.
+
 - **2026-11-17 · Auto-debit (Razorpay Subscriptions)** (migration 0053). Razorpay approved; live keys set.
   Renewing: the ₹30 promise (monthly), Pocket Pro (monthly/yearly), Pocket Pro Group (yearly). One-time:
   Pocket Plus, AI packs, the 3-month offer, the habit programme. Auto-debit is charged at list price (no

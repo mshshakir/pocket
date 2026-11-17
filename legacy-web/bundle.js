@@ -7611,6 +7611,10 @@ RULES:
     groupLeave() {
       return this.#plan.groupLeave();
     }
+    /** Deleting your own account: the database calls as the signed-in person (AccountClosure). */
+    accountRpc() {
+      return () => this.#sb && this.#user ? (fn, args) => this.#sb.rpc(fn, args) : null;
+    }
     /** The ₹30 promise: ask to use Pocket free (signed in), and the rule as anyone can read it. */
     freeRequestSend(name, reason) {
       return this.#plan.freeRequestSend(name, reason);
@@ -7720,6 +7724,18 @@ RULES:
       this.#sb.auth.signOut().catch(() => {
       });
       if (this.#user) this.#resetToGuest(true, { wipeLocal: true });
+    }
+    /**
+     * Empties this device after its Pocket account was deleted (AccountClosure):
+     * the same wipe as signing out, for a book whose account no longer exists.
+     * Does nothing while someone is signed in.
+     */
+    forgetDevice() {
+      if (this.#user) return;
+      this.#markClean();
+      this.#baseline.clear();
+      this.#shareCache.clear();
+      this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
     }
     /** Remove all realtime channels so they don't leak across sessions/users. */
     #teardownChannels() {
@@ -20449,6 +20465,24 @@ This replaces your current grouping.`
         ${this.#renderHijriSection(u)}
         ${this.#install()}`;
     }
+    /**
+     * Deleting the account: a quiet "Delete my account" link, or, once asked,
+     * the date it goes and "Keep my account".
+     */
+    #closing() {
+      const c = window.__app?.accountClosing?.();
+      if (c?.pending && c.deleteAfter) {
+        const day = c.deleteAfter.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+        return `
+            <div class="account-closing mt-2 p-3 rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-900/20 dark:border-rose-800/40 text-sm">
+              <div class="font-medium text-rose-700 dark:text-rose-300 mb-1">Your account will be deleted on ${this.#esc(day)}</div>
+              <div class="text-xs text-zinc-600 dark:text-zinc-400 mb-2">Your sign-in, cloud book, Telegram links, plan and AI credits go then, and this device is emptied. Download your data before then if you want a copy.</div>
+              <button class="btn btn-outline w-full justify-center account-keep" onclick="window.__app.keepMyAccount()"><i data-lucide="undo-2"></i> Keep my account</button>
+            </div>`;
+      }
+      return `
+            <div class="text-right mt-1"><button class="text-xs text-rose-500 underline account-delete" onclick="window.__app.deleteMyAccount()">Delete my account</button></div>`;
+    }
     /** Account: sign-in and sync, plan, AI. */
     #account(u, state, isSaaS, sbUser) {
       return `
@@ -20481,6 +20515,7 @@ This replaces your current grouping.`
             <div class="flex gap-2 mb-1">
               ${sbUser ? `<button class="btn btn-outline flex-1 justify-center" onclick="window.__app.signOut()"><i data-lucide="log-out"></i> Sign out</button>` : `<button class="btn btn-primary flex-1 justify-center" onclick="window.__app.closeModal(); window.__app.openModal('auth',{})"><i data-lucide="log-in"></i> Sign in / Create account</button>`}
             </div>
+            ${sbUser ? this.#closing() : ""}
           ` : `
             <div class="mb-2">
               <label class="text-xs text-zinc-500">Project URL</label>
@@ -25484,6 +25519,81 @@ ${body}\r
     }
   };
 
+  // src/domain/services/AccountClosure.js
+  var AccountClosure = class _AccountClosure {
+    static KEY = "pocket.v1.closing";
+    #rpc;
+    #storage;
+    /**
+     * @param {() => (((fn: string, args?: object) => Promise<{data: any, error: any}>)|null)} rpc
+     *   the signed-in person's database calls, or null when signed out
+     * @param {Storage} storage
+     */
+    constructor(rpc, storage) {
+      this.#rpc = rpc;
+      this.#storage = storage;
+    }
+    /** {pending: boolean, deleteAfter: Date|null}; null when it can't be asked (signed out, offline). */
+    async state() {
+      return this.#call("pocket_account_deletion").catch(() => null);
+    }
+    /** Schedules the deletion; remembers it on this device for `owner`. */
+    async request(owner) {
+      const s = await this.#call("pocket_account_delete_request");
+      if (s.pending && s.deleteAfter) this.#remember(owner, s.deleteAfter);
+      return s;
+    }
+    /** Keeps the account. */
+    async cancel() {
+      const s = await this.#call("pocket_account_delete_cancel");
+      this.forget();
+      return s;
+    }
+    /** The note on this device: {owner, at: Date}, or null. */
+    get note() {
+      try {
+        const raw = JSON.parse(this.#storage.getItem(_AccountClosure.KEY) || "null");
+        return raw && typeof raw.owner === "string" && !Number.isNaN(Date.parse(raw.at)) ? { owner: raw.owner, at: new Date(raw.at) } : null;
+      } catch {
+        return null;
+      }
+    }
+    forget() {
+      try {
+        this.#storage.removeItem(_AccountClosure.KEY);
+      } catch {
+      }
+    }
+    /**
+     * What to do with this device at start: 'wipe' (the account's date has
+     * passed and nobody is signed in to it any more), 'keep' (the note is stale:
+     * the deletion was cancelled), or 'wait'.
+     * @param {string|null} storedOwner  the account the book on this device belongs to
+     * @param {boolean} signedIn
+     * @param {{pending: boolean}|null} serverState  pocket_account_deletion(), when signed in
+     */
+    decide(storedOwner, signedIn, serverState, now = /* @__PURE__ */ new Date()) {
+      const n = this.note;
+      if (!n) return "wait";
+      if (storedOwner && n.owner !== storedOwner) return "keep";
+      if (signedIn) return serverState && serverState.pending === false ? "keep" : "wait";
+      return n.at <= now ? "wipe" : "wait";
+    }
+    #remember(owner, at) {
+      try {
+        this.#storage.setItem(_AccountClosure.KEY, JSON.stringify({ owner, at }));
+      } catch {
+      }
+    }
+    async #call(fn) {
+      const rpc = this.#rpc();
+      if (!rpc) throw new Error("Sign in first.");
+      const { data, error } = await rpc(fn);
+      if (error) throw new Error("Pocket couldn't reach the server. Please try again.");
+      return { pending: data?.pending === true, deleteAfter: data?.deleteAfter ? new Date(data.deleteAfter) : null };
+    }
+  };
+
   // src/app.js
   var ACCOUNT_TYPE_KEYWORDS = {
     cash: ["cash", "wallet", "pocket", "petty"],
@@ -25606,6 +25716,10 @@ ${body}\r
     #driveRestoreModal = null;
     /** @type {PromiseModal|null} the ₹30 promise and asking to use Pocket free */
     #promiseModal = null;
+    /** @type {AccountClosure|null} deleting your own account */
+    #closure = null;
+    /** The server's answer about deleting this account: {pending, deleteAfter}, or null until asked. */
+    #closing = null;
     /** The promise rule as anyone may read it ({required, promisePaise, …}), for people not signed in. */
     #promiseRule = null;
     /** Whether the server offers automatic backups; null until asked (when Settings opens). */
@@ -25998,6 +26112,7 @@ ${body}\r
       if (_Application.#addsEntry(name, opts) && !this.#entryGate()) return;
       if (name === "settings") {
         this.#refreshPlanInfo();
+        this.#checkClosing();
         if (this.driveStatus().available && this.#pwa?.online !== false) {
           this.#driveBackup.warm();
           this.#driveBackup.automaticOffered().then((yes) => {
@@ -30348,6 +30463,12 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       this.#promiseRule = _Application.#storedPromiseRule();
       this.#loadPromiseRule();
       this.#bus.on("auth:changed", () => this.#loadPromiseRule());
+      this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
+      this.#bus.on("session:known", () => this.#checkClosing());
+      this.#bus.on("auth:changed", () => {
+        this.#closing = null;
+        this.#checkClosing();
+      });
       this.#bus.on("session:known", () => this.#refreshNotices());
       this.#bus.on("auth:changed", () => this.#refreshNotices());
       document.addEventListener("visibilitychange", () => {
@@ -30605,6 +30726,69 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         this.#promiseModal.sending = false;
         this.#promiseModal.show("request", e?.message || "Pocket couldn't send that. Please try again.");
       }
+    }
+    // ── Deleting your own account (migrations 0055, 0056) ─────────────────
+    /** For Settings: {pending, deleteAfter} once known, else null. */
+    accountClosing() {
+      return this.#closing;
+    }
+    /**
+     * Reads whether this account is on its way out, and tidies this device: a
+     * note left by a deletion that was cancelled is dropped; once the account is
+     * gone, this device's book is emptied (the same as signing out).
+     */
+    async #checkClosing() {
+      if (DemoMode.active || !this.#closure) return;
+      const signedIn = !!this.#sync.currentUser;
+      const state = signedIn ? await this.#closure.state() : null;
+      if (signedIn && state) {
+        const was = JSON.stringify(this.#closing);
+        this.#closing = state;
+        if (JSON.stringify(state) !== was && this.#modal.active === "settings") this.#modal.refresh();
+      }
+      if (!this.#sync.sessionKnown) return;
+      const step = this.#closure.decide(this.#store.storedOwner, signedIn, state);
+      if (step === "keep") this.#closure.forget();
+      if (step === "wipe") {
+        this.#closure.forget();
+        this.#sync.forgetDevice?.();
+        this.#toast.show("Your Pocket account has been deleted, and this device has been emptied.");
+      }
+    }
+    /** "Delete my account": asks to be sure, stops auto-debit, then schedules the deletion. */
+    async deleteMyAccount() {
+      const user = this.#sync.currentUser;
+      if (!user) return;
+      const typed = prompt(
+        "Delete your Pocket account?\n\nIn 7 days Pocket deletes your sign-in, your cloud book, Telegram links, plan and AI credits. Until then you can keep your account from Settings. Payment records are kept for tax.\n\nDownload your data first if you want a copy (Settings \u2192 Data).\n\nType DELETE to confirm."
+      );
+      if (typed == null) return;
+      if (typed.trim().toUpperCase() !== "DELETE") {
+        this.#toast.show("Not deleted: you didn't type DELETE");
+        return;
+      }
+      try {
+        if (this.getPlan()?.toJSON().autoRenew) {
+          this.#payments ??= this.#sync.payments();
+          await this.#payments.stopAutoDebit();
+        }
+        this.#closing = await this.#closure.request(this.#store.storedOwner || user.id);
+        const day = this.#closing.deleteAfter?.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+        this.#toast.show(`Your account will be deleted on ${day}`);
+      } catch (e) {
+        this.#toast.show(e?.message || "Couldn't delete your account. Please try again.");
+      }
+      if (this.#modal.active === "settings") this.#modal.refresh();
+    }
+    /** "Keep my account": cancels the deletion. */
+    async keepMyAccount() {
+      try {
+        this.#closing = await this.#closure.cancel();
+        this.#toast.show("Your account is staying");
+      } catch (e) {
+        this.#toast.show(e?.message || "Couldn't reach the server. Please try again.");
+      }
+      if (this.#modal.active === "settings") this.#modal.refresh();
     }
     openDriveRestore() {
       this.#modal.open("driveRestore", {});

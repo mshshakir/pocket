@@ -134,6 +134,25 @@ export class SettingsModal {
         ${this.#install()}`;
   }
 
+  /**
+   * Deleting the account: a quiet "Delete my account" link, or, once asked,
+   * the date it goes and "Keep my account".
+   */
+  #closing() {
+    const c = window.__app?.accountClosing?.();
+    if (c?.pending && c.deleteAfter) {
+      const day = c.deleteAfter.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+      return `
+            <div class="account-closing mt-2 p-3 rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-900/20 dark:border-rose-800/40 text-sm">
+              <div class="font-medium text-rose-700 dark:text-rose-300 mb-1">Your account will be deleted on ${this.#esc(day)}</div>
+              <div class="text-xs text-zinc-600 dark:text-zinc-400 mb-2">Your sign-in, cloud book, Telegram links, plan and AI credits go then, and this device is emptied. Download your data before then if you want a copy.</div>
+              <button class="btn btn-outline w-full justify-center account-keep" onclick="window.__app.keepMyAccount()"><i data-lucide="undo-2"></i> Keep my account</button>
+            </div>`;
+    }
+    return `
+            <div class="text-right mt-1"><button class="text-xs text-rose-500 underline account-delete" onclick="window.__app.deleteMyAccount()">Delete my account</button></div>`;
+  }
+
   /** Account: sign-in and sync, plan, AI. */
   #account(u, state, isSaaS, sbUser) {
     return `
@@ -172,6 +191,7 @@ export class SettingsModal {
                 ? `<button class="btn btn-outline flex-1 justify-center" onclick="window.__app.signOut()"><i data-lucide="log-out"></i> Sign out</button>`
                 : `<button class="btn btn-primary flex-1 justify-center" onclick="window.__app.closeModal(); window.__app.openModal('auth',{})"><i data-lucide="log-in"></i> Sign in / Create account</button>`}
             </div>
+            ${sbUser ? this.#closing() : ''}
           ` : `
             <div class="mb-2">
               <label class="text-xs text-zinc-500">Project URL</label>

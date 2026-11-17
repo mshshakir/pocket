@@ -189,6 +189,11 @@ export class SyncService {
   groupRemove(email) { return this.#plan.groupRemove(email); }
   groupLeave()       { return this.#plan.groupLeave(); }
 
+  /** Deleting your own account: the database calls as the signed-in person (AccountClosure). */
+  accountRpc() {
+    return () => (this.#sb && this.#user ? (fn, args) => this.#sb.rpc(fn, args) : null);
+  }
+
   /** The ₹30 promise: ask to use Pocket free (signed in), and the rule as anyone can read it. */
   freeRequestSend(name, reason) { return this.#plan.freeRequestSend(name, reason); }
   promiseRule()      { return this.#sb ? this.#plan.promiseRule() : Promise.resolve(null); }
@@ -317,6 +322,19 @@ export class SyncService {
     this.#explicitSignOut = true;
     this.#sb.auth.signOut().catch(() => {});
     if (this.#user) this.#resetToGuest(true, { wipeLocal: true });
+  }
+
+  /**
+   * Empties this device after its Pocket account was deleted (AccountClosure):
+   * the same wipe as signing out, for a book whose account no longer exists.
+   * Does nothing while someone is signed in.
+   */
+  forgetDevice() {
+    if (this.#user) return;
+    this.#markClean();
+    this.#baseline.clear();
+    this.#shareCache.clear();
+    this.#store.reset(() => SeedFactory.create(), (s) => this.#migrateDefaults(s));
   }
 
   /** Remove all realtime channels so they don't leak across sessions/users. */

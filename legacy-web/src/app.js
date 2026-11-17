@@ -136,6 +136,7 @@ import { BackupFiles }          from './domain/services/BackupFiles.js';
 import { DriveRestoreModal }    from './ui/modals/DriveRestoreModal.js';
 import { PromiseModal }         from './ui/modals/PromiseModal.js';
 import { EntryAccess }          from './domain/billing/EntryAccess.js';
+import { AccountClosure }       from './domain/services/AccountClosure.js';
 import { GOOGLE_DRIVE_CLIENT_ID, APP_SUPABASE_URL, APP_SUPABASE_KEY } from './data/constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +228,10 @@ export class Application {
   #driveRestoreModal = null;
   /** @type {PromiseModal|null} the ₹30 promise and asking to use Pocket free */
   #promiseModal      = null;
+  /** @type {AccountClosure|null} deleting your own account */
+  #closure          = null;
+  /** The server's answer about deleting this account: {pending, deleteAfter}, or null until asked. */
+  #closing          = null;
   /** The promise rule as anyone may read it ({required, promisePaise, …}), for people not signed in. */
   #promiseRule       = null;
   /** Whether the server offers automatic backups; null until asked (when Settings opens). */
@@ -686,6 +691,7 @@ export class Application {
     if (Application.#addsEntry(name, opts) && !this.#entryGate()) return;
     if (name === 'settings') {
       this.#refreshPlanInfo();
+      this.#checkClosing();
       if (this.driveStatus().available && this.#pwa?.online !== false) {
         this.#driveBackup.warm();
         this.#driveBackup.automaticOffered().then((yes) => {
@@ -5188,6 +5194,10 @@ export class Application {
     this.#loadPromiseRule();
     this.#bus.on('auth:changed', () => this.#loadPromiseRule());
 
+    this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
+    this.#bus.on('session:known', () => this.#checkClosing());
+    this.#bus.on('auth:changed', () => { this.#closing = null; this.#checkClosing(); });
+
     this.#bus.on('session:known', () => this.#refreshNotices());
     this.#bus.on('auth:changed', () => this.#refreshNotices());
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.#refreshNotices(); });
@@ -5437,6 +5447,71 @@ export class Application {
       this.#promiseModal.sending = false;
       this.#promiseModal.show('request', e?.message || 'Pocket couldn\'t send that. Please try again.');
     }
+  }
+
+  // ── Deleting your own account (migrations 0055, 0056) ─────────────────
+
+  /** For Settings: {pending, deleteAfter} once known, else null. */
+  accountClosing() { return this.#closing; }
+
+  /**
+   * Reads whether this account is on its way out, and tidies this device: a
+   * note left by a deletion that was cancelled is dropped; once the account is
+   * gone, this device's book is emptied (the same as signing out).
+   */
+  async #checkClosing() {
+    if (DemoMode.active || !this.#closure) return;
+    const signedIn = !!this.#sync.currentUser;
+    const state = signedIn ? await this.#closure.state() : null;
+    if (signedIn && state) {
+      const was = JSON.stringify(this.#closing);
+      this.#closing = state;
+      if (JSON.stringify(state) !== was && this.#modal.active === 'settings') this.#modal.refresh();
+    }
+    if (!this.#sync.sessionKnown) return;
+    const step = this.#closure.decide(this.#store.storedOwner, signedIn, state);
+    if (step === 'keep') this.#closure.forget();
+    if (step === 'wipe') {
+      this.#closure.forget();
+      this.#sync.forgetDevice?.();
+      this.#toast.show('Your Pocket account has been deleted, and this device has been emptied.');
+    }
+  }
+
+  /** "Delete my account": asks to be sure, stops auto-debit, then schedules the deletion. */
+  async deleteMyAccount() {
+    const user = this.#sync.currentUser;
+    if (!user) return;
+    const typed = prompt(
+      'Delete your Pocket account?\n\n' +
+      'In 7 days Pocket deletes your sign-in, your cloud book, Telegram links, plan and AI credits. ' +
+      'Until then you can keep your account from Settings. Payment records are kept for tax.\n\n' +
+      'Download your data first if you want a copy (Settings → Data).\n\nType DELETE to confirm.');
+    if (typed == null) return;
+    if (typed.trim().toUpperCase() !== 'DELETE') { this.#toast.show('Not deleted: you didn\'t type DELETE'); return; }
+    try {
+      if (this.getPlan()?.toJSON().autoRenew) {
+        this.#payments ??= this.#sync.payments();
+        await this.#payments.stopAutoDebit();
+      }
+      this.#closing = await this.#closure.request(this.#store.storedOwner || user.id);
+      const day = this.#closing.deleteAfter?.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+      this.#toast.show(`Your account will be deleted on ${day}`);
+    } catch (e) {
+      this.#toast.show(e?.message || 'Couldn\'t delete your account. Please try again.');
+    }
+    if (this.#modal.active === 'settings') this.#modal.refresh();
+  }
+
+  /** "Keep my account": cancels the deletion. */
+  async keepMyAccount() {
+    try {
+      this.#closing = await this.#closure.cancel();
+      this.#toast.show('Your account is staying');
+    } catch (e) {
+      this.#toast.show(e?.message || 'Couldn\'t reach the server. Please try again.');
+    }
+    if (this.#modal.active === 'settings') this.#modal.refresh();
   }
 
   openDriveRestore() {
