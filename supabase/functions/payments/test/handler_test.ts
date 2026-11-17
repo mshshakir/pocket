@@ -353,6 +353,12 @@ const subSig = (payment: string, sub: string, secret = KEY_SECRET) => new Signat
   const k = await (await make(s).handle(app({ action: 'products' }))).json();
   ok('S17 monthly and yearly products are marked as renewing', k.products.find((p: { product: string }) => p.product === 'sync_month').renews === true
     && !('renews' in k.products.find((p: { product: string }) => p.product === 'ai_pack')));
+  subCalls = [];
+  const once = await (await make(s, subRazorpay()).handle(app({ action: 'order', product: 'sync_month', once: true }))).json();
+  ok('S19 "pay once": a renewing plan is sold as a one-time order instead', !once.kind && once.orderId && !subCalls.some((c) => c.url.includes('/subscriptions')), JSON.stringify(once));
+  s.renewing.add('promise_month');
+  const promiseOnce = await (await make(s, subRazorpay()).handle(app({ action: 'order', product: 'promise_month', once: true }))).json();
+  ok('S19 the promise has no one-time form', promiseOnce.kind === 'subscription');
   s.subRefusal = 'auto_debit_off';
   const off = await make(s, subRazorpay()).handle(app({ action: 'order', product: 'sync_month' }));
   ok('S18 the promise while auto-debit is off: said plainly', /isn't available yet/.test((await off.json()).error));

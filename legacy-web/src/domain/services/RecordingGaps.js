@@ -11,8 +11,10 @@
  *   restDue    Paid half of the habit programme and the 6 weeks are over:
  *              the second half is due.
  *
- * Nobody hears anything in their first NEW_DAYS (counted from their first
- * entry), and the programme isn't suggested to anyone already in it.
+ * Nobody hears anything in their first NEW_DAYS (counted from the first entry
+ * they made in Pocket: imported or back-dated entries don't make someone
+ * "old"), and the programme isn't suggested to anyone already in it, or to
+ * anyone recording on STEADY_DAYS of the last 7 days (they're doing it now).
  * Bills and repeats added by the app don't count as recording.
  */
 export class RecordingGaps {
@@ -21,6 +23,8 @@ export class RecordingGaps {
   static CATCH_UP_MAX = 30;
   static WINDOW = 30;
   static ON_OFF_DAYS = 15;
+  /** Recorded on this many of the last 7 days: no programme suggestion. */
+  static STEADY_DAYS = 5;
   /** Programme statuses that mean they're in it, or on their way. */
   static #IN_PROGRAMME = new Set(['waitlisted', 'offered', 'confirmed', 'completed']);
 
@@ -38,10 +42,10 @@ export class RecordingGaps {
 
     const own = (transactions || []).filter((t) => t && !t.recurring && !t.recurringSourceId && typeof t.date === 'string');
     if (!own.length) return null;
-    const first = own.reduce((min, t) => {
-      const d = RecordingGaps.#day(t.createdAt) || t.date;
-      return d < min ? d : min;
-    }, today);
+    // When they started using Pocket: the earliest entry they made here. Entries
+    // without a made-on time (old imports) only count if none has one.
+    const made = own.map((t) => RecordingGaps.#day(t.createdAt)).filter(Boolean);
+    const first = (made.length ? made : own.map((t) => t.date)).reduce((min, d) => (d < min ? d : min), today);
     if (RecordingGaps.#between(first, today) < RecordingGaps.NEW_DAYS) return null;
 
     const inProgramme = RecordingGaps.#IN_PROGRAMME.has(programme?.status);
@@ -59,6 +63,9 @@ export class RecordingGaps {
       const d = RecordingGaps.#day(t.createdAt) || t.date;
       if (d >= since && d <= today) days.add(d);
     }
+    const week = RecordingGaps.#addDays(today, -6);
+    const lately = [...days].filter((d) => d >= week).length;
+    if (lately >= RecordingGaps.STEADY_DAYS) return null;
     if (days.size > 0 && days.size < RecordingGaps.ON_OFF_DAYS) {
       return { kind: 'programme', recordedDays: days.size, window: RecordingGaps.WINDOW, stopped: false };
     }

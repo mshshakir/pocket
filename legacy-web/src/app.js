@@ -1033,14 +1033,17 @@ export class Application {
    * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
    * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
    */
-  async buy(product) {
+  /** A plan that renews, bought once instead (for devices that can't set up auto-debit). */
+  buyOnce(product) { return this.buy(product, { once: true }); }
+
+  async buy(product, { once = false } = {}) {
     if (this.#buying || !this.#sync.currentUser) return;
     this.#payments ??= this.#sync.payments();
     this.#buying = product;
     this.#modal.refresh();
     try {
       const code = this.#couponApplied && this.#paymentOffers?.coupon?.products?.includes(product) ? this.#couponApplied : '';
-      await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
+      await this.#payments.buy(product, { email: this.#sync.currentUser.email, code, once });
       this.#coupon = ''; this.#couponApplied = null; this.#couponOpen = false;
       this.#toast.show(product === 'ai_pack' ? 'Payment received — AI credits added'
         : product === 'drive_backup' ? 'Payment received — Pocket Plus is on: scheduled backups'
@@ -5196,6 +5199,14 @@ export class Application {
 
     this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
     this.#bus.on('session:known', () => this.#checkClosing());
+    // app.html#promise opens the ₹30 promise directly (to keep it, or to test it).
+    this.#bus.on('session:known', () => {
+      if (window.location.hash !== '#promise' || DemoMode.active) return;
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      this.#promiseModal.open({ reason: this.#sync.currentUser ? 'none' : 'signed_out' });
+      this.#modal.open('promise', {});
+      lucide?.createIcons?.();
+    });
     this.#bus.on('auth:changed', () => { this.#closing = null; this.#checkClosing(); });
 
     this.#bus.on('session:known', () => this.#refreshNotices());

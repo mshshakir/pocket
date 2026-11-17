@@ -7402,7 +7402,7 @@ RULES:
     }
     async buy(product, who = {}) {
       const code = (who.code ?? "").trim();
-      const order = await this.#call({ action: "order", product, ...code ? { code } : {} });
+      const order = await this.#call({ action: "order", product, ...code ? { code } : {}, ...who.once ? { once: true } : {} });
       const paid = await this.#checkout.open({ ...order, email: who.email });
       const result = await this.#call({ action: "verify", ...paid });
       return { applied: result.applied === true };
@@ -12226,7 +12226,7 @@ This replaces your current grouping.`
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
     }
     /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
@@ -12254,7 +12254,8 @@ This replaces your current grouping.`
       const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
       const button = !offers ? "" : renewing ? `<div class="plan-autodebit text-xs text-zinc-500 mt-3 flex items-center justify-between gap-2">
           <span><i data-lucide="repeat" style="width:13px;height:13px;vertical-align:-2px"></i> Auto-debit is on</span>
-          <button class="btn btn-ghost text-xs plan-stop" ${buying ? "disabled" : ""} onclick="window.__app.stopAutoDebit()">Stop auto-debit</button></div>` : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ""}`, buying, true, "w-full justify-center mt-3") + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.</div>` : "") + (product.switchDays ? `<div class="plan-switch-note">+ ${_PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? "plan")}</div>` : "");
+          <button class="btn btn-ghost text-xs plan-stop" ${buying ? "disabled" : ""} onclick="window.__app.stopAutoDebit()">Stop auto-debit</button></div>` : down ? this.#switchDown(p, down, buying) : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === "month" ? "monthly" : "yearly"}.</div>` : !product.available && product.reason === "lifetime" ? "" : this.#button(product, `${verb} \xB7 ${_PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ""}`, buying, true, "w-full justify-center mt-3") + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.
+            <button class="underline plan-once" ${buying ? "disabled" : ""} onclick="window.__app.buyOnce('${Html.escape(product.product)}')">Pay once instead</button></div>` : "") + (product.switchDays ? `<div class="plan-switch-note">+ ${_PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? "plan")}</div>` : "");
       const trial = this.#trialLink(p, plan, offers, buying);
       const popular = p.sharing && !p.group_size && !current;
       return `
@@ -24398,6 +24399,8 @@ This replaces your current grouping.`
     static CATCH_UP_MAX = 30;
     static WINDOW = 30;
     static ON_OFF_DAYS = 15;
+    /** Recorded on this many of the last 7 days: no programme suggestion. */
+    static STEADY_DAYS = 5;
     /** Programme statuses that mean they're in it, or on their way. */
     static #IN_PROGRAMME = /* @__PURE__ */ new Set(["waitlisted", "offered", "confirmed", "completed"]);
     /**
@@ -24412,10 +24415,8 @@ This replaces your current grouping.`
       }
       const own = (transactions || []).filter((t) => t && !t.recurring && !t.recurringSourceId && typeof t.date === "string");
       if (!own.length) return null;
-      const first = own.reduce((min, t) => {
-        const d = _RecordingGaps.#day(t.createdAt) || t.date;
-        return d < min ? d : min;
-      }, today);
+      const made = own.map((t) => _RecordingGaps.#day(t.createdAt)).filter(Boolean);
+      const first = (made.length ? made : own.map((t) => t.date)).reduce((min, d) => d < min ? d : min, today);
       if (_RecordingGaps.#between(first, today) < _RecordingGaps.NEW_DAYS) return null;
       const inProgramme = _RecordingGaps.#IN_PROGRAMME.has(programme?.status);
       const lastDated = own.reduce((max, t) => t.date <= today && t.date > max ? t.date : max, "");
@@ -24429,6 +24430,9 @@ This replaces your current grouping.`
         const d = _RecordingGaps.#day(t.createdAt) || t.date;
         if (d >= since && d <= today) days.add(d);
       }
+      const week = _RecordingGaps.#addDays(today, -6);
+      const lately = [...days].filter((d) => d >= week).length;
+      if (lately >= _RecordingGaps.STEADY_DAYS) return null;
       if (days.size > 0 && days.size < _RecordingGaps.ON_OFF_DAYS) {
         return { kind: "programme", recordedDays: days.size, window: _RecordingGaps.WINDOW, stopped: false };
       }
@@ -26489,14 +26493,18 @@ ${body}\r
      * Pay for a plan, trial or AI pack with Razorpay, then show the new plan.
      * @param {string} product  e.g. 'sync_month', 'family_trial', 'ai_pack'
      */
-    async buy(product) {
+    /** A plan that renews, bought once instead (for devices that can't set up auto-debit). */
+    buyOnce(product) {
+      return this.buy(product, { once: true });
+    }
+    async buy(product, { once = false } = {}) {
       if (this.#buying || !this.#sync.currentUser) return;
       this.#payments ??= this.#sync.payments();
       this.#buying = product;
       this.#modal.refresh();
       try {
         const code = this.#couponApplied && this.#paymentOffers?.coupon?.products?.includes(product) ? this.#couponApplied : "";
-        await this.#payments.buy(product, { email: this.#sync.currentUser.email, code });
+        await this.#payments.buy(product, { email: this.#sync.currentUser.email, code, once });
         this.#coupon = "";
         this.#couponApplied = null;
         this.#couponOpen = false;
@@ -30465,6 +30473,13 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       this.#bus.on("auth:changed", () => this.#loadPromiseRule());
       this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
       this.#bus.on("session:known", () => this.#checkClosing());
+      this.#bus.on("session:known", () => {
+        if (window.location.hash !== "#promise" || DemoMode.active) return;
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        this.#promiseModal.open({ reason: this.#sync.currentUser ? "none" : "signed_out" });
+        this.#modal.open("promise", {});
+        lucide?.createIcons?.();
+      });
       this.#bus.on("auth:changed", () => {
         this.#closing = null;
         this.#checkClosing();

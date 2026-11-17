@@ -140,7 +140,7 @@ export class PlanCard {
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews)
           ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : selling
-          ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
+          ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : 'Online payment is coming soon.'}</div>
       </div>`;
   }
@@ -177,7 +177,8 @@ export class PlanCard {
       : !product ? `<div class="text-xs text-zinc-400 mt-3">Not sold ${term === 'month' ? 'monthly' : 'yearly'}.</div>`
       : !product.available && product.reason === 'lifetime' ? ''
       : this.#button(product, `${verb} · ${PlanCard.#inr(product.amountPaise)}${product.renews ? `/${term}` : ''}`, buying, true, 'w-full justify-center mt-3')
-        + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.</div>` : '')
+        + (product.renews ? `<div class="text-[11px] text-zinc-400 mt-1 text-center plan-renews-note">Renews every ${term} by auto-debit. Stop any time.
+            <button class="underline plan-once" ${buying ? 'disabled' : ''} onclick="window.__app.buyOnce('${Html.escape(product.product)}')">Pay once instead</button></div>` : '')
         + (product.switchDays ? `<div class="plan-switch-note">+ ${PlanCard.span(product.switchDays)} extra from the time left on your ${Html.escape(product.switchFrom ?? 'plan')}</div>` : '');
     const trial = this.#trialLink(p, plan, offers, buying);
     const popular = p.sharing && !p.group_size && !current;

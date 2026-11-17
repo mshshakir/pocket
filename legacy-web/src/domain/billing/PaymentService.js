@@ -57,7 +57,7 @@ export class PaymentService {
 
   async buy(product, who = {}) {
     const code = (who.code ?? '').trim();
-    const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}) });
+    const order = await this.#call({ action: 'order', product, ...(code ? { code } : {}), ...(who.once ? { once: true } : {}) });
     // For a plan that renews, the server answers with a subscription instead
     // of an order; Checkout sets up auto-debit and takes the first payment.
     const paid = await this.#checkout.open({ ...order, email: who.email });

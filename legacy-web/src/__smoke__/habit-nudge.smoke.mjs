@@ -58,6 +58,14 @@ ok('N3 recording daily: nothing', RecordingGaps.suggestion(daily, today) === nul
 const backfilled = Array.from({ length: 30 }, (_, i) => ({ date: day(i), createdAt: at(i % 3 === 0 ? i : i - (i % 3)) }));
 ok('N3 counted by when it was recorded, not the date it is for', RecordingGaps.suggestion([entry(60), ...backfilled], today)?.kind === 'programme');
 
+// N3b (owner's report, 17 Nov: recording every day but still shown the programme)
+const imported = Array.from({ length: 50 }, (_, i) => ({ date: day(30 + i) }));   // old entries brought in, no made-on time
+ok('N3b imported old entries don\'t make a new person "old": nothing in their first 14 days',
+   RecordingGaps.suggestion([...imported, ...daysAgo([6, 5, 4, 3, 2, 1, 0])], today) === null);
+ok('N3b recording on 5 of the last 7 days: no programme, even if the month was patchy',
+   RecordingGaps.suggestion(daysAgo([60, 25, 20, 4, 3, 2, 1, 0]), today) === null);
+ok('N3b 4 of the last 7 days and a patchy month: the programme', RecordingGaps.suggestion(daysAgo([60, 25, 20, 6, 4, 2, 0]), today)?.kind === 'programme');
+
 // N4
 ok('N4 stopped for 40 days: the programme, start again', (() => { const s = RecordingGaps.suggestion(daysAgo([90, 60, 40]), today); return s?.kind === 'programme' && s.stopped; })());
 

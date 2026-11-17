@@ -14,7 +14,9 @@
  *                         Pocket Pro monthly/yearly, Group yearly) the answer is instead
  *                         { kind: 'subscription', subscriptionId, keyId, amount, currency, name }:
  *                         Checkout sets up auto-debit and takes the first payment. Coupons
- *                         don't apply to auto-debit.
+ *                         don't apply to auto-debit. With once: true, a plan (not the promise)
+ *                         is bought as a one-time payment instead (devices that can't set up
+ *                         auto-debit).
  *   verify { orderId, paymentId, signature } → { ok, applied }
  *   verify { subscriptionId, paymentId, signature } → { ok, applied }  the first auto-debit charge
  *   cancel {}           → { ok, cancelled }  stops auto-debit; the time paid for runs to its end
@@ -116,7 +118,7 @@ export class PaymentHandler {
       case 'order': {
         const code = PaymentHandler.#code(body.code);
         if (code === false) return this.#fail(409, 'bad_coupon', PaymentHandler.#REFUSALS.coupon_unknown);
-        return await this.#order(userId, String(body.product ?? ''), code);
+        return await this.#order(userId, String(body.product ?? ''), code, body.once === true);
       }
       case 'verify': return body.subscriptionId ? await this.#verifySubscription(userId, body) : await this.#verify(userId, body);
       case 'cancel': return await this.#cancel(userId);
@@ -167,9 +169,9 @@ export class PaymentHandler {
   /** Refusals that mean the code itself is no good (not just "not for this item"). */
   static readonly #CODE_FAULTS = new Set(['coupon_unknown', 'coupon_not_started', 'coupon_expired', 'coupon_used_up']);
 
-  async #order(userId: string, product: string, coupon: string | null): Promise<Response> {
+  async #order(userId: string, product: string, coupon: string | null, once = false): Promise<Response> {
     const renewing = await this.#store.subscriptionQuote(userId, product);
-    if (renewing.renewing) return await this.#subscribe(userId, renewing, product);
+    if (renewing.renewing && !(once && !product.startsWith('promise_'))) return await this.#subscribe(userId, renewing, product);
     const quote: Quote = await this.#store.quote(userId, product, coupon);
     if (!quote.ok) {
       const reason = quote.reason ?? '';
