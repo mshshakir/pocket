@@ -54,6 +54,10 @@ export class ProgrammePage {
   async #load(user) {
     this.#user = user;
     this.#app = user ? await this.#session.rpc('pocket_programme_mine').catch(() => null) : null;
+    // On the waitlist and a batch has room: the place is theirs now (held 48 hours to pay).
+    if (this.#app?.status === 'waitlisted') {
+      this.#app = await this.#session.rpc('pocket_programme_claim').catch(() => null) ?? this.#app;
+    }
     this.#editing = false;
     this.#render();
   }
@@ -80,9 +84,12 @@ export class ProgrammePage {
     const profile = Object.fromEntries(ProgrammePage.#FIELDS.map((k) => [k, String(form.get(k) ?? '').trim()]));
     profile.consent = form.get('consent') === 'on';
     await this.#run(async () => {
+      const before = this.#app?.status;
       this.#app = await this.#session.rpc('pocket_programme_apply', { p: profile });
       this.#editing = false;
-      this.#message = 'Saved. Thank you!';
+      this.#message = this.#app?.status === 'offered' && before !== 'offered'
+        ? 'Thank you! A place is yours — choose how to pay below to confirm it.'
+        : 'Saved. Thank you!';
     });
   }
 
@@ -179,14 +186,19 @@ export class ProgrammePage {
           <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : (this.#batches?.open ? 'Apply now' : this.#batches ? 'Join the waitlist' : 'Apply')}</button>
           ${this.#editing ? '<button type="button" data-action="cancel-edit" class="btn-soft">Cancel</button>' : ''}
         </div>
-        ${this.#editing ? '' : `<p class="text-xs text-zinc-500">There is no payment now. ${this.#batches?.open
-          ? `We'll offer you a place in ${Html.escape(this.#batches.headline.name)} on WhatsApp; you pay only when you accept it.`
-          : 'If a batch has room, we offer you a place; otherwise you join the waitlist. You pay only when you accept a place.'}</p>`}
+        ${this.#editing ? '' : `<p class="text-xs text-zinc-500">Nothing is charged when you apply. ${this.#batches?.open
+          ? `${Html.escape(this.#batches.headline.name)} has room: once you apply, you can pay straight away to take your place (held for you for 48 hours).`
+          : 'If a batch has room, you can pay straight away to take your place; otherwise you join the waitlist and we tell you when a place opens.'}</p>`}
       </form>`;
   }
 
   #field(name, label, control, hint = '') {
     return `<label class="block"><span class="block text-sm font-medium mb-1">${label}</span>${control}${hint ? `<span class="block text-xs text-zinc-500 mt-1">${hint}</span>` : ''}</label>`;
+  }
+
+  /** A date and time, e.g. "19 November, 11:30 am". */
+  static #when(iso) {
+    return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' });
   }
 
   /** Split payment: the second half, until it is paid (due when the 6 weeks end; can be paid earlier). */
@@ -229,7 +241,7 @@ export class ProgrammePage {
         const rest = b.restPaise ?? full - half;
         const busy = this.#busy ? 'disabled' : '';
         main = head('party-popper', `A place is waiting for you in ${Html.escape(b.name ?? 'the next batch')}`,
-          `It starts on <b>${day(b.startsOn)}</b>. Choose how to pay to confirm your place.`)
+          `It starts on <b>${day(b.startsOn)}</b>. Choose how to pay to confirm your place.${a.holdUntil ? ` <span class="programme-hold">We're holding it for you until <b>${ProgrammePage.#when(a.holdUntil)}</b>; after that it goes to the next person.</span>` : ''}`)
           + (a.paymentsOpen
             ? `<div class="mt-5 grid sm:grid-cols-2 gap-3">
                  <div class="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">

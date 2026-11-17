@@ -54,7 +54,7 @@ const b4 = { name: 'Batch 4', startsOn: `${y}-12-20`, opensOn: `${y}-12-10`, clo
   const page = new ProgrammePage(session, root, { open: async () => ({}) }, async () => new ProgrammeBatches([{ ...b3, state: 'open' }]));
   await page.start();
   ok('B3 the banner says the batch is open with places left', /Batch 3 is open/.test(root.querySelector('.programme-batch')?.textContent || '') && root.querySelector('.programme-batch').dataset.state === 'open');
-  ok('B3 the button says Apply now, and the place is offered on WhatsApp', /Apply now/.test(root.querySelector('#programmeForm button[type=submit]').textContent) && /offer you a place in Batch 3/.test(root.textContent));
+  ok('B3 the button says Apply now, and you can pay straight away when there is room', /Apply now/.test(root.querySelector('#programmeForm button[type=submit]').textContent) && /Batch 3 has room: once you apply, you can pay straight away/.test(root.textContent));
   const root2 = document.createElement('div');
   await new ProgrammePage(session, root2, { open: async () => ({}) }, async () => new ProgrammeBatches([{ ...b3, state: 'full', placesLeft: 0 }])).start();
   ok('B3 when full: Join the waitlist', /Join the waitlist/.test(root2.querySelector('#programmeForm button[type=submit]').textContent) && /is full/.test(root2.textContent));

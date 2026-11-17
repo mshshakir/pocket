@@ -57,6 +57,10 @@ export class ProgrammeView extends AdminView {
 
   /** How the fee was paid: in full, half (second half still owed), or both halves; and whether Pocket Pro was given. */
   static #paid(a) {
+    if (a.status === 'offered' && a.hold_until) {
+      const until = new Date(a.hold_until).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+      return ` ${Format.pill(`took a free place · held until ${until}`, 'warn')}`;
+    }
     if (!a.pay_plan) return '';
     const owed = a.pay_plan === 'split' && !a.rest_paid_at;
     const label = a.pay_plan === 'full' ? 'paid in full' : owed ? 'second half owed' : 'both halves paid';

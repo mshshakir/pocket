@@ -10,6 +10,8 @@
  *   N7  "Not now" hides it for 21 days, then it comes back; no way to hide it for good;
  *       putting the catch-up away doesn't bring on the programme
  *   N8  programme page: two ways to pay (₹4,500 in full; ₹2,500 now) and the second-half box
+ *   N9  direct places: someone on the waitlist who opens the page gets a free place (claim);
+ *       a held place shows until when it is held
  *
  * Run: node src/__smoke__/habit-nudge.smoke.mjs
  */
@@ -104,6 +106,21 @@ const owed = await page({ status: 'confirmed', fullName: 'Me', whatsapp: '1', pa
 ok('N8 split, 6 weeks over: second half due, Pay ₹2,500', owed.querySelector('.programme-rest')?.dataset.due === 'true' && !!owed.querySelector('[data-product=programme_rest]'));
 const paid = await page({ status: 'confirmed', fullName: 'Me', whatsapp: '1', paymentsOpen: true, payPlan: 'split', restPaid: true, batch });
 ok('N8 both halves paid: no box', !paid.querySelector('.programme-rest'));
+
+// N9
+{
+  const root = document.getElementById('root');
+  const calls = [];
+  const held = { status: 'offered', fullName: 'Me', whatsapp: '1', paymentsOpen: true, batch, holdUntil: '2026-11-19T06:00:00Z' };
+  const session = {
+    user: async () => ({ id: 'u', email: 'me@x.com', user_metadata: { full_name: 'Me' } }), onChange: () => {},
+    rpc: async (fn) => { calls.push(fn); return fn === 'pocket_programme_claim' ? held : { status: 'waitlisted', fullName: 'Me', whatsapp: '1' }; },
+    invoker: () => null, signIn: async () => {}, signOut: async () => {},
+  };
+  await new ProgrammePage(session, root, { open: async () => ({}) }, async () => { throw new Error('offline'); }).start();
+  ok('N9 on the waitlist: the page asks for a free place', calls.includes('pocket_programme_claim'), calls.join());
+  ok('N9 a place found: pay now, held until a date', !!root.querySelector('[data-product=programme_half]') && /holding it for you until/.test(root.querySelector('.programme-hold')?.textContent || ''));
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
