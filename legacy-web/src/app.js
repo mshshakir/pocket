@@ -255,6 +255,8 @@ export class Application {
   #couponError       = '';
   #couponChecking    = false;
   #planHighlight     = null;
+  /** "Change plan" was tapped: show every plan, not just the person's own. */
+  #planAll           = false;
   /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
   #groupState        = null;
   static #PENDING_PLANS = 'pocket.pendingPlans';
@@ -718,6 +720,7 @@ export class Application {
     if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
     if (this.#budgetShareSheet?.isOpen)  this.#budgetShareSheet.close();
     if (this.#spaceComposer?.isOpen)     this.#spaceComposer.close();
+    this.#planAll = false;
     this.#modal.close();
   }
 
@@ -899,7 +902,7 @@ export class Application {
   get planUi() {
     const term = this.#planTerm ?? (this.getPlan()?.term === 'month' ? 'month' : 'year');
     return {
-      term, couponOpen: this.#couponOpen, highlight: this.#planHighlight, group: this.#groupState,
+      term, couponOpen: this.#couponOpen, highlight: this.#planHighlight, group: this.#groupState, allPlans: this.#planAll,
       couponApplied: this.#couponApplied, couponError: this.#couponError, couponChecking: this.#couponChecking,
     };
   }
@@ -990,6 +993,12 @@ export class Application {
 
   setPlanTerm(term) {
     this.#planTerm = term === 'month' ? 'month' : 'year';
+    this.#modal.refresh();
+  }
+
+  /** On a paid plan, the plan page shows only that plan until "Change plan" is tapped. */
+  showAllPlans() {
+    this.#planAll = true;
     this.#modal.refresh();
   }
 

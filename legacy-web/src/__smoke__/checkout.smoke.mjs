@@ -134,7 +134,13 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   const busy = card.html(free({ paymentsOpen: true }), catalogue, offers(), 'sync_month', '', { term: 'month' });
   ok('C6 while paying, buttons are disabled and the one in progress says so', /disabled/.test(busy) && busy.includes('Opening…'));
 
-  const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
+  const onSyncPlan = Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true });
+  const own = card.html(onSyncPlan, catalogue, offers(), null, '', { term: 'month' });
+  ok('C6 on a paid plan: only their own plan, with Add 1 month, and "Change plan"',
+     own.includes('Add 1 month') && /plan-own/.test(own) && own.includes('showAllPlans()') && !own.includes('Switch to Family') && !own.includes('plan-terms'));
+  ok('C6 the AI pack still shows on a paid plan', own.includes("buy('ai_pack')"));
+  ok('C6 a website link to a plan shows every plan', card.html(onSyncPlan, catalogue, offers(), null, '', { term: 'month', highlight: 'family' }).includes('Switch to Family'));
+  const syncing = card.html(onSyncPlan, catalogue, offers(), null, '', { term: 'month', allPlans: true });
   ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
      syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
 
@@ -230,13 +236,13 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   const up = { switches: {}, products: [
     { product: 'sync_year', plan: 'sync', term: 'year', amountPaise: 99900, available: true },
     { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true, switchDays: 182, switchFrom: 'Sync' } ] };
-  const h = card.html(onSync, catalogue, up, null, '', { term: 'year' });
+  const h = card.html(onSync, catalogue, up, null, '', { term: 'year', allPlans: true });
   ok('C14 moving up: full price, and the time left shown as extra days', /Switch to Family · ₹1,499</.test(h) && /\+ about 6 months extra from the time left on your Sync/.test(h));
   const onFamily = Entitlements.from({ plan: 'family', state: 'active', term: 'year', paymentsOpen: true });
   const down = { switches: { sync: { fromPlan: 'family', fromName: 'Family', creditPaise: 74900, days: 273, lower: true } }, products: [
     { product: 'sync_year', plan: 'sync', term: 'year', amountPaise: 99900, available: true },
     { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true } ] };
-  const d = card.html(onFamily, catalogue, down, null, '', { term: 'year' });
+  const d = card.html(onFamily, catalogue, down, null, '', { term: 'year', allPlans: true });
   ok('C15 moving down: a free switch, no payment button for that plan', d.includes("__app.switchPlan('sync')") && /Switch to Sync · free/.test(d) && !d.includes("buy('sync_year')")
      && /becomes about 9 months of Sync/.test(d) && /Add 1 year · ₹1,499/.test(d));
   ok('C16 how long, in words', PlanCard.span(20) === '20 days' && PlanCard.span(273) === 'about 9 months' && PlanCard.span(820) === 'about 2 years 3 months' && PlanCard.span(365) === 'about 12 months');

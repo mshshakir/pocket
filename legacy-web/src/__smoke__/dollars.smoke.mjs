@@ -88,6 +88,8 @@ Money.zoneOverride = 'America/Chicago';
 {
   const a = EntryAccess.from({ required: true, why: 'none', promisePaise: 3000, promiseCredits: 150 });
   ok('D4 the promise is $1 outside India', a.promisePrice === '$1');
+  const { PromiseModal } = await import('../ui/modals/PromiseModal.js');
+  ok('D4 the dollar wording has no "₹1 a day" line', !/a day/.test(PromiseModal.why('$1', 150, null)) && /Each month your \$1 returns/.test(PromiseModal.why('$1', 150, null)));
   Money.zoneOverride = 'Asia/Kolkata';
   ok('D4 and ₹30 in India', a.promisePrice === '₹30');
   Money.zoneOverride = 'America/Chicago';
@@ -105,7 +107,7 @@ for (const page of ['index.html', 'programme.html']) {
      && [...doc.querySelectorAll('[data-usd]')].every((el) => !el.textContent.includes('₹') && /\$|US dollars/.test(el.textContent)));
   const sections = page === 'index.html' ? ['#pricing', '#programme'] : ['body'];
   const left = sections.flatMap((sel) => [...doc.querySelectorAll(`${sel} *`)]
-    .filter((el) => !el.children.length && el.textContent.includes('₹') && !el.closest('[data-promise-price]') && !el.closest('script')))
+    .filter((el) => !el.children.length && el.textContent.includes('₹') && !el.closest('[data-promise-price]') && !el.closest('[data-promise-why]') && !el.closest('script')))
     .map((el) => el.textContent.trim().slice(0, 60));
   ok(`D5 ${page}: no rupee price left in the pricing and programme sections`, !left.length, left.join(' | '));
 }

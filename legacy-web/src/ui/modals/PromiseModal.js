@@ -88,12 +88,9 @@ export class PromiseModal {
         <button class="underline text-indigo-600 promise-ask" onclick="window.__app.promiseAsk()">Ask to use Pocket free</button></p>`;
     return `
       <div class="text-xs font-medium text-emerald-600 mb-1">${Html.escape(lead)}</div>
-      <h3 class="text-lg font-semibold mb-2">${a.promisePrice} a month. It isn't for us. It's for you.</h3>
-      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">Pocket works for people who write things down every day.
-        ${a.promisePrice} a month is how you tell yourself you're one of them.</p>
+      <h3 class="text-lg font-semibold mb-2">Pay ${a.promisePrice}. Get it all back.</h3>
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed promise-why">${PromiseModal.why(a.promisePrice, a.promiseCredits, Money.dollars ? null : a.promiseRupees)}</p>
       <div class="border-y border-zinc-100 dark:border-zinc-800 py-2.5 mb-4 text-sm leading-7">
-        ${PromiseModal.#line('check', `<b>Every ${Money.dollars ? 'cent' : 'rupee'} comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
-        ${PromiseModal.#line('check', `About ${Math.floor(a.promiseCredits / 5)} receipt scans or ${a.promiseCredits} voice entries`)}
         ${PromiseModal.#line('clock', `Each month's credits last ${a.promiseCreditDays} days`)}
         ${PromiseModal.#line('gift', 'Plus 20 welcome credits that last 6 months')}
         ${PromiseModal.#line('rotate-ccw', Money.dollars ? 'Paid a month at a time. Nothing renews by itself.' : 'Paid by auto-debit. Stop any time.')}
@@ -133,6 +130,22 @@ export class PromiseModal {
           We'll let you know here once it's decided.</p>
         <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Continue</button>
       </div>`;
+  }
+
+  /**
+   * The promise in a few lines (owner's wording, 17 Nov 2026). The "₹1 a day"
+   * line is only for rupees, and only when the monthly price is a whole number
+   * of rupees a day; a dollar a month isn't a neat daily figure.
+   * @param {string} price  "₹30" / "$1"
+   * @param {number} credits
+   * @param {number|null} rupees  the monthly price in rupees, or null outside India
+   */
+  static why(price, credits, rupees = null) {
+    const scans = Math.floor(credits / 5);
+    const perDay = rupees && rupees % 30 === 0 ? rupees / 30 : null;
+    const daily = perDay ? ` Think of it as ₹${perDay} a day to show up and record your expenses.` : '';
+    return `Each month your ${price} returns as ${credits} AI credits: about ${scans} receipt scans or ${credits} voice entries. `
+      + `What you really get is the habit. People who put something in keep going.${daily}`;
   }
 
   static #processing() {

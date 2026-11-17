@@ -128,6 +128,9 @@ export class PlanCard {
     const save = Math.max(0, ...paid.map((p) => PlanCard.#saving(p)));
     const tab = (t, label) => `<button class="plan-term ${term === t ? 'on' : ''}" onclick="window.__app.setPlanTerm('${t}')">${label}</button>`;
     const switching = plan.state === 'active' && plan.isPaid && plan.term !== 'trial';
+    if (PlanCard.settled(plan) && !ui.allPlans && !ui.highlight) {
+      return this.#ownPlanOnly(plan, paid, selling ? offers : null, buying, coupon, ui, switching);
+    }
     return `
       <div class="mt-4">
         <div class="flex items-center justify-between gap-2 mb-2">
@@ -145,6 +148,33 @@ export class PlanCard {
           : selling
           ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren\'t refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? ' Switching plans carries your time left over as extra days on the new plan.' : ''}`
           : 'Online payment is coming soon.'}</div>
+      </div>`;
+  }
+
+  /**
+   * Already on a paid plan (not the promise, not the 3-month offer)? Then the
+   * plan page shows just that plan, with Add time / Renew, and the other plans
+   * behind "Change plan" (owner, 17 Nov 2026).
+   */
+  static settled(plan) {
+    return plan.state === 'active' && plan.isPaid && plan.plan !== 'promise' && plan.term !== 'trial' && !plan.isLifetime;
+  }
+
+  /** The person's own plan (and the AI pack), with a link to see every plan. */
+  #ownPlanOnly(plan, paid, offers, buying, coupon, ui, switching) {
+    const mine = plan.group?.role === 'member' ? null : paid.find((p) => p.code === plan.plan);
+    const term = plan.term === 'month' ? 'month' : 'year';
+    return `
+      <div class="mt-4 plan-own">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="text-sm font-medium">Your plan</div>
+          <button class="plan-trial plan-change" onclick="window.__app.showAllPlans()">Change plan</button>
+        </div>
+        ${offers && mine ? this.#couponField(coupon, ui) : ''}
+        ${mine ? this.#planBox(mine, plan, term, offers, buying, null) : ''}
+        ${this.#backupAddon(plan, offers, buying)}
+        ${this.#aiPack(plan, offers, buying)}
+        ${mine && offers ? `<div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${switching ? 'Moving to another plan carries your time left over as extra days. ' : ''}Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).</div>` : ''}
       </div>`;
   }
 
@@ -337,7 +367,7 @@ export class PlanCard {
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
-            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for a year. ${Html.escape(plan.aiCostLine)}</div>
+            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for 6 months. ${Html.escape(plan.aiCostLine)}</div>
             ${PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, PlanCard.#price(pack), buying, false)}

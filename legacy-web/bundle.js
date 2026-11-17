@@ -12299,6 +12299,9 @@ This replaces your current grouping.`
       const save = Math.max(0, ...paid.map((p) => _PlanCard.#saving(p)));
       const tab = (t, label) => `<button class="plan-term ${term === t ? "on" : ""}" onclick="window.__app.setPlanTerm('${t}')">${label}</button>`;
       const switching = plan.state === "active" && plan.isPaid && plan.term !== "trial";
+      if (_PlanCard.settled(plan) && !ui.allPlans && !ui.highlight) {
+        return this.#ownPlanOnly(plan, paid, selling ? offers : null, buying, coupon, ui, switching);
+      }
       return `
       <div class="mt-4">
         <div class="flex items-center justify-between gap-2 mb-2">
@@ -12310,6 +12313,31 @@ This replaces your current grouping.`
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
         <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && offers.currency === "USD" ? `One-time payment by card through Razorpay, in US dollars. Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date. Your bank may add its own currency conversion fee.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Or tap "Pay once instead" for a single month or year that doesn't renew. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
+      </div>`;
+    }
+    /**
+     * Already on a paid plan (not the promise, not the 3-month offer)? Then the
+     * plan page shows just that plan, with Add time / Renew, and the other plans
+     * behind "Change plan" (owner, 17 Nov 2026).
+     */
+    static settled(plan) {
+      return plan.state === "active" && plan.isPaid && plan.plan !== "promise" && plan.term !== "trial" && !plan.isLifetime;
+    }
+    /** The person's own plan (and the AI pack), with a link to see every plan. */
+    #ownPlanOnly(plan, paid, offers, buying, coupon, ui, switching) {
+      const mine = plan.group?.role === "member" ? null : paid.find((p) => p.code === plan.plan);
+      const term = plan.term === "month" ? "month" : "year";
+      return `
+      <div class="mt-4 plan-own">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="text-sm font-medium">Your plan</div>
+          <button class="plan-trial plan-change" onclick="window.__app.showAllPlans()">Change plan</button>
+        </div>
+        ${offers && mine ? this.#couponField(coupon, ui) : ""}
+        ${mine ? this.#planBox(mine, plan, term, offers, buying, null) : ""}
+        ${this.#backupAddon(plan, offers, buying)}
+        ${this.#aiPack(plan, offers, buying)}
+        ${mine && offers ? `<div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${switching ? "Moving to another plan carries your time left over as extra days. " : ""}Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).</div>` : ""}
       </div>`;
     }
     /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
@@ -12483,7 +12511,7 @@ This replaces your current grouping.`
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="font-semibold text-sm flex items-center gap-1.5"><i data-lucide="sparkles" style="width:14px;height:14px"></i> AI pack</div>
-            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for a year. ${Html.escape(plan.aiCostLine)}</div>
+            <div class="text-xs text-zinc-500 mt-0.5 ai-pack-line">${pack.aiCredits.toLocaleString()} credits, valid for 6 months. ${Html.escape(plan.aiCostLine)}</div>
             ${_PlanCard.#codeNote(pack)}
           </div>
           ${this.#button(pack, _PlanCard.#price(pack), buying, false)}
@@ -25569,12 +25597,9 @@ ${body}\r
         <button class="underline text-indigo-600 promise-ask" onclick="window.__app.promiseAsk()">Ask to use Pocket free</button></p>`;
       return `
       <div class="text-xs font-medium text-emerald-600 mb-1">${Html.escape(lead)}</div>
-      <h3 class="text-lg font-semibold mb-2">${a.promisePrice} a month. It isn't for us. It's for you.</h3>
-      <p class="text-sm text-zinc-500 mb-3 leading-relaxed">Pocket works for people who write things down every day.
-        ${a.promisePrice} a month is how you tell yourself you're one of them.</p>
+      <h3 class="text-lg font-semibold mb-2">Pay ${a.promisePrice}. Get it all back.</h3>
+      <p class="text-sm text-zinc-500 mb-3 leading-relaxed promise-why">${_PromiseModal.why(a.promisePrice, a.promiseCredits, Money.dollars ? null : a.promiseRupees)}</p>
       <div class="border-y border-zinc-100 dark:border-zinc-800 py-2.5 mb-4 text-sm leading-7">
-        ${_PromiseModal.#line("check", `<b>Every ${Money.dollars ? "cent" : "rupee"} comes back to you</b> as ${a.promiseCredits} AI credits each month`)}
-        ${_PromiseModal.#line("check", `About ${Math.floor(a.promiseCredits / 5)} receipt scans or ${a.promiseCredits} voice entries`)}
         ${_PromiseModal.#line("clock", `Each month's credits last ${a.promiseCreditDays} days`)}
         ${_PromiseModal.#line("gift", "Plus 20 welcome credits that last 6 months")}
         ${_PromiseModal.#line("rotate-ccw", Money.dollars ? "Paid a month at a time. Nothing renews by itself." : "Paid by auto-debit. Stop any time.")}
@@ -25612,6 +25637,20 @@ ${body}\r
           We'll let you know here once it's decided.</p>
         <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Continue</button>
       </div>`;
+    }
+    /**
+     * The promise in a few lines (owner's wording, 17 Nov 2026). The "₹1 a day"
+     * line is only for rupees, and only when the monthly price is a whole number
+     * of rupees a day; a dollar a month isn't a neat daily figure.
+     * @param {string} price  "₹30" / "$1"
+     * @param {number} credits
+     * @param {number|null} rupees  the monthly price in rupees, or null outside India
+     */
+    static why(price, credits, rupees = null) {
+      const scans = Math.floor(credits / 5);
+      const perDay = rupees && rupees % 30 === 0 ? rupees / 30 : null;
+      const daily = perDay ? ` Think of it as \u20B9${perDay} a day to show up and record your expenses.` : "";
+      return `Each month your ${price} returns as ${credits} AI credits: about ${scans} receipt scans or ${credits} voice entries. What you really get is the habit. People who put something in keep going.${daily}`;
     }
     static #processing() {
       return `
@@ -25860,6 +25899,8 @@ ${body}\r
     #couponError = "";
     #couponChecking = false;
     #planHighlight = null;
+    /** "Change plan" was tapped: show every plan, not just the person's own. */
+    #planAll = false;
     /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
     #groupState = null;
     static #PENDING_PLANS = "pocket.pendingPlans";
@@ -26254,6 +26295,7 @@ ${body}\r
       if (this.#accountShareSheet?.isOpen) this.#accountShareSheet.close();
       if (this.#budgetShareSheet?.isOpen) this.#budgetShareSheet.close();
       if (this.#spaceComposer?.isOpen) this.#spaceComposer.close();
+      this.#planAll = false;
       this.#modal.close();
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -26452,6 +26494,7 @@ ${body}\r
         couponOpen: this.#couponOpen,
         highlight: this.#planHighlight,
         group: this.#groupState,
+        allPlans: this.#planAll,
         couponApplied: this.#couponApplied,
         couponError: this.#couponError,
         couponChecking: this.#couponChecking
@@ -26548,6 +26591,11 @@ ${body}\r
     }
     setPlanTerm(term) {
       this.#planTerm = term === "month" ? "month" : "year";
+      this.#modal.refresh();
+    }
+    /** On a paid plan, the plan page shows only that plan until "Change plan" is tapped. */
+    showAllPlans() {
+      this.#planAll = true;
       this.#modal.refresh();
     }
     openCoupon() {

@@ -9,6 +9,7 @@
  * [data-promise-credits] are filled from the rule.
  */
 import { Money } from '../core/Money.js';
+import { PromiseModal } from '../ui/modals/PromiseModal.js';
 import { APP_SUPABASE_URL, APP_SUPABASE_KEY } from '../data/constants.js';
 
 export class PromiseSection {
@@ -47,5 +48,7 @@ export class PromiseSection {
     const credits = Number.isInteger(rule.promiseCredits) ? rule.promiseCredits : 150;
     this.#root.querySelectorAll('[data-promise-price]').forEach((el) => { el.textContent = price; });
     this.#root.querySelectorAll('[data-promise-credits]').forEach((el) => { el.textContent = String(credits); });
+    const why = PromiseModal.why(price, credits, Money.dollars ? null : Math.round(paise / 100));
+    this.#root.querySelectorAll('[data-promise-why]').forEach((el) => { el.textContent = why; });
   }
 }

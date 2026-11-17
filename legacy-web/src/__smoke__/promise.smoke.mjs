@@ -66,9 +66,9 @@ console.log('\nPromise suite');
   const m = new PromiseModal({ access: () => access, person: () => ({ name: 'Aliasgar <b>' }), redraw: () => {} });
   m.open({ reason: 'none' });
   let html = m.render();
-  ok('P3 the promise: ₹30 a month, for you', /₹30 a month\. It isn't for us\. It's for you\./.test(html));
-  ok('P3 every rupee comes back as 150 credits', /Every rupee comes back to you<\/b> as 150 AI credits each month/.test(html));
-  ok('P3 the serious-users line', /people who write things down every day/.test(html));
+  ok('P3 the promise: pay ₹30, get it all back', /Pay ₹30\. Get it all back\./.test(html));
+  ok('P3 ₹30 returns as 150 credits: 30 scans or 150 voice entries', /Each month your ₹30 returns as 150 AI credits: about 30 receipt scans or 150 voice entries\./.test(html));
+  ok('P3 the habit, and ₹1 a day', /What you really get is the habit\. People who put something in keep going\. Think of it as ₹1 a day to show up and record your expenses\./.test(html));
   ok('P3 keep-my-promise button and the request link', /promise-keep/.test(html) && /Ask to use Pocket free/.test(html));
   m.show('request');
   html = m.render();
@@ -139,7 +139,7 @@ function boot({ rule = null, url = 'https://local.test/app.html' } = {}) {
   w.__app.openModal('transaction', {});
   await wait(50);
   const text = w.document.body.textContent;
-  ok('P5 rule off: a new entry opens as usual', !/Sign in to start/.test(text) && !/It isn't for us/.test(text));
+  ok('P5 rule off: a new entry opens as usual', !/Sign in to start/.test(text) && !/Get it all back/.test(text));
 }
 {
   const w = boot({ rule: { required: true, promisePaise: 3000, promiseCredits: 150 } });
@@ -147,7 +147,7 @@ function boot({ rule = null, url = 'https://local.test/app.html' } = {}) {
   w.__app.openModal('transaction', {});
   await wait(50);
   const text = w.document.body.textContent;
-  ok('P5 rule on, signed out: the promise opens and asks to sign in', /It isn't for us/.test(text) && /Sign in to start/.test(text));
+  ok('P5 rule on, signed out: the promise opens and asks to sign in', /Get it all back/.test(text) && /Sign in to start/.test(text));
   w.__app.closeModal();
   w.__app.openModal('trade', { id: 'x', mode: 'buy' });
   await wait(50);
