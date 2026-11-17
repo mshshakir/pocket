@@ -124,6 +124,8 @@ import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
 import { PlanBanner }           from './ui/components/PlanBanner.js';
 import { AppNotices }           from './ui/components/AppNotices.js';
+import { HabitNudge }           from './ui/components/HabitNudge.js';
+import { RecordingGaps }        from './domain/services/RecordingGaps.js';
 import { PwaService }           from './core/PwaService.js';
 import { Repository }           from './core/Repository.js';
 import { GoogleTokenClient }    from './core/GoogleTokenClient.js';
@@ -211,6 +213,10 @@ export class Application {
   #currencySetupModal= null;  // CurrencySetupModal
   #exportModal       = null;  // ExportModal
   #planBanner        = null;  // PlanBanner
+  /** @type {HabitNudge|null} catch-up / programme / second-half box */
+  #nudge             = null;
+  /** The signed-in person's habit programme place (pocket_programme_mine), or null. */
+  #programme         = null;
   /** @type {AppNotices|null} offline note and "backup due" above every page */
   #notices           = null;
   /** @type {PwaService|null} install as an app, offline files, online state */
@@ -5110,6 +5116,13 @@ export class Application {
   // ──────────────────────────────────────────────────────────────────────────
 
   #startAppShell() {
+    this.#nudge = new HabitNudge(document.getElementById('habitNudge'), {
+      storage: DemoMode.active ? null : window.localStorage,
+    });
+    // Their habit programme place, if any: no programme offer for people in it; the second half when due.
+    const loadProgramme = () => this.#sync.programmeStatus().then((p) => { this.#programme = p; this.#refreshNudge(); });
+    this.#bus.on('session:known', loadProgramme);
+    this.#bus.on('auth:changed', loadProgramme);
     this.#notices = new AppNotices(document.getElementById('appNotices'), {
       icons: document.querySelectorAll('.status-icons'),
       storage: DemoMode.active ? null : window.localStorage,
@@ -5163,8 +5176,17 @@ export class Application {
     if (!DemoMode.active) this.#pwa.keepStorage();
   }
 
+  /** Help when recording has slipped (catch-up, habit programme), or the programme's second half. Not in the sample book. */
+  #refreshNudge() {
+    if (!this.#nudge) return;
+    if (DemoMode.active || this.#lockState()) return void this.#nudge.show(null);
+    const state = this.#store.getState();
+    this.#nudge.show(RecordingGaps.suggestion(state.transactions, DateService.todayIso(), this.#programme));
+  }
+
   /** The notes above every page: offline, and a Google Drive backup that is due. */
   #refreshNotices() {
+    this.#refreshNudge();
     if (!this.#notices) return;
     const drive = this.driveStatus();
     const online = this.#pwa?.online !== false;
@@ -5406,6 +5428,8 @@ export class Application {
 
   /** Close a note above the page (its icon stays in the top bar). @param {'offline'|'backup'} kind */
   dismissNotice(kind) { this.#notices?.dismiss(kind); }
+  /** "Not now" on the catch-up / programme / second-half box. */
+  nudgeLater() { this.#nudge?.later(); }
 
   /** A top-bar icon was tapped: open its note (or close it if open). @param {'offline'|'backup'} kind */
   toggleNotice(kind) {

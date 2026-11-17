@@ -70,7 +70,7 @@ export class ProgrammePage {
     if (action === 'withdraw') {
       return this.#run(async () => { this.#app = await this.#session.rpc('pocket_programme_withdraw'); this.#message = 'Done. You can apply again any time.'; });
     }
-    if (action === 'pay') return this.#pay();
+    if (action === 'pay') return this.#pay(e.target.closest('[data-action]')?.dataset.product || 'programme');
   }
 
   async #onSubmit(e) {
@@ -86,12 +86,17 @@ export class ProgrammePage {
     });
   }
 
-  async #pay() {
+  /** @param {'programme'|'programme_half'|'programme_rest'} product */
+  async #pay(product) {
     const code = this.#root.querySelector('#programmeCode')?.value ?? '';
     await this.#run(async () => {
       try {
-        await this.#payments.buy('programme', { email: this.#user?.email, code });
-        this.#message = 'Payment received — your place is confirmed. See you in week 1!';
+        await this.#payments.buy(product, { email: this.#user?.email, code });
+        this.#message = product === 'programme_rest'
+          ? 'Second half received — the programme is fully paid. Thank you!'
+          : product === 'programme_half'
+            ? 'First half received — your place is confirmed. The second half is due when the 6 weeks end. See you in week 1!'
+            : 'Payment received — your place is confirmed. See you in week 1!';
       } catch (err) {
         if (err?.code === 'dismissed') return;
         throw err;
@@ -168,7 +173,7 @@ export class ProgrammePage {
         </div>
         <label class="flex items-start gap-3 text-sm text-zinc-700">
           <input type="checkbox" name="consent" class="mt-1" required ${this.#app && this.#app.status !== 'withdrawn' ? 'checked' : ''}>
-          <span>I agree to the programme terms: ₹5,000 for 6 weeks, <b>not refundable once my place is confirmed</b>. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
+          <span>I agree to the programme terms: ₹5,000 for 6 weeks (₹4,500 if paid in full; or ₹2,500 now and ₹2,500 when the 6 weeks end), <b>not refundable once my place is confirmed</b>. If I pay half now, I will pay the second half when the 6 weeks end. Pocket's team never sees my Pocket data; I share only what I choose on calls and WhatsApp. My details here are used only to run the programme. (<a href="terms.html" target="_blank" class="underline">Terms</a>, <a href="refunds.html" target="_blank" class="underline">Refunds</a>, <a href="privacy.html" target="_blank" class="underline">Privacy</a>)</span>
         </label>
         <div class="flex flex-wrap gap-3">
           <button type="submit" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Saving…' : this.#editing ? 'Save my details' : (this.#batches?.open ? 'Apply now' : this.#batches ? 'Join the waitlist' : 'Apply')}</button>
@@ -184,6 +189,25 @@ export class ProgrammePage {
     return `<label class="block"><span class="block text-sm font-medium mb-1">${label}</span>${control}${hint ? `<span class="block text-xs text-zinc-500 mt-1">${hint}</span>` : ''}</label>`;
   }
 
+  /** Split payment: the second half, until it is paid (due when the 6 weeks end; can be paid earlier). */
+  #restDue() {
+    const a = this.#app;
+    if (a.payPlan !== 'split' || a.restPaid || !a.paymentsOpen) return '';
+    const b = a.batch ?? {};
+    const rest = b.restPaise ?? Math.ceil((b.pricePaise ?? 500000) / 2);
+    const inr = (p) => (p / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+    const ended = !!b.endsOn && new Date() >= new Date(`${b.endsOn}T00:00:00`);
+    const when = b.endsOn ? new Date(`${b.endsOn}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : 'the end of the programme';
+    return `
+      <div class="programme-rest mt-5 rounded-xl border ${ended ? 'border-amber-200 bg-amber-50' : 'border-zinc-200 bg-zinc-50'} p-4" data-due="${ended}">
+        <div class="font-semibold">Second half: ${inr(rest)}</div>
+        <p class="text-sm text-zinc-600 mt-1">${ended
+          ? 'The 6 weeks are done — please pay the second half. Your 3 months of Pocket Pro start as soon as it\'s paid.'
+          : `Due on ${when}, when the 6 weeks end. You can pay it earlier if you like.`}</p>
+        <button data-action="pay" data-product="programme_rest" class="btn-main mt-3" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(rest)}`}</button>
+      </div>`;
+  }
+
   #status() {
     const a = this.#app;
     const day = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : 'date to be confirmed');
@@ -197,23 +221,43 @@ export class ProgrammePage {
         main = head('hourglass', 'You\'re on the waitlist',
           'Thank you for applying. When a place opens in a batch, we\'ll message you on WhatsApp and you can pay here to confirm it.');
         break;
-      case 'offered':
-        main = head('party-popper', `A place is waiting for you in ${Html.escape(a.batch?.name ?? 'the next batch')}`,
-          `It starts on <b>${day(a.batch?.startsOn)}</b>. Pay ${inr(a.batch?.pricePaise ?? 500000)} to confirm your place.`)
+      case 'offered': {
+        const b = a.batch ?? {};
+        const full = b.fullPaise ?? b.pricePaise ?? 500000;
+        const upfront = b.upfrontPaise ?? full;
+        const half = b.halfPaise ?? Math.floor(full / 2);
+        const rest = b.restPaise ?? full - half;
+        const busy = this.#busy ? 'disabled' : '';
+        main = head('party-popper', `A place is waiting for you in ${Html.escape(b.name ?? 'the next batch')}`,
+          `It starts on <b>${day(b.startsOn)}</b>. Choose how to pay to confirm your place.`)
           + (a.paymentsOpen
-            ? `<div class="mt-5 flex flex-wrap items-center gap-3">
-                 <input id="programmeCode" class="field max-w-[12rem] uppercase" placeholder="Code (optional)" maxlength="32" autocomplete="off">
-                 <button data-action="pay" class="btn-main" ${this.#busy ? 'disabled' : ''}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(a.batch?.pricePaise ?? 500000)}`}</button>
+            ? `<div class="mt-5 grid sm:grid-cols-2 gap-3">
+                 <div class="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
+                   <div class="font-semibold">Pay in full</div>
+                   <div class="text-2xl font-bold mt-1">${inr(upfront)}</div>
+                   ${upfront < full ? `<div class="text-xs text-emerald-700 mt-0.5">Save ${inr(full - upfront)}</div>` : ''}
+                   <button data-action="pay" data-product="programme" class="btn-main mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(upfront)}`}</button>
+                 </div>
+                 <div class="rounded-xl border border-zinc-200 bg-white p-4">
+                   <div class="font-semibold">Half now, half at the end</div>
+                   <div class="text-2xl font-bold mt-1">${inr(half)} <span class="text-sm font-normal text-zinc-500">now</span></div>
+                   <div class="text-xs text-zinc-500 mt-0.5">${inr(rest)} when the 6 weeks end${b.endsOn ? ` (${day(b.endsOn)})` : ''}</div>
+                   <button data-action="pay" data-product="programme_half" class="btn-soft mt-3 w-full" ${busy}>${this.#busy ? 'Opening…' : `<i data-lucide="credit-card"></i> Pay ${inr(half)} now`}</button>
+                 </div>
                </div>
-               <p class="mt-2 text-xs text-zinc-500">Through Razorpay: UPI, cards or net banking. Not refundable once your place is confirmed.</p>`
+               <div class="mt-3"><input id="programmeCode" class="field max-w-[12rem] uppercase" placeholder="Code (optional)" maxlength="32" autocomplete="off"></div>
+               <p class="mt-2 text-xs text-zinc-500">Through Razorpay: UPI, cards or net banking. Not refundable once your place is confirmed. With half now, the 3 months of Pocket Pro start once the second half is paid.</p>`
             : '<p class="mt-4 text-sm text-zinc-600">We\'ll send you a way to pay on WhatsApp shortly.</p>');
         break;
+      }
       case 'confirmed':
         main = head('circle-check', 'Your place is confirmed',
-          `${Html.escape(a.batch?.name ?? 'Your batch')} starts on <b>${day(a.batch?.startsOn)}</b>. We\'ll call you on WhatsApp before then to set everything up.`);
+          `${Html.escape(a.batch?.name ?? 'Your batch')} starts on <b>${day(a.batch?.startsOn)}</b>. We\'ll call you on WhatsApp before then to set everything up.`)
+          + this.#restDue();
         break;
       case 'completed':
-        main = head('award', 'You finished the programme', 'Well done. Keep the habit going: one message to the bot each day.');
+        main = head('award', 'You finished the programme', 'Well done. Keep the habit going: one message to the bot each day.')
+          + this.#restDue();
         break;
       default:
         main = head('info', 'Your application', Html.escape(a.status));

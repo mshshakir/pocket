@@ -193,6 +193,12 @@ export class SyncService {
   freeRequestSend(name, reason) { return this.#plan.freeRequestSend(name, reason); }
   promiseRule()      { return this.#sb ? this.#plan.promiseRule() : Promise.resolve(null); }
 
+  /** The signed-in person's habit programme place (status, how they paid, batch dates), or null. */
+  programmeStatus() {
+    if (!this.#sb || !this.#user) return Promise.resolve(null);
+    return this.#sb.rpc('pocket_programme_mine').then(({ data, error }) => (error ? null : data ?? null), () => null);
+  }
+
   /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
   aiGateway() {
     return new AiGateway(() => (this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null));

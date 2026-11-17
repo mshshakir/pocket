@@ -37,7 +37,7 @@ export interface Switched {
 }
 
 export type QuoteRefusal =
-  | 'closed' | 'unknown' | 'lifetime' | 'trial_used' | 'has_plan' | 'no_place'
+  | 'closed' | 'unknown' | 'lifetime' | 'trial_used' | 'has_plan' | 'no_place' | 'no_rest'
   | 'coupon_unknown' | 'coupon_not_started' | 'coupon_expired' | 'coupon_used_up' | 'coupon_not_for_this';
 
 export interface Quote extends Partial<Product> {

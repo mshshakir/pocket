@@ -7,7 +7,9 @@
  *                         (coupon: { code, products }); a code that isn't
  *                         valid, or fits none of them, is refused (bad_coupon)
  *   order  { product, code? } → { orderId, keyId, amount, listAmount, coupon?, currency, name }
- *                         product 'programme' = the habit programme place offered to them
+ *                         product 'programme' = the habit programme place offered to them, in full
+ *                         (less the upfront discount); 'programme_half' = half now, confirming the
+ *                         place; 'programme_rest' = the other half (migration 0051)
  *   verify { orderId, paymentId, signature } → { ok, applied }
  *   switch { plan }     → { ok, applied, plan, days, endsAt }  moving down to a
  *                         cheaper plan: no payment, the time left becomes days there
@@ -44,6 +46,7 @@ export class PaymentHandler {
     has_plan: 'The trial is for people without a plan.',
     has_backup: 'Scheduled backups are already switched on for your account.',
     no_place: 'There is no programme place waiting for you to pay for.',
+    no_rest: 'There is no second half of the programme fee left to pay.',
     no_credit: 'There\'s no paid time left on your plan to move.',
     not_lower: 'Moving to a bigger plan needs a payment; your time left is added as extra days.',
     coupon_unknown: 'That code isn\'t valid.',

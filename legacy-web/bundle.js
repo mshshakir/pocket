@@ -7614,6 +7614,11 @@ RULES:
     promiseRule() {
       return this.#sb ? this.#plan.promiseRule() : Promise.resolve(null);
     }
+    /** The signed-in person's habit programme place (status, how they paid, batch dates), or null. */
+    programmeStatus() {
+      if (!this.#sb || !this.#user) return Promise.resolve(null);
+      return this.#sb.rpc("pocket_programme_mine").then(({ data, error }) => error ? null : data ?? null, () => null);
+    }
     /** Receipt scans and voice entries through Pocket's `ai` server function, as the signed-in person. */
     aiGateway() {
       return new AiGateway(() => this.#sb && this.#user ? (name, opts) => this.#sb.functions.invoke(name, opts) : null);
@@ -24234,6 +24239,174 @@ This replaces your current grouping.`
     }
   };
 
+  // src/ui/components/HabitNudge.js
+  var HabitNudge = class _HabitNudge {
+    static #KEY = "pocket.v1.nudge";
+    static AWAY_DAYS = 21;
+    static REST_AWAY_DAYS = 3;
+    static WHATSAPP = "919687318953";
+    #el;
+    #storage;
+    #now;
+    /** @type {{kind: string}|null} */
+    #current = null;
+    /**
+     * @param {HTMLElement|null} el
+     * @param {{storage?: {getItem: Function, setItem: Function}|null, now?: () => Date}} [deps]
+     */
+    constructor(el, { storage = null, now = () => /* @__PURE__ */ new Date() } = {}) {
+      this.#el = el;
+      this.#storage = storage;
+      this.#now = now;
+    }
+    /** @param {ReturnType<typeof import('../../domain/services/RecordingGaps.js').RecordingGaps.suggestion>} suggestion */
+    show(suggestion) {
+      this.#current = suggestion && !this.#away(suggestion.kind) ? suggestion : null;
+      if (!this.#el) return;
+      this.#el.innerHTML = this.html();
+      if (this.#current && typeof lucide !== "undefined") lucide.createIcons();
+    }
+    /** "Not now": hide this kind for a while. */
+    later() {
+      if (!this.#current) return;
+      const saved = this.#read();
+      saved[_HabitNudge.#group(this.#current.kind)] = this.#now().toISOString();
+      this.#write(saved);
+      this.show(null);
+    }
+    html() {
+      const s = this.#current;
+      if (!s) return "";
+      const box = (icon, tone, title, text, action) => `
+      <div class="habit-nudge mb-4 rounded-2xl border ${tone} px-4 py-3 flex items-start gap-3" data-kind="${s.kind}">
+        <i data-lucide="${icon}" class="shrink-0 mt-0.5" style="width:18px;height:18px"></i>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold text-sm">${title}</div>
+          <p class="text-sm mt-0.5 opacity-90">${text}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-3 text-sm">
+            ${action}
+            <button type="button" data-nudge="later" class="underline opacity-75" onclick="window.__app.nudgeLater()">Not now</button>
+          </div>
+        </div>
+      </div>`;
+      const link = (href, label, external = false) => `<a href="${Html.escape(href)}" ${external ? 'target="_blank" rel="noopener"' : ""} class="font-semibold underline">${label}</a>`;
+      if (s.kind === "catchUp") {
+        const text = encodeURIComponent(`Hi, I'd like the Pocket catch-up service for the last ${s.days} days.`);
+        return box(
+          "file-spreadsheet",
+          "border-sky-200 bg-sky-50 text-sky-900",
+          `No entries for the last ${s.days} days`,
+          "Missed a few days? It happens. Send us your statements or receipts and we'll sort them into a file you import yourself: \u20B9100 for up to 7 days or 100 entries. We delete your data once the file is delivered.",
+          link(`https://wa.me/${_HabitNudge.WHATSAPP}?text=${text}`, "Ask on WhatsApp", true)
+        );
+      }
+      if (s.kind === "programme") {
+        const text = s.stopped ? "It's been a while since your last entry. Our 6-week habit programme helps you start again and make recording part of your day, with a short check-in every day." : `You recorded on ${s.recordedDays} of the last ${s.window} days. Our 6-week habit programme helps you make it daily, with a short check-in every day.`;
+        return box(
+          "sprout",
+          "border-amber-200 bg-amber-50 text-amber-900",
+          "Make recording a daily habit",
+          `${text} \u20B94,500 in full, or \u20B92,500 now and \u20B92,500 at the end.`,
+          link("programme.html", "See the programme")
+        );
+      }
+      if (s.kind === "restDue") {
+        return box(
+          "credit-card",
+          "border-amber-200 bg-amber-50 text-amber-900",
+          "Second half of the programme fee",
+          "The 6 weeks are done \u2014 well done! Please pay the second half. Your 3 months of Pocket Pro start as soon as it's paid.",
+          link("programme.html", "Pay now")
+        );
+      }
+      return "";
+    }
+    /** The catch-up and the programme share one pause, so putting one away doesn't bring on the other. */
+    static #group(kind) {
+      return kind === "restDue" ? "restDue" : "help";
+    }
+    #away(kind) {
+      const at = this.#read()[_HabitNudge.#group(kind)];
+      if (!at) return false;
+      const days = kind === "restDue" ? _HabitNudge.REST_AWAY_DAYS : _HabitNudge.AWAY_DAYS;
+      return this.#now().getTime() - Date.parse(at) < days * 864e5;
+    }
+    #read() {
+      try {
+        return JSON.parse(this.#storage?.getItem(_HabitNudge.#KEY) || "{}") || {};
+      } catch {
+        return {};
+      }
+    }
+    #write(v) {
+      try {
+        this.#storage?.setItem(_HabitNudge.#KEY, JSON.stringify(v));
+      } catch {
+      }
+    }
+  };
+
+  // src/domain/services/RecordingGaps.js
+  var RecordingGaps = class _RecordingGaps {
+    static NEW_DAYS = 14;
+    static GAP_DAYS = 3;
+    static CATCH_UP_MAX = 30;
+    static WINDOW = 30;
+    static ON_OFF_DAYS = 15;
+    /** Programme statuses that mean they're in it, or on their way. */
+    static #IN_PROGRAMME = /* @__PURE__ */ new Set(["waitlisted", "offered", "confirmed", "completed"]);
+    /**
+     * @param {Array<{date?: string, createdAt?: string, recurring?: unknown, recurringSourceId?: unknown}>} transactions
+     * @param {string} today  YYYY-MM-DD, local
+     * @param {{status?: string, payPlan?: string, restPaid?: boolean, batch?: {endsOn?: string}}|null} [programme]
+     * @returns {{kind: 'catchUp', days: number} | {kind: 'programme', recordedDays: number, window: number, stopped: boolean} | {kind: 'restDue'} | null}
+     */
+    static suggestion(transactions, today, programme = null) {
+      if (programme?.payPlan === "split" && !programme.restPaid && programme.batch?.endsOn && today >= programme.batch.endsOn && (programme.status === "confirmed" || programme.status === "completed")) {
+        return { kind: "restDue" };
+      }
+      const own = (transactions || []).filter((t) => t && !t.recurring && !t.recurringSourceId && typeof t.date === "string");
+      if (!own.length) return null;
+      const first = own.reduce((min, t) => {
+        const d = _RecordingGaps.#day(t.createdAt) || t.date;
+        return d < min ? d : min;
+      }, today);
+      if (_RecordingGaps.#between(first, today) < _RecordingGaps.NEW_DAYS) return null;
+      const inProgramme = _RecordingGaps.#IN_PROGRAMME.has(programme?.status);
+      const lastDated = own.reduce((max, t) => t.date <= today && t.date > max ? t.date : max, "");
+      const gap = lastDated ? _RecordingGaps.#between(lastDated, today) : Infinity;
+      if (gap >= _RecordingGaps.GAP_DAYS && gap <= _RecordingGaps.CATCH_UP_MAX) return { kind: "catchUp", days: gap };
+      if (inProgramme) return null;
+      if (gap > _RecordingGaps.CATCH_UP_MAX) return { kind: "programme", recordedDays: 0, window: _RecordingGaps.WINDOW, stopped: true };
+      const since = _RecordingGaps.#addDays(today, -(_RecordingGaps.WINDOW - 1));
+      const days = /* @__PURE__ */ new Set();
+      for (const t of own) {
+        const d = _RecordingGaps.#day(t.createdAt) || t.date;
+        if (d >= since && d <= today) days.add(d);
+      }
+      if (days.size > 0 && days.size < _RecordingGaps.ON_OFF_DAYS) {
+        return { kind: "programme", recordedDays: days.size, window: _RecordingGaps.WINDOW, stopped: false };
+      }
+      return null;
+    }
+    /** The local calendar day of an ISO time, or '' when there isn't one. */
+    static #day(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+    static #between(from, to) {
+      return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5);
+    }
+    static #addDays(iso, n) {
+      const d = /* @__PURE__ */ new Date(`${iso}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    }
+  };
+
   // src/core/PwaService.js
   var PwaService = class {
     #win;
@@ -25409,6 +25582,10 @@ ${body}\r
     // ExportModal
     #planBanner = null;
     // PlanBanner
+    /** @type {HabitNudge|null} catch-up / programme / second-half box */
+    #nudge = null;
+    /** The signed-in person's habit programme place (pocket_programme_mine), or null. */
+    #programme = null;
     /** @type {AppNotices|null} offline note and "backup due" above every page */
     #notices = null;
     /** @type {PwaService|null} install as an app, offline files, online state */
@@ -30084,6 +30261,15 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     // Install as an app · offline note · Google Drive backup
     // ──────────────────────────────────────────────────────────────────────────
     #startAppShell() {
+      this.#nudge = new HabitNudge(document.getElementById("habitNudge"), {
+        storage: DemoMode.active ? null : window.localStorage
+      });
+      const loadProgramme = () => this.#sync.programmeStatus().then((p) => {
+        this.#programme = p;
+        this.#refreshNudge();
+      });
+      this.#bus.on("session:known", loadProgramme);
+      this.#bus.on("auth:changed", loadProgramme);
       this.#notices = new AppNotices(document.getElementById("appNotices"), {
         icons: document.querySelectorAll(".status-icons"),
         storage: DemoMode.active ? null : window.localStorage
@@ -30140,8 +30326,16 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       this.#refreshNotices();
       if (!DemoMode.active) this.#pwa.keepStorage();
     }
+    /** Help when recording has slipped (catch-up, habit programme), or the programme's second half. Not in the sample book. */
+    #refreshNudge() {
+      if (!this.#nudge) return;
+      if (DemoMode.active || this.#lockState()) return void this.#nudge.show(null);
+      const state = this.#store.getState();
+      this.#nudge.show(RecordingGaps.suggestion(state.transactions, DateService.todayIso(), this.#programme));
+    }
     /** The notes above every page: offline, and a Google Drive backup that is due. */
     #refreshNotices() {
+      this.#refreshNudge();
       if (!this.#notices) return;
       const drive = this.driveStatus();
       const online = this.#pwa?.online !== false;
@@ -30389,6 +30583,10 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
     /** Close a note above the page (its icon stays in the top bar). @param {'offline'|'backup'} kind */
     dismissNotice(kind) {
       this.#notices?.dismiss(kind);
+    }
+    /** "Not now" on the catch-up / programme / second-half box. */
+    nudgeLater() {
+      this.#nudge?.later();
     }
     /** A top-bar icon was tapped: open its note (or close it if open). @param {'offline'|'backup'} kind */
     toggleNotice(kind) {

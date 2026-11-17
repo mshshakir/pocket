@@ -55,6 +55,14 @@ export class ProgrammeView extends AdminView {
       <div class="cards">${cards || '<p class="muted">Nobody here.</p>'}</div>`;
   }
 
+  /** How the fee was paid: in full, half (second half still owed), or both halves; and whether Pocket Pro was given. */
+  static #paid(a) {
+    if (!a.pay_plan) return '';
+    const owed = a.pay_plan === 'split' && !a.rest_paid_at;
+    const label = a.pay_plan === 'full' ? 'paid in full' : owed ? 'second half owed' : 'both halves paid';
+    return ` ${Format.pill(label, owed ? 'warn' : 'good')}${a.pro_granted_at ? ` ${Format.pill('Pro given', 'good')}` : ''}`;
+  }
+
   #card(a, position) {
     const batch = this.#data.batches.find((b) => b.id === a.batch_id);
     const wa = Format.whatsapp(a.whatsapp);
@@ -77,7 +85,7 @@ export class ProgrammeView extends AdminView {
     return `
       <div class="card">
         <div class="card-head">
-          <div>${position ? `<span class="pos">#${position}</span> ` : ''}<span class="strong">${Format.esc(a.full_name)}</span> ${Format.pill(a.status, ProgrammeView.#TONE[a.status])}
+          <div>${position ? `<span class="pos">#${position}</span> ` : ''}<span class="strong">${Format.esc(a.full_name)}</span> ${Format.pill(a.status, ProgrammeView.#TONE[a.status])}${ProgrammeView.#paid(a)}
             ${batch ? `<span class="sub">· ${Format.esc(batch.name)}</span>` : ''}</div>
           <div class="sub">applied ${Format.date(a.created_at)}</div>
         </div>
