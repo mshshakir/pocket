@@ -57,6 +57,7 @@ export class PaymentHandler {
     has_plan: 'The trial is for people without a plan.',
     has_backup: 'Scheduled backups are already switched on for your account.',
     has_subscription: 'Auto-debit for this is already on.',
+    auto_debit_off: 'Monthly auto-debit isn\'t available yet. Meanwhile, you can ask to use Pocket free.',
     promise_not_needed: 'Your plan already lets you add entries, so the ₹30 promise isn\'t needed.',
     no_place: 'There is no programme place waiting for you to pay for.',
     no_rest: 'There is no second half of the programme fee left to pay.',
@@ -127,9 +128,13 @@ export class PaymentHandler {
   async #products(userId: string, code: string | null): Promise<Response> {
     const products = await this.#store.products();
     const quotes = await Promise.all(products.map((p) => this.#store.quote(userId, p.product)));
+    // Whether each monthly/yearly product is sold by auto-debit right now (billing_settings.auto_debit_enabled).
+    const renewing = await Promise.all(products.map((p) => (p.term === 'month' || p.term === 'year')
+      ? this.#store.subscriptionQuote(userId, p.product).then((q) => q.renewing && q.reason !== 'auto_debit_off')
+      : Promise.resolve(false)));
     const listed = products.map((p, i) => ({
       ...p, sort: undefined, available: quotes[i].ok, reason: quotes[i].reason,
-      ...(p.term === 'month' || p.term === 'year' ? { renews: true } : {}),
+      ...(renewing[i] ? { renews: true } : {}),
       ...(quotes[i].switchDays ? { switchDays: quotes[i].switchDays, switchFrom: quotes[i].switchFrom } : {}),
     }));
     const switches = await this.#store.switchOptions(userId);

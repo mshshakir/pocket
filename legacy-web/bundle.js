@@ -12210,7 +12210,7 @@ This replaces your current grouping.`
         ${paid.map((p) => this.#planBox(p, plan, term, selling ? offers : null, buying, ui.highlight)).join("")}
         ${this.#backupAddon(plan, selling ? offers : null, buying)}
         ${this.#aiPack(plan, selling ? offers : null, buying)}
-        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
+        <div class="text-[11px] text-zinc-400 leading-relaxed mt-2">${selling && !offers.products.some((o) => o.renews) ? `One-time payment through Razorpay (UPI, cards, net banking). Nothing renews by itself, and payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>). Paying again for your plan adds to its end date.${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : selling ? `Pocket Pro and Pocket Pro Group renew by auto-debit through Razorpay (UPI AutoPay or card). Stop it any time here; your plan runs to the end of what you've paid. Pocket Plus, AI packs and the 3-month offer are one-time payments. Payments aren't refundable (<a href="refunds.html" target="_blank" class="underline">policy</a>).${switching ? " Switching plans carries your time left over as extra days on the new plan." : ""}` : "Online payment is coming soon."}</div>
       </div>`;
     }
     /** One plan: name, price for the chosen term, what it includes, one button, and the trial link. */
@@ -12234,7 +12234,7 @@ This replaces your current grouping.`
         p.sharing && "Daily, monthly and yearly family summaries"
       ].filter(Boolean);
       const renewing = current && plan.toJSON().autoRenew;
-      const verb = current ? "Renew by auto-debit" : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
+      const verb = current ? product?.renews ? "Renew by auto-debit" : `Add 1 ${term}` : plan.isPaid && plan.state === "active" && plan.term !== "trial" ? `Switch to ${Html.escape(p.name)}` : `Get ${Html.escape(p.name)}`;
       const down = !current && offers?.switches?.[p.code]?.lower ? offers.switches[p.code] : null;
       const button = !offers ? "" : renewing ? `<div class="plan-autodebit text-xs text-zinc-500 mt-3 flex items-center justify-between gap-2">
           <span><i data-lucide="repeat" style="width:13px;height:13px;vertical-align:-2px"></i> Auto-debit is on</span>

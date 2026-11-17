@@ -135,8 +135,8 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
   ok('C6 while paying, buttons are disabled and the one in progress says so', /disabled/.test(busy) && busy.includes('Opening…'));
 
   const syncing = card.html(Entitlements.from({ plan: 'sync', state: 'active', term: 'month', paymentsOpen: true }), catalogue, offers(), null, '', { term: 'month' });
-  ok('C6 on Sync: "Renew by auto-debit" on your own plan, other plans say Switch, and switching is explained',
-     syncing.includes('Renew by auto-debit') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
+  ok('C6 on Sync: "Add 1 month" extends, other plans say Switch, and switching is explained',
+     syncing.includes('Add 1 month') && syncing.includes('Switch to Family') && /Your plan/.test(syncing) && /time left over as extra days/.test(syncing) && !syncing.includes('try it for'));
 
   const withPlus = (o) => ({ products: [...o.products, { product: 'drive_backup', name: 'Pocket Plus', addon: 'drive_backup', amountPaise: 19900, available: true }] });
   const plusFree = card.html(free({ paymentsOpen: true }), catalogue, withPlus(offers()));
@@ -238,7 +238,7 @@ const refusal = (status, body) => ({ data: null, error: { message: `HTTP ${statu
     { product: 'family_year', plan: 'family', term: 'year', amountPaise: 149900, available: true } ] };
   const d = card.html(onFamily, catalogue, down, null, '', { term: 'year' });
   ok('C15 moving down: a free switch, no payment button for that plan', d.includes("__app.switchPlan('sync')") && /Switch to Sync · free/.test(d) && !d.includes("buy('sync_year')")
-     && /becomes about 9 months of Sync/.test(d) && /Renew by auto-debit · ₹1,499/.test(d));
+     && /becomes about 9 months of Sync/.test(d) && /Add 1 year · ₹1,499/.test(d));
   ok('C16 how long, in words', PlanCard.span(20) === '20 days' && PlanCard.span(273) === 'about 9 months' && PlanCard.span(820) === 'about 2 years 3 months' && PlanCard.span(365) === 'about 12 months');
   const s = server({ switch: () => ({ data: { ok: true, applied: true, plan: 'sync', days: 273, endsAt: '2027-08-15' }, error: null }) });
   const r = await new PaymentService(() => s.invoke, {}).switchPlan('sync');
