@@ -1969,6 +1969,108 @@ var _PocketApp = (() => {
     }
   };
 
+  // src/domain/services/TermsAgreement.js
+  var TermsAgreement = class _TermsAgreement {
+    static #FLAG = "pocket.termsAgreed";
+    /** How long a "Continue with Google" tap counts for (the sign-in round trip). */
+    static #FLAG_MS = 30 * 60 * 1e3;
+    #rpc;
+    #storage;
+    /**
+     * @param {() => (((fn: string, args?: object) => Promise<{data: any, error: any}>)|null)} rpc  the signed-in person's rpc, or null
+     * @param {Storage|null} storage  sessionStorage
+     */
+    constructor(rpc, storage) {
+      this.#rpc = rpc;
+      this.#storage = storage;
+    }
+    /** "Continue with Google" was tapped under the "By continuing, you agree" line. */
+    agreedAtSignIn(now = Date.now()) {
+      try {
+        this.#storage?.setItem(_TermsAgreement.#FLAG, String(now));
+      } catch (_) {
+      }
+    }
+    /**
+     * After sign-in: records an agreement made on the sign-in window, or says
+     * the person needs to be asked.
+     * @returns {Promise<{status: 'ok'|'ask'|'unknown', version?: string}>}
+     */
+    async check(now = Date.now()) {
+      const call = this.#rpc();
+      if (!call) return { status: "unknown" };
+      const { data, error } = await call("pocket_terms_state").catch(() => ({ data: null, error: true }));
+      if (error || !data?.version) return { status: "unknown" };
+      if (data.accepted) {
+        this.#clearFlag();
+        return { status: "ok", version: data.version };
+      }
+      if (this.#flagFresh(now)) {
+        const r = await this.accept(data.version, "sign_in").catch(() => null);
+        if (r) return { status: "ok", version: data.version };
+      }
+      return { status: "ask", version: data.version };
+    }
+    /** Records agreement to `version`. @throws {Error} with a message to show */
+    async accept(version, via = "prompt") {
+      const call = this.#rpc();
+      if (!call) throw new Error("Please sign in first.");
+      const { data, error } = await call("pocket_terms_accept", { p_version: version, p_via: via });
+      if (error) throw new Error(error.code === "PG001" && error.message ? error.message : "Pocket couldn't save that. Please try again.");
+      this.#clearFlag();
+      return data;
+    }
+    #flagFresh(now) {
+      let at = null;
+      try {
+        at = Number(this.#storage?.getItem(_TermsAgreement.#FLAG));
+      } catch (_) {
+        return false;
+      }
+      return Number.isFinite(at) && at > 0 && now - at < _TermsAgreement.#FLAG_MS;
+    }
+    #clearFlag() {
+      try {
+        this.#storage?.removeItem(_TermsAgreement.#FLAG);
+      } catch (_) {
+      }
+    }
+  };
+
+  // src/ui/modals/TermsModal.js
+  var TermsModal = class {
+    #saving = false;
+    #error = "";
+    #changed = false;
+    /** @param {{changed?: boolean}} [o]  changed: they agreed to an earlier version */
+    open(o = {}) {
+      this.#changed = !!o.changed;
+      this.#saving = false;
+      this.#error = "";
+    }
+    set saving(on) {
+      this.#saving = !!on;
+    }
+    set error(msg) {
+      this.#error = String(msg || "");
+    }
+    render() {
+      return `
+      <div class="p-5 terms-modal" style="max-width:420px">
+        <span class="w-10 h-10 rounded-xl bg-zinc-100 dark:bg-zinc-800 grid place-items-center mb-3"><i data-lucide="file-check" style="width:20px;height:20px"></i></span>
+        <h3 class="text-lg font-semibold mb-1">${this.#changed ? "Our Terms have changed" : "Pocket's Terms and Privacy Policy"}</h3>
+        <p class="text-sm text-zinc-500 leading-relaxed mb-4">${this.#changed ? "Please take a moment to read the updated Terms and Privacy Policy." : "They explain what Pocket does with your data and how payments and refunds work."}
+          To keep using Pocket, please agree to them.</p>
+        <div class="flex gap-3 text-sm mb-4">
+          <a href="terms.html" target="_blank" class="underline">Terms and Conditions</a>
+          <a href="privacy.html" target="_blank" class="underline">Privacy Policy</a>
+        </div>
+        ${this.#error ? `<div class="text-sm text-rose-600 mb-3 terms-error">${this.#error.replace(/[<>&]/g, "")}</div>` : ""}
+        <button class="btn btn-primary w-full justify-center terms-agree" ${this.#saving ? "disabled" : ""} onclick="window.__app.agreeToTerms()">${this.#saving ? "Saving\u2026" : "I agree, continue"}</button>
+      </div>`;
+    }
+  };
+
   // src/domain/services/LedgerMath.js
   var LedgerMath = class _LedgerMath {
     /**
@@ -21695,8 +21797,11 @@ This replaces your current grouping.`
           Continue with Google
         </button>
 
+        ${isSaaS ? `<div class="text-xs text-zinc-500 text-center mb-2 terms-line">By continuing, you agree to Pocket's
+          <a href="terms.html" target="_blank" class="underline">Terms</a> and
+          <a href="privacy.html" target="_blank" class="underline">Privacy Policy</a>.</div>` : ""}
         <div class="text-xs text-zinc-400 text-center">
-          ${isSaaS ? `Your data is sent securely and stored encrypted. Other users can't see your book unless you share it. <a href="privacy.html" target="_blank" class="underline">Privacy</a>` : "Your data is end-to-end owned by you. Stored in your own Supabase project."}
+          ${isSaaS ? "Your data is sent securely and stored encrypted. Other users can't see your book unless you share it." : "Your data is end-to-end owned by you. Stored in your own Supabase project."}
         </div>
       </div>`;
     }
@@ -25899,6 +26004,12 @@ ${body}\r
     #couponError = "";
     #couponChecking = false;
     #planHighlight = null;
+    /** @type {TermsAgreement|null} */
+    #terms = null;
+    /** @type {TermsModal|null} */
+    #termsModal = null;
+    /** The Terms version the server asked about. @type {string|null} */
+    #termsVersion = null;
     /** "Change plan" was tapped: show every plan, not just the person's own. */
     #planAll = false;
     /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
@@ -26776,7 +26887,35 @@ ${body}\r
       if (this.#modal.active === "settings") this.#modal.refresh();
     }
     async signInWithGoogle() {
+      this.#terms?.agreedAtSignIn();
       await this.#sync.signInWithGoogle();
+    }
+    /** After sign-in: record the agreement, or ask for it once (migration 0061). */
+    async #checkTerms() {
+      if (DemoMode.active || !this.#terms || !this.#sync.currentUser) return;
+      const r = await this.#terms.check().catch(() => ({ status: "unknown" }));
+      this.#termsVersion = r.version ?? null;
+      if (r.status !== "ask" || this.#modal.active === "terms") return;
+      this.#termsModal.open({ changed: false });
+      this.#modal.open("terms", {});
+      lucide?.createIcons?.();
+    }
+    /** "I agree, continue" in the Terms window. */
+    async agreeToTerms() {
+      if (!this.#termsVersion) return;
+      this.#termsModal.saving = true;
+      this.#termsModal.error = "";
+      this.#modal.refresh();
+      try {
+        await this.#terms.accept(this.#termsVersion, "prompt");
+        this.#termsModal.saving = false;
+        this.closeModal();
+        this.#toast.show("Thank you");
+      } catch (e) {
+        this.#termsModal.saving = false;
+        this.#termsModal.error = e?.message || "Pocket couldn't save that. Please try again.";
+        this.#modal.refresh();
+      }
     }
     /**
      * Sign out — always succeeds locally even if the Supabase revocation request
@@ -30655,6 +30794,13 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       this.#loadPromiseRule();
       this.#bus.on("auth:changed", () => this.#loadPromiseRule());
       this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
+      this.#terms = new TermsAgreement(this.#sync.accountRpc(), window.sessionStorage);
+      this.#termsModal = new TermsModal();
+      this.#modal.register("terms", this.#termsModal);
+      this.#bus.on("session:known", () => setTimeout(() => this.#checkTerms(), 300));
+      this.#bus.on("auth:changed", ({ user } = {}) => {
+        if (user) setTimeout(() => this.#checkTerms(), 300);
+      });
       this.#bus.on("session:known", () => this.#checkClosing());
       this.#bus.on("session:known", () => {
         if (window.location.hash !== "#promise" || DemoMode.active) return;

@@ -15,6 +15,8 @@ import { Router }     from './core/Router.js';
 import { SeedFactory } from './data/seed.js';
 import { DemoMode } from './core/DemoMode.js';
 import { Money } from './core/Money.js';
+import { TermsAgreement } from './domain/services/TermsAgreement.js';
+import { TermsModal } from './ui/modals/TermsModal.js';
 import { BookCleaner } from './domain/services/BookCleaner.js';
 import { StateMigrator } from './data/StateMigrator.js';
 import {
@@ -255,6 +257,12 @@ export class Application {
   #couponError       = '';
   #couponChecking    = false;
   #planHighlight     = null;
+  /** @type {TermsAgreement|null} */
+  #terms             = null;
+  /** @type {TermsModal|null} */
+  #termsModal        = null;
+  /** The Terms version the server asked about. @type {string|null} */
+  #termsVersion      = null;
   /** "Change plan" was tapped: show every plan, not just the person's own. */
   #planAll           = false;
   /** Pocket Pro Group card (pocket_group_state), loaded with the plan; null while loading or not in a group. */
@@ -1164,7 +1172,39 @@ export class Application {
     if (this.#modal.active === 'settings') this.#modal.refresh();
   }
 
-  async signInWithGoogle() { await this.#sync.signInWithGoogle(); }
+  async signInWithGoogle() {
+    // The sign-in window says "By continuing, you agree to the Terms…" (0061).
+    this.#terms?.agreedAtSignIn();
+    await this.#sync.signInWithGoogle();
+  }
+
+  /** After sign-in: record the agreement, or ask for it once (migration 0061). */
+  async #checkTerms() {
+    if (DemoMode.active || !this.#terms || !this.#sync.currentUser) return;
+    const r = await this.#terms.check().catch(() => ({ status: 'unknown' }));
+    this.#termsVersion = r.version ?? null;
+    if (r.status !== 'ask' || this.#modal.active === 'terms') return;
+    this.#termsModal.open({ changed: false });
+    this.#modal.open('terms', {});
+    lucide?.createIcons?.();
+  }
+
+  /** "I agree, continue" in the Terms window. */
+  async agreeToTerms() {
+    if (!this.#termsVersion) return;
+    this.#termsModal.saving = true; this.#termsModal.error = '';
+    this.#modal.refresh();
+    try {
+      await this.#terms.accept(this.#termsVersion, 'prompt');
+      this.#termsModal.saving = false;
+      this.closeModal();
+      this.#toast.show('Thank you');
+    } catch (e) {
+      this.#termsModal.saving = false;
+      this.#termsModal.error = e?.message || 'Pocket couldn\'t save that. Please try again.';
+      this.#modal.refresh();
+    }
+  }
 
   /**
    * Sign out — always succeeds locally even if the Supabase revocation request
@@ -5230,6 +5270,13 @@ export class Application {
     this.#bus.on('auth:changed', () => this.#loadPromiseRule());
 
     this.#closure = new AccountClosure(this.#sync.accountRpc(), window.localStorage);
+
+    // Terms and Privacy Policy (0061): recorded after sign-in, or asked once.
+    this.#terms = new TermsAgreement(this.#sync.accountRpc(), window.sessionStorage);
+    this.#termsModal = new TermsModal();
+    this.#modal.register('terms', this.#termsModal);
+    this.#bus.on('session:known', () => setTimeout(() => this.#checkTerms(), 300));
+    this.#bus.on('auth:changed', ({ user } = {}) => { if (user) setTimeout(() => this.#checkTerms(), 300); });
     this.#bus.on('session:known', () => this.#checkClosing());
     // app.html#promise opens the ₹30 promise directly (to keep it, or to test it).
     this.#bus.on('session:known', () => {

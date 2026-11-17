@@ -49,10 +49,13 @@ export class AuthModal {
           Continue with Google
         </button>
 
+        ${isSaaS ? `<div class="text-xs text-zinc-500 text-center mb-2 terms-line">By continuing, you agree to Pocket's
+          <a href="terms.html" target="_blank" class="underline">Terms</a> and
+          <a href="privacy.html" target="_blank" class="underline">Privacy Policy</a>.</div>` : ''}
         <div class="text-xs text-zinc-400 text-center">
           ${isSaaS
             // Must match privacy.html: encrypted in transit and at rest, not end-to-end.
-            ? 'Your data is sent securely and stored encrypted. Other users can\'t see your book unless you share it. <a href="privacy.html" target="_blank" class="underline">Privacy</a>'
+            ? 'Your data is sent securely and stored encrypted. Other users can\'t see your book unless you share it.'
             : 'Your data is end-to-end owned by you. Stored in your own Supabase project.'}
         </div>
       </div>`;
