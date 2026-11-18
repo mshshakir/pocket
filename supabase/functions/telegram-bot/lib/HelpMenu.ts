@@ -90,7 +90,7 @@ export class HelpMenu {
         '<b>📷 Receipts</b> — send a photo, or the PDF bill as a file. The total, shop and date are filled in. 5 AI credits.',
         'The bot shows what it heard or read, then saves it like a typed entry, with ✏️ Edit and 🗑 Delete. Speak clearly: a misheard note is still charged; if the AI service fails, you aren\'t.',
         '',
-        '<b>💬 Plain words</b> — "gave Ali five thousand yesterday" is worked out for you, free.',
+        '<b>💬 Plain words</b> — "gave Ali five thousand yesterday" is worked out for you: 20 a day free, then 1 AI credit each.',
         '<b>❓ Questions</b> — "What\'s left for groceries?" or "How much did I spend on food this month?" Answered from your own totals (this month, last month, budgets), never single entries. You\'re asked once before it\'s turned on. 1 AI credit each.',
         '',
         'Pocket Pro includes 150 AI credits a month; packs are in the app under Settings → Your plan.',

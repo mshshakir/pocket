@@ -3,7 +3,7 @@
  *
  *   🎙 a voice note        → entries   (1 credit per 30 seconds, as in the app)
  *   📷 a receipt photo, or a PDF bill sent as a file → entries (5 credits, as a scan in the app)
- *   💬 a typed message the bot couldn't read → entries, free
+ *   💬 a typed message the bot couldn't read → entries: 20 a day free, then 1 credit
  *   ❓ a question about your own money → an answer (1 credit), only after the
  *      person agrees, once per chat, to send totals (never entries) to the AI
  *
@@ -129,10 +129,18 @@ export class AiAssistant {
    */
   async interpret(link: TelegramLink, chatId: number, messageId: number, text: string, ws: Workspace, record: RecordText): Promise<boolean> {
     if (!this.#model) return false;
+    const ref = `tgt:${chatId}:${messageId}`;
+    const charge = await this.#store.aiText(link.user_id, ref);
+    if (!charge.ok) {
+      await this.#telegram.reply(chatId,
+        'I couldn\'t find an amount. Start with the amount, e.g. 500 lunch @food\n(Today\'s free AI readings are used up and you have no AI credits left. Send /help for all the ways to record.)', messageId);
+      return true;
+    }
     let answer: string;
     try {
       answer = await this.#model.generate([{ text: `${this.#entriesPrompt('text', ws, link)}\nMESSAGE: ${text.slice(0, 1000)}` }], 600);
     } catch (e) {
+      if (!charge.free) await this.#store.aiRefund(link.user_id, ref);
       console.error('[telegram-bot] ai interpret', e);
       return false;
     }
@@ -143,7 +151,8 @@ export class AiAssistant {
       return true;
     }
     if (reading.kind !== 'entries') return false;
-    await this.#telegram.reply(chatId, `💬 Understood as:\n${reading.lines.map((l) => `• ${l}`).join('\n')}`, messageId);
+    const note = charge.free ? (charge.freeLeft === 0 ? '\n· That was today\'s last free one; after this, 1 AI credit each.' : '') : AiAssistant.#cost(charge);
+    await this.#telegram.reply(chatId, `💬 Understood as:\n${reading.lines.map((l) => `• ${l}`).join('\n')}${note}`, messageId);
     await record(reading.lines.join('\n'));
     return true;
   }

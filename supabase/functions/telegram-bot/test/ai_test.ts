@@ -10,7 +10,8 @@
  *   A6  The AI service fails → credits given back, "You weren't charged"
  *   A7  No credits → nothing downloaded or recorded, told how to buy a pack
  *   A8  The default account is in a shared book → the family pool pays; no access → own credits
- *   A9  A typed message with no amount: worked out for free; a question asks consent first
+ *   A9  A typed message with no amount: worked out (free within the daily limit); a question asks consent first
+ *   A13 After the daily free ones: 1 credit each; none left → the usual hint, nothing sent to the AI
  *   A10 "Allow" → stored, then the question is answered from totals (1 credit)
  *   A11 EntryParser.hasAmount tells typed entries from messages for the AI
  */
@@ -55,13 +56,20 @@ class FakeStore {
   credits = 100;
   shared = false;
   noAccessFor = new Set<string>();
+  textFreeLeft = 20;
+  textRefs: string[] = [];
+  aiText(user: string, ref: string): Promise<AiCharge> {
+    this.textRefs.push(ref);
+    if (this.textFreeLeft > 0) { this.textFreeLeft--; return Promise.resolve({ ok: true, free: true, freeLeft: this.textFreeLeft }); }
+    return this.aiCharge(user, user, ref, 'text', 0);
+  }
   entitlements() { return Promise.resolve({ state: 'active', access: { telegram: 'write' }, coveredBy: [{ ownerId: FAMILY, access: 'write' }] }); }
   sharesFor() { return Promise.resolve(this.shared ? [{ ownerId: FAMILY, ownerName: 'Abbas' }] : []); }
   tryLoadBook(id: string) { return Promise.resolve(id === FAMILY ? familyBook : book); }
   aiCharge(user: string, bookId: string, ref: string, kind: string, seconds: number): Promise<AiCharge> {
     this.charges.push({ user, book: bookId, ref, kind, seconds });
     if (this.noAccessFor.has(bookId)) return Promise.resolve({ ok: false, reason: 'no_access' });
-    const cost = kind === 'voice' ? Math.max(1, Math.ceil(seconds / 30)) : kind === 'question' ? 1 : 5;
+    const cost = kind === 'voice' ? Math.max(1, Math.ceil(seconds / 30)) : kind === 'question' || kind === 'text' ? 1 : 5;
     if (cost > this.credits) return Promise.resolve({ ok: false, reason: 'no_credits', cost, remaining: this.credits });
     this.credits -= cost;
     return Promise.resolve({ ok: true, chargedTo: bookId === user ? 'own' : 'family', cost, remaining: this.credits });
@@ -207,7 +215,7 @@ const msg = (over: Partial<TelegramMessage>): TelegramMessage => ({ message_id: 
   const t = setup();
   t.model.answers.push('{"kind":"entries","heard":"gave Ali five thousand","lines":["5000 gave ali"]}');
   const done = await t.ai.interpret(t.link, CHAT, 42, 'gave ali five thousand', await ws(t.store), t.record);
-  ok('A9 worked out for free', done && !t.store.charges.length && t.recorded[0] === '5000 gave ali' && /Understood as/.test(t.tg.replies[0]));
+  ok('A9 worked out for free', done && !t.store.charges.length && t.store.textRefs[0] === 'tgt:7:42' && t.recorded[0] === '5000 gave ali' && /Understood as/.test(t.tg.replies[0]));
   const q = setup();
   q.model.answers.push('{"kind":"question","heard":"how much left for groceries","lines":[]}');
   const asked = await q.ai.interpret(q.link, CHAT, 43, "what's left for groceries?", await ws(q.store), q.record);
@@ -233,6 +241,25 @@ const msg = (over: Partial<TelegramMessage>): TelegramMessage => ({ message_id: 
   again.model.answers.push('{"kind":"question","heard":"","lines":[]}', 'You spent ₹4,500 on food this month.');
   await again.ai.interpret(again.link, CHAT, 60, 'how much on food this month', await ws(again.store), again.record);
   ok('A10 once allowed, questions are answered straight away', !again.tg.sent.length && /₹4,500/.test(again.tg.replies[0] ?? ''));
+}
+
+// ── A13 ───────────────────────────────────────────────────────────────────
+{
+  const t = setup();
+  t.store.textFreeLeft = 1;
+  t.model.answers.push('{"kind":"entries","heard":"","lines":["80 chai"]}', '{"kind":"entries","heard":"","lines":["60 auto"]}');
+  await t.ai.interpret(t.link, CHAT, 70, 'chai eighty', await ws(t.store), t.record);
+  ok('A13 the last free one says so', /last free one/.test(t.tg.replies[0] ?? '') && !t.store.charges.length, t.tg.replies[0]);
+  await t.ai.interpret(t.link, CHAT, 71, 'auto sixty', await ws(t.store), t.record);
+  ok('A13 then 1 credit each', t.store.charges[0]?.kind === 'text' && /1 AI credit, 99 left/.test(t.tg.replies[1] ?? '') && t.recorded.length === 2, t.tg.replies[1]);
+  const n = setup();
+  n.store.textFreeLeft = 0; n.store.credits = 0;
+  const handled = await n.ai.interpret(n.link, CHAT, 72, 'auto sixty', await ws(n.store), n.record);
+  ok('A13 none left: the usual hint, nothing sent to the AI', handled && !n.model.calls.length && /Start with the amount/.test(n.tg.replies[0] ?? '') && !n.recorded.length);
+  const f = setup();
+  f.store.textFreeLeft = 0;
+  f.model.answers.push(new AiModelError('down'));
+  ok('A13 AI failure after the limit: refunded, falls back', !(await f.ai.interpret(f.link, CHAT, 73, 'auto sixty', await ws(f.store), f.record)) && f.store.refunds[0] === 'tgt:7:73');
 }
 
 // ── A11 ───────────────────────────────────────────────────────────────────

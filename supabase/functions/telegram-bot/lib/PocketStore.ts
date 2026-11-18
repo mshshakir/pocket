@@ -34,6 +34,8 @@ export interface AiCharge {
   chargedTo?: 'unlimited' | 'own' | 'family';
   cost?: number;
   remaining?: number;
+  free?: boolean;     // a typed message within the daily free limit (pocket_ai_text)
+  freeLeft?: number;
 }
 
 /** A /link in progress: the code was emailed, the chat hasn't sent it yet. */
@@ -414,6 +416,16 @@ export class PocketStore {
     const { data, error } = await this.#sb.rpc('pocket_ai_charge', {
       p_user: userId, p_book: book, p_ref: ref, p_kind: kind, p_seconds: Math.round(seconds),
     });
+    if (error) throw new Error(error.message);
+    return data as AiCharge;
+  }
+
+  /**
+   * Working out a typed message: free up to the daily limit, then charged like
+   * other AI uses (pocket_ai_text, migration 0065). Safe to repeat with the same ref.
+   */
+  async aiText(userId: string, ref: string): Promise<AiCharge> {
+    const { data, error } = await this.#sb.rpc('pocket_ai_text', { p_user: userId, p_ref: ref });
     if (error) throw new Error(error.message);
     return data as AiCharge;
   }
