@@ -42,6 +42,30 @@
   .price-terms{display:inline-flex;padding:4px;border-radius:14px;background:#f4f4f5;gap:2px}
   .price-term{padding:.45rem 1rem;border-radius:10px;font-size:.85rem;font-weight:600;color:#71717a;display:inline-flex;align-items:center;gap:.4rem;transition:background .15s,color .15s}
   .price-term.on{background:#fff;color:#18181b;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .plan-tag{display:inline-flex;align-items:center;vertical-align:middle;margin-left:.4rem;padding:.1rem .5rem;border-radius:999px;font-size:.65rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;line-height:1.4;white-space:nowrap;text-decoration:none}
+  .plan-tag.free{background:#d1fae5;color:#047857}
+  .plan-tag.plus{background:#e0f2fe;color:#0369a1}
+  .plan-tag.pro{background:#ede9fe;color:#6d28d9}
+  .compare-table{width:100%;border-collapse:separate;border-spacing:0;font-size:.875rem}
+  .compare-table th,.compare-table td{padding:.75rem .9rem;text-align:left;vertical-align:top;border-bottom:1px solid #f4f4f5}
+  .compare-table thead th{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#71717a;font-weight:700}
+  .compare-table thead th.pro{color:#6d28d9}
+  .compare-table td.pro,.compare-table th.pro{background:#faf5ff}
+  .compare-table tbody th{font-weight:500;color:#3f3f46;width:32%}
+  .compare-yes{color:#10b981;font-weight:700}
+  .compare-no{color:#d4d4d8}
+  .compare-sub{display:block;font-size:.75rem;color:#a1a1aa;margin-top:.15rem}
+  .compare-tabs{display:none}
+  @media (max-width:767px){
+    .compare-tabs{display:flex;gap:4px;padding:4px;border-radius:14px;background:#f4f4f5;margin-bottom:.75rem}
+    .compare-tab{flex:1;border:0;background:transparent;padding:.45rem .25rem;border-radius:10px;font-size:.8rem;font-weight:600;color:#71717a}
+    .compare-tab.on{background:#fff;color:#18181b;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+    [data-compare]:not([data-show="free"]) [data-col="free"],
+    [data-compare]:not([data-show="plus"]) [data-col="plus"],
+    [data-compare]:not([data-show="pro"]) [data-col="pro"],
+    [data-compare]:not([data-show="group"]) [data-col="group"]{display:none}
+    .compare-table tbody th{width:55%}
+  }
   .price-save{font-size:.7rem;padding:.1rem .45rem;border-radius:999px;background:#d1fae5;color:#047857}
 </style>
 </head>
@@ -153,7 +177,7 @@
   <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
     <div class="">
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-emerald-600"><i data-lucide="target" style="width:14px;height:14px"></i> Budgets</span>
-      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Budgets that look ahead, not just back</h3>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Budgets that look ahead, not just back <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-zinc-600">Know before the month ends whether you’ll make it.</p>
       <ul class="mt-5 space-y-3">
           <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="gauge" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">A mark on every bar shows where you’d be if you spent evenly — and about how much you can spend each day.</span></li>
@@ -175,7 +199,7 @@
   <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
     <div class="md:order-2">
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-sky-600"><i data-lucide="repeat" style="width:14px;height:14px"></i> Regulars</span>
-      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Bills, deliveries and the things you buy every day</h3>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Bills, deliveries and the things you buy every day <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-zinc-600">The money that goes out on its own, in one place.</p>
       <ul class="mt-5 space-y-3">
           <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="zap" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Bills that change each month wait for you to enter the amount — with a reminder before they’re due.</span></li>
@@ -197,7 +221,7 @@
   <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
     <div class="">
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-violet-600"><i data-lucide="hand-coins" style="width:14px;height:14px"></i> Debts & reimbursements</span>
-      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Everything you owe — and everything owed to you</h3>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Everything you owe — and everything owed to you <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-zinc-600">One total, each with a Pay button.</p>
       <ul class="mt-5 space-y-3">
           <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="credit-card" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">Credit card: the bill, its due date, and what you’ve spent since the statement.</span></li>
@@ -219,7 +243,7 @@
   <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
     <div class="md:order-2">
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-orange-600"><i data-lucide="sparkles" style="width:14px;height:14px"></i> Habits</span>
-      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">See your habits before they cost you</h3>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">See your habits before they cost you <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-zinc-600">Food delivery, cabs, chai — counted for you.</p>
       <ul class="mt-5 space-y-3">
           <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="hash" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">How many times this month and how much, against last month.</span></li>
@@ -238,7 +262,7 @@
   <div class="grid md:grid-cols-2 gap-10 md:gap-16 items-center reveal">
     <div class="">
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-teal-600"><i data-lucide="wallet" style="width:14px;height:14px"></i> Accounts</span>
-      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Every account, every alert, on one screen</h3>
+      <h3 class="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight">Every account, every alert, on one screen <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-zinc-600">Your Dashboard tells you what needs doing today.</p>
       <ul class="mt-5 space-y-3">
           <li class="flex gap-3"><span class="w-8 h-8 shrink-0 rounded-lg grid place-items-center bg-zinc-100 text-zinc-700"><i data-lucide="triangle-alert" style="width:15px;height:15px"></i></span><span class="text-sm text-zinc-600 pt-1.5">A warning when an account drops below the amount you set.</span></li>
@@ -272,7 +296,7 @@
     <!-- big feature -->
     <div class="reveal card-soft p-6 md:row-span-2 md:col-span-1 flex flex-col">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#4285f422;color:#4285f4"><i data-lucide="scan-line"></i></span>
-      <h3 class="mt-4 text-xl font-bold tracking-tight">AI receipt scanning</h3>
+      <h3 class="mt-4 text-xl font-bold tracking-tight">AI receipt scanning <a href="#compare" class="plan-tag free" data-plan-tag="free">All plans · AI credits</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Snap a photo and Gemini reads the line items, maps them to your categories, and pre-fills a split transaction. Just review and save.</p>
       <div class="mt-5 rounded-xl bg-zinc-50 border border-zinc-100 p-4 text-sm">
         <div class="flex items-center justify-between"><span class="text-zinc-500">Latte</span><span class="font-medium">$4.50</span></div>
@@ -284,97 +308,97 @@
     <!-- standard features -->
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#0ea5e922;color:#0ea5e9"><i data-lucide="globe"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Multi-currency, live rates</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Multi-currency, live rates <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">100+ currencies with rates refreshed automatically. Per-account currencies and cross-currency transfers, all converted to your home currency.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#10b98122;color:#10b981"><i data-lucide="target"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Smart budgets</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Smart budgets <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Budget a category, several sub-categories, or a whole group — by month, Hijri month, week, year, or set dates for a trip. See if you're on track, about how much you can spend each day, the bills still to come, and what you spent with no budget. Suggested limits from your past spending, and Telegram alerts at 80%, 100% and when you're spending fast.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#6366f122;color:#6366f1"><i data-lucide="moon-star"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Hijri calendar & miqaats</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Hijri calendar & miqaats <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">See Hijri dates alongside Gregorian throughout the app, with miqaats from the Mumineen calendar and Hijri-month budgeting.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#a855f722;color:#a855f7"><i data-lucide="pie-chart"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Reports & insights</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Reports & insights <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Net-worth over time, spending by category, daily trends and your biggest transactions — clear charts, no setup.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#14b8a622;color:#14b8a6"><i data-lucide="wallet"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Accounts & transfers</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Accounts & transfers <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Bank, cash, card, savings & investments — grouped and in the order you like, with splits, tags and one-tap transfers. Get a nudge when a balance runs low, and keep a business account out of your totals.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#f59e0b22;color:#f59e0b"><i data-lucide="hand-coins"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Everything you owe, in one place</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Everything you owe, in one place <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Loans, card bills, bills due and delivery dues add up to one “You owe” total, each with a Pay button. Bank or car loans can be paid back in monthly instalments — see how many are paid and what’s next.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#10b98122;color:#10b981"><i data-lucide="undo-2"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Reimbursements that aren’t income</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Reimbursements that aren’t income <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Mark an expense your company, insurer or family will pay back. Record the money when it comes — spread across several items, oldest first, or per item — and close what won’t come in the same step. Your spending counts only what you bore, with badges like “Reimbursed 83%”. Loans and repayments aren’t counted as income or spending either.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#ec489922;color:#ec4899"><i data-lucide="calendar-days"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Regulars: bills, deliveries & shortcuts</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Regulars: bills, deliveries & shortcuts <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">A calendar of everything that repeats. Monthly bills (or ones that ask for the amount, like electricity), milk and newspaper deliveries with what you owe each vendor, and one-tap shortcuts for things you buy often.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#0891b222;color:#0891b2"><i data-lucide="users"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Family sharing & sync</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Family sharing & sync <a href="#compare" class="plan-tag pro" data-plan-tag="pro">Pocket Pro</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Share chosen accounts with family — view-only or with edit access — and stay in sync across all your devices in real time.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#64748b22;color:#64748b"><i data-lucide="file-down"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Import & export</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Import & export <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Migrate from any app with a CSV — accounts, categories, transfers and splits auto-created. Export to JSON or CSV anytime.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#d9770622;color:#d97706"><i data-lucide="gem"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Gold, silver &amp; shares you own</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Gold, silver &amp; shares you own <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Keep a record of the jewellery, coins and shares you already have — grams and purity, or how many shares — and see them in your net worth. Pocket doesn’t sell or trade anything. <a href="#investments" class="underline">More</a></p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#ef444422;color:#ef4444"><i data-lucide="credit-card"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Credit cards</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Credit cards <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Set the limit, statement day and due day. See this bill, what’s left to spend, and pay it with one tap — with a reminder before it’s due.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#84cc1622;color:#65a30d"><i data-lucide="tags"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Tidy categories</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Tidy categories <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Rename, or tick a few and merge them into one — keep one of them, pick another, or make a new one. Entries, budgets and regulars move with them, and you can undo.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#10b98122;color:#059669"><i data-lucide="smartphone"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Install it, use it offline</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Install it, use it offline <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Add Pocket to your phone’s home screen straight from this site — no app store. It opens full screen and keeps working with no internet; what you add is saved on the phone.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#3b82f622;color:#2563eb"><i data-lucide="cloud-upload"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Backups to your Google Drive</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Backups to your Google Drive <a href="#compare" class="plan-tag plus" data-plan-tag="plus">Free · automatic with Plus</a></h3>
       <p class="mt-2 text-sm text-zinc-600">Save your whole book plus a CSV of every transaction to your own Drive, and restore any of the last 10 in a tap — free on every plan. Daily, weekly or monthly backups that run by themselves come with Pocket Plus (<span data-usd="$4.99">₹199</span> once) and Pocket Pro.</p>
     </div>
 
     <div class="reveal card-soft p-6">
       <span class="w-11 h-11 rounded-xl grid place-items-center" style="background:#8b5cf622;color:#8b5cf6"><i data-lucide="life-buoy"></i></span>
-      <h3 class="mt-4 font-bold tracking-tight">Help where you need it</h3>
+      <h3 class="mt-4 font-bold tracking-tight">Help where you need it <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h3>
       <p class="mt-2 text-sm text-zinc-600">A short guide on every main page — tap the ? by the title. And a Feedback button to tell us what to fix or build next; every message is read.</p>
     </div>
   </div>
@@ -386,7 +410,7 @@
     <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-amber-600">
       <i data-lucide="gem" style="width:14px;height:14px"></i> Net worth
     </span>
-    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Keep track of the gold and shares you own</h2>
+    <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Keep track of the gold and shares you own <a href="#compare" class="plan-tag free" data-plan-tag="free">Free</a></h2>
     <p class="mt-4 text-zinc-600">Record what you already have, or note something you bought elsewhere. Pocket keeps the grams or shares and what you paid, and counts them in your net worth alongside your bank and cash.</p>
     <p class="mt-4 inline-flex items-start gap-2 text-left text-sm text-zinc-700 bg-zinc-100 rounded-xl px-4 py-3 no-trading-note"><i data-lucide="info" style="width:16px;height:16px;flex-shrink:0;margin-top:2px"></i><span>Pocket is a personal budgeting app. It does not buy, sell, store or deliver gold, silver or shares, and takes no payments for them. You only record what you already own.</span></p>
   </div>
@@ -432,7 +456,7 @@
       <span class="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest" style="color:#229ED9">
         <i data-lucide="send" style="width:14px;height:14px"></i> New · Pocket on Telegram
       </span>
-      <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Log it the moment you spend it — just send a text</h2>
+      <h2 class="mt-3 text-3xl md:text-4xl font-extrabold tracking-tight">Log it the moment you spend it — just send a text <a href="#compare" class="plan-tag pro" data-plan-tag="pro">Pocket Pro</a></h2>
       <p class="mt-4 text-zinc-600">
         No app to open, no form to fill. Type what you spent into a Telegram chat and it lands in your
         Pocket book instantly — on the right account, in the right category, with today's date.
@@ -664,6 +688,7 @@
       <button type="button" class="price-term" data-term="year">Yearly <span class="price-save">2 months free</span></button>
     </div>
   </div>
+  <p class="text-center text-sm -mt-3 mb-6 reveal"><a href="#compare" class="underline underline-offset-4 text-zinc-500 hover:text-zinc-900">Compare all plans</a></p>
 
   <!-- The ₹30 promise: shown only once the app asks for it (src/web/PromiseSection.js) -->
   <div id="promise" class="reveal card-soft p-6 md:p-8 mb-6 promise-block" data-promise="on" hidden>
@@ -788,6 +813,39 @@
       <div class="text-sm text-zinc-500" data-usd="Packs of $2 for 500 credits, valid for 6 months: a receipt scan uses 5 credits, a voice entry 1 credit for every 30 seconds. Every account gets 20 free credits to try it. Pocket Pro already includes 150 a month; packs are for when you need more, and are shared by everyone in your shared space.">Packs of ₹100 for 500 credits, valid for 6 months: a receipt scan uses 5 credits, a voice entry 1 credit for every 30 seconds. Every account gets 20 free credits to try it. Pocket Pro already includes 150 a month; packs are for when you need more, and are shared by everyone in your shared space.</div>
     </div>
     <a href="app.html#plans" class="mt-3 md:mt-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-zinc-200 text-zinc-700 hover:bg-zinc-50 transition shrink-0">Buy a pack</a>
+  </div>
+
+
+  <!-- Compare plans (src/web/PlanCompare.js) -->
+  <div id="compare" class="reveal card-soft p-4 md:p-6 mt-6" data-compare data-show="pro">
+    <h3 class="text-xl font-bold tracking-tight mb-1">Compare plans</h3>
+    <p class="text-sm text-zinc-500 mb-4">Everything side by side. Prices follow the Monthly / Yearly switch above.</p>
+    <div class="compare-tabs" role="group" aria-label="Plan">
+      <button type="button" class="compare-tab" data-compare-tab="free">Free</button>
+      <button type="button" class="compare-tab" data-compare-tab="plus">Plus</button>
+      <button type="button" class="compare-tab" data-compare-tab="pro">Pro</button>
+      <button type="button" class="compare-tab" data-compare-tab="group">Group</button>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="compare-table">
+        <thead>
+          <tr><th scope="col"><span class="sr-only">Feature</span></th><th scope="col" data-col="free" class="free">Free</th><th scope="col" data-col="plus" class="plus">Pocket Plus</th><th scope="col" data-col="pro" class="pro">Pocket Pro</th><th scope="col" data-col="group" class="group">Pocket Pro Group</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row"><span class="font-semibold text-zinc-900">Price</span></th><td data-col="free" class="free"><span class="font-semibold" data-promise="off"><span data-usd="$0">₹0</span></span><span class="font-semibold" data-promise="on" hidden><span data-promise-price>₹30</span> a month</span><span class="compare-sub" data-promise="on" hidden>your promise, back as AI credits</span></td><td data-col="plus" class="plus"><span class="font-semibold" data-usd="$4.99 once">₹199 once</span></td><td data-col="pro" class="pro"><span class="font-semibold" data-price-month hidden data-usd="$2.99 a month">₹99 a month</span><span class="font-semibold" data-price-year data-usd="$24.99 a year">₹999 a year</span><span class="compare-sub" data-usd="first 3 months $3.99">first 3 months ₹149</span></td><td data-col="group" class="group"><span class="font-semibold" data-usd="$49.99 a year">₹1,999 a year</span><span class="compare-sub" data-usd="about $16.66 each · yearly only">about ₹666 each · yearly only</span></td></tr>
+          <tr><th scope="row">Record entries, budgets, reports and every export</th><td data-col="free" class="free"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="plus" class="plus"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+          <tr><th scope="row">AI voice entry and receipt scan in the app</th><td data-col="free" class="free"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="plus" class="plus"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+          <tr><th scope="row">AI credits included</th><td data-col="free" class="free"><span data-promise="off">20 to try, then packs</span><span data-promise="on" hidden>20 to try, then 150 a month with the promise<span class="compare-sub">worth <span data-promise-price>₹30</span></span></span></td><td data-col="plus" class="plus"><span data-promise="off">20 to try, then packs</span><span data-promise="on" hidden>20 to try, then 150 a month with the promise<span class="compare-sub">worth <span data-promise-price>₹30</span></span></span></td><td data-col="pro" class="pro">150 a month, shared by the family<span class="compare-sub">worth <span data-usd="$1">₹30</span></span></td><td data-col="group" class="group">150 a month each<span class="compare-sub">worth <span data-usd="$1">₹30</span> each</span></td></tr>
+          <tr><th scope="row">Extra AI credits</th><td data-col="free" class="free"><span data-usd="$2 for 500">₹100 for 500</span></td><td data-col="plus" class="plus"><span data-usd="$2 for 500">₹100 for 500</span></td><td data-col="pro" class="pro"><span data-usd="$2 for 500">₹100 for 500</span></td><td data-col="group" class="group"><span data-usd="$2 for 500">₹100 for 500</span></td></tr>
+          <tr><th scope="row">Google Drive backups</th><td data-col="free" class="free">Back up now<span class="compare-sub">when you choose</span></td><td data-col="plus" class="plus">Automatic</td><td data-col="pro" class="pro">Automatic</td><td data-col="group" class="group">Automatic</td></tr>
+          <tr><th scope="row">Sync across devices</th><td data-col="free" class="free"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="plus" class="plus"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+          <tr><th scope="row">Telegram: text, voice notes, photos, PDF bills</th><td data-col="free" class="free"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="plus" class="plus"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+          <tr><th scope="row">Questions on Telegram</th><td data-col="free" class="free"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="plus" class="plus"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+          <tr><th scope="row">Shared family book</th><td data-col="free" class="free"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="plus" class="plus"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="pro" class="pro">You and up to 4 family members</td><td data-col="group" class="group">3 people, each with their own book</td></tr>
+          <tr><th scope="row">Family summaries in Telegram groups</th><td data-col="free" class="free"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="plus" class="plus"><span class="compare-no" aria-label="Not included">—</span></td><td data-col="pro" class="pro"><span class="compare-yes" aria-label="Included">✓</span></td><td data-col="group" class="group"><span class="compare-yes" aria-label="Included">✓</span></td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <!-- FAQ row -->
@@ -950,6 +1008,7 @@
 </script>
 <script type="module">
   import { PricingToggle } from './src/web/PricingToggle.js';
+  import { PlanCompare } from './src/web/PlanCompare.js';
   import { ProgrammeBatches } from './src/web/ProgrammeBatches.js';
   import { InstallButton } from './src/web/InstallButton.js';
   import { PromiseSection } from './src/web/PromiseSection.js';
@@ -959,6 +1018,7 @@
   // Install as an app (also sets up the offline copy of the app's files).
   new InstallButton(document.querySelectorAll('.install-btn'), document.getElementById('installHelp')).start();
   new PricingToggle(document.getElementById('pricing')).start();
+  new PlanCompare(document.querySelector('[data-compare]')).start();
   new PromiseSection(document).start();
   // Habit programme: where the batches stand (dates set in the admin dashboard).
   ProgrammeBatches.load().then((b) => {
