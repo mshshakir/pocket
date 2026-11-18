@@ -18,8 +18,13 @@
  *        silently relocate the user or keep rendering a snapshot that is gone.
  *   SP9  Labels: member-side override beats the owner's sharedBy; clearing it
  *        restores the owner's name.
- *   SP10 The active space is session-scoped and never written to user state,
- *        so it can't sync to another device or outlive a revocation.
+ *   SP10 The active space is remembered on the device (for the person who
+ *        chose it) and never written to user state, so it can't sync to
+ *        another device or outlive a revocation.
+ *   SP25 A reload or a fresh sign-in returns to the remembered space once the
+ *        shares arrive — it must not be dropped while they are still loading.
+ *   SP26 Someone else signing in on the same device does not inherit it, and
+ *        is not told anyone "removed your access".
  *   SP11 A hostile snapshot renders inert in the switcher too (audit H1).
  *   SP12 A space sharing SEVERAL accounts offers all the writable ones in the
  *        account dropdown — arriving via the switcher picks one arbitrarily, so
@@ -104,7 +109,7 @@ const snapshot = (over = {}) => ({
   ...over,
 });
 
-function boot(state, { shares = [] } = {}) {
+function boot(state, { shares = [], space = null } = {}) {
   // The cloud book mirrors local state, so adopting it is a no-op — the suite
   // is about spaces, not about sync. Shares are served as given (old-style
   // {owner_id, snapshot} rows are accepted for brevity).
@@ -127,6 +132,7 @@ function boot(state, { shares = [] } = {}) {
     { url: 'https://local.test/app.html', pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window } = dom;
   window.localStorage.setItem('pocket.v1', JSON.stringify(state));
+  if (space) window.localStorage.setItem('pocket.v1.space', JSON.stringify(space));
   window.lucide = { createIcons() {} };
   window.Chart  = function () { return { destroy() {} }; };
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
@@ -250,9 +256,10 @@ console.log('\nspaces suite');
      app.spaces.labelFor('abbas1'));
 
   // ═══ SP10 — session-scoped, never user data ══════════════════════════════
-  ok('SP10 the active space is in sessionStorage',
-     w.sessionStorage.getItem('pocket.v1.space') === 'abbas1',
-     w.sessionStorage.getItem('pocket.v1.space'));
+  const remembered = JSON.parse(w.localStorage.getItem('pocket.v1.space') || 'null');
+  ok('SP10 the active space is remembered on the device, for the person who chose it',
+     remembered?.spaceId === 'abbas1' && remembered?.userId === 'me1',
+     JSON.stringify(remembered));
   const persisted = JSON.parse(w.localStorage.getItem('pocket.v1'));
   ok('SP10 …and NOT in the synced user state',
      persisted.user.activeSpace === undefined && persisted.activeSpace === undefined);
@@ -263,9 +270,9 @@ console.log('\nspaces suite');
   await wait(80);
   ok('SP8 a revoked space drops the user back home', w.__app.spaces.isHome,
      String(w.__app.spaces.activeId));
-  ok('SP8 …and the stale selection is cleared from session storage',
-     !w.sessionStorage.getItem('pocket.v1.space'),
-     w.sessionStorage.getItem('pocket.v1.space'));
+  ok('SP8 …and the stale selection is forgotten',
+     !w.localStorage.getItem('pocket.v1.space'),
+     w.localStorage.getItem('pocket.v1.space'));
   // The state reset alone is not the requirement — active() self-heals anyway.
   // What must ALSO happen is that the user is TOLD: a moment ago the screen was
   // full of someone else's money, and silently relocating them is exactly the
@@ -275,6 +282,47 @@ console.log('\nspaces suite');
      toastText.includes('removed your access') && toastText.includes('Abbas'),
      JSON.stringify(toastText));
 
+  w.close();
+}
+
+// ═══ SP25 — a reload keeps the space ══════════════════════════════════════
+{
+  const w = boot(memberState(), {
+    shares: [{ owner_id: 'abbas1', snapshot: snapshot() }],
+    space:  { spaceId: 'abbas1', userId: 'me1' },
+  });
+  await wait(120);
+  const app = w.__app;
+  ok('SP25 before the shares load, home is shown…', app.spaces.isHome);
+  ok('SP25 …but the choice is kept', JSON.parse(w.localStorage.getItem('pocket.v1.space') || 'null')?.spaceId === 'abbas1',
+     w.localStorage.getItem('pocket.v1.space'));
+  await signIn(w);
+  await wait(80);
+  ok('SP25 once they arrive, the remembered space is back', app.spaces.active().id === 'abbas1',
+     String(app.spaces.active().id));
+  app.navigate?.('accounts');
+  await wait(40);
+  ok('SP25 …and stays when opening Accounts', app.spaces.active().id === 'abbas1',
+     String(app.spaces.active().id));
+  const toastText = w.document.getElementById('toast')?.textContent || '';
+  ok('SP25 no "removed your access" notice', !toastText.includes('removed your access'), JSON.stringify(toastText));
+  w.close();
+}
+
+// ═══ SP26 — another person on the same device ═════════════════════════════
+{
+  const w = boot(memberState(), {
+    shares: [{ owner_id: 'abbas1', snapshot: snapshot() }],
+    space:  { spaceId: 'abbas1', userId: 'someone-else' },
+  });
+  await wait(120);
+  await signIn(w);
+  await wait(80);
+  ok('SP26 a space chosen by someone else is not inherited', w.__app.spaces.isHome,
+     String(w.__app.spaces.activeId));
+  const toastText = w.document.getElementById('toast')?.textContent || '';
+  ok('SP26 …and nobody is told access was removed', !toastText.includes('removed your access'),
+     JSON.stringify(toastText));
   w.close();
 }
 

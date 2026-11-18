@@ -195,10 +195,12 @@ export class PlanCard {
       `For ${p.group_size} people, from any household: one pays, adds the others by email`,
       'Each person gets their own Pocket Pro, with a private book',
       'Sync, Telegram, scheduled backups and household sharing for each',
+      '150 AI credits every month for each person, for voice and receipt scans',
       'Yearly only',
     ] : [
       p.sync && 'Cloud sync on all your devices',
-      p.telegram && 'Log by Telegram, voice or receipt scan',
+      p.telegram && 'Record by voice, receipt photo or Telegram',
+      p.sharing && '150 AI credits every month, shared by your family',
       p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
       p.sharing && 'Daily, monthly and yearly family summaries',
     ].filter(Boolean);

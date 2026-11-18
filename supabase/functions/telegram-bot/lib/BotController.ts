@@ -6,6 +6,7 @@
  * records one entry per line (BatchEntryService). In groups the bot only
  * handles summary commands (GroupService) and never records entries.
  */
+import { AiAssistant } from './AiAssistant.ts';
 import type { BatchEntryService } from './BatchEntryService.ts';
 import { DeliveryBot } from './DeliveryBot.ts';
 import { OwedBot } from './OwedBot.ts';
@@ -29,6 +30,12 @@ export interface TelegramMessage {
   migrate_to_chat_id?: number; // a group became a supergroup, with this new id
   message_thread_id?: number;   // the topic (or reply thread) it was sent in
   is_topic_message?: boolean;   // sent in a topic of a group with topics
+  caption?: string;             // text sent with a photo or file
+  voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+  audio?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+  photo?: { file_id: string; file_size?: number; width?: number; height?: number }[];
+  document?: { file_id: string; mime_type?: string; file_size?: number; file_name?: string };
+  reply_to_message?: TelegramMessage;
 }
 
 export interface TelegramCallback {
@@ -47,12 +54,14 @@ export class BotController {
   readonly #groups: GroupService;
   readonly #deliveries: DeliveryBot | null;
   readonly #owed: OwedBot | null;
+  readonly #ai: AiAssistant | null;
 
   constructor(
     store: PocketStore, telegram: TelegramClient, entries: EntryService,
     links: LinkService, batches: BatchEntryService, groups: GroupService,
-    deliveries: DeliveryBot | null = null, owed: OwedBot | null = null,
+    deliveries: DeliveryBot | null = null, owed: OwedBot | null = null, ai: AiAssistant | null = null,
   ) {
+    this.#ai = ai;
     this.#owed = owed;
     this.#deliveries = deliveries;
     this.#store = store;
@@ -67,7 +76,8 @@ export class BotController {
     const chatId = message.chat.id;
     if (message.migrate_to_chat_id) return void await this.#store.moveGroup(chatId, message.migrate_to_chat_id);
     const text = (message.text || '').trim();
-    if (!text) return;
+    const media = message.chat.type && message.chat.type !== 'private' ? null : AiAssistant.mediaOf(message);
+    if (!text && !media) return;
     if (message.chat.type && message.chat.type !== 'private') {
       if (message.chat.type === 'channel') return;
       try {
@@ -116,6 +126,13 @@ export class BotController {
         return void await this.#telegram.reply(chatId, notice, message.message_id);
       }
 
+      if (media) {
+        if (!this.#ai) return;
+        await this.#dropPending(chatId);
+        return void await this.#ai.handleMedia(link, chatId, message, media, await books,
+          (lines) => this.#recordText(link, chatId, message.message_id, lines, books, true));
+      }
+
       if (pending?.kind === 'edit') {
         return void await this.#entries.record({
           link, chatId, seed: pending.seed_message_id, text, replace: true, oldOwnerId: pending.owner_id,
@@ -135,17 +152,30 @@ export class BotController {
         }
         await this.#dropPending(chatId);
       }
-      // Loans and paybacks ("5000 lent Ali", "+27000 paid back Star Health") come before "paid <bill> <amount>".
-      if (this.#owed && !EntryBatch.isBatch(text) && await this.#owed.tryText(link, chatId, message.message_id, text)) return;
-      if (this.#deliveries && !EntryBatch.isBatch(text) && await this.#deliveries.tryText(link, chatId, message.message_id, text)) return;
-      if (EntryBatch.isBatch(text)) return void await this.#batches.record(link, chatId, message.message_id, text);
-      await this.#entries.record({
-        link, chatId, seed: message.message_id, text, replace: false, replyTo: message.message_id, workspace: await books,
-      });
+      await this.#recordText(link, chatId, message.message_id, text, books);
     } catch (err) {
       console.error('[telegram-bot]', err);
       await this.#telegram.reply(chatId, `⚠️ Not saved: ${BotController.#reason(err)}`, message.message_id);
     }
+  }
+
+  /**
+   * Records a message's text: loans and paybacks, deliveries, several lines, or
+   * one entry. A message with no amount at all is first given to the AI, which
+   * may work out the entry or find a question (`fromAi` stops it going round).
+   */
+  async #recordText(link: TelegramLink, chatId: number, messageId: number, text: string, books: Promise<Workspace>, fromAi = false): Promise<void> {
+    const batch = EntryBatch.isBatch(text);
+    // Loans and paybacks ("5000 lent Ali", "+27000 paid back Star Health") come before "paid <bill> <amount>".
+    if (this.#owed && !batch && await this.#owed.tryText(link, chatId, messageId, text)) return;
+    if (this.#deliveries && !batch && await this.#deliveries.tryText(link, chatId, messageId, text)) return;
+    if (batch) return void await this.#batches.record(link, chatId, messageId, text);
+    if (!fromAi && this.#ai && !EntryParser.hasAmount(text)
+        && await this.#ai.interpret(link, chatId, messageId, text, await books,
+          (lines) => this.#recordText(link, chatId, messageId, lines, books, true))) return;
+    await this.#entries.record({
+      link, chatId, seed: messageId, text, replace: false, replyTo: messageId, workspace: await books,
+    });
   }
 
   async handleCallback(cb: TelegramCallback): Promise<void> {
@@ -170,6 +200,14 @@ export class BotController {
     const link = await this.#store.findLink(chatId);
     if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not connected. Send /link.');
 
+    if (this.#ai && AiAssistant.isButton(cb.data)) {
+      try {
+        return void await this.#ai.handleCallback(cb, link);
+      } catch (err) {
+        console.error('[telegram-bot] ai callback', err);
+        return void await this.#telegram.answer(cb.id, '⚠️ Not done');
+      }
+    }
     // edit/del carry the book's owner id; buttons from before shared books meant your own book.
     if (this.#owed && OwedBot.isButton(cb.data)) {
       const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();

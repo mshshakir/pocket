@@ -45,6 +45,11 @@ export class EntryParser {
     this.#paymentTypes = new Set(paymentTypes.map((p) => p.toLowerCase()));
   }
 
+  /** Whether a message has an amount anywhere (else the AI may work out what was meant). */
+  static hasAmount(text: string): boolean {
+    return EntryParser.#tokenize(text).some((t) => EntryParser.#AMOUNT.test(t));
+  }
+
   parse(text: string): ParseResult {
     const tokens = EntryParser.#tokenize(text);
     let amount: number | null = null;

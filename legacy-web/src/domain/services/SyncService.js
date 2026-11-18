@@ -127,6 +127,9 @@ export class SyncService {
   #pendingRemovals  = new Set();
   #pendingAdditions = new Map();
   #sharedData       = [];
+
+  /** True once the shared books have loaded since sign-in. */
+  #sharesLoaded     = false;
   /**
    * The shares exactly as the server last sent them (no optimistic edits),
    * and the cursor to ask for changes since. #sharedData is rebuilt from
@@ -480,6 +483,7 @@ export class SyncService {
     this.#sessionUser = false;
     this.#loaded = false;
     this.#sharedData = [];
+    this.#sharesLoaded = false;
     this.#sharesBase = null;
     this.#sharesCursor = null;
     this.#pendingRemovals.clear();
@@ -511,6 +515,15 @@ export class SyncService {
 
   get sharedData() {
     return this.#sharedData;
+  }
+
+  /**
+   * Whether the shared books have loaded since sign-in. Until then, a space
+   * that isn't in `sharedData` may simply not have arrived yet.
+   * @returns {boolean}
+   */
+  get sharesLoaded() {
+    return this.#sharesLoaded;
   }
 
   /**
@@ -1156,6 +1169,7 @@ export class SyncService {
       }
 
       for (const share of this.#sharedData) this.#deriveShareBalances(share);
+      this.#sharesLoaded = true;
 
       if (this.#sharedData.map((s) => s._ownerId).join(',') !== ownersBefore) this.#subscribeShares();
     } catch (e) { console.warn('[SyncService] pullFamilyShares error:', e); }

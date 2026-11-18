@@ -24,6 +24,16 @@ export interface TelegramLink {
   default_owner_id: string | null; // book of the default account
   default_account_id: string | null;
   created_at?: string;             // when this chat was (last) connected
+  ai_questions?: boolean;          // said yes to sending totals to the AI for questions
+}
+
+/** The result of charging AI credits (pocket_ai_charge). */
+export interface AiCharge {
+  ok: boolean;
+  reason?: 'no_credits' | 'no_access';
+  chargedTo?: 'unlimited' | 'own' | 'family';
+  cost?: number;
+  remaining?: number;
 }
 
 /** A /link in progress: the code was emailed, the chat hasn't sent it yet. */
@@ -125,6 +135,25 @@ export interface SpaceSummary {
   people: { name: string; entries: number }[];
 }
 
+/** One period's totals from pocket_bot_period (home-currency minor units). */
+export interface PeriodTotals {
+  from: string;
+  to: string;
+  spent: number;
+  received: number;
+  entries: number;
+  categories: { type: 'expense' | 'income'; main: string; sub: string | null; amount: number }[];
+}
+
+/** What a question is answered from (pocket_bot_insights). */
+export interface Insights {
+  currency: string;
+  today: string;
+  thisMonth: PeriodTotals;
+  lastMonth: PeriodTotals;
+  budgets: { name?: string; label?: string; from?: string; to?: string; currency?: string; spent?: number; limit?: number }[];
+}
+
 export interface EntryWriter {
   /** Saves all rows of one entry (one row, or a transfer's two legs) together. */
   add(txs: PocketTransaction[]): Promise<SaveResult>;
@@ -182,7 +211,7 @@ export class PocketStore {
 
   async findLink(chatId: number): Promise<TelegramLink | null> {
     const { data, error } = await this.#sb
-      .from('telegram_links').select('chat_id, user_id, email, default_owner_id, default_account_id, created_at')
+      .from('telegram_links').select('chat_id, user_id, email, default_owner_id, default_account_id, created_at, ai_questions')
       .eq('chat_id', chatId).maybeSingle();
     if (error) throw error;
     return data;
@@ -376,6 +405,36 @@ export class PocketStore {
     const { data, error } = await this.#sb.from('book_settings').select('hijri_offset').eq('owner_id', ownerId).maybeSingle();
     if (error) throw error;
     return Number((data as { hijri_offset: number | null } | null)?.hijri_offset) || 0;
+  }
+
+  // ── AI on Telegram (migration 0064) ──
+
+  /** Charges AI credits for one request; safe to repeat with the same ref. */
+  async aiCharge(userId: string, book: string, ref: string, kind: 'voice' | 'receipt' | 'question', seconds: number): Promise<AiCharge> {
+    const { data, error } = await this.#sb.rpc('pocket_ai_charge', {
+      p_user: userId, p_book: book, p_ref: ref, p_kind: kind, p_seconds: Math.round(seconds),
+    });
+    if (error) throw new Error(error.message);
+    return data as AiCharge;
+  }
+
+  /** Gives back what a request was charged (when the AI service failed). */
+  async aiRefund(userId: string, ref: string): Promise<void> {
+    const { error } = await this.#sb.rpc('pocket_ai_refund', { p_user: userId, p_ref: ref });
+    if (error) console.error('[telegram-bot] ai refund failed', ref, error.message);
+  }
+
+  /** Totals from the person's own book (this month, last month, budgets) — never entries. */
+  async insights(ownerId: string, today: string): Promise<Insights> {
+    const { data, error } = await this.#sb.rpc('pocket_bot_insights', { p_owner: ownerId, p_today: today });
+    if (error) throw new Error(error.message);
+    return data as Insights;
+  }
+
+  /** Records that this chat agreed to send totals to the AI for questions. */
+  async allowAiQuestions(chatId: number): Promise<void> {
+    const { error } = await this.#sb.from('telegram_links').update({ ai_questions: true }).eq('chat_id', chatId);
+    if (error) throw error;
   }
 
   /** Totals for one shared space between two dates (inclusive); null when the space is gone. */

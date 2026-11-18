@@ -7728,6 +7728,8 @@ RULES:
     #pendingRemovals = /* @__PURE__ */ new Set();
     #pendingAdditions = /* @__PURE__ */ new Map();
     #sharedData = [];
+    /** True once the shared books have loaded since sign-in. */
+    #sharesLoaded = false;
     /**
      * The shares exactly as the server last sent them (no optimistic edits),
      * and the cursor to ask for changes since. #sharedData is rebuilt from
@@ -8060,6 +8062,7 @@ RULES:
       this.#sessionUser = false;
       this.#loaded = false;
       this.#sharedData = [];
+      this.#sharesLoaded = false;
       this.#sharesBase = null;
       this.#sharesCursor = null;
       this.#pendingRemovals.clear();
@@ -8087,6 +8090,14 @@ RULES:
     }
     get sharedData() {
       return this.#sharedData;
+    }
+    /**
+     * Whether the shared books have loaded since sign-in. Until then, a space
+     * that isn't in `sharedData` may simply not have arrived yet.
+     * @returns {boolean}
+     */
+    get sharesLoaded() {
+      return this.#sharesLoaded;
     }
     /**
      * Resolve a share by its stable owner id.
@@ -8690,6 +8701,7 @@ RULES:
           share.transactions = [tx, ...share.transactions || []];
         }
         for (const share of this.#sharedData) this.#deriveShareBalances(share);
+        this.#sharesLoaded = true;
         if (this.#sharedData.map((s) => s._ownerId).join(",") !== ownersBefore) this.#subscribeShares();
       } catch (e) {
         console.warn("[SyncService] pullFamilyShares error:", e);
@@ -12000,7 +12012,7 @@ This replaces your current grouping.`
   var STORAGE_KEY = "pocket.v1.space";
   var defaultSessionStore = () => {
     try {
-      if (typeof sessionStorage !== "undefined") return sessionStorage;
+      if (typeof localStorage !== "undefined") return localStorage;
     } catch (_) {
     }
     const mem = /* @__PURE__ */ new Map();
@@ -12023,6 +12035,8 @@ This replaces your current grouping.`
     #spaceFactory;
     /** @type {string|null} owner id of the active space, null = home */
     #activeId = null;
+    /** @type {string|null} the signed-in person the selection was made by */
+    #chosenBy = null;
     /** @type {Set<Function>} */
     #listeners = /* @__PURE__ */ new Set();
     /** @type {{getItem:Function,setItem:Function,removeItem:Function}} */
@@ -12048,7 +12062,9 @@ This replaces your current grouping.`
       this.#sync = sync;
       this.#spaceFactory = spaceFactory;
       this.#session = sessionStore || defaultSessionStore();
-      this.#activeId = this.#readPersisted();
+      const saved = this.#readPersisted();
+      this.#activeId = saved.spaceId;
+      this.#chosenBy = saved.userId;
     }
     // ── Query ────────────────────────────────────────────────────────────
     /**
@@ -12069,6 +12085,31 @@ This replaces your current grouping.`
       return this.#sync?.sharedData || [];
     }
     /**
+     * Whether the shared books have been loaded since sign-in. Before that, an
+     * absent space proves nothing. A sync without the flag (mobile) counts as
+     * loaded, which is the old behaviour.
+     * @returns {boolean}
+     */
+    #sharesKnown() {
+      return this.#sync?.sharesLoaded ?? true;
+    }
+    /** @returns {string|null} id of the signed-in person, if known */
+    #userId() {
+      return this.#sync?.currentUser?.id ?? null;
+    }
+    /**
+     * A selection made by someone else who used this device is not theirs to
+     * inherit: drop it quietly, with no "removed your access" notice.
+     */
+    #forgetIfAnotherPerson() {
+      const me = this.#userId();
+      if (this.#activeId && me && this.#chosenBy && this.#chosenBy !== me) {
+        this.#activeId = null;
+        this.#lastLabel = null;
+        this.#persist();
+      }
+    }
+    /**
      * Home first, then one guest space per owner sharing with you.
      * @returns {import('./Space.js').Space[]}
      */
@@ -12087,12 +12128,16 @@ This replaces your current grouping.`
      */
     active() {
       const state = this.#store.getState();
+      this.#forgetIfAnotherPerson();
       if (this.#activeId === null) return this.#spaceFactory({ id: null, share: null, state });
       const share = this.#shares().find((s) => this.#keyOf(s) === this.#activeId);
       if (share) {
         const space = this.#spaceFactory({ id: this.#activeId, share, state });
         this.#lastLabel = space.label;
         return space;
+      }
+      if (!this.#sharesKnown()) {
+        return this.#spaceFactory({ id: null, share: null, state });
       }
       {
         this.#activeId = null;
@@ -12102,11 +12147,11 @@ This replaces your current grouping.`
     }
     /** @returns {string|null} */
     get activeId() {
-      return this.#activeId;
+      return this.active().id ?? null;
     }
     /** @returns {boolean} */
     get isHome() {
-      return this.#activeId === null;
+      return this.activeId === null;
     }
     /** @returns {boolean} true when there is anything to switch between */
     get hasGuestSpaces() {
@@ -12143,7 +12188,9 @@ This replaces your current grouping.`
      * @returns {{lostLabel: string, reason: 'revoked'}|null}
      */
     reconcile() {
+      this.#forgetIfAnotherPerson();
       if (this.#activeId === null) return null;
+      if (!this.#sharesKnown()) return null;
       if (this.#shares().some((s) => this.#keyOf(s) === this.#activeId)) return null;
       const label = this.#lastLabel || this.labelFor(this.#activeId);
       this.#activeId = null;
@@ -12189,17 +12236,29 @@ This replaces your current grouping.`
       return () => this.#listeners.delete(cb);
     }
     // ── Persistence (session-scoped) ─────────────────────────────────────
+    /** @returns {{spaceId: string|null, userId: string|null}} */
     #readPersisted() {
       try {
-        return this.#session.getItem(STORAGE_KEY) || null;
+        const raw = this.#session.getItem(STORAGE_KEY);
+        if (!raw) return { spaceId: null, userId: null };
+        const saved = JSON.parse(raw);
+        if (saved && typeof saved === "object") {
+          return { spaceId: saved.spaceId || null, userId: saved.userId || null };
+        }
+        return { spaceId: String(saved) || null, userId: null };
       } catch (_) {
-        return null;
+        return { spaceId: null, userId: null };
       }
     }
     #persist() {
+      if (this.#activeId) this.#chosenBy = this.#userId() || this.#chosenBy;
+      else this.#chosenBy = null;
       try {
-        if (this.#activeId) this.#session.setItem(STORAGE_KEY, this.#activeId);
-        else this.#session.removeItem(STORAGE_KEY);
+        if (this.#activeId) {
+          this.#session.setItem(STORAGE_KEY, JSON.stringify({ spaceId: this.#activeId, userId: this.#chosenBy }));
+        } else {
+          this.#session.removeItem(STORAGE_KEY);
+        }
       } catch (_) {
       }
     }
@@ -12456,10 +12515,12 @@ This replaces your current grouping.`
         `For ${p.group_size} people, from any household: one pays, adds the others by email`,
         "Each person gets their own Pocket Pro, with a private book",
         "Sync, Telegram, scheduled backups and household sharing for each",
+        "150 AI credits every month for each person, for voice and receipt scans",
         "Yearly only"
       ] : [
         p.sync && "Cloud sync on all your devices",
-        p.telegram && "Log by Telegram, voice or receipt scan",
+        p.telegram && "Record by voice, receipt photo or Telegram",
+        p.sharing && "150 AI credits every month, shared by your family",
         p.sharing && `Share a household book with your family (up to ${p.seats - 1} family members)`,
         p.sharing && "Daily, monthly and yearly family summaries"
       ].filter(Boolean);

@@ -42,6 +42,7 @@ export class HelpMenu {
         'Send what you spent: the amount, what it was, and the category with @.',
         '<code>70 auto to station @taxi</code>',
         '<code>+45000 salary @wazifa</code>  (+ for income)',
+        '🎙 Or send a voice note, or 📷 a photo or PDF of the bill.',
         '',
         'Pick a topic to learn more:',
       ].join('\n'),
@@ -80,6 +81,19 @@ export class HelpMenu {
         '<code>5000 &gt; #mpesa</code>  from your default account',
         '<code>5000 #boi &gt; #mpesa =7750</code>  different currencies: 7,750 arrived',
         'Without =, today\'s exchange rate is used. → and -&gt; also work.',
+      ].join('\n'),
+    },
+    ai: {
+      button: '🎙 Voice, photos & questions',
+      text: [
+        '<b>🎙 Voice notes</b> — say it: "Spent 450 on groceries from HDFC, cash." 1 AI credit per 30 seconds.',
+        '<b>📷 Receipts</b> — send a photo, or the PDF bill as a file. The total, shop and date are filled in. 5 AI credits.',
+        'The bot shows what it heard or read, then saves it like a typed entry, with ✏️ Edit and 🗑 Delete. Speak clearly: a misheard note is still charged; if the AI service fails, you aren\'t.',
+        '',
+        '<b>💬 Plain words</b> — "gave Ali five thousand yesterday" is worked out for you, free.',
+        '<b>❓ Questions</b> — "What\'s left for groceries?" or "How much did I spend on food this month?" Answered from your own totals (this month, last month, budgets), never single entries. You\'re asked once before it\'s turned on. 1 AI credit each.',
+        '',
+        'Pocket Pro includes 150 AI credits a month; packs are in the app under Settings → Your plan.',
       ].join('\n'),
     },
     batch: {
@@ -190,7 +204,7 @@ export class HelpMenu {
   };
 
   /** The order of the topic buttons on the first page, two per row. */
-  static readonly #TOPICS = ['record', 'categories', 'transfers', 'batch', 'extras', 'fix', 'deliveries', 'owed', 'family', 'commands'];
+  static readonly #TOPICS = ['record', 'ai', 'categories', 'transfers', 'batch', 'extras', 'fix', 'deliveries', 'owed', 'family', 'commands'];
 
   static readonly #PREFIX = 'help:';
 

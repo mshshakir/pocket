@@ -11,8 +11,16 @@
  *     "you were dropped back to your own space", not to a persistent pointer
  *     at a book that no longer exists.
  *
- * `sessionStorage` gives the right lifetime: a reload keeps you where you were,
- * a new tab or a new day starts at home.
+ * The selection is remembered on this device (localStorage), against the
+ * signed-in person: a reload, a relaunch of the installed app, or signing out
+ * and back in keeps you in the space you chose. Someone else signing in on the
+ * same device never inherits it.
+ *
+ * Shared books arrive from the server a moment after the app starts. Until
+ * they have loaded once, a remembered space that isn't there yet is NOT a
+ * revocation: the app shows home meanwhile and keeps the selection, then
+ * switches to it when the shares arrive. (Dropping it then was the bug that
+ * sent every refresh back to the personal space.)
  */
 import { Space } from './Space.js';
 
@@ -21,15 +29,13 @@ const STORAGE_KEY = 'pocket.v1.space';
 /**
  * Where the active-space selection lives.
  *
- * The web app uses sessionStorage: a reload keeps you where you were, a new tab
- * starts at home. React Native has no such thing, and "a session" is murky when
- * an app can be backgrounded for days — so mobile injects an in-memory store,
- * which resets to home on a cold start. That is the same intent, and it means
- * this file stays a verbatim copy on both platforms.
+ * The web app uses localStorage, so the choice survives reloads, relaunches and
+ * signing in again. Mobile injects an in-memory store, which resets to home on
+ * a cold start; injecting it keeps this file a verbatim copy on both platforms.
  */
 const defaultSessionStore = () => {
   try {
-    if (typeof sessionStorage !== 'undefined') return sessionStorage;
+    if (typeof localStorage !== 'undefined') return localStorage;
   } catch (_) { /* access can throw in a sandboxed frame */ }
   const mem = new Map();
   return {
@@ -46,6 +52,9 @@ export class SpaceRegistry {
 
   /** @type {string|null} owner id of the active space, null = home */
   #activeId = null;
+
+  /** @type {string|null} the signed-in person the selection was made by */
+  #chosenBy = null;
 
   /** @type {Set<Function>} */ #listeners = new Set();
   /** @type {{getItem:Function,setItem:Function,removeItem:Function}} */ #session;
@@ -72,7 +81,9 @@ export class SpaceRegistry {
     this.#sync         = sync;
     this.#spaceFactory = spaceFactory;
     this.#session      = sessionStore || defaultSessionStore();
-    this.#activeId     = this.#readPersisted();
+    const saved        = this.#readPersisted();
+    this.#activeId     = saved.spaceId;
+    this.#chosenBy     = saved.userId;
   }
 
   // ── Query ────────────────────────────────────────────────────────────
@@ -97,6 +108,34 @@ export class SpaceRegistry {
   }
 
   /**
+   * Whether the shared books have been loaded since sign-in. Before that, an
+   * absent space proves nothing. A sync without the flag (mobile) counts as
+   * loaded, which is the old behaviour.
+   * @returns {boolean}
+   */
+  #sharesKnown() {
+    return this.#sync?.sharesLoaded ?? true;
+  }
+
+  /** @returns {string|null} id of the signed-in person, if known */
+  #userId() {
+    return this.#sync?.currentUser?.id ?? null;
+  }
+
+  /**
+   * A selection made by someone else who used this device is not theirs to
+   * inherit: drop it quietly, with no "removed your access" notice.
+   */
+  #forgetIfAnotherPerson() {
+    const me = this.#userId();
+    if (this.#activeId && me && this.#chosenBy && this.#chosenBy !== me) {
+      this.#activeId = null;
+      this.#lastLabel = null;
+      this.#persist();
+    }
+  }
+
+  /**
    * Home first, then one guest space per owner sharing with you.
    * @returns {import('./Space.js').Space[]}
    */
@@ -116,12 +155,17 @@ export class SpaceRegistry {
    */
   active() {
     const state = this.#store.getState();
+    this.#forgetIfAnotherPerson();
     if (this.#activeId === null) return this.#spaceFactory({ id: null, share: null, state });
     const share = this.#shares().find((s) => this.#keyOf(s) === this.#activeId);
     if (share) {
       const space = this.#spaceFactory({ id: this.#activeId, share, state });
       this.#lastLabel = space.label;
       return space;
+    }
+    if (!this.#sharesKnown()) {
+      // Still loading (or signed out): show home for now, keep the choice.
+      return this.#spaceFactory({ id: null, share: null, state });
     }
     {
       // Selected space has vanished. Reset quietly here; announcing it is the
@@ -134,10 +178,10 @@ export class SpaceRegistry {
   }
 
   /** @returns {string|null} */
-  get activeId() { return this.#activeId; }
+  get activeId() { return this.active().id ?? null; }
 
   /** @returns {boolean} */
-  get isHome() { return this.#activeId === null; }
+  get isHome() { return this.activeId === null; }
 
   /** @returns {boolean} true when there is anything to switch between */
   get hasGuestSpaces() { return this.#shares().length > 0; }
@@ -171,7 +215,9 @@ export class SpaceRegistry {
    * @returns {{lostLabel: string, reason: 'revoked'}|null}
    */
   reconcile() {
+    this.#forgetIfAnotherPerson();
     if (this.#activeId === null) return null;
+    if (!this.#sharesKnown()) return null;
     if (this.#shares().some((s) => this.#keyOf(s) === this.#activeId)) return null;
     // Resolve the label BEFORE dropping the id, or the message has nothing to
     // name — the snapshot it came from is already gone.
@@ -224,14 +270,30 @@ export class SpaceRegistry {
 
   // ── Persistence (session-scoped) ─────────────────────────────────────
 
+  /** @returns {{spaceId: string|null, userId: string|null}} */
   #readPersisted() {
-    try { return this.#session.getItem(STORAGE_KEY) || null; } catch (_) { return null; }
+    try {
+      const raw = this.#session.getItem(STORAGE_KEY);
+      if (!raw) return { spaceId: null, userId: null };
+      const saved = JSON.parse(raw);
+      if (saved && typeof saved === 'object') {
+        return { spaceId: saved.spaceId || null, userId: saved.userId || null };
+      }
+      return { spaceId: String(saved) || null, userId: null };
+    } catch (_) {
+      return { spaceId: null, userId: null };
+    }
   }
 
   #persist() {
+    if (this.#activeId) this.#chosenBy = this.#userId() || this.#chosenBy;
+    else this.#chosenBy = null;
     try {
-      if (this.#activeId) this.#session.setItem(STORAGE_KEY, this.#activeId);
-      else this.#session.removeItem(STORAGE_KEY);
+      if (this.#activeId) {
+        this.#session.setItem(STORAGE_KEY, JSON.stringify({ spaceId: this.#activeId, userId: this.#chosenBy }));
+      } else {
+        this.#session.removeItem(STORAGE_KEY);
+      }
     } catch (_) { /* private mode — the selection just won't survive a reload */ }
   }
 }

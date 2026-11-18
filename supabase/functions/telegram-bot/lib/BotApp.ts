@@ -4,6 +4,8 @@
  * by telegram-summaries (which sweeps the queue on its schedule).
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { AiAssistant } from './AiAssistant.ts';
+import { AiModel } from './AiModel.ts';
 import { BatchEntryService } from './BatchEntryService.ts';
 import { BotController } from './BotController.ts';
 import { DeliveryBot } from './DeliveryBot.ts';
@@ -73,6 +75,8 @@ export class BotApp {
       new GroupService(store, telegram, new GroupSummaries(store, new SummaryReport()), clock),
       new DeliveryBot(store, new DeliveryStore(supabase), telegram, clock, rates),
       new OwedBot(store, telegram, clock, rates),
+      // GEMINI_API_KEY: the same secret the app's `ai` function uses; without it voice and photos say "not set up".
+      new AiAssistant(store, telegram, secrets.get('GEMINI_API_KEY').trim() ? new AiModel(secrets.get('GEMINI_API_KEY').trim()) : null, clock),
     );
     // BOT_REGION (optional secret): where the database is; defaults to Sydney.
     const region = new WebhookRegion(telegram, secrets.get('SUPABASE_URL'), secrets.get('BOT_REGION'), secrets.get('TELEGRAM_WEBHOOK_SECRET'));

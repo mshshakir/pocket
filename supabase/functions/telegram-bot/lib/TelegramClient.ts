@@ -66,6 +66,23 @@ export class TelegramClient {
     });
   }
 
+  /**
+   * Downloads a file a person sent (voice note, photo, document). Telegram lets
+   * bots download files up to 20 MB; null if it can't be fetched.
+   */
+  async download(fileId: string): Promise<Uint8Array | null> {
+    const file = await this.#call('getFile', { file_id: fileId }) as { file_path?: string } | null;
+    if (!file?.file_path) return null;
+    try {
+      const res = await this.#fetch(`https://api.telegram.org/file/bot${this.#token}/${file.file_path}`);
+      if (!res.ok) { console.error('[telegram] download failed', res.status); return null; }
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      console.error('[telegram] download failed', e);
+      return null;
+    }
+  }
+
   /** Points the webhook at a URL, keeping the secret header (other settings stay as they were). */
   async setWebhook(url: string, secretToken: string): Promise<boolean> {
     return (await this.#raw('setWebhook', { url, secret_token: secretToken })).ok;
