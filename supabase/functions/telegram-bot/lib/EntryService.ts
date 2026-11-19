@@ -1,7 +1,8 @@
 /**
  * EntryService — records an entry from a message into the right book, asks
  * for a category when one is missing (nothing is saved until it is chosen),
- * and handles the ✏️ Edit / 🗑 Delete buttons on each confirmation.
+ * and handles 🗑 Delete and "send the corrected entry" for each confirmation
+ * (the ✏️ Edit menu itself is EntryEditor).
  *
  * The book is the one holding the chosen account: the person's own, or a
  * space shared with them (see Workspace). Categories come from that book and
@@ -109,6 +110,12 @@ export class EntryService {
     return found > 0;
   }
 
+  /** "petrol" → "Petrol" (a typed @category, as a new category's name). */
+  static #title(s: string): string {
+    const t = s.replace(/^[@#]/, '').trim().slice(0, 40);
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : '';
+  }
+
   static reason(err: unknown): string {
     return err instanceof Error ? err.message : 'Something went wrong.';
   }
@@ -160,7 +167,11 @@ export class EntryService {
       } else if (typed) {
         const found = book.resolveCategory(typed, type);
         if (found.kind === 'main') return await askSubs(found.main);
-        if (found.kind === 'choose') return await this.#askCategory(req, book, found.reason, found.options, true);
+        if (found.kind === 'choose') {
+          // Nothing matches: in their own book, offer to make it (BookCreator).
+          const offer = access.isOwn && found.reason.startsWith('No category') ? typed : null;
+          return await this.#askCategory(req, book, found.reason, found.options, true, offer);
+        }
         category = found.value;
       }
       if (!category) return await askMains('Which category is this?');
@@ -197,7 +208,7 @@ export class EntryService {
     }
     if (req.promptMessageId || req.replace) await this.#store.clearPending(chatId);
 
-    const text = this.#confirmation(txs, factory, book, ws, from, to, category)
+    const text = this.confirmation(txs, factory, book, ws, from, to, category)
       + (claim ? `\n↩ ${claim.payer} will pay back ${factory.money.format(EntryService.#expectedOf(txs[0]), txs[0].currency)} · not counted as spending once paid back` : '');
     const buttons = EntryService.#entryButtons(req.seed, access.ownerId);
     if (req.promptMessageId) {
@@ -246,7 +257,7 @@ export class EntryService {
    * step. Main categories open their subcategories (›); subcategories save.
    */
   async #askCategory(
-    req: RecordRequest, book: PocketBook, reason: string, options: Category[], back: boolean,
+    req: RecordRequest, book: PocketBook, reason: string, options: Category[], back: boolean, offerNew: string | null = null,
   ): Promise<{ outcome: RecordOutcome; category: null }> {
     if (req.defer) return { outcome: 'deferred', category: null };
     const waiting = req.queue?.length ?? 0;
@@ -262,6 +273,8 @@ export class EntryService {
         callback_data: `${book.isMain(c) ? 'main' : 'cat'}:${c.id}`,
       })));
     }
+    const newName = offerNew ? EntryService.#title(offerNew) : '';
+    if (newName) buttons.unshift([{ text: `➕ New category “${newName}”`, callback_data: 'nc:e:' }]);
     if (back) buttons.push([{ text: '⬅️ All categories', callback_data: 'back' }]);
     let promptId = req.promptMessageId ?? null;
     if (promptId) {
@@ -273,11 +286,13 @@ export class EntryService {
       kind: 'category', seed_message_id: req.seed, source_text: req.text, replace: req.replace,
       prompt_message_id: promptId, confirm_message_id: req.confirmMessageId ?? null, owner_id: req.oldOwnerId ?? null,
       queue: req.queue ?? [], shared: req.shared ?? false,
+      step: newName ? { kind: 'newcategory', at: 'offer', name: newName } : null,
     });
     return { outcome: 'asked', category: null };
   }
 
-  #confirmation(
+  /** The confirmation text for saved rows (also shown after a change from the ✏️ Edit menu). */
+  confirmation(
     txs: PocketTransaction[], factory: TransactionFactory, book: PocketBook, ws: Workspace,
     from: AccountChoice, to: AccountChoice | null, category: Category | null,
   ): string {
@@ -316,10 +331,12 @@ export class EntryService {
     return e > 0 ? e : tx.amount;
   }
 
+  /**
+   * One ✏️ Edit button: it opens the menu (amount, account, category, date,
+   * note, payment type, delete) — see EntryEditor. Older confirmations still
+   * carry the earlier edit:/del: buttons, which keep working.
+   */
   static #entryButtons(seed: number, ownerId: string): Keyboard {
-    return [[
-      { text: '✏️ Edit', callback_data: `edit:${seed}:${ownerId}` },
-      { text: '🗑 Delete', callback_data: `del:${seed}:${ownerId}` },
-    ]];
+    return [[{ text: '✏️ Edit', callback_data: `ed:m:${seed}:${ownerId}` }]];
   }
 }

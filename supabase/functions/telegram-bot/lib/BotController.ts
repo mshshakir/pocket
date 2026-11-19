@@ -8,6 +8,8 @@
  */
 import { AiAssistant } from './AiAssistant.ts';
 import type { BatchEntryService } from './BatchEntryService.ts';
+import { BookCreator } from './BookCreator.ts';
+import { EntryEditor } from './EntryEditor.ts';
 import { DeliveryBot } from './DeliveryBot.ts';
 import { OwedBot } from './OwedBot.ts';
 import { CategoryDirectory } from './CategoryDirectory.ts';
@@ -55,13 +57,18 @@ export class BotController {
   readonly #deliveries: DeliveryBot | null;
   readonly #owed: OwedBot | null;
   readonly #ai: AiAssistant | null;
+  readonly #editor: EntryEditor | null;
+  readonly #creator: BookCreator | null;
 
   constructor(
     store: PocketStore, telegram: TelegramClient, entries: EntryService,
     links: LinkService, batches: BatchEntryService, groups: GroupService,
     deliveries: DeliveryBot | null = null, owed: OwedBot | null = null, ai: AiAssistant | null = null,
+    editor: EntryEditor | null = null, creator: BookCreator | null = null,
   ) {
     this.#ai = ai;
+    this.#editor = editor;
+    this.#creator = creator;
     this.#owed = owed;
     this.#deliveries = deliveries;
     this.#store = store;
@@ -133,6 +140,12 @@ export class BotController {
           (lines) => this.#recordText(link, chatId, message.message_id, lines, books, true));
       }
 
+      // A step of the ✏️ Edit menu, /newaccount or /newcategory waiting for typed text.
+      if (pending?.kind === 'edit' && pending.step) {
+        const step = pending.step;
+        if (step.kind === 'field' && this.#editor) return void await this.#editor.answer(link, chatId, step, text, message.message_id);
+        if (step.kind !== 'field' && this.#creator) return void await this.#creator.answer(link, chatId, pending, text, message.message_id);
+      }
       if (pending?.kind === 'edit') {
         return void await this.#entries.record({
           link, chatId, seed: pending.seed_message_id, text, replace: true, oldOwnerId: pending.owner_id,
@@ -200,6 +213,19 @@ export class BotController {
     const link = await this.#store.findLink(chatId);
     if (!link) return void await this.#telegram.answer(cb.id, 'This chat is not connected. Send /link.');
 
+    // The ✏️ Edit menu and new accounts / categories: the plan must still include Telegram.
+    if ((this.#editor && EntryEditor.isButton(cb.data)) || (this.#creator && BookCreator.isButton(cb.data))) {
+      const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+      if (notice) return void await this.#telegram.answer(cb.id, 'Not available on your plan');
+      try {
+        if (EntryEditor.isButton(cb.data)) return void await this.#editor!.handleCallback(cb, link);
+        return void await this.#creator!.handleCallback(cb, link);
+      } catch (err) {
+        console.error('[telegram-bot] edit/create callback', err);
+        await this.#telegram.answer(cb.id, '⚠️ Not done');
+        return void await this.#telegram.send(chatId, `⚠️ ${BotController.#reason(err)}`, { replyTo: msg.message_id });
+      }
+    }
     if (this.#ai && AiAssistant.isButton(cb.data)) {
       try {
         return void await this.#ai.handleCallback(cb, link);
@@ -270,6 +296,14 @@ export class BotController {
     if (this.#deliveries && command === '/deliveries') return void await this.#deliveries.deliveries(link, chatId);
     if (this.#deliveries && command === '/dues') return void await this.#deliveries.dues(link, chatId);
     if (this.#owed && command === '/toget') return void await this.#owed.toget(link, chatId);
+
+    if (this.#creator && (command === '/newaccount' || command === '/newcategory')) {
+      const notice = (await PlanAccess.load(this.#store, link.user_id)).notice();
+      if (notice) return void await this.#telegram.reply(chatId, notice, messageId);
+      await this.#dropPending(chatId);
+      if (command === '/newaccount') return void await this.#creator.newAccount(link, chatId, messageId, argument);
+      return void await this.#creator.newCategory(link, chatId, messageId, argument);
+    }
 
     const ws = await Workspace.load(this.#store, link);
     const fallback = { ownerId: link.default_owner_id, accountId: link.default_account_id };

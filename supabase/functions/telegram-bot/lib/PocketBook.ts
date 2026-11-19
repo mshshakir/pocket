@@ -111,6 +111,13 @@ export class PocketBook {
       .sort((a, b) => (score.get(b.id)! - score.get(a.id)!) || a.name.localeCompare(b.name));
   }
 
+  /** Every main category of this type, with or without subcategories (by name). */
+  mainsOfType(type: string): Category[] {
+    return (this.#data.categories || [])
+      .filter((c: Category) => (!c.type || c.type === type) && this.isMain(c))
+      .sort((a: Category, b: Category) => a.name.localeCompare(b.name));
+  }
+
   /** Subcategories of one main category for this type, most-used first. */
   subcategories(mainId: string, type: string): Category[] {
     const uses = this.#uses(type);

@@ -100,9 +100,18 @@ categories as buttons, then the chosen one's subcategories, and saves nothing un
 subcategory is tapped or typed; a main category on its own is never saved. Same-named
 categories are told apart by parent (`@childrentoiletries`). Transfers need no category.
 
-**Each confirmation has ✏️ Edit and 🗑 Delete buttons.** Edit asks for the corrected entry and
-replaces the original rows in place; Delete removes them. A family member can always fix or
-delete an entry they entered; anyone else's needs edit access to change and full access to delete.
+**Each confirmation has one ✏️ Edit button.** It opens a menu in the same message: Amount ·
+Account · Category / Date · Note · Payment (a transfer: Amount · From · To / Date · Note) and
+🗑 Delete · ✓ Done. Accounts, categories, payment types and dates are picked with buttons; amount,
+note and date can be typed. Each change rewrites the same rows and updates the confirmation in
+place. Delete asks once more. Older confirmations keep their ✏️ Edit / 🗑 Delete buttons. A family
+member can always fix or delete an entry they entered; anyone else's needs edit access to change
+and full access to delete.
+
+**New accounts and categories** (own book only): `/newaccount` (name → type → currency →
+starting balance, saved as an "Opening balance" entry) or `/newaccount HDFC Savings bank`;
+`/newcategory` (spending or received → main → name) or `/newcategory Petrol`. When a typed
+`@category` matches nothing, the picker offers ➕ New, and the entry is saved with it.
 
 Commands (also in the bot's menu button): `/help` shows the full guide; `/accounts` lists accounts;
 `/categories` lists expense categories; `/link` and `/unlink` connect or disconnect a chat;

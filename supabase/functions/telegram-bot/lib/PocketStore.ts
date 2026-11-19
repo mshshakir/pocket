@@ -72,6 +72,26 @@ export interface PendingStep {
   owner_id: string | null;          // edit: the book the entry being corrected is in
   queue: QueuedEntry[];             // category step: lines of the same message still to ask about
   shared: boolean;                  // category step: this line's category is the message's shared one
+  step?: BotStep | null;            // kind 'edit' with a step: one field of an entry, or a new account/category (0066)
+}
+
+/** A step of the ✏️ Edit menu or of /newaccount, /newcategory, kept between messages. */
+export type BotStep =
+  | { kind: 'field'; field: string; seed: number; owner: string; message: number; prompt?: number | null }
+  | { kind: 'newaccount'; at: 'name' | 'currency' | 'balance'; name?: string; type?: string; currency?: string }
+  | { kind: 'newcategory'; at: 'offer' | 'type' | 'main' | 'mainname' | 'name'; type?: 'expense' | 'income';
+      mainId?: string | null; mainName?: string; name?: string; entry?: WaitingEntry };
+
+/** An entry waiting for its category while a new one is made for it. */
+export interface WaitingEntry {
+  seed: number;
+  text: string;
+  replace: boolean;
+  owner: string | null;
+  prompt: number | null;
+  confirm: number | null;
+  queue: QueuedEntry[];
+  shared: boolean;
 }
 
 export type SaveResult = 'saved' | 'duplicate';
@@ -428,6 +448,13 @@ export class PocketStore {
     const { data, error } = await this.#sb.rpc('pocket_ai_text', { p_user: userId, p_ref: ref });
     if (error) throw new Error(error.message);
     return data as AiCharge;
+  }
+
+  /** An entry's rows, read back in app shape to change one field (pocket_bot_entry, 0066). */
+  async botEntry(ownerId: string, ids: string[]): Promise<Record<string, unknown>[]> {
+    const { data, error } = await this.#sb.rpc('pocket_bot_entry', { owner: ownerId, ids });
+    if (error) throw new Error(error.message);
+    return (data ?? []) as Record<string, unknown>[];
   }
 
   /** Gives back what a request was charged (when the AI service failed). */

@@ -7,6 +7,8 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { AiAssistant } from './AiAssistant.ts';
 import { AiModel } from './AiModel.ts';
 import { BatchEntryService } from './BatchEntryService.ts';
+import { BookCreator } from './BookCreator.ts';
+import { EntryEditor } from './EntryEditor.ts';
 import { BotController } from './BotController.ts';
 import { DeliveryBot } from './DeliveryBot.ts';
 import { DeliveryStore } from './DeliveryStore.ts';
@@ -77,6 +79,8 @@ export class BotApp {
       new OwedBot(store, telegram, clock, rates),
       // GEMINI_API_KEY: the same secret the app's `ai` function uses; without it voice and photos say "not set up".
       new AiAssistant(store, telegram, secrets.get('GEMINI_API_KEY').trim() ? new AiModel(secrets.get('GEMINI_API_KEY').trim()) : null, clock),
+      new EntryEditor(store, telegram, entries, clock, rates),
+      new BookCreator(store, telegram, entries, clock, rates),
     );
     // BOT_REGION (optional secret): where the database is; defaults to Sydney.
     const region = new WebhookRegion(telegram, secrets.get('SUPABASE_URL'), secrets.get('BOT_REGION'), secrets.get('TELEGRAM_WEBHOOK_SECRET'));
