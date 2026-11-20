@@ -15,6 +15,8 @@ export interface Charge {
   remaining?: number;
   /** Credits this request costs (0 for unlimited). */
   cost?: number;
+  /** A text-only use within the daily free limit. */
+  free?: boolean;
 }
 
 export class AiCredits {
@@ -26,11 +28,21 @@ export class AiCredits {
   }
 
   /** @param seconds  length of the recording, for a voice entry */
-  async spend(userId: string, book: string, ref: string, kind: 'receipt' | 'voice', seconds: number): Promise<Charge> {
+  async spend(userId: string, book: string, ref: string, kind: 'receipt' | 'voice' | 'setup', seconds: number): Promise<Charge> {
     const { data, error } = await this.#admin.rpc('pocket_ai_charge', {
       p_user: userId, p_book: book, p_ref: ref, p_kind: kind, p_seconds: Math.round(seconds),
     });
     if (error) throw new Error(`spend failed: ${error.message}`);
+    return data as Charge;
+  }
+
+  /**
+   * A text-only use (setup suggestions): free up to the daily limit, then
+   * charged like other uses (pocket_ai_text, migration 0065).
+   */
+  async text(userId: string, ref: string): Promise<Charge> {
+    const { data, error } = await this.#admin.rpc('pocket_ai_text', { p_user: userId, p_ref: ref });
+    if (error) throw new Error(`text failed: ${error.message}`);
     return data as Charge;
   }
 

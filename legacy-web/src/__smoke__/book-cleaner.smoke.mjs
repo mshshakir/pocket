@@ -11,7 +11,7 @@
 import { BookCleaner } from '../domain/services/BookCleaner.js';
 import { SeedFactory } from '../data/seed.js';
 import { BookDiff } from '../core/BookDiff.js';
-import { CurrencySetupModal } from '../ui/modals/CurrencySetupModal.js';
+import { BookSetupModal } from '../ui/modals/BookSetupModal.js';
 
 let passed = 0, failed = 0;
 const ok = (label, cond, extra = '') => {
@@ -106,20 +106,21 @@ console.log('\nbook cleaner suite');
 
 {
   // Onboarding asks about sample data only when there is some.
-  const storeWith = (state) => ({ getState: () => state });
-  const withSample = new CurrencySetupModal({ store: storeWith(SeedFactory.create()) });
+  const storeWith = (state) => ({ getState: () => state, persist() {} });
+  const hooks = { clearSample() {}, suggest: async () => '', finish() {} };
+  const withSample = new BookSetupModal({ store: storeWith(SeedFactory.create()), hooks });
   withSample.onOpen();
   withSample.advance();
-  ok('onboarding step 2 is the sample-data choice', withSample.render().includes('chooseSampleData(false)'));
-  withSample.advance();
-  ok('then the Hijri step', withSample.render().includes('saveCurrencySetup'));
+  ok('onboarding step 2 is the sample-data choice', withSample.render().includes("setupAction('clean')"));
+  withSample.act('keep');
+  ok('keeping the sample goes straight to the calendar', withSample.step === 'calendar' && withSample.render().includes("setupAction('finish')"));
 
-  const realBook = { user: { homeCurrency: 'INR' }, accounts: [{ id: 'a1' }], transactions: [], budgets: [] };
-  const noSample = new CurrencySetupModal({ store: storeWith(realBook) });
+  const realBook = { user: { homeCurrency: 'INR' }, accounts: [{ id: 'a1' }], transactions: [{ id: 't1' }], budgets: [] };
+  const noSample = new BookSetupModal({ store: storeWith(realBook), hooks });
   noSample.onOpen();
-  ok('no sample step shown in the indicator', !noSample.render().includes('Sample data'));
+  ok('no sample step for a book without the sample', !noSample.render().includes("setupAction('clean')"));
   noSample.advance();
-  ok('without sample data step 2 is the Hijri step', noSample.render().includes('saveCurrencySetup'));
+  ok('a book with entries of its own skips to the calendar', noSample.step === 'calendar');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

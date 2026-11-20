@@ -15,6 +15,7 @@ export class AiRequest {
   /** Largest upload accepted (base64 characters ≈ 4.5 MB of image/audio). */
   static readonly MAX_INLINE_CHARS = 6_000_000;
   static readonly MAX_TEXT_CHARS = 20_000;
+  static readonly MAX_SETUP_CHARS = 8_000;
   static readonly MAX_OUTPUT_TOKENS = 1024;
   /** Longest recording billed for; also the most a voice entry can be said to last. */
   static readonly MAX_SECONDS = 600;
@@ -28,7 +29,7 @@ export class AiRequest {
   static readonly #MEDIA = /^(image\/(jpeg|png|webp|heic|heif|gif)|application\/pdf|audio\/(webm|ogg|mp4|mpeg|mp3|wav|aac|m4a|x-m4a|3gpp))(;.*)?$/i;
 
   private constructor(
-    readonly kind: 'receipt' | 'voice',
+    readonly kind: 'receipt' | 'voice' | 'setup',
     readonly book: string,
     readonly ref: string,
     readonly parts: Part[],
@@ -40,7 +41,9 @@ export class AiRequest {
   /** @throws AiRequestError with a sentence for the person */
   static parse(body: unknown): AiRequest {
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-    const kind = b.kind === 'voice' ? 'voice' : b.kind === 'receipt' ? 'receipt' : null;
+    // 'setup': suggesting categories while a new person sets up their book —
+    // text only, no picture or recording.
+    const kind = b.kind === 'voice' ? 'voice' : b.kind === 'receipt' ? 'receipt' : b.kind === 'setup' ? 'setup' : null;
     if (!kind) throw new AiRequestError('Unknown request.');
     if (typeof b.book !== 'string' || !AiRequest.#UUID.test(b.book)) throw new AiRequestError('Unknown book.');
     if (typeof b.ref !== 'string' || b.ref.length < 8 || b.ref.length > 80) throw new AiRequestError('Missing request id.');
@@ -61,12 +64,14 @@ export class AiRequest {
       }
       throw new AiRequestError('That file type can\'t be read.');
     });
-    if (media !== 1) throw new AiRequestError('Send one picture or recording at a time.');
+    if (kind === 'setup' ? media !== 0 : media !== 1) throw new AiRequestError(kind === 'setup' ? 'Nothing to read.' : 'Send one picture or recording at a time.');
+    if (kind === 'setup' && text > AiRequest.MAX_SETUP_CHARS) throw new AiRequestError('Request too long.');
     if (inline > AiRequest.MAX_INLINE_CHARS) throw new AiRequestError('That file is too large. Try a smaller photo or a shorter recording.');
     if (text > AiRequest.MAX_TEXT_CHARS) throw new AiRequestError('Request too long.');
 
     const out = Number(b.maxOutputTokens);
-    const max = Number.isInteger(out) && out > 0 ? Math.min(out, AiRequest.MAX_OUTPUT_TOKENS) : AiRequest.MAX_OUTPUT_TOKENS;
+    const cap = kind === 'setup' ? 600 : AiRequest.MAX_OUTPUT_TOKENS;
+    const max = Number.isInteger(out) && out > 0 ? Math.min(out, cap) : cap;
     return new AiRequest(kind, b.book, b.ref, parts, max, kind === 'voice' ? AiRequest.#seconds(b.seconds, inline) : 0);
   }
 

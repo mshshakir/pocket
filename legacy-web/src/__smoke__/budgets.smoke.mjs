@@ -291,7 +291,7 @@ const month = new BudgetPeriod({ period: 'gregorian' }, { today });
   await wait(20);
   const f = w.document.querySelector('form');
   const kinds = [...f.querySelectorAll('input[name="period"]')].map((i) => i.value).join();
-  ok('A3 five periods', kinds === 'gregorian,hijri,week,year,range', kinds);
+  ok('A3 four periods without the Hijri add-on', kinds === 'gregorian,week,year,range', kinds);
   ok('A3 dates hidden until Set dates is picked', f.querySelector('#budgetRange').classList.contains('hidden'));
   f.querySelector('input[value="range"]').checked = true;
   // jsdom here doesn't run inline handlers; run the group's onchange as the browser would.

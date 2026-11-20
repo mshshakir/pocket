@@ -24,6 +24,8 @@ class FakeCredits {
   constructor(public answer: Charge) {}
   spend(_u: string, _b: string, ref: string, kind: string, seconds: number) { this.spent.push(ref); this.asked.push({ kind, seconds }); return Promise.resolve(this.answer); }
   refund(_u: string, ref: string) { this.refunded.push(ref); return Promise.resolve(); }
+  texts: string[] = [];
+  text(_u: string, ref: string) { this.texts.push(ref); return Promise.resolve({ ok: true, free: true } as Charge); }
 }
 const gemini = (status: number, text = '{"total": 12}') => new GeminiClient('server-key', ((_u: unknown, init?: RequestInit) => {
   const sent = JSON.parse(String(init?.body));
@@ -98,5 +100,14 @@ console.log('\nai function');
   const res = await make(new FakeCredits({ ok: true })).handle(new Request('https://x/ai', { method: 'OPTIONS' }));
   ok('A9 the browser\'s pre-flight check is answered', res.status === 200 && res.headers.get('Access-Control-Allow-Origin') === '*');
 }
+// Setup suggestions: text only, the daily free allowance, no picture allowed.
+{
+  const c = new FakeCredits({ ok: true, chargedTo: 'own', remaining: 9 });
+  const res = await make(c).handle(post(body({ kind: 'setup', parts: [{ text: 'suggest categories' }] })));
+  ok('S1 setup: text only, uses the daily free allowance', res.status === 200 && c.texts.length === 1 && c.spent.length === 0, String(res.status));
+  const bad = await make(new FakeCredits({ ok: true })).handle(post(body({ kind: 'setup' })));
+  ok('S2 setup refuses a picture', bad.status === 400);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) Deno.exit(1);

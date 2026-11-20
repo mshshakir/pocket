@@ -20263,7 +20263,7 @@ This replaces your current grouping.`
           <label class="text-xs text-zinc-500 mb-1 block">Period</label>
           <div class="grid grid-cols-3 gap-2" id="budgetPeriods"
                onchange="const k=this.querySelector('input[name=period]:checked')?.value; document.getElementById('budgetRange').classList.toggle('hidden', k!=='range'); document.getElementById('budgetRollover').classList.toggle('hidden', k==='range');">
-            ${_BudgetModal.#PERIODS.map(([value, icon, label]) => `
+            ${_BudgetModal.#PERIODS.filter(([value]) => value !== "hijri" || state.user?.showHijri || kind === "hijri").map(([value, icon, label]) => `
             <label class="cursor-pointer">
               <input type="radio" name="period" value="${value}" ${kind === value ? "checked" : ""} class="peer sr-only">
               <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full text-sm">
@@ -20653,6 +20653,7 @@ This replaces your current grouping.`
       ["general", "General", "sliders-horizontal"],
       ["account", "Account", "user-round"],
       ["data", "Data", "database"],
+      ["addons", "Add-ons", "puzzle"],
       ["help", "Help", "life-buoy"]
     ];
     constructor() {
@@ -20678,7 +20679,7 @@ This replaces your current grouping.`
               <i data-lucide="x"></i>
             </button>
           </div>
-          <div class="grid grid-cols-4 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
+          <div class="grid grid-cols-5 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
             ${_SettingsModal.#TABS.map(([k, label, icon]) => `
               <button type="button" role="tab" data-settings-tab-btn="${k}" aria-selected="${k === tab}"
                       class="flex flex-col sm:flex-row items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-medium ${k === tab ? "bg-white dark:bg-zinc-900 shadow-sm" : "text-zinc-500"}"
@@ -20691,6 +20692,7 @@ This replaces your current grouping.`
           ${panel("general", this.#general(u, state))}
           ${panel("account", this.#account(u, state, isSaaS, sbUser))}
           ${panel("data", this.#data(state))}
+          ${panel("addons", this.#addons(u))}
           ${panel("help", this.#help(sbUser))}
         </div>
 
@@ -20753,8 +20755,16 @@ This replaces your current grouping.`
               </select>
             </div>
           </div>
-        </div>
-
+        </div>`;
+    }
+    /**
+     * Add-ons: features a person installs only if they want them. The Hijri
+     * calendar is the first (owner, 20 Nov 2026). Removing one only hides it —
+     * nothing is deleted, and installing it again brings everything back.
+     */
+    #addons(u) {
+      return `
+        <p class="text-xs text-zinc-500 mb-3">Extras you can install or remove any time. Removing one only hides it; nothing is deleted.</p>
         ${this.#renderHijriSection(u)}`;
     }
     /**
@@ -21066,9 +21076,10 @@ This replaces your current grouping.`
      * @returns {string} HTML
      */
     #renderHijriSection(u) {
-      const toggleBtn = `
-      <button class="btn ${u.showHijri ? "btn-primary" : "btn-outline"}"
-              onclick="window.__app.toggleHijri()">${u.showHijri ? "On" : "Off"}</button>`;
+      const toggleBtn = u.showHijri ? `<div class="flex flex-col items-end gap-1">
+           <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 addon-installed">Installed</span>
+           <button class="btn btn-ghost btn-sm text-zinc-500 addon-remove" onclick="window.__app.setHijriAddon(false)">Remove</button>
+         </div>` : `<button class="btn btn-primary addon-install" onclick="window.__app.setHijriAddon(true)"><i data-lucide="download"></i> Install</button>`;
       const offset = u.hijriOffset ?? 0;
       const todayHijri = u.showHijri ? this.#hijri.format(/* @__PURE__ */ new Date(), { long: true }) : "";
       const offsetBadge = offset !== 0 ? `<div class="text-xs mt-1 ${offset > 0 ? "text-amber-600" : "text-blue-600"}">
@@ -21135,7 +21146,7 @@ This replaces your current grouping.`
           </div>
           <div class="flex-1">
             <div class="font-medium text-sm">Hijri calendar</div>
-            <div class="text-xs text-zinc-500">Show Hijri dates and miqaats from the Mumineen Calendar</div>
+            <div class="text-xs text-zinc-500">Hijri dates and miqaats beside every date (Mumineen Calendar), a Hijri calendar in Regulars, and budgets by Hijri month.</div>
           </div>
           ${toggleBtn}
         </div>
@@ -22689,160 +22700,739 @@ This replaces your current grouping.`
     }
   };
 
-  // src/ui/modals/CurrencySetupModal.js
-  var CurrencySetupModal = class _CurrencySetupModal {
-    static #STEP_LABELS = Object.freeze({ currency: "Currency", sample: "Sample data", hijri: "Calendar" });
+  // src/data/StarterCategories.js
+  var StarterCategories = class _StarterCategories {
+    /** Life chips asked in setup: [key, label]. */
+    static LIFE = Object.freeze([
+      ["rent", "Rent"],
+      ["ownhome", "Own home"],
+      ["children", "Children / school"],
+      ["vehicle", "Car or bike"],
+      ["parents", "Support parents"],
+      ["business", "Run a business"],
+      ["giving", "Giving / charity"],
+      ["travel", "Travel"],
+      ["pets", "Pets"],
+      ["fitness", "Gym / sports"]
+    ]);
+    /** Income chips: [key, label]. */
+    static INCOME = Object.freeze([
+      ["salary", "Salary"],
+      ["business", "Business"],
+      ["rentin", "Rent received"],
+      ["family", "From family"],
+      ["investments", "Investments"]
+    ]);
+    /** The list. `when`: which answers tick it (any of them). */
+    static LIST = Object.freeze([
+      {
+        key: "food",
+        name: "Food",
+        type: "expense",
+        icon: "utensils",
+        color: "#f97316",
+        when: ["always"],
+        subs: ["Groceries", "Vegetables & fruit", "Milk", "Eating out"]
+      },
+      {
+        key: "home",
+        name: "Home",
+        type: "expense",
+        icon: "home",
+        color: "#a16207",
+        when: ["always"],
+        subs: ["Electricity", "Gas", "Water", "Household items", "Maintenance"],
+        extra: { rent: "Rent", ownhome: "Home loan EMI" }
+      },
+      {
+        key: "transport",
+        name: "Transport",
+        type: "expense",
+        icon: "bus",
+        color: "#3b82f6",
+        when: ["always"],
+        subs: ["Auto / taxi", "Train / bus", "Fuel", "Parking"]
+      },
+      {
+        key: "vehicle",
+        name: "Vehicle",
+        type: "expense",
+        icon: "car",
+        color: "#2563eb",
+        when: ["vehicle"],
+        subs: ["Service", "Insurance", "EMI"]
+      },
+      {
+        key: "health",
+        name: "Health",
+        type: "expense",
+        icon: "heart-pulse",
+        color: "#ef4444",
+        when: ["always"],
+        subs: ["Doctor", "Medicines", "Tests", "Insurance"]
+      },
+      {
+        key: "education",
+        name: "Education",
+        type: "expense",
+        icon: "graduation-cap",
+        color: "#10b981",
+        when: ["children"],
+        subs: ["School fees", "Tuition", "Books & stationery"]
+      },
+      {
+        key: "family",
+        name: "Family",
+        type: "expense",
+        icon: "users",
+        color: "#fb7185",
+        when: ["children", "parents"],
+        subs: ["Children", "Parents", "Gifts"]
+      },
+      {
+        key: "personal",
+        name: "Personal",
+        type: "expense",
+        icon: "user-round",
+        color: "#8b5cf6",
+        when: ["always"],
+        subs: ["Clothes", "Grooming", "Mobile & internet"]
+      },
+      {
+        key: "shopping",
+        name: "Shopping",
+        type: "expense",
+        icon: "shopping-bag",
+        color: "#ec4899",
+        when: ["always"],
+        subs: ["Electronics", "Home goods", "Online"]
+      },
+      {
+        key: "giving",
+        name: "Giving",
+        type: "expense",
+        icon: "hand-heart",
+        color: "#d946ef",
+        when: ["giving"],
+        subs: ["Charity", "Community contributions"]
+      },
+      {
+        key: "travel",
+        name: "Travel",
+        type: "expense",
+        icon: "plane",
+        color: "#0ea5e9",
+        when: ["travel"],
+        subs: ["Tickets", "Stay", "Local travel"]
+      },
+      {
+        key: "fun",
+        name: "Fun",
+        type: "expense",
+        icon: "film",
+        color: "#a855f7",
+        when: ["always"],
+        subs: ["Outings", "Subscriptions"]
+      },
+      {
+        key: "pets",
+        name: "Pets",
+        type: "expense",
+        icon: "paw-print",
+        color: "#d97706",
+        when: ["pets"],
+        subs: ["Food", "Vet"]
+      },
+      {
+        key: "fitness",
+        name: "Fitness",
+        type: "expense",
+        icon: "dumbbell",
+        color: "#84cc16",
+        when: ["fitness"],
+        subs: ["Gym", "Sports"]
+      },
+      {
+        key: "business",
+        name: "Business",
+        type: "expense",
+        icon: "briefcase",
+        color: "#475569",
+        when: ["business"],
+        subs: ["Stock", "Salaries", "Rent", "Other"]
+      },
+      {
+        key: "income",
+        name: "Income",
+        type: "income",
+        icon: "banknote",
+        color: "#22c55e",
+        when: ["always"],
+        subs: ["Other"],
+        extra: { salary: "Salary", business: "Business", rentin: "Rent received", family: "From family", investments: "Investments" }
+      }
+    ]);
+    /**
+     * What to tick for a set of answers.
+     * @param {Set<string>|string[]} answers  life and income chip keys
+     * @returns {{key:string, name:string, type:string, icon:string, color:string, on:boolean, subs:{name:string, on:boolean}[]}[]}
+     */
+    static plan(answers) {
+      const has = new Set(answers);
+      return _StarterCategories.LIST.map((m) => {
+        const extras = Object.entries(m.extra || {}).map(([k, name]) => ({ name, on: has.has(k) }));
+        const subs = [...extras, ...m.subs.map((name) => ({ name, on: true }))];
+        const on = m.when.includes("always") || m.when.some((k) => has.has(k));
+        return { key: m.key, name: m.name, type: m.type, icon: m.icon, color: m.color, on, subs };
+      });
+    }
+  };
+
+  // src/domain/services/BookSetup.js
+  var BookSetup = class _BookSetup {
+    /** Account types offered in setup, in the app's ACCOUNT_TYPES ids. */
+    static KINDS = Object.freeze([
+      { key: "bank", type: "bank", label: "Bank accounts", one: "Bank", icon: "landmark", color: "#3b82f6", hint: "e.g. HDFC Savings" },
+      { key: "card", type: "card", label: "Credit cards", one: "Credit card", icon: "credit-card", color: "#ef4444", hint: "e.g. Amex" },
+      { key: "cash", type: "cash", label: "Cash", one: "Cash", icon: "wallet", color: "#10b981", hint: "e.g. Cash" },
+      { key: "wallet", type: "cash", label: "Wallets / UPI", one: "Wallet", icon: "smartphone", color: "#14b8a6", hint: "e.g. Paytm" },
+      { key: "savings", type: "savings", label: "Savings / FD", one: "Savings", icon: "vault", color: "#8b5cf6", hint: "e.g. FD" }
+    ]);
+    #state;
+    #fx;
+    #hijri;
+    #today;
+    /**
+     * @param {object} deps
+     * @param {object} deps.state  the real book state (mutated)
+     * @param {object} deps.fx     CurrencyService (convert)
+     * @param {object} deps.hijri  HijriCalendarService (toHijri)
+     * @param {string} deps.today  YYYY-MM-DD
+     */
+    constructor({ state, fx, hijri, today }) {
+      this.#state = state;
+      this.#fx = fx;
+      this.#hijri = hijri;
+      this.#today = today;
+    }
+    /**
+     * @param {object} plan
+     * @param {{kind:string, name:string, balance?:number}[]} plan.accounts  balance in MAJOR units
+     * @param {{name:string, type:string, icon:string, color:string, subs:string[]}[]} plan.categories  ticked mains with ticked subs
+     * @param {boolean} plan.hijri  install the Hijri calendar
+     * @returns {{accounts:number, categories:number}}
+     */
+    apply({ accounts = [], categories = [], hijri = false }) {
+      const s = this.#state;
+      s.accounts ??= [];
+      s.categories ??= [];
+      s.transactions ??= [];
+      const fresh = _BookSetup.isFresh(s);
+      const madeAccounts = this.#addAccounts(accounts);
+      const madeCategories = this.#setCategories(categories, fresh);
+      s.user.showHijri = !!hijri;
+      if (!hijri) s.user.calendarMode = "gregorian";
+      else if (!s.user.calendarMode || s.user.calendarMode === "gregorian") s.user.calendarMode = "both";
+      if (madeAccounts.length && (!s.user.defaultAccountId || !s.accounts.some((a) => a.id === s.user.defaultAccountId && !a.archived))) {
+        s.user.defaultAccountId = (madeAccounts.find((a) => a.type === "bank") || madeAccounts[0]).id;
+      }
+      return { accounts: madeAccounts.length, categories: madeCategories };
+    }
+    /** Nothing of the person's own yet: only sample records, or none. */
+    static isFresh(state) {
+      const own = (list) => (list || []).some((x) => !BookCleaner.isSample(x));
+      return !own(state.transactions);
+    }
+    #addAccounts(list) {
+      const s = this.#state;
+      const home = s.user.homeCurrency || "INR";
+      const taken = new Set(s.accounts.filter((a) => !a.archived).map((a) => a.name.trim().toLowerCase()));
+      const made = [];
+      for (const a of list) {
+        const kind = _BookSetup.KINDS.find((k) => k.key === a.kind) || _BookSetup.KINDS[0];
+        let name = String(a.name || "").replace(/\s+/g, " ").trim().slice(0, 60) || kind.one;
+        if (taken.has(name.toLowerCase())) {
+          let n = 2;
+          while (taken.has(`${name} ${n}`.toLowerCase())) n++;
+          name = `${name} ${n}`;
+        }
+        taken.add(name.toLowerCase());
+        const account = {
+          id: IdGenerator.generate("acc"),
+          name,
+          type: kind.type,
+          currency: home,
+          openingBalance: 0,
+          balance: 0,
+          color: kind.color,
+          icon: kind.icon,
+          archived: false,
+          groupId: null
+        };
+        s.accounts.push(account);
+        made.push(account);
+        const minor = Math.round((Number(a.balance) || 0) * this.#fx.minorFactor(home));
+        if (minor !== 0) {
+          s.transactions.push({
+            id: IdGenerator.generate("tx"),
+            accountId: account.id,
+            categoryId: null,
+            amount: Math.abs(minor),
+            currency: home,
+            exchangeRate: (RATES[home] || 1) / (RATES[home] || 1),
+            refAmount: Math.abs(minor),
+            payee: "Opening balance",
+            note: "",
+            date: this.#today,
+            hijriDate: this.#hijri.toHijri(this.#today),
+            paymentType: "cash",
+            recordState: "cleared",
+            type: minor > 0 ? "income" : "expense",
+            transferPairId: null,
+            splits: null,
+            tags: ["opening-balance"]
+          });
+        }
+      }
+      return made;
+    }
+    /** @returns {number} how many categories were added */
+    #setCategories(mains, fresh) {
+      const s = this.#state;
+      if (!mains.length) return 0;
+      if (fresh) {
+        const used = /* @__PURE__ */ new Set();
+        for (const t of s.transactions) {
+          if (t.categoryId) used.add(t.categoryId);
+          for (const p of t.splits || []) if (p.categoryId) used.add(p.categoryId);
+        }
+        for (const b of s.budgets || []) {
+          if (b.categoryId) used.add(b.categoryId);
+          for (const id of b.categoryIds || []) used.add(id);
+        }
+        for (const r of s.regularItems || []) if (r.categoryId) used.add(r.categoryId);
+        const keep = s.categories.filter((c) => used.has(c.id) || s.categories.some((x) => x.parentId === c.id && used.has(x.id)) || c.type === "transfer");
+        s.categories.splice(0, s.categories.length, ...keep);
+      }
+      let added = 0;
+      const key = (n) => String(n).trim().toLowerCase();
+      for (const m of mains) {
+        let main = s.categories.find((c) => !c.parentId && c.type === m.type && key(c.name) === key(m.name));
+        if (!main) {
+          main = { id: IdGenerator.generate("cat"), name: m.name, type: m.type, parentId: null, icon: m.icon || "tag", color: m.color || "#737373", budgetLimit: null };
+          s.categories.push(main);
+          added++;
+        }
+        for (const subName of m.subs) {
+          const name = String(subName).replace(/\s+/g, " ").trim().slice(0, 40);
+          if (!name) continue;
+          if (s.categories.some((c) => c.parentId === main.id && key(c.name) === key(name))) continue;
+          s.categories.push({ id: IdGenerator.generate("cat"), name, type: m.type, parentId: main.id, icon: main.icon, color: main.color, budgetLimit: null });
+          added++;
+        }
+      }
+      return added;
+    }
+  };
+
+  // src/ui/modals/BookSetupModal.js
+  var BookSetupModal = class _BookSetupModal {
+    static #LABELS = Object.freeze({
+      currency: "Currency",
+      sample: "Start",
+      accounts: "Accounts",
+      names: "Names",
+      life: "About you",
+      categories: "Categories",
+      calendar: "Calendar"
+    });
+    static #MAX_PER_KIND = 10;
     #store;
+    #hooks;
     #hijri;
     /** @type {string[]} */
-    #steps = ["currency", "hijri"];
+    #steps = [];
     #index = 0;
-    constructor({ store }) {
+    #counts = {};
+    /** @type {{kind:string, name:string, balance:string}[]} */
+    #accounts = [];
+    #life = /* @__PURE__ */ new Set();
+    #income = /* @__PURE__ */ new Set();
+    #notes = "";
+    /** @type {ReturnType<typeof StarterCategories.plan>|null} */
+    #plan = null;
+    #useHijri = null;
+    #busy = "";
+    #note = "";
+    /**
+     * @param {object} deps
+     * @param {object} deps.store
+     * @param {object} deps.hooks  { clearSample(), suggest(prompt) → Promise<string>, finish(plan) }
+     */
+    constructor({ store, hooks }) {
       this.#store = store;
+      this.#hooks = hooks;
       this.#hijri = new HijriCalendarService();
     }
-    /** Start from the first step (called each time the modal is opened). */
+    /** Start again each time it opens. */
     onOpen() {
-      const withSample = BookCleaner.hasSample(this.#store.getState());
-      this.#steps = withSample ? ["currency", "sample", "hijri"] : ["currency", "hijri"];
+      const state = this.#store.getState();
+      const sample = BookCleaner.hasSample(state);
+      const fresh = BookSetup.isFresh(state);
+      this.#steps = sample ? ["currency", "sample", "accounts", "names", "life", "categories", "calendar"] : fresh ? ["currency", "accounts", "names", "life", "categories", "calendar"] : ["currency", "calendar"];
       this.#index = 0;
+      this.#counts = { bank: 1, card: 0, cash: 1, wallet: 0, savings: 0 };
+      this.#accounts = [];
+      this.#life = /* @__PURE__ */ new Set();
+      this.#income = /* @__PURE__ */ new Set(["salary"]);
+      this.#notes = "";
+      this.#plan = null;
+      this.#useHijri = state.user?.showHijri ?? null;
+      this.#busy = "";
+      this.#note = "";
+    }
+    get step() {
+      return this.#steps[this.#index];
+    }
+    /** Moves on one step (kept for callers of the old onboarding). */
+    advance() {
+      this.#go(1);
     }
     render() {
-      switch (this.#steps[this.#index]) {
-        case "sample":
-          return this.#renderSample();
+      const body = {
+        currency: () => this.#currency(),
+        sample: () => this.#sample(),
+        accounts: () => this.#accountsStep(),
+        names: () => this.#names(),
+        life: () => this.#lifeStep(),
+        categories: () => this.#categories(),
+        calendar: () => this.#calendar()
+      }[this.step] ?? (() => this.#currency());
+      return `<div class="p-6 setup" style="min-width:300px;max-width:460px">${this.#indicator()}${body()}</div>`;
+    }
+    /**
+     * One control was used. Returns false when the screen needn't be drawn
+     * again (typing into a box), a Promise when it is working (AI suggestions).
+     */
+    act(action, a, b) {
+      const state = this.#store.getState();
+      switch (action) {
+        case "currency":
+          state.user.homeCurrency = String(a);
+          this.#store.persist();
+          return false;
+        case "next":
+          return this.#next();
+        case "back":
+          this.#go(-1);
+          return true;
+        case "clean":
+          this.#hooks.clearSample();
+          this.#go(1);
+          return true;
+        case "keep":
+          this.#steps = ["currency", "sample", "calendar"];
+          this.#go(1);
+          return true;
+        case "count": {
+          const n = (this.#counts[a] || 0) + Number(b);
+          this.#counts[a] = Math.max(0, Math.min(_BookSetupModal.#MAX_PER_KIND, n));
+          return true;
+        }
+        case "name":
+          if (this.#accounts[a]) this.#accounts[a].name = String(b);
+          return false;
+        case "balance":
+          if (this.#accounts[a]) this.#accounts[a].balance = String(b);
+          return false;
+        case "life":
+          _BookSetupModal.#toggle(this.#life, a);
+          return true;
+        case "income":
+          _BookSetupModal.#toggle(this.#income, a);
+          return true;
+        case "notes":
+          this.#notes = String(a).slice(0, 500);
+          return false;
+        case "main": {
+          const m = this.#plan?.[a];
+          if (m) m.on = !m.on;
+          return true;
+        }
+        case "sub": {
+          const s = this.#plan?.[a]?.subs[b];
+          if (s) s.on = !s.on;
+          return true;
+        }
+        case "addsub": {
+          const m = this.#plan?.[a];
+          const name = String(b || "").replace(/\s+/g, " ").trim().slice(0, 40);
+          if (!m || !name || m.subs.some((s) => s.name.toLowerCase() === name.toLowerCase())) return true;
+          m.subs.push({ name, on: true });
+          m.on = true;
+          return true;
+        }
+        case "addmain": {
+          const name = String(a || "").replace(/\s+/g, " ").trim().slice(0, 40);
+          if (!name || this.#plan?.some((m) => m.name.toLowerCase() === name.toLowerCase())) return true;
+          this.#plan?.push({ key: `own${this.#plan.length}`, name, type: "expense", icon: "tag", color: "#737373", on: true, subs: [{ name: "General", on: true }] });
+          return true;
+        }
         case "hijri":
-          return this.#renderHijri();
+          this.#useHijri = !!a;
+          return true;
+        case "finish":
+          return this.#finish();
         default:
-          return this.#renderCurrency();
+          return true;
       }
     }
-    /** Move to the next step (app.js refreshes the modal afterwards). */
-    advance() {
-      this.#index = Math.min(this.#index + 1, this.#steps.length - 1);
+    // ── moving between steps ──────────────────────────────────────────────
+    #go(by) {
+      this.#index = Math.max(0, Math.min(this.#steps.length - 1, this.#index + by));
+      this.#note = "";
     }
-    // ── Step indicator ──────────────────────────────────────────────────
-    #renderIndicator() {
-      const dots = this.#steps.map((step, i) => {
-        const label = _CurrencySetupModal.#STEP_LABELS[step];
-        if (i < this.#index) {
-          return `
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full bg-emerald-500 text-white text-xs grid place-items-center">
-              <i data-lucide="check" style="width:12px;height:12px"></i>
-            </div>
-            <div class="text-xs text-zinc-400">${label}</div>
-          </div>`;
+    #next() {
+      if (this.step === "accounts") this.#makeAccountRows();
+      if (this.step === "life") return this.#buildPlan();
+      this.#go(1);
+      return true;
+    }
+    /** Rows for the names screen: as many per kind as counted, keeping what was typed. */
+    #makeAccountRows() {
+      const old = this.#accounts;
+      const rows = [];
+      for (const k of BookSetup.KINDS) {
+        const had = old.filter((r) => r.kind === k.key);
+        for (let i = 0; i < (this.#counts[k.key] || 0); i++) rows.push(had[i] ?? { kind: k.key, name: "", balance: "" });
+      }
+      this.#accounts = rows;
+    }
+    /** The ticked list from the answers, plus AI suggestions for "anything else". */
+    async #buildPlan() {
+      this.#plan = StarterCategories.plan([...this.#life, ...this.#income]);
+      const notes = this.#notes.trim();
+      if (notes) {
+        this.#busy = "Working out categories for you\u2026";
+        window.__app?.refreshSetup?.();
+        try {
+          const text = await this.#hooks.suggest(this.#prompt(notes));
+          this.#addSuggestions(text);
+        } catch (e) {
+          this.#note = `Couldn't get suggestions (${e?.message || "AI unavailable"}). Add your own below.`;
         }
-        const current = i === this.#index;
-        return `
-          <div class="flex items-center gap-1.5">
-            <div class="w-6 h-6 rounded-full ${current ? "bg-zinc-900 text-white" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-400"} text-xs grid place-items-center font-bold">${i + 1}</div>
-            <div class="text-xs ${current ? "font-medium" : "text-zinc-400"}">${label}</div>
-          </div>`;
-      });
-      return `<div class="flex items-center gap-2 mb-5">${dots.join('<div class="flex-1 h-px bg-zinc-200 dark:bg-zinc-700"></div>')}</div>`;
+        this.#busy = "";
+      }
+      this.#index++;
+      return true;
     }
-    // ── Step: currency ──────────────────────────────────────────────────
-    #renderCurrency() {
+    #prompt(notes) {
+      const list = this.#plan.map((m) => `${m.name} (${m.type === "income" ? "money received" : "spending"}): ${m.subs.map((s) => s.name).join(", ")}`).join("\n");
+      return `You help someone set up categories in Pocket, a money tracker. They wrote what else they spend on or receive money from.
+Suggest at most 8 short subcategory names (1\u20133 words, Title Case) that are NOT already in the list, each under the best existing main category, or under a new main category only if none fits.
+Reply with ONLY JSON: {"add":[{"main":"Food","sub":"Tiffin service","type":"expense"}]}
+
+EXISTING:
+${list}
+
+THEY WROTE: ${notes}`;
+    }
+    #addSuggestions(text) {
+      const m = String(text || "").match(/\{[\s\S]*\}/);
+      if (!m) return;
+      let obj;
+      try {
+        obj = JSON.parse(m[0]);
+      } catch (_) {
+        return;
+      }
+      const clean = (s) => String(s || "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+      for (const item of (Array.isArray(obj?.add) ? obj.add : []).slice(0, 8)) {
+        const sub = clean(item?.sub), mainName = clean(item?.main);
+        if (!sub || !mainName) continue;
+        const type = item?.type === "income" ? "income" : "expense";
+        let main = this.#plan.find((x) => x.name.toLowerCase() === mainName.toLowerCase() && x.type === type);
+        if (!main) {
+          main = { key: `ai${this.#plan.length}`, name: mainName, type, icon: "tag", color: "#737373", on: true, subs: [] };
+          this.#plan.push(main);
+        }
+        if (main.subs.some((s) => s.name.toLowerCase() === sub.toLowerCase())) continue;
+        main.subs.push({ name: sub, on: true, ai: true });
+        main.on = true;
+      }
+    }
+    #finish() {
+      const plan = {
+        hijri: !!this.#useHijri,
+        accounts: this.#steps.includes("names") ? this.#accounts.map((r) => ({
+          kind: r.kind,
+          name: r.name || (BookSetup.KINDS.find((k) => k.key === r.kind)?.one ?? "Account"),
+          balance: Number(String(r.balance).replace(/,/g, "")) || 0
+        })) : [],
+        categories: this.#steps.includes("categories") && this.#plan ? this.#plan.filter((m) => m.on && m.subs.some((s) => s.on)).map((m) => ({ name: m.name, type: m.type, icon: m.icon, color: m.color, subs: m.subs.filter((s) => s.on).map((s) => s.name) })) : []
+      };
+      this.#hooks.finish(plan);
+      return false;
+    }
+    // ── screens ───────────────────────────────────────────────────────────
+    #indicator() {
+      const n = this.#steps.length, i = this.#index;
+      return `<div class="flex items-center justify-between mb-4 text-xs text-zinc-500">
+      <span>${_BookSetupModal.#LABELS[this.step] ?? ""}</span><span>Step ${i + 1} of ${n}</span></div>
+      <div class="h-1 rounded-full bg-zinc-100 dark:bg-zinc-800 mb-5"><div class="h-1 rounded-full bg-zinc-900 dark:bg-white" style="width:${Math.round((i + 1) / n * 100)}%"></div></div>`;
+    }
+    #nav({ next = "Next", back = true, action = "next" } = {}) {
+      return `<div class="flex gap-2 mt-5">
+      ${back && this.#index > 0 ? `<button class="btn btn-outline" onclick="window.__app.setupAction('back')"><i data-lucide="arrow-left"></i></button>` : ""}
+      <button class="btn btn-primary flex-1 justify-center setup-next" onclick="window.__app.setupAction('${action}')" ${this.#busy ? "disabled" : ""}>${next} <i data-lucide="arrow-right"></i></button>
+    </div>`;
+    }
+    #currency() {
       const cur = this.#store.getState().user?.homeCurrency || "USD";
-      const options = CURRENCIES.map(
-        (c) => `<option value="${c}" ${c === cur ? "selected" : ""}>${c}</option>`
-      ).join("");
+      const options = CURRENCIES.map((c) => `<option value="${c}" ${c === cur ? "selected" : ""}>${c}</option>`).join("");
       return `
-      <div class="p-6" style="min-width:320px;max-width:420px">
-        ${this.#renderIndicator()}
-
-        <div class="w-12 h-12 rounded-2xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center text-xl font-bold mb-4">P</div>
-        <h2 class="text-xl font-semibold mb-1">Welcome to Pocket!</h2>
-        <p class="text-sm text-zinc-500 mb-5">Choose your home currency. All balances and reports will be shown in this currency.</p>
-
-        <label class="block text-sm font-medium mb-1">Home currency</label>
-        <select id="setupCurrency" class="select mb-6">${options}</select>
-
-        <button class="btn btn-primary w-full" onclick="window.__app.currencySetupNext()">
-          Next <i data-lucide="arrow-right"></i>
-        </button>
-      </div>`;
+      <div class="w-12 h-12 rounded-2xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 grid place-items-center text-xl font-bold mb-4">P</div>
+      <h2 class="text-xl font-semibold mb-1">Welcome to Pocket!</h2>
+      <p class="text-sm text-zinc-500 mb-5">A few quick questions and your book is ready. Everything can be changed later.</p>
+      <label class="block text-sm font-medium mb-1">Your currency</label>
+      <select id="setupCurrency" class="select" onchange="window.__app.setupAction('currency', this.value)">${options}</select>
+      ${this.#nav({ back: false })}`;
     }
-    // ── Step: sample data ───────────────────────────────────────────────
-    #renderSample() {
+    #sample() {
       return `
-      <div class="p-6" style="min-width:320px;max-width:420px">
-        ${this.#renderIndicator()}
-
-        <div class="w-10 h-10 rounded-xl grid place-items-center mb-4" style="background:#10b98122;color:#10b981">
-          <i data-lucide="sparkles" style="width:22px;height:22px"></i>
-        </div>
-        <h2 class="text-xl font-semibold mb-1">Start clean?</h2>
-        <p class="text-sm text-zinc-500 mb-5">
-          Pocket opened with a sample household \u2014 accounts, six months of entries, budgets, bills,
-          deliveries, debts, reimbursements and investments \u2014 so you could see everything it does.
-          Remove it and start with an empty book, or keep it for now.
-        </p>
-
-        <button class="btn btn-primary w-full mb-2" onclick="window.__app.chooseSampleData(false)">
-          <i data-lucide="eraser"></i> Remove sample data \u2014 start clean
-        </button>
-        <button class="btn btn-outline w-full" onclick="window.__app.chooseSampleData(true)">
-          Keep sample data for now
-        </button>
-        <div class="text-xs text-zinc-400 text-center mt-3">
-          You can remove it later in Settings \u2192 Data
-        </div>
-      </div>`;
+      <h2 class="text-xl font-semibold mb-1">Set up your own book?</h2>
+      <p class="text-sm text-zinc-500 mb-5">Pocket opened with a sample household so you could see what it does. Set up your own accounts and categories now, or keep looking around the sample.</p>
+      <button class="btn btn-primary w-full justify-center mb-2" onclick="window.__app.setupAction('clean')"><i data-lucide="sparkles"></i> Set up my own book</button>
+      <button class="btn btn-outline w-full justify-center" onclick="window.__app.setupAction('keep')">Keep the sample for now</button>
+      <div class="text-xs text-zinc-400 text-center mt-3">The sample can be removed any time in Settings \u2192 Data</div>`;
     }
-    // ── Step: Hijri offset calibration ──────────────────────────────────
-    #renderHijri() {
-      const u = this.#store.getState().user;
-      const offset = u?.hijriOffset ?? 0;
-      const todayHijri = this.#hijri.format(/* @__PURE__ */ new Date(), { long: true });
+    #accountsStep() {
+      const rows = BookSetup.KINDS.map((k) => {
+        const n = this.#counts[k.key] || 0;
+        return `<div class="flex items-center gap-3 py-2">
+        <span class="icon-pill" style="background:${k.color}22;color:${k.color};width:34px;height:34px"><i data-lucide="${k.icon}" style="width:16px;height:16px"></i></span>
+        <div class="flex-1 text-sm font-medium">${k.label}</div>
+        <button class="btn btn-outline px-3" onclick="window.__app.setupAction('count','${k.key}',-1)" ${n <= 0 ? "disabled" : ""} aria-label="Fewer">\u2212</button>
+        <div class="w-6 text-center font-semibold setup-count" data-kind="${k.key}">${n}</div>
+        <button class="btn btn-outline px-3" onclick="window.__app.setupAction('count','${k.key}',1)" ${n >= _BookSetupModal.#MAX_PER_KIND ? "disabled" : ""} aria-label="More">+</button>
+      </div>`;
+      }).join("");
+      const total = Object.values(this.#counts).reduce((s, n) => s + n, 0);
       return `
-      <div class="p-6" style="min-width:320px;max-width:420px">
-        ${this.#renderIndicator()}
-
-        <div class="w-10 h-10 rounded-xl grid place-items-center mb-4" style="background:#0ea5e922;color:#0ea5e9">
-          <i data-lucide="moon-star" style="width:22px;height:22px"></i>
-        </div>
-        <h2 class="text-xl font-semibold mb-1">Hijri date calibration</h2>
-        <p class="text-sm text-zinc-500 mb-4">
-          Pocket calculates the Hijri date automatically. If your local moon sighting
-          puts it a day earlier or later, adjust it here.
-        </p>
-
-        <!-- Live date display -->
-        <div class="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-4 mb-5 text-center">
-          <div class="text-xs text-zinc-500 mb-1">Today shows as</div>
-          <div class="text-lg font-semibold" id="setupHijriDisplay">${todayHijri}</div>
-          ${offset !== 0 ? `<div class="text-xs mt-1 ${offset > 0 ? "text-amber-600" : "text-blue-600"}">
-                 ${offset > 0 ? "+" : ""}${offset} day${Math.abs(offset) !== 1 ? "s" : ""} applied
-               </div>` : `<div class="text-xs text-zinc-400 mt-1">Calculated date \xB7 no adjustment</div>`}
-        </div>
-
-        <!-- Stepper -->
-        <div class="flex items-center gap-4 mb-2">
-          <button class="btn btn-outline flex-1 text-xl font-bold justify-center py-3"
-                  onclick="window.__app.adjustHijriOffset(-1)"
-                  ${offset <= -7 ? "disabled" : ""}>\u2212</button>
-          <div class="flex-1 text-center">
-            <div class="text-3xl font-bold">${offset > 0 ? "+" : ""}${offset}</div>
-            <div class="text-xs text-zinc-500">days</div>
-          </div>
-          <button class="btn btn-outline flex-1 text-xl font-bold justify-center py-3"
-                  onclick="window.__app.adjustHijriOffset(+1)"
-                  ${offset >= 7 ? "disabled" : ""}>+</button>
-        </div>
-        <div class="text-xs text-zinc-400 text-center mb-5">
-          You can always change this later in Settings \u2192 Hijri calendar
-        </div>
-
-        <button class="btn btn-primary w-full" onclick="window.__app.saveCurrencySetup()">
-          <i data-lucide="check"></i> Done \u2014 open Pocket
-        </button>
-      </div>`;
+      <h2 class="text-xl font-semibold mb-1">Where does your money sit?</h2>
+      <p class="text-sm text-zinc-500 mb-3">How many of each do you have? You'll name them next.</p>
+      <div class="divide-y divide-zinc-100 dark:divide-zinc-800">${rows}</div>
+      ${this.#nav({ next: total ? "Next" : "Skip" })}`;
     }
-    #esc(s) {
-      return (s == null ? "" : String(s)).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
+    #names() {
+      if (!this.#accounts.length) {
+        return `<h2 class="text-xl font-semibold mb-1">No accounts for now</h2>
+        <p class="text-sm text-zinc-500">You can add them any time from Accounts.</p>${this.#nav()}`;
+      }
+      const ccy = this.#store.getState().user?.homeCurrency || "";
+      const seen = {};
+      const rows = this.#accounts.map((r, i) => {
+        const k = BookSetup.KINDS.find((x) => x.key === r.kind) || BookSetup.KINDS[0];
+        seen[k.key] = (seen[k.key] || 0) + 1;
+        const many = (this.#counts[k.key] || 0) > 1;
+        return `<div class="mb-3">
+        <label class="text-xs text-zinc-500">${k.one}${many ? ` ${seen[k.key]}` : ""}</label>
+        <div class="flex gap-2">
+          <input class="input flex-1 setup-name" maxlength="60" placeholder="${Html.escape(k.hint)}" value="${Html.escape(r.name)}"
+                 oninput="window.__app.setupAction('name',${i},this.value)">
+          <input class="input setup-balance" style="width:7.5rem" inputmode="decimal" placeholder="Balance ${Html.escape(ccy)}" value="${Html.escape(r.balance)}"
+                 oninput="window.__app.setupAction('balance',${i},this.value)">
+        </div>
+      </div>`;
+      }).join("");
+      return `
+      <h2 class="text-xl font-semibold mb-1">Name your accounts</h2>
+      <p class="text-sm text-zinc-500 mb-4">The balance is optional \u2014 what's in it today${this.#counts.card ? " (for a card you owe on, put a minus, e.g. -5000)" : ""}.</p>
+      ${rows}
+      ${this.#nav()}`;
+    }
+    #lifeStep() {
+      const chips = (list, set, action) => list.map(([k, label]) => `<button type="button" class="setup-chip ${set.has(k) ? "on" : ""}" aria-pressed="${set.has(k)}" onclick="window.__app.setupAction('${action}','${k}')">${set.has(k) ? "\u2713 " : ""}${Html.escape(label)}</button>`).join("");
+      return `
+      <h2 class="text-xl font-semibold mb-1">A little about you</h2>
+      <p class="text-sm text-zinc-500 mb-3">Tap what applies \u2014 it decides which categories you start with.</p>
+      <div class="text-xs font-medium text-zinc-500 mb-2">Your spending</div>
+      <div class="flex flex-wrap gap-2 mb-4">${chips(StarterCategories.LIFE, this.#life, "life")}</div>
+      <div class="text-xs font-medium text-zinc-500 mb-2">Money comes from</div>
+      <div class="flex flex-wrap gap-2 mb-4">${chips(StarterCategories.INCOME, this.#income, "income")}</div>
+      <label class="text-xs font-medium text-zinc-500">Anything else you spend on? (optional)</label>
+      <textarea class="input mt-1 setup-notes" rows="2" maxlength="500" placeholder="e.g. tiffin service, my sister's tuition, a maid"
+                oninput="window.__app.setupAction('notes',this.value)">${Html.escape(this.#notes)}</textarea>
+      <div class="text-[11px] text-zinc-400 mt-1">If you write something, it's sent to Google's AI to suggest categories. Nothing else is sent.</div>
+      ${this.#busy ? `<div class="text-sm text-zinc-500 mt-3 flex items-center gap-2"><i data-lucide="loader-circle" class="animate-spin"></i> ${this.#busy}</div>` : ""}
+      ${this.#nav()}`;
+    }
+    #categories() {
+      const plan = this.#plan || [];
+      const block = (m, i) => `
+      <div class="setup-main py-2 ${m.on ? "" : "opacity-60"}">
+        <label class="flex items-center gap-2 font-medium text-sm">
+          <input type="checkbox" ${m.on ? "checked" : ""} onchange="window.__app.setupAction('main',${i})">
+          <i data-lucide="${Html.icon(m.icon)}" style="width:15px;height:15px;color:${Html.color(m.color)}"></i> ${Html.escape(m.name)}
+        </label>
+        ${m.on ? `<div class="flex flex-wrap gap-1.5 mt-2 ml-6">
+          ${m.subs.map((s, j) => `<button type="button" class="setup-chip sm ${s.on ? "on" : ""}" aria-pressed="${s.on}" onclick="window.__app.setupAction('sub',${i},${j})">${s.on ? "\u2713 " : ""}${s.ai ? "\u2728 " : ""}${Html.escape(s.name)}</button>`).join("")}
+          <span class="inline-flex items-center gap-1">
+            <input id="setupAdd${i}" class="input setup-add" style="width:8.5rem;padding:.25rem .5rem;font-size:.8rem" maxlength="40" placeholder="+ Add your own"
+                   onkeydown="if(event.key==='Enter'){window.__app.setupAction('addsub',${i},this.value)}">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="window.__app.setupAction('addsub',${i},document.getElementById('setupAdd${i}').value)" aria-label="Add">+</button>
+          </span>
+        </div>` : ""}
+      </div>`;
+      const spending = plan.map((m, i) => m.type === "expense" ? block(m, i) : "").join("");
+      const income = plan.map((m, i) => m.type === "income" ? block(m, i) : "").join("");
+      const ticked = plan.filter((m) => m.on).reduce((n, m) => n + m.subs.filter((s) => s.on).length, 0);
+      return `
+      <h2 class="text-xl font-semibold mb-1">Your categories</h2>
+      <p class="text-sm text-zinc-500 mb-2">Ticked from your answers. Untick what you don't need, or add your own. ${ticked} chosen.</p>
+      ${this.#note ? `<div class="text-xs text-amber-600 mb-2">${Html.escape(this.#note)}</div>` : ""}
+      <div class="divide-y divide-zinc-100 dark:divide-zinc-800 setup-list" style="max-height:52vh;overflow:auto">
+        ${spending}
+        <div class="pt-3 text-xs font-medium text-zinc-500">Money received</div>
+        ${income}
+        <div class="py-3 flex gap-2">
+          <input id="setupAddMain" class="input flex-1" maxlength="40" placeholder="+ A main category of your own (e.g. Car)"
+                 onkeydown="if(event.key==='Enter'){window.__app.setupAction('addmain',this.value)}">
+          <button type="button" class="btn btn-outline" onclick="window.__app.setupAction('addmain',document.getElementById('setupAddMain').value)">Add</button>
+        </div>
+      </div>
+      ${this.#nav()}`;
+    }
+    #calendar() {
+      const u = this.#store.getState().user || {};
+      const offset = u.hijriOffset ?? 0;
+      const yes = this.#useHijri === true, no = this.#useHijri === false;
+      const calibrate = yes ? `
+      <div class="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-3 mt-4 text-center">
+        <div class="text-xs text-zinc-500 mb-1">Today shows as</div>
+        <div class="font-semibold">${this.#hijri.format(/* @__PURE__ */ new Date(), { long: true })}</div>
+        <div class="flex items-center justify-center gap-3 mt-2">
+          <button class="btn btn-outline px-3" onclick="window.__app.adjustHijriOffset(-1)" ${offset <= -7 ? "disabled" : ""}>\u22121 day</button>
+          <span class="text-sm">${offset > 0 ? "+" : ""}${offset}</span>
+          <button class="btn btn-outline px-3" onclick="window.__app.adjustHijriOffset(1)" ${offset >= 7 ? "disabled" : ""}>+1 day</button>
+        </div>
+        <div class="text-[11px] text-zinc-400 mt-1">Adjust if your local moon sighting differs.</div>
+      </div>` : "";
+      const counts = this.#steps.includes("names") ? `${this.#accounts.length} account${this.#accounts.length === 1 ? "" : "s"}` : "";
+      return `
+      <h2 class="text-xl font-semibold mb-1">Do you use the Hijri calendar?</h2>
+      <p class="text-sm text-zinc-500 mb-4">Pocket can show Hijri dates and miqaats beside every date, and budget by Hijri month. It's an add-on you can install or remove any time in Settings \u2192 Add-ons.</p>
+      <div class="grid grid-cols-2 gap-2">
+        <button class="btn ${yes ? "btn-primary" : "btn-outline"} justify-center setup-hijri-yes" onclick="window.__app.setupAction('hijri',true)"><i data-lucide="moon-star"></i> Yes, install it</button>
+        <button class="btn ${no ? "btn-primary" : "btn-outline"} justify-center setup-hijri-no" onclick="window.__app.setupAction('hijri',false)">No thanks</button>
+      </div>
+      ${calibrate}
+      ${this.#nav({ next: this.#steps.includes("categories") ? "Set up my book" : "Done \u2014 open Pocket", action: "finish" }).replace('<i data-lucide="arrow-right"></i>', '<i data-lucide="check"></i>')}
+      ${counts ? `<div class="text-xs text-zinc-400 text-center mt-2">${counts} and your chosen categories will be added.</div>` : ""}`;
+    }
+    static #toggle(set, key) {
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
     }
   };
 
@@ -26032,7 +26622,7 @@ ${body}\r
     #dayLogsModal = null;
     // DayLogsModal
     #currencySetupModal = null;
-    // CurrencySetupModal
+    // BookSetupModal (first sign-in setup)
     #exportModal = null;
     // ExportModal
     #planBanner = null;
@@ -26233,7 +26823,19 @@ ${body}\r
         regularLogService: this.#regularLogs,
         vendorDues: this.#vendorDues
       });
-      this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
+      this.#currencySetupModal = new BookSetupModal({
+        store: this.#store,
+        hooks: {
+          clearSample: () => this.#clearSampleData(),
+          suggest: (prompt2) => this.#sync.aiGateway().generate({
+            kind: "setup",
+            book: this.#sync.currentUser?.id,
+            parts: [{ text: prompt2 }],
+            maxOutputTokens: 600
+          }),
+          finish: (plan) => this.#finishSetup(plan)
+        }
+      });
       this.#modal.register("transaction", this.#txModal);
       this.#modal.register("account", new AccountModal());
       this.#modal.register("category", new CategoryModal());
@@ -27267,9 +27869,20 @@ Leave empty to use your own name.`,
       });
     }
     toggleHijri() {
+      this.setHijriAddon(!this.#store.getState().user.showHijri);
+    }
+    /**
+     * Settings → Add-ons: install or remove the Hijri calendar. Removing only
+     * hides it: entries keep their Hijri dates and a Hijri-month budget keeps
+     * working, so installing it again brings everything back as it was.
+     * @param {boolean} on
+     */
+    setHijriAddon(on) {
       const u = this.#store.getState().user;
-      u.showHijri = !u.showHijri;
+      u.showHijri = !!on;
+      if (on && (!u.calendarMode || u.calendarMode === "gregorian")) u.calendarMode = "both";
       this.#store.persist();
+      this.#toast.show(on ? "Hijri calendar installed" : "Hijri calendar removed \u2014 install it again any time in Settings \u2192 Add-ons");
       this.#render();
       this.#keepSettingsOpen();
     }
@@ -30551,26 +31164,31 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       if (el) el.value = (qty * unit).toFixed(2);
     }
     /**
-     * Currency step done: save the selected currency, then move to the next
-     * onboarding step in place (no close/reopen flash).
+     * A control on the setup screens was used (BookSetupModal.act). Typing
+     * doesn't re-draw; the AI suggestions re-draw when they arrive.
      */
-    currencySetupNext() {
-      const sel = document.getElementById("setupCurrency");
-      if (sel) this.#store.getState().user.homeCurrency = sel.value;
-      this.#store.persist();
-      this.#currencySetupModal.advance();
+    setupAction(action, a, b) {
+      const r = this.#currencySetupModal.act(action, a, b);
+      if (r && typeof r.then === "function") {
+        r.then(() => this.#modal.refresh()).catch(() => this.#modal.refresh());
+      } else if (r !== false) {
+        this.#modal.refresh();
+      }
+    }
+    /** Re-draws the setup screens (while the AI is working). */
+    refreshSetup() {
       this.#modal.refresh();
     }
-    /**
-     * Sample-data step: keep the demo records, or remove them so the new user
-     * starts with an empty book. Removal is saved like any edit, so the cloud
-     * copy loses the sample rows too.
-     * @param {boolean} keep
-     */
-    chooseSampleData(keep) {
-      if (!keep) this.#clearSampleData();
-      this.#currencySetupModal.advance();
-      this.#modal.refresh();
+    /** "Set up my book": accounts, categories and the Hijri add-on (BookSetup). */
+    #finishSetup(plan) {
+      const today = DateService.todayIso();
+      const made = new BookSetup({ state: this.#store.getState(), fx: this.#fx, hijri: this.#hijri, today }).apply(plan);
+      this.#accounts.recompute();
+      this.#store.persist();
+      this.closeModal();
+      const parts = [made.accounts ? `${made.accounts} account${made.accounts === 1 ? "" : "s"}` : "", made.categories ? `${made.categories} categories` : ""].filter(Boolean);
+      this.#toast.show(parts.length ? `Your book is ready: ${parts.join(" and ")}` : "All set \u2014 welcome to Pocket!");
+      this.#render();
     }
     /** Settings → Data: remove whatever sample data is left. */
     removeSampleData() {
@@ -30587,15 +31205,6 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
       BookCleaner.removeSample(this.#store.getState());
       this.#accounts.recompute();
       this.#store.persist();
-    }
-    /**
-     * Step 2 done: close the onboarding modal and enter the app.
-     */
-    saveCurrencySetup() {
-      this.#store.persist();
-      this.closeModal();
-      this.#toast.show("All set \u2014 welcome to Pocket!");
-      this.#render();
     }
     // ──────────────────────────────────────────────────────────────────────────
     // Calendar view
@@ -32295,7 +32904,6 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
   }
   window.toggleTheme = () => window.__app.toggleTheme();
   window.adjustHijriOffset = (d) => window.__app.adjustHijriOffset(d);
-  window.currencySetupNext = () => window.__app.currencySetupNext();
   window.setHijriOffset = (v) => window.__app.setHijriOffset(v);
   window.setTheme = (m) => window.__app.setTheme(m);
   window.addCustomPaymentType = () => window.__app.addCustomPaymentType();
@@ -32305,7 +32913,6 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
   window.deleteRegularLog = (id, d) => window.__app.deleteRegularLog(id, d);
   window.prefillRegularLog = (s) => window.__app.prefillRegularLog(s);
   window.updateRegularLogTotal = () => window.__app.updateRegularLogTotal();
-  window.saveCurrencySetup = () => window.__app.saveCurrencySetup();
   function _boot() {
     let app;
     try {

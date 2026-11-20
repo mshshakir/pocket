@@ -26,6 +26,7 @@ export class SettingsModal {
     ['general', 'General', 'sliders-horizontal'],
     ['account', 'Account', 'user-round'],
     ['data',    'Data',    'database'],
+    ['addons',  'Add-ons', 'puzzle'],
     ['help',    'Help',    'life-buoy'],
   ];
 
@@ -54,7 +55,7 @@ export class SettingsModal {
               <i data-lucide="x"></i>
             </button>
           </div>
-          <div class="grid grid-cols-4 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
+          <div class="grid grid-cols-5 gap-1 mt-2 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 settings-tabs" role="tablist">
             ${SettingsModal.#TABS.map(([k, label, icon]) => `
               <button type="button" role="tab" data-settings-tab-btn="${k}" aria-selected="${k === tab}"
                       class="flex flex-col sm:flex-row items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-medium ${k === tab ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-zinc-500'}"
@@ -67,6 +68,7 @@ export class SettingsModal {
           ${panel('general', this.#general(u, state))}
           ${panel('account', this.#account(u, state, isSaaS, sbUser))}
           ${panel('data', this.#data(state))}
+          ${panel('addons', this.#addons(u))}
           ${panel('help', this.#help(sbUser))}
         </div>
 
@@ -129,8 +131,17 @@ export class SettingsModal {
               </select>
             </div>
           </div>
-        </div>
+        </div>`;
+  }
 
+  /**
+   * Add-ons: features a person installs only if they want them. The Hijri
+   * calendar is the first (owner, 20 Nov 2026). Removing one only hides it —
+   * nothing is deleted, and installing it again brings everything back.
+   */
+  #addons(u) {
+    return `
+        <p class="text-xs text-zinc-500 mb-3">Extras you can install or remove any time. Removing one only hides it; nothing is deleted.</p>
         ${this.#renderHijriSection(u)}`;
   }
 
@@ -457,9 +468,12 @@ export class SettingsModal {
    * @returns {string} HTML
    */
   #renderHijriSection(u) {
-    const toggleBtn = `
-      <button class="btn ${u.showHijri ? 'btn-primary' : 'btn-outline'}"
-              onclick="window.__app.toggleHijri()">${u.showHijri ? 'On' : 'Off'}</button>`;
+    const toggleBtn = u.showHijri
+      ? `<div class="flex flex-col items-end gap-1">
+           <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 addon-installed">Installed</span>
+           <button class="btn btn-ghost btn-sm text-zinc-500 addon-remove" onclick="window.__app.setHijriAddon(false)">Remove</button>
+         </div>`
+      : `<button class="btn btn-primary addon-install" onclick="window.__app.setHijriAddon(true)"><i data-lucide="download"></i> Install</button>`;
 
     const offset = u.hijriOffset ?? 0;
     const todayHijri = u.showHijri ? this.#hijri.format(new Date(), { long: true }) : '';
@@ -533,7 +547,7 @@ export class SettingsModal {
           </div>
           <div class="flex-1">
             <div class="font-medium text-sm">Hijri calendar</div>
-            <div class="text-xs text-zinc-500">Show Hijri dates and miqaats from the Mumineen Calendar</div>
+            <div class="text-xs text-zinc-500">Hijri dates and miqaats beside every date (Mumineen Calendar), a Hijri calendar in Regulars, and budgets by Hijri month.</div>
           </div>
           ${toggleBtn}
         </div>

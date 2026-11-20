@@ -123,7 +123,8 @@ import { HabitService }         from './domain/services/HabitService.js';
 import { SuggestionService }    from './domain/services/SuggestionService.js';
 import { HabitModal }           from './ui/modals/HabitModal.js';
 import { BillService }          from './domain/services/BillService.js';
-import { CurrencySetupModal }   from './ui/modals/CurrencySetupModal.js';
+import { BookSetupModal }       from './ui/modals/BookSetupModal.js';
+import { BookSetup }            from './domain/services/BookSetup.js';
 import { ExportModal }          from './ui/modals/ExportModal.js';
 import { PlanBanner }           from './ui/components/PlanBanner.js';
 import { AppNotices }           from './ui/components/AppNotices.js';
@@ -214,7 +215,7 @@ export class Application {
   #debtModal         = null;  // DebtModal — kept for payment-mode routing
   #reconcileModal    = null;  // ReconcileModal — kept for ledger-sum access
   #dayLogsModal      = null;  // DayLogsModal
-  #currencySetupModal= null;  // CurrencySetupModal
+  #currencySetupModal= null;  // BookSetupModal (first sign-in setup)
   #exportModal       = null;  // ExportModal
   #planBanner        = null;  // PlanBanner
   /** @type {HabitNudge|null} catch-up / programme / second-half box */
@@ -450,7 +451,16 @@ export class Application {
       regularLogService:  this.#regularLogs,
       vendorDues:         this.#vendorDues,
     });
-    this.#currencySetupModal = new CurrencySetupModal({ store: this.#store });
+    this.#currencySetupModal = new BookSetupModal({
+      store: this.#store,
+      hooks: {
+        clearSample: () => this.#clearSampleData(),
+        suggest: (prompt) => this.#sync.aiGateway().generate({
+          kind: 'setup', book: this.#sync.currentUser?.id, parts: [{ text: prompt }], maxOutputTokens: 600,
+        }),
+        finish: (plan) => this.#finishSetup(plan),
+      },
+    });
     this.#modal.register('transaction',  this.#txModal);
     this.#modal.register('account',      new AccountModal());
     this.#modal.register('category',     new CategoryModal());
@@ -1483,9 +1493,21 @@ export class Application {
   }
 
   toggleHijri() {
+    this.setHijriAddon(!this.#store.getState().user.showHijri);
+  }
+
+  /**
+   * Settings → Add-ons: install or remove the Hijri calendar. Removing only
+   * hides it: entries keep their Hijri dates and a Hijri-month budget keeps
+   * working, so installing it again brings everything back as it was.
+   * @param {boolean} on
+   */
+  setHijriAddon(on) {
     const u = this.#store.getState().user;
-    u.showHijri = !u.showHijri;
+    u.showHijri = !!on;
+    if (on && (!u.calendarMode || u.calendarMode === 'gregorian')) u.calendarMode = 'both';
     this.#store.persist();
+    this.#toast.show(on ? 'Hijri calendar installed' : 'Hijri calendar removed — install it again any time in Settings → Add-ons');
     this.#render(); this.#keepSettingsOpen();
   }
 
@@ -4944,27 +4966,31 @@ export class Application {
   }
 
   /**
-   * Currency step done: save the selected currency, then move to the next
-   * onboarding step in place (no close/reopen flash).
+   * A control on the setup screens was used (BookSetupModal.act). Typing
+   * doesn't re-draw; the AI suggestions re-draw when they arrive.
    */
-  currencySetupNext() {
-    const sel = document.getElementById('setupCurrency');
-    if (sel) this.#store.getState().user.homeCurrency = sel.value;
-    this.#store.persist();
-    this.#currencySetupModal.advance();
-    this.#modal.refresh();
+  setupAction(action, a, b) {
+    const r = this.#currencySetupModal.act(action, a, b);
+    if (r && typeof r.then === 'function') {
+      r.then(() => this.#modal.refresh()).catch(() => this.#modal.refresh());
+    } else if (r !== false) {
+      this.#modal.refresh();
+    }
   }
 
-  /**
-   * Sample-data step: keep the demo records, or remove them so the new user
-   * starts with an empty book. Removal is saved like any edit, so the cloud
-   * copy loses the sample rows too.
-   * @param {boolean} keep
-   */
-  chooseSampleData(keep) {
-    if (!keep) this.#clearSampleData();
-    this.#currencySetupModal.advance();
-    this.#modal.refresh();
+  /** Re-draws the setup screens (while the AI is working). */
+  refreshSetup() { this.#modal.refresh(); }
+
+  /** "Set up my book": accounts, categories and the Hijri add-on (BookSetup). */
+  #finishSetup(plan) {
+    const today = DateService.todayIso();
+    const made = new BookSetup({ state: this.#store.getState(), fx: this.#fx, hijri: this.#hijri, today }).apply(plan);
+    this.#accounts.recompute();
+    this.#store.persist();
+    this.closeModal();
+    const parts = [made.accounts ? `${made.accounts} account${made.accounts === 1 ? '' : 's'}` : '', made.categories ? `${made.categories} categories` : ''].filter(Boolean);
+    this.#toast.show(parts.length ? `Your book is ready: ${parts.join(' and ')}` : 'All set — welcome to Pocket!');
+    this.#render();
   }
 
   /** Settings → Data: remove whatever sample data is left. */
@@ -4983,16 +5009,6 @@ export class Application {
     BookCleaner.removeSample(this.#store.getState());
     this.#accounts.recompute();
     this.#store.persist();
-  }
-
-  /**
-   * Step 2 done: close the onboarding modal and enter the app.
-   */
-  saveCurrencySetup() {
-    this.#store.persist();
-    this.closeModal();
-    this.#toast.show('All set — welcome to Pocket!');
-    this.#render();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -6696,7 +6712,6 @@ function _showError(err) {
 // ── Window globals for HTML onclick= wrappers ──────────────────────────────
 window.toggleTheme           = ()      => window.__app.toggleTheme();
 window.adjustHijriOffset     = (d)     => window.__app.adjustHijriOffset(d);
-window.currencySetupNext     = ()      => window.__app.currencySetupNext();
 window.setHijriOffset        = (v)     => window.__app.setHijriOffset(v);
 window.setTheme              = (m)     => window.__app.setTheme(m);
 window.addCustomPaymentType  = ()     => window.__app.addCustomPaymentType();
@@ -6706,7 +6721,6 @@ window.submitRegularLog      = (e, d)  => window.__app.submitRegularLog(e, d);
 window.deleteRegularLog      = (id, d) => window.__app.deleteRegularLog(id, d);
 window.prefillRegularLog     = (s)     => window.__app.prefillRegularLog(s);
 window.updateRegularLogTotal = ()      => window.__app.updateRegularLogTotal();
-window.saveCurrencySetup     = ()      => window.__app.saveCurrencySetup();
 
 function _boot() {
   let app;

@@ -48,7 +48,9 @@ export class AiHandler {
 
     if (!this.#gemini) return this.#fail(503, 'not_set_up', 'AI scanning isn\'t set up yet. Please try again later.');
 
-    const charge = await this.#credits.spend(userId, request.book, request.ref, request.kind, request.seconds);
+    const charge = request.kind === 'setup'
+      ? await this.#credits.text(userId, request.ref)
+      : await this.#credits.spend(userId, request.book, request.ref, request.kind, request.seconds);
     if (!charge.ok) {
       if (charge.reason === 'no_access') return this.#fail(403, 'no_access', 'You can\'t add entries to that shared space.');
       const need = charge.cost ?? 1, have = charge.remaining ?? 0;
@@ -61,7 +63,7 @@ export class AiHandler {
       const text = await this.#gemini.generate(request);
       return this.#json(200, { text, chargedTo: charge.chargedTo, cost: charge.cost ?? null, remaining: charge.remaining ?? null });
     } catch (e) {
-      await this.#credits.refund(userId, request.ref);
+      if (!charge.free) await this.#credits.refund(userId, request.ref);
       const message = e instanceof GeminiError ? e.message : 'The AI service failed. Please try again.';
       if (!(e instanceof GeminiError)) console.error('[ai]', e);
       return this.#fail(502, 'ai_failed', `${message} You weren't charged.`);

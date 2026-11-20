@@ -73,7 +73,10 @@ export class BudgetModal {
           <label class="text-xs text-zinc-500 mb-1 block">Period</label>
           <div class="grid grid-cols-3 gap-2" id="budgetPeriods"
                onchange="const k=this.querySelector('input[name=period]:checked')?.value; document.getElementById('budgetRange').classList.toggle('hidden', k!=='range'); document.getElementById('budgetRollover').classList.toggle('hidden', k==='range');">
-            ${BudgetModal.#PERIODS.map(([value, icon, label]) => `
+            ${BudgetModal.#PERIODS
+              // Hijri month only with the Hijri add-on installed (or for a budget that already uses it).
+              .filter(([value]) => value !== 'hijri' || state.user?.showHijri || kind === 'hijri')
+              .map(([value, icon, label]) => `
             <label class="cursor-pointer">
               <input type="radio" name="period" value="${value}" ${kind === value ? 'checked' : ''} class="peer sr-only">
               <div class="btn btn-outline justify-center peer-checked:bg-zinc-900 peer-checked:text-white dark:peer-checked:bg-white dark:peer-checked:text-zinc-900 peer-checked:border-transparent w-full text-sm">

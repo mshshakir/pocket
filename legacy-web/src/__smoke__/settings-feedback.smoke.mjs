@@ -51,7 +51,7 @@ const shown = (key) => w.document.querySelector(`[data-settings-tab="${key}"]`)?
   app.openModal('settings');
   await wait(10);
   const tabs = [...w.document.querySelectorAll('[data-settings-tab-btn]')].map((b) => b.textContent.trim());
-  ok('S1 four tabs: General · Account · Data · Help', tabs.join(' · ') === 'General · Account · Data · Help', tabs.join(' · '));
+  ok('S1 five tabs: General · Account · Data · Add-ons · Help', tabs.join(' · ') === 'General · Account · Data · Add-ons · Help', tabs.join(' · '));
   ok('S1 General shows; Account, Data, Help are hidden', shown('general') && !shown('account') && !shown('data') && !shown('help'));
   app.setSettingsTab('data');
   ok('S2 Data tab shows Export JSON and Import CSV', shown('data') && !shown('general') && /Export JSON/.test(w.document.querySelector('[data-settings-tab="data"]').textContent) && /Import CSV/.test(w.document.querySelector('[data-settings-tab="data"]').textContent));
