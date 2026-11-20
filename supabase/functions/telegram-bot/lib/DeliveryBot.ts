@@ -91,7 +91,11 @@ export class DeliveryBot {
     const tap = CheckinMessage.parse(cb.data ?? '');
     const checkin = tap ? await this.#deliveries.checkin(tap.checkinId) : null;
     if (!tap || !checkin) return void await this.#telegram.answer(cb.id, 'This check-in has expired.');
-    if (checkin.answered_by) return void await this.#telegram.answer(cb.id, `Already confirmed by ${checkin.answered_by}`);
+    if (checkin.answered_by) {
+      // A copy can still show buttons if two taps crossed; tapping it puts it right.
+      await this.#telegram.answer(cb.id, `Already confirmed by ${checkin.answered_by}`);
+      return void await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day);
+    }
     if (!actor.owners.includes(checkin.owner_id)) return void await this.#planNotice(cb, actor);
     const items = await this.#checkinItems(checkin.owner_id, checkin.items);
     if (tap.index >= 0 && tap.step === 0) return void await this.#telegram.answer(cb.id, 'Use − or + to change it');
@@ -108,7 +112,7 @@ export class DeliveryBot {
         await this.#deliveries.change(actor.link.user_id, checkin.owner_id, it.id, { confirm: checkin.day });
       }
       await this.#telegram.answer(cb.id, 'Thanks — saved');
-      return void await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day, name);
+      return void await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day);
     }
     const item = items[tap.index];
     if (!item) return void await this.#telegram.answer(cb.id, 'That item is gone');
@@ -116,15 +120,26 @@ export class DeliveryBot {
     const qty = Math.max(0, day.qtyOn(checkin.day) + tap.step);
     await this.#setDay(actor, item, checkin.day, qty);
     await this.#telegram.answer(cb.id, `${item.name}: ${qty ? day.qtyLabel(qty) : 'none'}`);
-    await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day, null);
+    await this.#redraw(checkin.id, checkin.owner_id, checkin.items, checkin.day);
   }
 
-  /** Updates every copy of a check-in (private chats and the group). */
-  async #redraw(checkinId: number, ownerId: string, itemIds: string[], day: string, answered: string | null): Promise<void> {
-    const items = await this.#checkinItems(ownerId, itemIds);
-    const view = CheckinMessage.render(checkinId, items, day, answered);
-    for (const m of await this.#deliveries.messages(checkinId)) {
-      await this.#telegram.edit(m.chat_id, m.message_id, view.text, view.keyboard, true);
+  /**
+   * Updates every copy of a check-in (private chats and the group) from what
+   * is saved NOW — never from what this tap saw. Two quick taps (− then ✓)
+   * are handled at the same time; drawing from a stale picture let the − tap's
+   * buttons land after ✓ had confirmed it. If the check-in was confirmed while
+   * this was drawing, it draws once more so the confirmed view is last.
+   */
+  async #redraw(checkinId: number, ownerId: string, itemIds: string[], day: string): Promise<void> {
+    for (let pass = 0; pass < 2; pass++) {
+      const before = (await this.#deliveries.checkin(checkinId))?.answered_by ?? null;
+      const items = await this.#checkinItems(ownerId, itemIds);
+      const view = CheckinMessage.render(checkinId, items, day, before);
+      for (const m of await this.#deliveries.messages(checkinId)) {
+        await this.#telegram.edit(m.chat_id, m.message_id, view.text, view.keyboard, true);
+      }
+      const after = (await this.#deliveries.checkin(checkinId))?.answered_by ?? null;
+      if (after === before) return;
     }
   }
 
@@ -181,7 +196,7 @@ export class DeliveryBot {
     }
     await this.#telegram.reply(chatId, `✓ ${item.name} ${offset ? 'yesterday' : 'today'}: ${qty ? day.qtyLabel(qty) : 'none'}`, messageId);
     const today = await this.#deliveries.latestCheckin(item.ownerId, iso);
-    if (today && today.items.includes(item.id) && !today.answered_by) await this.#redraw(today.id, item.ownerId, today.items, iso, null);
+    if (today && today.items.includes(item.id) && !today.answered_by) await this.#redraw(today.id, item.ownerId, today.items, iso);
     return true;
   }
 

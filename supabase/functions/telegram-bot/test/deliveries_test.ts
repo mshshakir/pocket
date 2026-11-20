@@ -223,6 +223,28 @@ const rates = { current: () => Promise.resolve({ INR: 1 }) };
 }
 
 {
+  // T3c: − then ✓ a moment later. Both are handled at once; the − tap's redraw
+  // must not leave buttons on a check-in that ✓ confirmed meanwhile.
+  const dl = new FakeDeliveries(), st = new FakeStore(), tg = new FakeTelegram();
+  const clock = clockAt('2026-11-16', '09:05');
+  await new CheckinRunner(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clock).run();
+  const bot = new DeliveryBot(st as unknown as PocketStore, dl as unknown as DeliveryStore, tg as unknown as TelegramClient, clock, rates as never);
+  const plainEdit = tg.edit.bind(tg);
+  let confirmedMidway = false;
+  tg.edit = (chat: number, id: number, text: string, keyboard?: unknown) => {
+    if (!confirmedMidway) { confirmedMidway = true; dl.checkins[0].answered_by = 'Asha'; } // ✓ lands while − is drawing
+    return plainEdit(chat, id, text, keyboard);
+  };
+  await bot.handleCallback({ id: 'cb', from: { id: HER }, data: 'dv:1:0:-', message: { message_id: 1, chat: { id: HER, type: 'private' } } });
+  const last = tg.edits.slice(-2);
+  ok('T3c the confirmed view is drawn last, without buttons', last.length === 2 && last.every((e) => /Confirmed by Asha/.test(e.text) && (e.keyboard as unknown[]).length === 0), JSON.stringify(last.map((e) => e.text.slice(-30))));
+  tg.edit = plainEdit;
+  const n = tg.edits.length;
+  await bot.handleCallback({ id: 'cb', from: { id: ME }, data: 'dv:1:0:+', message: { message_id: 1, chat: { id: ME, type: 'private' } } });
+  ok('T3c a tap on a copy that still shows buttons puts it right', tg.edits.length > n && tg.edits.slice(n).every((e) => (e.keyboard as unknown[]).length === 0) && /Already confirmed/.test(tg.answers.at(-1) ?? ''));
+}
+
+{
   // T3b: the owner's plan ends after the check-in went out
   const dl = new FakeDeliveries(), st = new FakeStore(), tg = new FakeTelegram();
   const clock = clockAt('2026-11-16', '09:05');
