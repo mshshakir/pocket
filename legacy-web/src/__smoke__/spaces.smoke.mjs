@@ -25,6 +25,7 @@
  *        shares arrive — it must not be dropped while they are still loading.
  *   SP26 Someone else signing in on the same device does not inherit it, and
  *        is not told anyone "removed your access".
+ *   SP27 Entries in a shared space show the owner's category names.
  *   SP11 A hostile snapshot renders inert in the switcher too (audit H1).
  *   SP12 A space sharing SEVERAL accounts offers all the writable ones in the
  *        account dropdown — arriving via the switcher picks one arbitrarily, so
@@ -202,6 +203,7 @@ console.log('\nspaces suite');
      JSON.stringify(space.categories.map((c) => c.id)));
   ok('SP3 my own categories are NOT offered', !space.categories.some((c) => c.id === 'mycat'));
 
+
   const proj = space.project();
   ok('SP3 the projection carries the owner\'s three collections',
      proj.accounts[0].id === 'own1' && proj.categories[0].id === 'owncat'
@@ -323,6 +325,24 @@ console.log('\nspaces suite');
   const toastText = w.document.getElementById('toast')?.textContent || '';
   ok('SP26 …and nobody is told access was removed', !toastText.includes('removed your access'),
      JSON.stringify(toastText));
+  w.close();
+}
+
+// ═══ SP27 — rows in a shared space name the owner's categories ═════════════
+// The row renderer read the local book, so every row there showed "—".
+{
+  const snap = snapshot();
+  snap.transactions = [{ ...snap.transactions[0], date: THIS_MONTH(1) }];
+  const w = boot(memberState(), { shares: [{ owner_id: 'abbas1', snapshot: snap }] });
+  await wait(120);
+  await signIn(w);
+  const app = w.__app;
+  app.switchSpace('abbas1');
+  app.navigate('transactions');
+  await wait(80);
+  const list = w.document.getElementById('viewContent')?.innerHTML || '';
+  ok('SP27 a shared space\'s entries show the owner\'s category', list.includes('Abbas Groceries') && !list.includes('My Food'),
+     list.includes('Abbas Groceries') ? '' : 'no category name in the list');
   w.close();
 }
 

@@ -13897,8 +13897,19 @@ This replaces your current grouping.`
       return this.#renderRow(tx, ctx);
     }
     // ── Private helpers ──────────────────────────────────────────────────
+    /**
+     * The book being looked at: the active space's projection (the owner's
+     * accounts, categories and entries in a shared space), or the real state at
+     * home. Rows must read names from here — reading the local book made every
+     * row in a shared space show "—" for its category.
+     */
+    #scoped() {
+      const raw = this.#store.getState();
+      const space = typeof window !== "undefined" ? window.__app?.spaces?.active?.() : null;
+      return space ? space.project() : raw;
+    }
     #buildCtx(opts) {
-      const state = this.#store.getState();
+      const state = this.#scoped();
       const account = opts.account || null;
       const isShared = opts.isShared || false;
       const shareIndex = isShared ? opts.shareIndex ?? null : null;
@@ -14118,16 +14129,17 @@ This replaces your current grouping.`
     }
     /** One service per burst of rows (a list render), rebuilt when the book changes. */
     #reimb() {
-      const txs = this.#store.getState().transactions || [];
+      const book = this.#scoped();
+      const txs = book.transactions || [];
       const now = Date.now();
       const c = this.#reimbCache;
       if (!c || c.txs !== txs || c.n !== txs.length || now - c.at > 250) {
-        this.#reimbCache = { txs, n: txs.length, at: now, svc: new ReimbursementService(this.#store.getState()) };
+        this.#reimbCache = { txs, n: txs.length, at: now, svc: new ReimbursementService(book) };
       }
       return this.#reimbCache.svc;
     }
     #getAccount(id) {
-      return this.#store.getState().accounts.find((a) => a.id === id) || null;
+      return (this.#scoped().accounts || []).find((a) => a.id === id) || null;
     }
     #esc(s) {
       return Html.escape(s);
