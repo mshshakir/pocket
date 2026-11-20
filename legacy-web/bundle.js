@@ -23375,7 +23375,7 @@ THEY WROTE: ${notes}`;
           <input type="checkbox" ${m.on ? "checked" : ""} onchange="window.__app.setupAction('main',${i})">
           <i data-lucide="${Html.icon(m.icon)}" style="width:15px;height:15px;color:${Html.color(m.color)}"></i> ${Html.escape(m.name)}
         </label>
-        ${m.on ? `<div class="flex flex-wrap gap-1.5 mt-2 ml-6">
+        ${m.on ? `<div class="flex flex-wrap items-center gap-1.5 mt-2 ml-6">
           ${m.subs.map((s, j) => `<button type="button" class="setup-chip sm ${s.on ? "on" : ""}" aria-pressed="${s.on}" onclick="window.__app.setupAction('sub',${i},${j})">${s.on ? "\u2713 " : ""}${s.ai ? "\u2728 " : ""}${Html.escape(s.name)}</button>`).join("")}
           <span class="inline-flex items-center gap-1">
             <input id="setupAdd${i}" class="input setup-add" style="width:8.5rem;padding:.25rem .5rem;font-size:.8rem" maxlength="40" placeholder="+ Add your own"
