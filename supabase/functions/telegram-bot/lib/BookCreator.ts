@@ -35,7 +35,7 @@ export class BookCreator {
     { id: 'bank', label: 'Bank', icon: 'landmark', color: '#3b82f6', words: ['bank', 'current', 'salary'] },
     { id: 'cash', label: 'Cash', icon: 'wallet', color: '#10b981', words: ['cash', 'wallet', 'purse'] },
     { id: 'card', label: 'Credit card', icon: 'credit-card', color: '#ef4444', words: ['card', 'credit', 'creditcard'] },
-    { id: 'savings', label: 'Savings', icon: 'vault', color: '#8b5cf6', words: ['savings', 'saving', 'fd', 'deposit'] },
+    { id: 'savings', label: 'Savings', icon: 'vault', color: '#8b5cf6', words: ['savings', 'saving'] },
     { id: 'invest', label: 'Investment', icon: 'trending-up', color: '#f59e0b', words: ['investment', 'invest', 'demat', 'gold'] },
   ];
 

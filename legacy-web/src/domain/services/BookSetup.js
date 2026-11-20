@@ -23,7 +23,7 @@ export class BookSetup {
     { key: 'card',    type: 'card',    label: 'Credit cards',  one: 'Credit card', icon: 'credit-card', color: '#ef4444', hint: 'e.g. Amex' },
     { key: 'cash',    type: 'cash',    label: 'Cash',          one: 'Cash',        icon: 'wallet',      color: '#10b981', hint: 'e.g. Cash' },
     { key: 'wallet',  type: 'cash',    label: 'Wallets / UPI', one: 'Wallet',      icon: 'smartphone',  color: '#14b8a6', hint: 'e.g. Paytm' },
-    { key: 'savings', type: 'savings', label: 'Savings / FD',  one: 'Savings',     icon: 'vault',       color: '#8b5cf6', hint: 'e.g. FD' },
+    { key: 'savings', type: 'savings', label: 'Savings',       one: 'Savings',     icon: 'vault',       color: '#8b5cf6', hint: 'e.g. Emergency savings' },
   ]);
 
   #state;
