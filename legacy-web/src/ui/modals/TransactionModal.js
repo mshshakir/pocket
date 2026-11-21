@@ -252,7 +252,7 @@ export class TransactionModal {
             payee:              '',
             note:               '',
             date:               DateService.todayIso(),
-            paymentType:        window.__app?.paymentTypeService?.defaultType?.() || 'card',
+            paymentType:        '',   // set from the account when saved (PaymentTypeService.forAccount)
             transferToAccountId:'',
             // "Add → a bill" opens a new entry already set to repeat (and to ask, for changing amounts).
             ...(opts.preset || {}),
@@ -353,28 +353,9 @@ export class TransactionModal {
       ? `${hijriLabel}${miqaat ? ` · <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ''}`
       : '';
 
-    // Pre-compute payment type options to avoid triple-nested template literals
-    // which cause a parse error in some V8/Node versions (Bug #Bug).
-    const current      = data.paymentType
-      || window.__app?.paymentTypeService?.defaultType?.()
-      || 'card';
-    const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
-    // A transaction may carry a method that is no longer offered — imported from
-    // CSV, or deleted since. Keep it in the list so simply opening the record
-    // doesn't silently re-assign it to something else.
-    const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
-    // Mobile-style tappable chips (replaces the native <select>). A hidden input
-    // named "paymentType" carries the value into FormData; captureForm() reads it
-    // so a selection survives modal re-renders. Add/Manage reuse the sheet flow.
-    const payChipCls = (on) => 'px-3 py-1.5 rounded-full border text-sm ' + (on
-      ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900'
-      : 'border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800');
-    const paymentChips = paymentTypes.map((p) => {
-      const label = p.charAt(0).toUpperCase() + p.slice(1);
-      return `<button type="button" data-pay-chip="${this.#esc(p)}"`
-        + ` onclick="window.__app.pickPaymentType('${Html.js(p)}')"`
-        + ` class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
-    }).join('');
+    // Payment type is no longer asked (owner, 20 Nov 2026): a new entry takes
+    // it from its account when saved; an edited one keeps what it had.
+    const current = data.paymentType || '';
 
     const signedIn  = !!window.__app?.getSbUser?.();
     const isTransfer = type === 'transfer';
@@ -460,17 +441,7 @@ export class TransactionModal {
           <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
         </div>
 
-        <div class="mb-3">
-          <span class="field-label">Payment</span>
-          <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
-          <div class="chip-scroll">
-            ${paymentChips}
-            <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
-              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">＋ Add</button>
-            <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
-              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">⚙ Manage</button>
-          </div>
-        </div>
+        <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
 
         ${type === 'expense' && !isSharedMode && !sharedBook ? this.#reimbSection(data, state, editing) : ''}
         ${editing && ReimbursementService.isPayment(editing) ? this.#paybackNote(editing, state) : ''}

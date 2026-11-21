@@ -109,13 +109,6 @@ export class SettingsModal {
               </select>
             </div>
             <div>
-              <label class="text-xs text-zinc-500" title="Pre-selected on the payment chips">Default payment</label>
-              <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
-                ${this.#paymentTypes().map((p) =>
-                  `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? 'selected' : ''}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join('')}
-              </select>
-            </div>
-            <div>
               <label class="text-xs text-zinc-500">Date format</label>
               <select class="select" onchange="window.__app.setDateFormat(this.value)">
                 <option value="auto"       ${u.dateFormat === 'auto'       ? 'selected' : ''}>Auto</option>

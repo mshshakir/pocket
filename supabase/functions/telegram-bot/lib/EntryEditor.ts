@@ -4,7 +4,7 @@
  * ✏️ Edit turns the confirmation's buttons into a menu:
  *
  *   Amount · Account · Category        (a transfer: Amount · From · To)
- *   Date · Note · Payment type          (a transfer: Date · Note)
+ *   Date · Note                         (a transfer: Date · Note)
  *   🗑 Delete · ✓ Done
  *
  * Account, category, payment type and date are picked with buttons right in
@@ -372,7 +372,7 @@ export class EntryEditor {
     const b = (text: string, a: string) => ({ text, callback_data: `ed:${a}:${seed}:${owner}` });
     return transfer
       ? [[b('Amount', 'a'), b('From', 'A'), b('To', 'T')], [b('Date', 'd'), b('Note', 'n')], [b('🗑 Delete', 'x'), b('✓ Done', 'o')]]
-      : [[b('Amount', 'a'), b('Account', 'A'), b('Category', 'c')], [b('Date', 'd'), b('Note', 'n'), b('Payment', 'p')], [b('🗑 Delete', 'x'), b('✓ Done', 'o')]];
+      : [[b('Amount', 'a'), b('Account', 'A'), b('Category', 'c')], [b('Date', 'd'), b('Note', 'n')], [b('🗑 Delete', 'x'), b('✓ Done', 'o')]];
   }
 
   static #pairs<T>(items: T[]): T[][] {

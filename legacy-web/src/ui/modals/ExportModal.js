@@ -176,12 +176,6 @@ export class ExportModal {
             <span class="field-label">Types</span>
             <div class="chip-scroll">${ExportFilter.TYPES.map(([k, l]) => this.#chip(l, f.types.includes(k), `window.__app.exportToggle('filter','types','${k}')`)).join('')}</div>
           </div>
-          <div>
-            <span class="field-label">Payment</span>
-            <div class="chip-scroll">${payments.length
-              ? payments.map((p) => this.#chip(p[0].toUpperCase() + p.slice(1), f.paymentTypes.includes(p), `window.__app.exportToggle('filter','paymentTypes','${Html.js(p)}')`)).join('')
-              : '<span class="text-xs text-zinc-400">None recorded</span>'}</div>
-          </div>
           <div class="sm:col-span-2">
             <label class="field-label" for="expSearch">Search payee, note, category or account</label>
             <input id="expSearch" class="input" value="${this.#esc(f.search)}" placeholder="e.g. taxi"

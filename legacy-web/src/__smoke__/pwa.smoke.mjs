@@ -159,7 +159,7 @@ function boot() {
   w.dispatchEvent(new w.Event('appinstalled'));
   await wait(10);
   ok('A1 once installed the card and the top-bar icon are gone', !card() && !w.document.querySelector('.status-icon-install'));
-  ok('A1 the General tab keeps its six settings', w.document.querySelectorAll('[data-settings-tab="general"] .grid.grid-cols-2 select').length === 6);
+  ok('A1 the General tab keeps its five settings', w.document.querySelectorAll('[data-settings-tab="general"] .grid.grid-cols-2 select').length === 5);
   app.closeModal();
 
   const note = () => w.document.querySelector('.app-notice-offline');

@@ -8803,6 +8803,17 @@ RULES:
       if (preferred && offered.includes(preferred)) return preferred;
       return offered[0] || "card";
     }
+    /**
+     * How an entry from this account was paid. Payment type is no longer asked
+     * anywhere (owner, 20 Nov 2026); it follows the account: cash → cash,
+     * credit card → card, anything else → online.
+     * @param {{type?: string}|null|undefined} account
+     * @returns {string}
+     */
+    static forAccount(account) {
+      const t = String(account?.type || "").toLowerCase();
+      return t === "cash" ? "cash" : t === "card" ? "card" : "online";
+    }
     /** @returns {string[]} the unmodified built-in list */
     static get baseTypes() {
       return [...BASE_TYPES];
@@ -14643,10 +14654,6 @@ This replaces your current grouping.`
           ${this.#multiChips("types", typeOpts, f.types, "\uFF0B Add type\u2026")}
         </div>
         <div>
-          <label class="text-xs font-medium text-zinc-500 mb-1 block">Payment method <span class="font-normal opacity-60">(multi)</span></label>
-          ${this.#multiChips("paymentTypes", paymentOpts, f.paymentTypes, "\uFF0B Add method\u2026")}
-        </div>
-        <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Reimbursements</label>
           <select class="select" onchange="window.__app.txFilterSet('reimb',this.value)">
             <option value="">Any entry</option>
@@ -15269,8 +15276,7 @@ This replaces your current grouping.`
         type: "expense",
         accountId: a.id,
         currency: a.currency,
-        date: DateService.todayIso(),
-        paymentType: window.__app?.paymentTypeService?.defaultType?.() || "card"
+        date: DateService.todayIso()
       }).replace(/'/g, "&#39;");
       const newTxBtn = "";
       const permLabel = this.#accessLabel(perm);
@@ -18519,7 +18525,6 @@ This replaces your current grouping.`
   };
 
   // src/ui/modals/TransactionModal.js
-  var DEFAULT_PAYMENT_TYPES = ["card", "cash", "bank-transfer", "cheque", "crypto", "other"];
   var TransactionModal = class _TransactionModal {
     /** @type {Store} */
     #store;
@@ -18703,7 +18708,8 @@ This replaces your current grouping.`
         payee: "",
         note: "",
         date: DateService.todayIso(),
-        paymentType: window.__app?.paymentTypeService?.defaultType?.() || "card",
+        paymentType: "",
+        // set from the account when saved (PaymentTypeService.forAccount)
         transferToAccountId: "",
         // "Add → a bill" opens a new entry already set to repeat (and to ask, for changing amounts).
         ...opts.preset || {}
@@ -18744,14 +18750,7 @@ This replaces your current grouping.`
       const miqaat = this.#hijri.topMiqaat(this.#hijri.miqaatsForGregorian(data.date));
       const hijriLabel = this.#hijri.format(data.date, { long: true });
       const hijriPreview = state.user?.showHijri ? `${hijriLabel}${miqaat ? ` \xB7 <span class="text-amber-600">${this.#esc(miqaat.t)}</span>` : ""}` : "";
-      const current = data.paymentType || window.__app?.paymentTypeService?.defaultType?.() || "card";
-      const offeredTypes = window.__app?.paymentTypeService?.allTypes() || DEFAULT_PAYMENT_TYPES;
-      const paymentTypes = offeredTypes.includes(current) ? offeredTypes : [current, ...offeredTypes];
-      const payChipCls = (on) => "px-3 py-1.5 rounded-full border text-sm " + (on ? "bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800");
-      const paymentChips = paymentTypes.map((p) => {
-        const label = p.charAt(0).toUpperCase() + p.slice(1);
-        return `<button type="button" data-pay-chip="${this.#esc(p)}" onclick="window.__app.pickPaymentType('${Html.js(p)}')" class="${payChipCls(current === p)}">${this.#esc(label)}</button>`;
-      }).join("");
+      const current = data.paymentType || "";
       const signedIn = !!window.__app?.getSbUser?.();
       const isTransfer = type === "transfer";
       const isBill = !isTransfer && !!data.recurring && !data.recurringSourceId;
@@ -18832,17 +18831,7 @@ This replaces your current grouping.`
           <div id="hijriDatePreview" class="text-xs text-zinc-500 mt-1">${hijriPreview}</div>
         </div>
 
-        <div class="mb-3">
-          <span class="field-label">Payment</span>
-          <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
-          <div class="chip-scroll">
-            ${paymentChips}
-            <button type="button" onclick="window.__app.pickPaymentType('__add_payment__')"
-              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\uFF0B Add</button>
-            <button type="button" onclick="window.__app.pickPaymentType('__manage_payment__')"
-              class="px-3 py-1.5 rounded-full border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500">\u2699 Manage</button>
-          </div>
-        </div>
+        <input type="hidden" name="paymentType" id="paymentTypeInput" value="${this.#esc(current)}">
 
         ${type === "expense" && !isSharedMode && !sharedBook ? this.#reimbSection(data, state, editing) : ""}
         ${editing && ReimbursementService.isPayment(editing) ? this.#paybackNote(editing, state) : ""}
@@ -20731,12 +20720,6 @@ This replaces your current grouping.`
               <select class="select" onchange="window.__app.setDefaultAccount(this.value)">
                 <option value="" ${!u.defaultAccountId ? "selected" : ""}>First in the list</option>
                 ${state.accounts.filter((a) => !a.archived).map((a) => `<option value="${this.#escAttr(a.id)}" ${u.defaultAccountId === a.id ? "selected" : ""}>${this.#esc(a.name)}</option>`).join("")}
-              </select>
-            </div>
-            <div>
-              <label class="text-xs text-zinc-500" title="Pre-selected on the payment chips">Default payment</label>
-              <select class="select" onchange="window.__app.setDefaultPaymentType(this.value)">
-                ${this.#paymentTypes().map((p) => `<option value="${this.#escAttr(p)}" ${u.defaultPaymentType === p ? "selected" : ""}>${this.#esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`).join("")}
               </select>
             </div>
             <div>
@@ -24934,10 +24917,6 @@ THEY WROTE: ${notes}`;
             <span class="field-label">Types</span>
             <div class="chip-scroll">${ExportFilter.TYPES.map(([k, l]) => this.#chip(l, f.types.includes(k), `window.__app.exportToggle('filter','types','${k}')`)).join("")}</div>
           </div>
-          <div>
-            <span class="field-label">Payment</span>
-            <div class="chip-scroll">${payments.length ? payments.map((p) => this.#chip(p[0].toUpperCase() + p.slice(1), f.paymentTypes.includes(p), `window.__app.exportToggle('filter','paymentTypes','${Html.js(p)}')`)).join("") : '<span class="text-xs text-zinc-400">None recorded</span>'}</div>
-          </div>
           <div class="sm:col-span-2">
             <label class="field-label" for="expSearch">Search payee, note, category or account</label>
             <input id="expSearch" class="input" value="${this.#esc(f.search)}" placeholder="e.g. taxi"
@@ -27925,6 +27904,10 @@ Leave empty to use your own name.`,
       const fd = new FormData(event.target);
       const data = Object.fromEntries(fd.entries());
       const state = this.#store.getState();
+      if (!data.paymentType) {
+        const acc = state.accounts.find((a) => a.id === data.accountId) || (this.#sync.sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === data.accountId);
+        data.paymentType = PaymentTypeService.forAccount(acc);
+      }
       const sharedMode = this.#txModal?.sharedTxMode;
       const allShared = this.#sync.sharedData || [];
       const sharedMatch = !sharedMode && allShared.find(

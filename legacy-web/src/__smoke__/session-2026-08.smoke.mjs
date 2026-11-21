@@ -460,10 +460,8 @@ console.log('\n2026-08 session regression suite');
   await wait(30);
   ok('P1 the form opened on the default account',
      $('#txForm [name=accountId]')?.value === 'a2', $('#txForm [name=accountId]')?.value);
-  ok('P1 …and the default payment method',
-     $('#paymentTypeInput')?.value === 'cash', $('#paymentTypeInput')?.value);
-  ok('P1 the matching chip is the selected one',
-     doc.querySelector('[data-pay-chip=cash]')?.className.includes('bg-zinc-900'));
+  // Payment type is no longer asked (20 Nov 2026): it follows the account when saved.
+  ok('P1 no payment picker on the form', !doc.querySelector('[data-pay-chip]') && ($('#paymentTypeInput')?.value ?? '') === '');
   app.closeModal();
   await wait(20);
 

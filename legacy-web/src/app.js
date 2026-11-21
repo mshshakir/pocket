@@ -1555,6 +1555,12 @@ export class Application {
     const fd   = new FormData(event.target);
     const data = Object.fromEntries(fd.entries());
     const state= this.#store.getState();
+    // Payment type follows the account (no longer asked); an edit keeps its own.
+    if (!data.paymentType) {
+      const acc = state.accounts.find((a) => a.id === data.accountId)
+        || (this.#sync.sharedData || []).flatMap((s) => s.accounts || []).find((a) => a.id === data.accountId);
+      data.paymentType = PaymentTypeService.forAccount(acc);
+    }
 
     // ── Shared-account contribution mode ──────────────────────────────────
     // When a family member adds a tx to a shared account (via sharedTxMode modal

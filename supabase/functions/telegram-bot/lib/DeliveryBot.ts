@@ -22,6 +22,7 @@ import { HijriCalendar } from './HijriCalendar.ts';
 import type { LocalClock } from './LocalClock.ts';
 import { Money } from './Money.ts';
 import { PlanAccess } from './PlanAccess.ts';
+import { PocketBook } from './PocketBook.ts';
 import type { PocketStore, TelegramLink } from './PocketStore.ts';
 import { Recipients } from './Recipients.ts';
 import type { TelegramClient } from './TelegramClient.ts';
@@ -379,7 +380,7 @@ export class DeliveryBot {
       id: `${t.id}__${occurrence}`, accountId: t.accountId, categoryId: t.categoryId, type: 'expense',
       amount, currency: t.currency, exchangeRate: money.exchangeRate(t.currency, book.homeCurrency),
       refAmount: money.convert(amount, t.currency, book.homeCurrency), payee: t.payee, note: '',
-      date: today, hijriDate: hijri.toHijri(today), paymentType: book.defaultPaymentType, recordState: 'cleared',
+      date: today, hijriDate: hijri.toHijri(today), paymentType: PocketBook.paymentFor(book.accounts.find((a) => a.id === t.accountId)), recordState: 'cleared',
       transferPairId: null, transferDir: null, transferRate: null, tags: [], splits: null, recurring: null,
       recurringSourceId: t.id, createdAt: new Date().toISOString(), addedBy: actor.link.email,
     } as unknown as PocketTransaction;

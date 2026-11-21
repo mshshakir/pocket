@@ -4,7 +4,7 @@
  * family permissions — no transactions. It resolves the hints a message
  * carries (#account, @category) against that data.
  */
-export interface Account { id: string; name: string; currency: string; archived?: boolean }
+export interface Account { id: string; name: string; currency: string; archived?: boolean; type?: string }
 export interface Category { id: string; name: string; type?: string; parentId?: string | null }
 
 type Resolution<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -35,6 +35,16 @@ export class PocketBook {
   get hijriOffset(): number { return Number(this.#data.user?.hijriOffset) || 0; }
   get defaultPaymentType(): string { return this.#data.user?.defaultPaymentType || 'card'; }
   get fxRates(): Record<string, number> { return this.#data.fxRates || {}; }
+
+  /**
+   * How an entry from this account was paid (owner, 20 Nov 2026: payment type is
+   * no longer asked anywhere; it follows the account). Cash → cash, credit card
+   * → card, anything else → online.
+   */
+  static paymentFor(account: { type?: string } | null | undefined): string {
+    const t = String(account?.type ?? '').toLowerCase();
+    return t === 'cash' ? 'cash' : t === 'card' ? 'card' : 'online';
+  }
 
   get paymentTypes(): string[] {
     const hidden = new Set<string>((this.#data.user?.hiddenPaymentTypes || []).map((p: string) => p.toLowerCase()));

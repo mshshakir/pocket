@@ -66,7 +66,6 @@ with app sign-ins); set up custom SMTP if that becomes a problem.
 | You send | Saved as |
 |---|---|
 | `70 marol to modi street @taxi` | ₹70 expense, note "marol to modi street", category Taxi |
-| `500 diaper cash @toiletries` | paid in cash (any payment type the app knows) |
 | `+45000 salary @wazifa` | income |
 | `250 lunch #wallet @rest` | into the account whose name starts with "wallet" |
 | `120 auto yesterday @rickshaw` | dated yesterday |
@@ -85,7 +84,7 @@ with app sign-ins); set up custom SMTP if that becomes a problem.
 ```
 
 Each line becomes its own entry with its own confirmation and buttons. A line with no amount
-(only `#account`, `@category`, a payment type, a date or `yesterday`) applies to every line that doesn't
+(only `#account`, `@category`, a date or `yesterday`) applies to every line that doesn't
 name its own; a line's own choices always win, and transfers keep their own accounts. Complete
 lines are saved at once; lines still missing a category are asked one at a time, and a shared
 category that needs choosing (e.g. a main category like `@food`) is asked once for all of them.
@@ -101,8 +100,8 @@ subcategory is tapped or typed; a main category on its own is never saved. Same-
 categories are told apart by parent (`@childrentoiletries`). Transfers need no category.
 
 **Each confirmation has one ✏️ Edit button.** It opens a menu in the same message: Amount ·
-Account · Category / Date · Note · Payment (a transfer: Amount · From · To / Date · Note) and
-🗑 Delete · ✓ Done. Accounts, categories, payment types and dates are picked with buttons; amount,
+Account · Category / Date · Note (a transfer: Amount · From · To / Date · Note) and
+🗑 Delete · ✓ Done. Accounts, categories and dates are picked with buttons; amount,
 note and date can be typed. Each change rewrites the same rows and updates the confirmation in
 place. Delete asks once more. Older confirmations keep their ✏️ Edit / 🗑 Delete buttons. A family
 member can always fix or delete an entry they entered; anyone else's needs edit access to change
@@ -148,3 +147,7 @@ How it runs: migration `0022_telegram_group_summaries.sql` adds `telegram_groups
 (every 10 minutes since 0026, so half-hour zones like India also post just after 9). The function works out what is due and claims each summary in the database before
 sending, so it posts once however often it is called. If the owner's Family plan ends, the group is
 told once that summaries are paused; if the bot is removed from the group, the link is deleted.
+
+
+**Payment type** is no longer asked anywhere (20 Nov 2026): every entry takes it from its
+account — a cash account → cash, a credit card → card, anything else → online.

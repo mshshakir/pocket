@@ -9,7 +9,7 @@
  */
 import { HijriCalendar, type HijriDate } from './HijriCalendar.ts';
 import { Money } from './Money.ts';
-import type { Account, Category, PocketBook } from './PocketBook.ts';
+import { type Account, type Category, PocketBook } from './PocketBook.ts';
 import type { ParsedEntry } from './EntryParser.ts';
 
 export interface PocketTransaction {
@@ -95,7 +95,8 @@ export class TransactionFactory {
       categoryId: input.category?.id ?? null,
       ...this.#valued(amount, currency),
       payee: '',
-      paymentType: entry.paymentType || this.#book.defaultPaymentType,
+      // Follows the account; a typed "cash" / "card" no longer decides it.
+      paymentType: PocketBook.paymentFor(account),
       type: entry.type as 'expense' | 'income',
       transferPairId: null,
       transferDir: null,

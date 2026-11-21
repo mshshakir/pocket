@@ -47,6 +47,18 @@ export class PaymentTypeService {
     return offered[0] || 'card';
   }
 
+  /**
+   * How an entry from this account was paid. Payment type is no longer asked
+   * anywhere (owner, 20 Nov 2026); it follows the account: cash → cash,
+   * credit card → card, anything else → online.
+   * @param {{type?: string}|null|undefined} account
+   * @returns {string}
+   */
+  static forAccount(account) {
+    const t = String(account?.type || '').toLowerCase();
+    return t === 'cash' ? 'cash' : t === 'card' ? 'card' : 'online';
+  }
+
   /** @returns {string[]} the unmodified built-in list */
   static get baseTypes() { return [...BASE_TYPES]; }
 

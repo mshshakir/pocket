@@ -308,7 +308,6 @@ export class EntryService {
         `✅ ${tx.type === 'income' ? '+' : ''}${money(tx)}`,
         tx.note || null,
         category ? `🏷 ${book.categoryPath(category)}` : null,
-        tx.paymentType,
         ws.label(from),
       ];
     const when = `${tx.date} · ${factory.hijri.label(tx.hijriDate)}`;

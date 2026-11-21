@@ -60,13 +60,12 @@ Reply with ONLY one JSON object, no markdown:
 - "none": nothing to record and no question (greetings, unclear audio, not a receipt). "lines" is [].
 
 LINE FORMAT (exactly this; words are separated by spaces):
-  AMOUNT NOTE [@category] [#account] [payment type] [date]
+  AMOUNT NOTE [@category] [#account] [date]
 - AMOUNT: digits only, no currency sign or commas, e.g. 450 or 1250.50. Put "+" in front for money RECEIVED (income), e.g. +45000 salary.
 - Transfer between two of their accounts: AMOUNT #from > #to (no category).
 - NOTE: a few words saying what it was (shop or item). Never put a number, "#", "@" or ">" in the note.
 - @category: copy one token from CATEGORIES exactly, only if it clearly fits; otherwise leave it out.
 - #account: copy one token from ACCOUNTS exactly, only if the person named that account or card; otherwise leave it out (their default account is used).
-- payment type: one of ${ws.paymentTypes.join(', ') || 'card, cash, online'}, only if mentioned.
 - date: only if it was not today: "yesterday", or day/month like 8/11. Today is ${Number(d)}/${Number(m)}/${y}. Never a future date.
 - Several things in one go: one line each, or one line per category for a receipt with items in different categories (amounts must add up to the total paid).
 - A receipt: use the TOTAL actually paid, the shop name as the note, and the receipt's date.

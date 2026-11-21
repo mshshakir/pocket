@@ -60,7 +60,7 @@ const shown = (key) => w.document.querySelector(`[data-settings-tab="${key}"]`)?
   ok('S2 after a setting re-draws the sheet, Data is still the open tab', shown('data'));
   app.setSettingsTab('general');
   const general = w.document.querySelector('[data-settings-tab="general"]');
-  ok('S3 General: six settings in a two-column grid, theme is a select', general.querySelectorAll('.grid.grid-cols-2 select').length === 6 && !!general.querySelector('select[onchange*="setTheme"]'));
+  ok('S3 General: five settings in a two-column grid (no default payment), theme is a select', general.querySelectorAll('.grid.grid-cols-2 select').length === 5 && !!general.querySelector('select[onchange*="setTheme"]'));
   app.setSettingsTab('help');
   ok('F1 Help tab: Send feedback and Suggest a feature', shown('help') && w.document.querySelector('.settings-feedback') && w.document.querySelector('.settings-feature'));
   app.closeModal();

@@ -287,10 +287,6 @@ export class TransactionsView extends BaseView {
           ${this.#multiChips('types', typeOpts, f.types, '＋ Add type…')}
         </div>
         <div>
-          <label class="text-xs font-medium text-zinc-500 mb-1 block">Payment method <span class="font-normal opacity-60">(multi)</span></label>
-          ${this.#multiChips('paymentTypes', paymentOpts, f.paymentTypes, '＋ Add method…')}
-        </div>
-        <div>
           <label class="text-xs font-medium text-zinc-500 mb-1 block">Reimbursements</label>
           <select class="select" onchange="window.__app.txFilterSet('reimb',this.value)">
             <option value="">Any entry</option>

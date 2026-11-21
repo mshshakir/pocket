@@ -1,9 +1,12 @@
 /**
- * payment.smoke.mjs — headless smoke test for payment-method management.
+ * payment.smoke.mjs — payment type is no longer asked (owner, 20 Nov 2026).
  *
- * Boots the real app in jsdom and drives the manage sheet the way a user
- * would: rename a built-in, rename a custom one, delete an unused method,
- * fail to delete one that's in use, and confirm the ledger was migrated.
+ *   P1  The entry form has no payment field and no manage/add buttons.
+ *   P2  A new entry takes its payment type from the account:
+ *       cash account → cash, credit card → card, bank → online.
+ *   P3  Editing an old entry keeps the payment type it was saved with.
+ *   P4  Settings has no "Default payment"; the transaction filters and the
+ *       export screen have no payment filter.
  *
  * Run:  node src/__smoke__/payment.smoke.mjs
  */
@@ -17,29 +20,31 @@ const ok = (label, cond, extra = '') => {
   if (cond) { passed++; console.log(`  ✓ ${label}`); }
   else      { failed++; console.log(`  ✗ ${label}${extra ? ` — ${extra}` : ''}`); }
 };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const today = new Date().toISOString().slice(0, 10);
 
 const state = {
   user: {
     homeCurrency: 'USD', defaultCurrency: 'USD', theme: 'light',
-    showHijri: false, hijriOffset: 0,
-    customPaymentTypes: ['amex'], hiddenPaymentTypes: [],
+    showHijri: false, hijriOffset: 0, customPaymentTypes: ['amex'], hiddenPaymentTypes: [],
   },
-  accounts: [{ id: 'a1', name: 'Cash', type: 'cash', currency: 'USD', openingBalance: 0, balance: 0 }],
-  categories: [{ id: 'c1', name: 'Food', type: 'expense', parentId: null, color: '#f97316', icon: 'tag' }],
-  transactions: [
-    { id: 't1', accountId: 'a1', categoryId: 'c1', amount: 500, currency: 'USD', type: 'expense',
-      date: '2026-01-05', paymentType: 'card', recordState: 'cleared', tags: [] },
-    { id: 't2', accountId: 'a1', categoryId: 'c1', amount: 700, currency: 'USD', type: 'expense',
-      date: '2026-01-06', paymentType: 'card', recordState: 'cleared', tags: [] },
-    { id: 't3', accountId: 'a1', categoryId: 'c1', amount: 300, currency: 'USD', type: 'expense',
-      date: '2026-01-07', paymentType: 'amex', recordState: 'cleared', tags: [] },
+  accounts: [
+    { id: 'a1', name: 'Cash', type: 'cash', currency: 'USD', openingBalance: 0, balance: 0 },
+    { id: 'a2', name: 'Amex', type: 'card', currency: 'USD', openingBalance: 0, balance: 0 },
+    { id: 'a3', name: 'HDFC', type: 'bank', currency: 'USD', openingBalance: 0, balance: 0 },
   ],
-  budgets: [], debts: [], family: [], regularItems: [],
-  merchantCategories: {}, accountGroups: [],
+  categories: [{ id: 'c1', name: 'Food', type: 'expense', parentId: null, color: '#f97316', icon: 'tag' },
+               { id: 'c2', name: 'Groceries', type: 'expense', parentId: 'c1', color: '#f97316', icon: 'tag' }],
+  transactions: [
+    { id: 'old', accountId: 'a3', categoryId: 'c2', amount: 500, currency: 'USD', type: 'expense',
+      date: today, paymentType: 'cheque', recordState: 'cleared', tags: [] },
+  ],
+  budgets: [], debts: [], family: [], regularItems: [], merchantCategories: {}, accountGroups: [],
 };
 
-const dom = new JSDOM(`<!doctype html><html><head></head><body><div id="app"></div></body></html>`,
-  { url: 'https://local.test/app.html', pretendToBeVisual: true, runScripts: 'outside-only' });
+const dom = new JSDOM(`<!doctype html><html><head></head><body>
+  <div id="viewContent"></div><div id="sidebarNav"></div><div id="bottomNav"></div><div id="authPill"></div><div id="app"></div>
+</body></html>`, { url: 'https://local.test/app.html', pretendToBeVisual: true, runScripts: 'outside-only' });
 const { window } = dom;
 window.localStorage.setItem('pocket.v1', JSON.stringify(state));
 window.lucide = { createIcons() {} };
@@ -47,192 +52,55 @@ window.Chart  = function () { return { destroy() {} }; };
 window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
 window.fetch  = () => Promise.reject(new Error('offline'));
 window.confirm = () => true;
-
+window.alert = () => {};
 window.eval(bundle);
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-await wait(60);
+await wait(80);
 
-const app  = window.__app;
-const doc  = window.document;
-const $    = (sel) => doc.querySelector(sel);
-const svc  = app.paymentTypeService;
-const saved = () => JSON.parse(window.localStorage.getItem('pocket.v1'));
-const sheetRows = () => [...doc.querySelectorAll('#paymentSheetRoot .sheet-row-name')]
-  .map((r) => r.textContent.trim());
+console.log('\npayment type suite');
+const app = window.__app, doc = window.document, $ = (s) => doc.querySelector(s);
+const saved = () => app.store.getState().transactions;
 
-console.log('\npayment method smoke test');
-ok('app booted', !!app);
+/** Opens a new entry on an account and saves it. */
+async function add(accountId, amount) {
+  app.openModal('transaction', {});
+  await wait(20);
+  const f = $('#txForm');
+  f.querySelector('[name=amount]').value = String(amount);
+  const acc = f.querySelector('[name=accountId]'); if (acc) acc.value = accountId;
+  const cat = f.querySelector('[name=categoryId]'); if (cat) cat.value = 'c2';
+  await app.submitTx({ preventDefault() {}, target: f });
+  await wait(20);
+  return saved().find((t) => t.amount === amount * 100);
+}
 
-// ── 1. The chip row exposes every method plus both commands ────────────────
-// NB: this section used to query `select[name=paymentType] option`. The control
-// became a row of chips (buttons carrying data-pay-chip, plus a hidden input),
-// so the old selector matched nothing and these assertions failed against a
-// perfectly healthy app — then the suite died on `sel.value` of null, taking
-// sections 2-8 with it.
 app.openModal('transaction', {});
 await wait(20);
-const chipVals = [...doc.querySelectorAll('#txForm [data-pay-chip]')]
-  .map((el) => el.getAttribute('data-pay-chip'));
-ok('chips list built-ins + custom',
-   ['card','cash','transfer','cheque','online','amex'].every((v) => chipVals.includes(v)),
-   chipVals.join(','));
-
-const cmdHandlers = [...doc.querySelectorAll('#txForm button[onclick*="pickPaymentType"]')]
-  .map((b) => b.getAttribute('onclick'));
-ok('chip row offers Add custom',     cmdHandlers.some((h) => h.includes('__add_payment__')));
-ok('chip row offers Manage methods', cmdHandlers.some((h) => h.includes('__manage_payment__')));
-
-// ── 2. Choosing "Manage" opens the sheet and never leaks into the form ─────
-$('#txForm [name=amount]').value = '31.50';
-app.pickPaymentType('__manage_payment__');
-await wait(30);
-ok('manage sheet opened', $('#paymentSheetRoot')?.classList.contains('open'));
-// The command chips are actions, not selections — neither may end up stored on
-// the transaction as if it were a payment method.
-ok('the command never leaks into the form value',
-   $('#txForm [name=paymentType]')?.value !== '__manage_payment__',
-   $('#txForm [name=paymentType]')?.value);
-ok('sheet lists every method',
-   ['Card','Cash','Transfer','Cheque','Online','Amex'].every((n) => sheetRows().includes(n)),
-   sheetRows().join(' | '));
-
-// ── 3. Delete is offered only for unused methods ───────────────────────────
-const rowFor = (label) => [...doc.querySelectorAll('#paymentSheetRoot .sheet-row-static')]
-  .find((r) => r.querySelector('.sheet-row-name')?.textContent.trim() === label);
-ok('in-use method shows its count',
-   rowFor('Card')?.querySelector('.sheet-row-meta')?.textContent.includes('2'),
-   rowFor('Card')?.querySelector('.sheet-row-meta')?.textContent);
-ok('in-use method hides the delete button',
-   !rowFor('Card')?.querySelector('button[title=Delete]'));
-ok('unused method offers delete', !!rowFor('Cheque')?.querySelector('button[title=Delete]'));
-ok('every method offers rename',   !!rowFor('Card')?.querySelector('button[title=Rename]'));
-
-// ── 4. Deleting an unused built-in ─────────────────────────────────────────
-app.paymentSheet.remove('cheque');
-await wait(20);
-ok('cheque removed from the list', !svc.allTypes().includes('cheque'), svc.allTypes().join(','));
-ok('cheque recorded as hidden, not lost', svc.hiddenTypes().includes('cheque'));
-ok('deletion persisted', saved().user.hiddenPaymentTypes.includes('cheque'));
-
-// ── 5. Deleting an in-use method is blocked ────────────────────────────────
-app.paymentSheet.remove('card');
-await wait(20);
-ok('card survives the blocked delete', svc.allTypes().includes('card'));
-const errText = $('#paymentSheetRoot .text-rose-500')?.textContent || '';
-ok('block explains why, with a count', errText.includes('2 transactions') && errText.includes('reassign'), errText);
-
-// ── 6. Renaming a built-in migrates the ledger ─────────────────────────────
-app.paymentSheet.edit('card');
-await wait(20);
-ok('rename input pre-filled with the current name', $('#paymentSheetRoot [data-pm-input]')?.value === 'card');
-$('#paymentSheetRoot [data-pm-input]').value = 'Credit card';
-app.paymentSheet.submit();
-await wait(20);
-ok('renamed built-in appears', svc.allTypes().includes('Credit card'), svc.allTypes().join(','));
-ok('old built-in name gone',   !svc.allTypes().includes('card'));
-const afterRename = saved().transactions.filter((t) => t.paymentType === 'Credit card');
-ok('both transactions migrated', afterRename.length === 2, String(afterRename.length));
-ok('no transaction left on the old name',
-   !saved().transactions.some((t) => t.paymentType === 'card'));
-
-// ── 7. Renaming a custom method ────────────────────────────────────────────
-app.paymentSheet.edit('amex');
-await wait(20);
-$('#paymentSheetRoot [data-pm-input]').value = 'AmEx Gold';
-app.paymentSheet.submit();
-await wait(20);
-ok('custom renamed in place', svc.allTypes().includes('AmEx Gold') && !svc.allTypes().includes('amex'));
-ok('its transaction migrated', saved().transactions.some((t) => t.paymentType === 'AmEx Gold'));
-
-// ── 8. Duplicate names rejected ────────────────────────────────────────────
-app.paymentSheet.edit('cash');
-await wait(20);
-$('#paymentSheetRoot [data-pm-input]').value = 'AmEx Gold';
-app.paymentSheet.submit();
-await wait(20);
-ok('duplicate rename rejected',
-   ($('#paymentSheetRoot .text-rose-500')?.textContent || '').includes('already exists'));
-ok('cash unchanged after the rejection', svc.allTypes().includes('cash'));
-app.paymentSheet.cancel();
-await wait(10);
-
-// ── 9. Adding from inside the sheet ────────────────────────────────────────
-app.paymentSheet.startAdd();
-await wait(20);
-$('#paymentSheetRoot [data-pm-input]').value = 'Apple Pay';
-app.paymentSheet.submit();
-await wait(20);
-ok('new method added', svc.allTypes().includes('Apple Pay'));
-
-// ── 10. Restore brings deleted built-ins back ──────────────────────────────
-app.paymentSheet.restoreBuiltIns();
-await wait(20);
-ok('cheque restored', svc.allTypes().includes('cheque'));
-ok('a renamed built-in does NOT come back as a duplicate',
-   svc.allTypes().filter((t) => t.toLowerCase() === 'card').length <= 1,
-   svc.allTypes().join(','));
-
-// ── 11. Closing follows the rename and keeps the form intact ───────────────
-app.paymentSheet.close();
-await wait(30);
-ok('sheet closed', !$('#paymentSheetRoot').classList.contains('open'));
-// Same stale selector as section 1: the value now lives in the hidden input the
-// chips write to, not a <select>. (Section 12 below already proved the rename
-// was followed — it saves a transaction carrying 'Credit card'.)
-ok('selection followed the rename card → Credit card',
-   $('#txForm [name=paymentType]')?.value === 'Credit card',
-   $('#txForm [name=paymentType]')?.value);
-ok('…and the matching chip is the active one',
-   $('#txForm [data-pay-chip="Credit card"]')?.className.includes('bg-zinc-900'),
-   $('#txForm [data-pay-chip="Credit card"]')?.className);
-ok('typed amount survived the sheet', $('#txForm [name=amount]')?.value === '31.50',
-   $('#txForm [name=amount]')?.value);
-
-// ── 12. Saving uses the renamed method ─────────────────────────────────────
-await app.submitTx({ preventDefault() {}, target: $('#txForm') }, '');
-await wait(60);
-const newest = saved().transactions.find((t) => t.amount === 3150);
-ok('new transaction saved with the renamed method', newest?.paymentType === 'Credit card', newest?.paymentType);
-
-// ── 13. A method deleted while selected falls back safely ──────────────────
-app.openModal('transaction', {});
-await wait(20);
-// Chips again: select by tapping, and openPaymentTypeManager() now reads the
-// current value from the hidden input itself rather than taking an element.
-app.pickPaymentType('Apple Pay');
-await wait(10);
-ok('chip selection wrote through to the form', $('#txForm [name=paymentType]')?.value === 'Apple Pay',
-   $('#txForm [name=paymentType]')?.value);
-app.openPaymentTypeManager();
-await wait(30);
-ok('command value never reaches the form',
-   $('#txForm [name=paymentType]')?.value !== '__manage_payment__',
-   $('#txForm [name=paymentType]')?.value);
-app.paymentSheet.remove('Apple Pay');
-await wait(20);
-app.paymentSheet.close();
-await wait(30);
-const fallback = $('#txForm [name=paymentType]')?.value;
-ok('selection falls back to a live method',
-   !!fallback && svc.allTypes().includes(fallback), fallback);
+const form = $('#txForm')?.textContent || '';
+ok('P1 no payment field', !/Payment/.test(form) && !doc.querySelector('[data-pay-chip]') && !/__manage_payment__|__add_payment__/.test($('#txForm')?.innerHTML || ''));
 app.closeModal();
 
-// ── 14. An unknown legacy method (e.g. from CSV import) is preserved ───────
-// 'bank-transfer' is not in the offered list; opening a record that carries it
-// must keep it rather than silently re-assign the transaction to 'card'.
-app.openModal('transaction', {
-  prefill: {
-    type: 'expense', amount: 100, currency: 'USD', accountId: 'a1', categoryId: 'c1',
-    payee: '', note: '', date: '2026-01-08', paymentType: 'bank-transfer', transferToAccountId: '',
-  },
-});
-await wait(20);
-const legacyChips = [...doc.querySelectorAll('#txForm [data-pay-chip]')]
-  .map((el) => el.getAttribute('data-pay-chip'));
-ok('legacy method kept in the list so editing does not silently change it',
-   legacyChips.includes('bank-transfer') && $('#txForm [name=paymentType]')?.value === 'bank-transfer',
-   `${$('#txForm [name=paymentType]')?.value} in ${legacyChips.join(',')}`);
-app.closeModal();
+ok('P2 cash account → cash', (await add('a1', 11))?.paymentType === 'cash');
+ok('P2 credit card → card', (await add('a2', 12))?.paymentType === 'card');
+ok('P2 bank → online', (await add('a3', 13))?.paymentType === 'online');
 
-console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+app.openModal('transaction', { id: 'old' });
+await wait(20);
+await app.submitTx({ preventDefault() {}, target: $('#txForm') }, 'old');
+await wait(20);
+ok('P3 an old entry keeps its payment type when edited', saved().find((t) => t.id === 'old')?.paymentType === 'cheque');
+
+app.openModal('settings');
+await wait(20);
+ok('P4 no Default payment in Settings', !/Default payment/.test(doc.body.textContent));
+app.closeModal();
+app.navigate('transactions');
+await wait(20);
+app.toggleTxFilterPanel?.();
+await wait(20);
+ok('P4 no payment filter on transactions', !/Payment method/.test($('#viewContent')?.textContent || ''));
+app.openModal('export');
+await wait(20);
+ok('P4 no payment filter on export', !/\bPayment\b/.test([...doc.querySelectorAll('.field-label')].map((e) => e.textContent).join(' ')));
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);

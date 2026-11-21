@@ -3,10 +3,10 @@
  * Run: deno run --allow-all --import-map <map with a supabase-js stub> supabase/functions/telegram-bot/test/edit_test.ts
  *
  *   E1  A new entry shows one ✏️ Edit button
- *   E2  Edit opens the menu: Amount · Account · Category / Date · Note · Payment / Delete · Done
+ *   E2  Edit opens the menu: Amount · Account · Category / Date · Note / Delete · Done (no payment type)
  *   E3  Amount typed: same rows rewritten, who entered it and when kept; confirmation updated in place
  *   E4  Category with buttons: main → subcategory
- *   E5  Date "Yesterday", note cleared with "-", payment type, account
+ *   E5  Date "Yesterday", note cleared with "-", account (payment type follows the account)
  *   E6  Delete asks once more; "Keep it" goes back; "Yes, delete" removes
  *   E7  Done puts the single button back; an old pick with nothing waiting has expired
  *   E8  A transfer: From / To; the same account on both sides is refused
@@ -37,7 +37,7 @@ console.log('\nEdit menu, new accounts and categories');
 const ME = 'u1', FAMILY = 'u9', CHAT = 7;
 const bookData = () => ({
   user: { homeCurrency: 'INR', defaultPaymentType: 'card', hijriOffset: 0 }, fxRates: { INR: 83, USD: 1 },
-  accounts: [{ id: 'a1', name: 'HDFC', currency: 'INR' }, { id: 'a2', name: 'Cash', currency: 'INR' }, { id: 'a3', name: 'Wise', currency: 'USD' }],
+  accounts: [{ id: 'a1', name: 'HDFC', currency: 'INR', type: 'bank' }, { id: 'a2', name: 'Cash', currency: 'INR', type: 'cash' }, { id: 'a3', name: 'Wise', currency: 'USD', type: 'bank' }],
   categories: [
     { id: 'm1', name: 'Food', type: 'expense', icon: 'utensils', color: '#f97316' },
     { id: 's1', name: 'Groceries', type: 'expense', parentId: 'm1' }, { id: 's2', name: 'Restaurant', type: 'expense', parentId: 'm1' },
@@ -134,7 +134,8 @@ const tap = (messageId: number, d: string, tg: FakeTelegram): TelegramCallback =
 
   await t.editor.handleCallback(tap(conf.id, data(conf.keyboard, '✏️ Edit'), t.tg), link);
   const menu = t.tg.edits.get(conf.id)!.keyboard;
-  ok('E2 the menu', buttons(menu).join('|') === 'Amount|Account|Category|Date|Note|Payment|🗑 Delete|✓ Done', buttons(menu).join('|'));
+  ok('E2 the menu', buttons(menu).join('|') === 'Amount|Account|Category|Date|Note|🗑 Delete|✓ Done', buttons(menu).join('|'));
+  ok('E1 payment type follows the account, and isn\'t shown', row.paymentType === 'online' && !/online|card\b/.test(conf.text), conf.text);
 
   await t.editor.handleCallback(tap(conf.id, data(menu, 'Amount'), t.tg), link);
   ok('E3 asks for the amount', t.store.pending?.step?.kind === 'field' && /new amount/.test(t.tg.last().text) && !!t.tg.last().forceReply);
@@ -164,13 +165,10 @@ const tap = (messageId: number, d: string, tg: FakeTelegram): TelegramCallback =
   await t.editor.answer(link, CHAT, t.store.pending!.step as never, '-', 61);
   ok('E5 note cleared', [...t.store.rows.values()][0].note === '');
   k = t.tg.edits.get(conf.id)!.keyboard;
-  await t.editor.handleCallback(tap(conf.id, data(k, 'Payment'), t.tg), link);
-  await t.editor.handleCallback(tap(conf.id, data(t.tg.edits.get(conf.id)!.keyboard, 'cash'), t.tg), link);
-  ok('E5 payment type', [...t.store.rows.values()][0].paymentType === 'cash');
-  k = t.tg.edits.get(conf.id)!.keyboard;
   await t.editor.handleCallback(tap(conf.id, data(k, 'Account'), t.tg), link);
   await t.editor.handleCallback(tap(conf.id, data(t.tg.edits.get(conf.id)!.keyboard, 'Cash'), t.tg), link);
   ok('E5 account', [...t.store.rows.values()][0].accountId === 'a2' && [...t.store.rows.values()][0].amount === 65000);
+  ok('E5 moved to Cash: paid in cash', [...t.store.rows.values()][0].paymentType === 'cash');
 
   // E6 delete
   k = t.tg.edits.get(conf.id)!.keyboard;
