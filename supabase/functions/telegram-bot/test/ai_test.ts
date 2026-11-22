@@ -90,9 +90,21 @@ class FakeTelegram {
   edits: string[] = [];
   downloads = 0;
   file: Uint8Array | null = new Uint8Array([1, 2, 3, 4]);
+  acks: string[] = [];
+  #status = new Set<number>();
+  #next = 100;
   reply(_c: number, text: string) { this.replies.push(text); return Promise.resolve(); }
-  send(_c: number, text: string, o: { keyboard?: unknown } = {}) { this.sent.push({ text, keyboard: o.keyboard }); return Promise.resolve(1); }
-  edit(_c: number, _m: number, text: string) { this.edits.push(text); return Promise.resolve(); }
+  send(_c: number, text: string, o: { keyboard?: unknown } = {}) {
+    const id = this.#next++;
+    // "Got your … — reading…": the message that later becomes the answer.
+    if (/^(🎙|📄|📷) Got your/.test(text)) { this.acks.push(text); this.#status.add(id); }
+    else this.sent.push({ text, keyboard: o.keyboard });
+    return Promise.resolve(id);
+  }
+  edit(_c: number, m: number, text: string) {
+    if (this.#status.has(m)) this.replies.push(text); else this.edits.push(text);
+    return Promise.resolve();
+  }
   answer() { return Promise.resolve(); }
   download() { this.downloads++; return Promise.resolve(this.file); }
 }
@@ -139,7 +151,8 @@ const msg = (over: Partial<TelegramMessage>): TelegramMessage => ({ message_id: 
   ok('A2 a question', AiPrompts.readEntries('{"kind":"question","heard":"how much on food","lines":[]}').kind === 'question');
   ok('A2 nonsense is "none"', AiPrompts.readEntries('sorry').kind === 'none' && AiPrompts.readEntries('{"kind":"entries","lines":["no amount"]}').kind === 'none');
   const many = AiPrompts.readEntries(JSON.stringify({ kind: 'entries', lines: Array.from({ length: 30 }, (_, i) => `${i + 1} x`) }));
-  ok('A2 at most 20 lines', many.lines.length === 20);
+  const lots = AiPrompts.readEntries(JSON.stringify({ kind: 'entries', lines: Array.from({ length: 60 }, (_, i) => `${i + 1} x`) }));
+  ok('A2 up to 40 lines (a long receipt), no more', many.lines.length === 30 && lots.lines.length === 40, `${many.lines.length}/${lots.lines.length}`);
 }
 
 // ── A3 ────────────────────────────────────────────────────────────────────
@@ -161,6 +174,7 @@ const msg = (over: Partial<TelegramMessage>): TelegramMessage => ({ message_id: 
   ok('A4 the audio and the prompt went to the AI', t.model.calls[0]?.length === 2 && 'inline_data' in t.model.calls[0][0]);
   ok('A4 recorded as a typed line', t.recorded[0] === '450 groceries @foodgroceries #hdfcbank', t.recorded[0]);
   ok('A4 the reply shows what was heard and the cost', /Heard: “Spent 450/.test(t.tg.replies[0]) && /2 AI credits, 98 left/.test(t.tg.replies[0]), t.tg.replies[0]);
+  ok('A4 "got it" is said at once, then becomes the answer', t.tg.acks[0] === '🎙 Got your voice note — listening…' && t.tg.replies.length === 1);
 }
 
 // ── A5 ────────────────────────────────────────────────────────────────────
@@ -172,7 +186,9 @@ const msg = (over: Partial<TelegramMessage>): TelegramMessage => ({ message_id: 
   const part = t.model.calls[0]?.[0] as { inline_data?: { mime_type: string } };
   ok('A5 the PDF is sent as application/pdf', part?.inline_data?.mime_type === 'application/pdf');
   ok('A5 charged as a scan, caption passed on', t.store.charges[0]?.kind === 'receipt' && JSON.stringify(t.model.calls[0]).includes('electricity'));
-  ok('A5 recorded', t.recorded[0] === '2340 tata power' && /📷 Read/.test(t.tg.replies[0]));
+  ok('A5 recorded', t.recorded[0] === '2340 tata power' && /📄 Read/.test(t.tg.replies[0]), t.tg.replies[0]);
+  ok('A5 a PDF is acknowledged as a PDF', t.tg.acks[0] === '📄 Got your PDF — reading the bill…');
+  ok('A5 receipts are asked for one line per item', JSON.stringify(t.model.calls[0]).includes('ONE LINE PER ITEM'));
 }
 
 // ── A6 ────────────────────────────────────────────────────────────────────

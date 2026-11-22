@@ -306,6 +306,8 @@ export class EntryEditor {
       category: main.categoryId ? book.categoryById(String(main.categoryId)) : null,
       date: String(main.date),
     };
+    const show = (e: Editable) => EntryEditor.#value(step.field, e, book, factory.money);
+    const before = show(editable);
     const problem = change(editable);
     if (problem) return void await this.#telegram.send(chatId, problem, { replyTo: step.message });
     if (editable.entry.type !== 'transfer' && !editable.category) {
@@ -330,6 +332,7 @@ export class EntryEditor {
     const ids = await TransactionFactory.allIdsFor(chatId, step.seed);
     await this.#store.writerFor(access.ownerId, link.email, access.isOwn).replace(ids, txs);
     await this.#dropStep(chatId);
+    // The prompt message (typed fields) is no longer needed once answered.
     if (step.prompt) await this.#telegram.edit(chatId, step.prompt, `✓ ${EntryEditor.#LABELS[step.field] ?? 'entry'} changed`).catch(() => {});
 
     const from = { access, account: editable.account };
@@ -337,6 +340,25 @@ export class EntryEditor {
     const text = this.#entries.confirmation(txs, factory, book, ws, from, to, editable.category)
       + `\n✏️ ${EntryEditor.#capital(EntryEditor.#LABELS[step.field] ?? 'entry')} changed`;
     await this.#telegram.edit(chatId, step.message, text, EntryEditor.#menu(step.seed, step.owner, editable.entry.type === 'transfer'));
+    // A new message too, so the change is seen in the chat, not only in the entry above.
+    const after = show(editable);
+    await this.#telegram.send(chatId,
+      `✅ ${EntryEditor.#capital(EntryEditor.#LABELS[step.field] ?? 'entry')} changed${before !== after ? `: ${before || '—'} → ${after || '—'}` : ''}`,
+      { replyTo: step.message });
+  }
+
+  /** One field of the entry, as the person sees it (for "Amount changed: ₹450 → ₹650"). */
+  static #value(field: string, e: Editable, book: BookAccess['book'], money: { format(minor: number, ccy: string): string; toMinor(major: number, ccy: string): number }): string {
+    const ccy = e.account.currency;
+    switch (field) {
+      case 'a': return money.format(money.toMinor(e.entry.amount, ccy), ccy);
+      case 'A': return e.account.name;
+      case 'T': return e.toAccount?.name ?? '';
+      case 'c': return e.category ? book.categoryPath(e.category) : '';
+      case 'd': return e.date;
+      case 'n': return e.entry.note ? `“${e.entry.note}”` : '';
+      default: return '';
+    }
   }
 
   /** The entry's rows and the book they're in, or null if it's gone (or no longer reachable). */

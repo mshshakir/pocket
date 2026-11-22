@@ -144,6 +144,8 @@ const tap = (messageId: number, d: string, tg: FakeTelegram): TelegramCallback =
   ok('E3 same row, new amount', t.store.rows.size === 1 && saved.amount === 65000 && saved.id === row.id, JSON.stringify(saved).slice(0, 120));
   ok('E3 who entered it and when are kept', saved.addedBy === 'wife@x.com' && saved.createdAt === '2026-11-01T00:00:00Z' && saved.categoryId === 's1');
   const after = t.tg.edits.get(conf.id)!;
+  const note = t.tg.sent.find((m) => m.text.startsWith('✅ Amount changed'));
+  ok('E3 a new message confirms the change, old → new', note?.text === '✅ Amount changed: ₹450 → ₹650', note?.text);
   ok('E3 confirmation updated in place, menu still open', /₹650/.test(after.text) && /Amount changed/.test(after.text) && buttons(after.keyboard).includes('✓ Done') && !t.store.pending, after.text);
 
   // E4 category
@@ -153,6 +155,7 @@ const tap = (messageId: number, d: string, tg: FakeTelegram): TelegramCallback =
   await t.editor.handleCallback(tap(conf.id, data(mains, 'Transport ›'), t.tg), link);
   const subs = t.tg.edits.get(conf.id)!.keyboard;
   await t.editor.handleCallback(tap(conf.id, data(subs, 'Taxi'), t.tg), link);
+  ok('E4 the change is confirmed in a new message', t.tg.sent.some((m) => m.text === '✅ Category changed: Food / Groceries → Transport / Taxi'), t.tg.sent.map((m) => m.text).filter((x) => x.startsWith('✅')).join(' | '));
   ok('E4 subcategory saved', [...t.store.rows.values()][0].categoryId === 's3' && /Transport \/ Taxi/.test(t.tg.edits.get(conf.id)!.text), t.tg.edits.get(conf.id)!.text);
 
   // E5 date, note, payment, account

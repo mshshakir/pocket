@@ -90,7 +90,7 @@ export class HelpMenu {
       button: '🎙 Voice, photos & questions',
       text: [
         '<b>🎙 Voice notes</b> — say it: "Spent 450 on groceries from HDFC." 1 AI credit per 30 seconds.',
-        '<b>📷 Receipts</b> — send a photo, or the PDF bill as a file. The total, shop and date are filled in. 5 AI credits.',
+        '<b>📷 Receipts</b> — send a photo, or the PDF bill as a file. Each item becomes its own entry, with its own category (tax or delivery as one more), all on the bill\'s date. 5 AI credits.',
         'The bot shows what it heard or read, then saves it like a typed entry, with ✏️ Edit and 🗑 Delete. Speak clearly: a misheard note is still charged; if the AI service fails, you aren\'t.',
         '',
         '<b>💬 Plain words</b> — "gave Ali five thousand yesterday" is worked out for you: 20 a day free, then 1 AI credit each.',

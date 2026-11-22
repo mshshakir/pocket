@@ -92,9 +92,21 @@ export class AiAssistant {
       return void await this.#telegram.reply(chatId, 'That file is too large. Try a smaller photo or a shorter voice note.', replyTo);
     }
 
+    // Say at once that it arrived: reading a PDF or a long note takes a while.
+    const isPdf = media.mime === 'application/pdf';
+    const status = await this.#telegram.send(chatId,
+      media.source === 'voice' ? '🎙 Got your voice note — listening…'
+        : isPdf ? '📄 Got your PDF — reading the bill…' : '📷 Got your photo — reading the receipt…',
+      { replyTo });
+    // The status message becomes the answer (or the reason it didn't work).
+    const say = async (text: string) => {
+      if (status) await this.#telegram.edit(chatId, status, text);
+      else await this.#telegram.reply(chatId, text, replyTo);
+    };
+
     const ref = `tg:${chatId}:${replyTo}`;
     const charge = await this.#charge(link, ws, ref, media.source, Math.max(1, media.seconds));
-    if (!charge.ok) return void await this.#telegram.reply(chatId, AiAssistant.#noCredits(charge), replyTo);
+    if (!charge.ok) return void await say(AiAssistant.#noCredits(charge));
 
     let text: string;
     try {
@@ -103,23 +115,25 @@ export class AiAssistant {
       if (bytes.length > AiAssistant.MAX_BYTES) throw new AiModelError('That file is too large. Try a smaller photo or a shorter voice note.');
       const caption = (message.caption ?? '').trim();
       const prompt = this.#entriesPrompt(media.source, ws, link, caption ? `The person also wrote: "${caption.slice(0, 300)}" — use it for the note, account or category.` : '');
-      text = await this.#model.generate([{ inline_data: { mime_type: media.mime, data: AiModel.base64(bytes) } }, { text: prompt }]);
+      text = await this.#model.generate([{ inline_data: { mime_type: media.mime, data: AiModel.base64(bytes) } }, { text: prompt }], 2048);
     } catch (e) {
       await this.#store.aiRefund(link.user_id, ref);
       const why = e instanceof AiModelError ? e.message : 'The AI service failed. Please try again.';
       if (!(e instanceof AiModelError)) console.error('[telegram-bot] ai', e);
-      return void await this.#telegram.reply(chatId, `⚠️ ${why} You weren't charged.`, replyTo);
+      return void await say(`⚠️ ${why} You weren't charged.`);
     }
 
     const reading = AiPrompts.readEntries(text);
-    const icon = media.source === 'voice' ? '🎙' : '📷';
+    const icon = media.source === 'voice' ? '🎙' : isPdf ? '📄' : '📷';
     if (reading.kind !== 'entries') {
       const heard = reading.heard ? `${icon} ${media.source === 'voice' ? 'Heard' : 'Read'}: “${reading.heard}”\n` : '';
-      return void await this.#telegram.reply(chatId,
-        `${heard}I couldn't find an amount to record.${media.source === 'voice' ? ' Please speak clearly and say the amount, e.g. "450 for groceries".' : ' Make sure the total is clear in the photo.'}${AiAssistant.#cost(charge)}`, replyTo);
+      return void await say(
+        `${heard}I couldn't find an amount to record.${media.source === 'voice' ? ' Please speak clearly and say the amount, e.g. "450 for groceries".' : ' Make sure the total is clear in the photo.'}${AiAssistant.#cost(charge)}`);
     }
-    await this.#telegram.reply(chatId,
-      `${icon} ${media.source === 'voice' ? 'Heard' : 'Read'}${reading.heard ? `: “${reading.heard}”` : ''}\nRecording:\n${reading.lines.map((l) => `• ${l}`).join('\n')}${AiAssistant.#cost(charge)}`, replyTo);
+    const many = reading.lines.length > 1;
+    await say(
+      `${icon} ${media.source === 'voice' ? 'Heard' : 'Read'}${reading.heard ? `: “${reading.heard}”` : ''}\n`
+      + `Recording ${many ? `${reading.lines.length} entries` : 'this'}:\n${reading.lines.map((l) => `• ${l}`).join('\n')}${AiAssistant.#cost(charge)}`);
     await record(reading.lines.join('\n'));
   }
 

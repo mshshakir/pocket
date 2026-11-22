@@ -25,7 +25,7 @@ export interface AiReading {
 }
 
 export class AiPrompts {
-  static readonly MAX_LINES = 20;
+  static readonly MAX_LINES = 40;
   static readonly #MAX_CATEGORIES = 250;
 
   /**
@@ -67,8 +67,8 @@ LINE FORMAT (exactly this; words are separated by spaces):
 - @category: copy one token from CATEGORIES exactly, only if it clearly fits; otherwise leave it out.
 - #account: copy one token from ACCOUNTS exactly, only if the person named that account or card; otherwise leave it out (their default account is used).
 - date: only if it was not today: "yesterday", or day/month like 8/11. Today is ${Number(d)}/${Number(m)}/${y}. Never a future date.
-- Several things in one go: one line each, or one line per category for a receipt with items in different categories (amounts must add up to the total paid).
-- A receipt: use the TOTAL actually paid, the shop name as the note, and the receipt's date.
+- Several things in one go: one line each.
+- A receipt or bill: ONE LINE PER ITEM, in the order printed. Note = the item's name, then the shop (e.g. "Amul milk dmart"). Each item gets its own best-fitting @category. Use the item's line total (quantity × price). Tax, delivery or service charges paid on top become their own line ("gst dmart"). A discount is taken off the items it applies to (or spread over all items), so the lines add up EXACTLY to the total actually paid. Every line gets the receipt's date. A one-line bill (electricity, phone, a single service) is one line.
 - Never invent an amount. If no amount was said or shown, use kind "none".
 - At most ${AiPrompts.MAX_LINES} lines.
 
