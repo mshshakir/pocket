@@ -26,6 +26,11 @@ class FakeCredits {
   refund(_u: string, ref: string) { this.refunded.push(ref); return Promise.resolve(); }
   texts: string[] = [];
   text(_u: string, ref: string) { this.texts.push(ref); return Promise.resolve({ ok: true, free: true } as Charge); }
+  imports: { session: string; rows: number; ref: string }[] = [];
+  importAnswer: Charge = { ok: true, free: true, cost: 0 };
+  importUse(_u: string, session: string, rows: number, ref: string) { this.imports.push({ session, rows, ref }); return Promise.resolve(this.importAnswer); }
+  importRefunds: { session: string; chargeRef?: string }[] = [];
+  importRefund(_u: string, session: string, chargeRef?: string) { this.importRefunds.push({ session, chargeRef }); return Promise.resolve(); }
 }
 const gemini = (status: number, text = '{"total": 12}') => new GeminiClient('server-key', ((_u: unknown, init?: RequestInit) => {
   const sent = JSON.parse(String(init?.body));
@@ -107,6 +112,34 @@ console.log('\nai function');
   ok('S1 setup: text only, uses the daily free allowance', res.status === 200 && c.texts.length === 1 && c.spent.length === 0, String(res.status));
   const bad = await make(new FakeCredits({ ok: true })).handle(post(body({ kind: 'setup' })));
   ok('S2 setup refuses a picture', bad.status === 400);
+}
+
+// Import with AI: text only, one session per import, JSON answers.
+{
+  const SESSION = '0b7f0c8e-3c1d-4a51-9b7e-2f5d6c7a8b90';
+  const imp = (over: Record<string, unknown> = {}) => body({ kind: 'import', parts: [{ text: 'TABLE t1 …' }], session: SESSION, rows: 848, maxOutputTokens: 99999, ...over });
+  const c = new FakeCredits({ ok: true });
+  const res = await make(c).handle(post(imp()));
+  const last = (gemini as unknown as { last: { sent: { generationConfig: { maxOutputTokens: number; responseMimeType?: string } } } }).last;
+  ok('I1 import: charged through the import rule with its session and row count, never the scan price',
+     res.status === 200 && c.imports.length === 1 && c.imports[0].session === SESSION && c.imports[0].rows === 848 && !c.spent.length && !c.texts.length);
+  ok('I2 import: JSON answers, output capped at 8192 tokens', last.sent.generationConfig.responseMimeType === 'application/json' && last.sent.generationConfig.maxOutputTokens === 8192);
+  const bad1 = await make(c).handle(post(imp({ session: 'nope' })));
+  const bad2 = await make(c).handle(post(imp({ parts: [{ inline_data: { mime_type: 'image/png', data: 'AAAA' } }] })));
+  const bad3 = await make(c).handle(post(imp({ parts: [{ text: 'x'.repeat(20_001) }] })));
+  ok('I3 import: no session, a file, or too much text is refused before charging', [bad1, bad2, bad3].every((r) => r.status === 400) && c.imports.length === 1);
+  const paid = new FakeCredits({ ok: true });
+  paid.importAnswer = { ok: true, chargedTo: 'own', cost: 5, remaining: 95, chargeRef: 'import:req-0001-abcd' };
+  const failed = await make(paid, gemini(500)).handle(post(imp()));
+  ok('I4 import: the AI fails → the call is given back with the charge it made', failed.status === 502 && paid.importRefunds.length === 1 && paid.importRefunds[0].chargeRef === 'import:req-0001-abcd' && !paid.refunded.length);
+  const many = new FakeCredits({ ok: true });
+  many.importAnswer = { ok: false, reason: 'too_many' };
+  const r = await make(many).handle(post(imp()));
+  ok('I5 import: too many calls in one import → a clear message', r.status === 429 && (await r.json()).code === 'too_many');
+  const broke = new FakeCredits({ ok: true });
+  broke.importAnswer = { ok: false, reason: 'no_credits', cost: 5, remaining: 2 };
+  const r2 = await (await make(broke).handle(post(imp()))).json();
+  ok('I6 import: not enough credits says how many it needs', r2.code === 'no_credits' && /needs 5 AI credits and you have 2/.test(r2.error), r2.error);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -5,7 +5,8 @@
  * The app builds the prompt (it knows the person's categories); the server
  * fixes everything that costs money: the model, the output length, and a size
  * limit on what is sent. Only a picture, a PDF or a recording plus text parts
- * are accepted.
+ * are accepted — or text only, for setup suggestions and Import with AI (the
+ * column names and sample rows of a file, never the whole file).
  */
 export type Part = { text: string } | { inline_data: { mime_type: string; data: string } };
 
@@ -16,6 +17,8 @@ export class AiRequest {
   static readonly MAX_INLINE_CHARS = 6_000_000;
   static readonly MAX_TEXT_CHARS = 20_000;
   static readonly MAX_SETUP_CHARS = 8_000;
+  static readonly MAX_IMPORT_CHARS = 20_000;
+  static readonly MAX_IMPORT_OUTPUT_TOKENS = 8192;
   static readonly MAX_OUTPUT_TOKENS = 1024;
   /** Longest recording billed for; also the most a voice entry can be said to last. */
   static readonly MAX_SECONDS = 600;
@@ -29,21 +32,27 @@ export class AiRequest {
   static readonly #MEDIA = /^(image\/(jpeg|png|webp|heic|heif|gif)|application\/pdf|audio\/(webm|ogg|mp4|mpeg|mp3|wav|aac|m4a|x-m4a|3gpp))(;.*)?$/i;
 
   private constructor(
-    readonly kind: 'receipt' | 'voice' | 'setup',
+    readonly kind: 'receipt' | 'voice' | 'setup' | 'import',
     readonly book: string,
     readonly ref: string,
     readonly parts: Part[],
     readonly maxOutputTokens: number,
     /** Length of the recording in seconds (voice only; 0 for a scan). Voice is charged by this. */
     readonly seconds: number,
+    /** Import with AI: one id for every call of one import, and how many rows the file has. */
+    readonly session: string = '',
+    readonly rows: number = 0,
   ) {}
+
+  /** Text-only kinds, answered in JSON. */
+  get json(): boolean { return this.kind === 'import'; }
 
   /** @throws AiRequestError with a sentence for the person */
   static parse(body: unknown): AiRequest {
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     // 'setup': suggesting categories while a new person sets up their book —
     // text only, no picture or recording.
-    const kind = b.kind === 'voice' ? 'voice' : b.kind === 'receipt' ? 'receipt' : b.kind === 'setup' ? 'setup' : null;
+    const kind = b.kind === 'voice' ? 'voice' : b.kind === 'receipt' ? 'receipt' : b.kind === 'setup' ? 'setup' : b.kind === 'import' ? 'import' : null;
     if (!kind) throw new AiRequestError('Unknown request.');
     if (typeof b.book !== 'string' || !AiRequest.#UUID.test(b.book)) throw new AiRequestError('Unknown book.');
     if (typeof b.ref !== 'string' || b.ref.length < 8 || b.ref.length > 80) throw new AiRequestError('Missing request id.');
@@ -64,15 +73,23 @@ export class AiRequest {
       }
       throw new AiRequestError('That file type can\'t be read.');
     });
-    if (kind === 'setup' ? media !== 0 : media !== 1) throw new AiRequestError(kind === 'setup' ? 'Nothing to read.' : 'Send one picture or recording at a time.');
+    const textOnly = kind === 'setup' || kind === 'import';
+    if (textOnly ? media !== 0 : media !== 1) throw new AiRequestError(textOnly ? 'Nothing to read.' : 'Send one picture or recording at a time.');
     if (kind === 'setup' && text > AiRequest.MAX_SETUP_CHARS) throw new AiRequestError('Request too long.');
+    if (kind === 'import' && text > AiRequest.MAX_IMPORT_CHARS) throw new AiRequestError('Request too long.');
+    let session = '', rows = 0;
+    if (kind === 'import') {
+      if (typeof b.session !== 'string' || !AiRequest.#UUID.test(b.session)) throw new AiRequestError('Missing import id.');
+      session = b.session;
+      rows = Number.isInteger(b.rows) && (b.rows as number) >= 0 ? b.rows as number : 0;
+    }
     if (inline > AiRequest.MAX_INLINE_CHARS) throw new AiRequestError('That file is too large. Try a smaller photo or a shorter recording.');
-    if (text > AiRequest.MAX_TEXT_CHARS) throw new AiRequestError('Request too long.');
+    if (kind !== 'import' && text > AiRequest.MAX_TEXT_CHARS) throw new AiRequestError('Request too long.');
 
     const out = Number(b.maxOutputTokens);
-    const cap = kind === 'setup' ? 600 : AiRequest.MAX_OUTPUT_TOKENS;
+    const cap = kind === 'setup' ? 600 : kind === 'import' ? AiRequest.MAX_IMPORT_OUTPUT_TOKENS : AiRequest.MAX_OUTPUT_TOKENS;
     const max = Number.isInteger(out) && out > 0 ? Math.min(out, cap) : cap;
-    return new AiRequest(kind, b.book, b.ref, parts, max, kind === 'voice' ? AiRequest.#seconds(b.seconds, inline) : 0);
+    return new AiRequest(kind, b.book, b.ref, parts, max, kind === 'voice' ? AiRequest.#seconds(b.seconds, inline) : 0, session, rows);
   }
 
   /** The recording's length: what the app measured, but never less than its size makes possible. */

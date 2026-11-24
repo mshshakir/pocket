@@ -9,14 +9,16 @@ import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 export interface Charge {
   ok: boolean;
-  reason?: 'no_credits' | 'no_access';
+  reason?: 'no_credits' | 'no_access' | 'too_many';
   chargedTo?: 'unlimited' | 'own' | 'family';
   ownerEmail?: string;
   remaining?: number;
   /** Credits this request costs (0 for unlimited). */
   cost?: number;
-  /** A text-only use within the daily free limit. */
+  /** A text-only use within the daily free limit, or a free call of an import. */
   free?: boolean;
+  /** Import with AI: the ledger ref of the call that charged the import (to give back). */
+  chargeRef?: string;
 }
 
 export class AiCredits {
@@ -44,6 +46,23 @@ export class AiCredits {
     const { data, error } = await this.#admin.rpc('pocket_ai_text', { p_user: userId, p_ref: ref });
     if (error) throw new Error(`text failed: ${error.message}`);
     return data as Charge;
+  }
+
+  /**
+   * One call of an Import with AI (pocket_ai_import, migration 0069): the
+   * account's first import is free (up to 5,000 rows); another import is
+   * charged once, on its first call; the corrections after it are free.
+   */
+  async importUse(userId: string, session: string, rows: number, ref: string): Promise<Charge> {
+    const { data, error } = await this.#admin.rpc('pocket_ai_import', { p_user: userId, p_session: session, p_rows: rows, p_ref: ref });
+    if (error) throw new Error(`import failed: ${error.message}`);
+    return data as Charge;
+  }
+
+  /** The AI failed on an import call: not counted, and credits given back if it charged. */
+  async importRefund(userId: string, session: string, chargeRef: string | undefined): Promise<void> {
+    const { error } = await this.#admin.rpc('pocket_ai_import_refund', { p_user: userId, p_session: session, p_ref: chargeRef ?? '' });
+    if (error) console.error('[ai] import refund failed', session, error.message);
   }
 
   async refund(userId: string, ref: string): Promise<void> {

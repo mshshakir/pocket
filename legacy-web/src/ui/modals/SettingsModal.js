@@ -13,6 +13,7 @@ import { BookCleaner }     from '../../domain/services/BookCleaner.js';
 import { PlanCard }        from '../components/PlanCard.js';
 import { AppNotices }      from '../components/AppNotices.js';
 import { BackupSchedule }  from '../../domain/services/BackupSchedule.js';
+import { Html }            from '../../core/Html.js';
 
 export class SettingsModal {
   /** @type {Store} */                #store;
@@ -245,22 +246,40 @@ export class SettingsModal {
 `;
   }
 
+  /** Imports made with AI, newest first, each with Undo. */
+  #imports(state) {
+    const list = [...(state.imports || [])].reverse().slice(0, 5);
+    if (!list.length) return '';
+    const day = (iso) => String(iso || '').slice(0, 10);
+    return `<div class="mb-2 flex flex-col gap-1">${list.map((r) => `
+      <div class="flex items-center gap-2 text-xs">
+        <span class="flex-1 truncate">${Html.escape(r.file || 'Import')} · ${day(r.at)} · ${Number(r.entries || 0).toLocaleString('en-IN')} entries</span>
+        <button class="btn btn-ghost text-xs" onclick="window.__app.undoImport('${Html.js(r.id)}')">Undo</button>
+      </div>`).join('')}</div>`;
+  }
+
   /** Data: move in, export / import, reset, saved copies. */
   #data(state) {
     return `
         ${this.#driveBackup()}
-        <!-- Migrate from another app (CSV) -->
+        <!-- Migrate from another app -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-center gap-2 mb-2">
             <i data-lucide="file-down" style="width:16px;height:16px" class="text-emerald-600"></i>
             <div class="font-medium text-sm flex-1">Move in from another app</div>
           </div>
+          <button class="btn btn-primary w-full justify-center mb-1" onclick="window.__app.openModal('aiImport')">
+            <i data-lucide="sparkles"></i> Import with AI
+          </button>
+          <div class="text-xs text-zinc-500 mb-2">Any CSV or Excel file: AI works out the columns, you check a preview. ${(state.imports || []).length ? '5 AI credits per import.' : 'Your first import is free (up to 5,000 rows).'}</div>
+          ${this.#imports(state)}
+          <div class="text-xs text-zinc-500 mb-1">Or use Pocket's own template:</div>
           <div class="grid grid-cols-2 gap-2">
             <button class="btn btn-outline justify-center"
                     onclick="window.__app.downloadImportTemplate()">
               <i data-lucide="download"></i> Template
             </button>
-            <label class="btn btn-primary justify-center cursor-pointer">
+            <label class="btn btn-outline justify-center cursor-pointer">
               <i data-lucide="upload"></i> Import CSV
               <input type="file" accept=".csv,text/csv" class="hidden"
                      onchange="window.__app.startImport(this)">

@@ -7472,17 +7472,18 @@ RULES:
       this.#invoker = invoker;
     }
     /**
-     * @param {{kind: 'receipt'|'voice', book: string, parts: object[], maxOutputTokens?: number, seconds?: number}} request
+     * @param {{kind: 'receipt'|'voice'|'setup'|'import', book: string, parts: object[], maxOutputTokens?: number, seconds?: number, session?: string, rows?: number}} request
      *   seconds: how long the recording is (voice only) — voice entries are charged by length
+     *   session, rows: Import with AI — one id for every AI call of one import (charged once), and its row count
      * @returns {Promise<string>} the model's text answer
      * @throws {AiError}
      */
-    async generate({ kind, book, parts, maxOutputTokens = 1024, seconds = 0 }) {
+    async generate({ kind, book, parts, maxOutputTokens = 1024, seconds = 0, session = null, rows = 0 }) {
       const invoke = this.#invoker();
       if (!invoke || !book) throw new AiError("Please sign in to use AI scanning and voice entry.", "signed_out");
       let result;
       try {
-        result = await invoke("ai", { body: { kind, book, ref: _AiGateway.#ref(), parts, maxOutputTokens, ...kind === "voice" ? { seconds } : {} } });
+        result = await invoke("ai", { body: { kind, book, ref: _AiGateway.#ref(), parts, maxOutputTokens, ...kind === "voice" ? { seconds } : {}, ...kind === "import" ? { session, rows } : {} } });
       } catch (_) {
         throw new AiError("Network error \u2014 check your connection and try again.", "network");
       }
@@ -20849,22 +20850,39 @@ This replaces your current grouping.`
 
 `;
     }
+    /** Imports made with AI, newest first, each with Undo. */
+    #imports(state) {
+      const list = [...state.imports || []].reverse().slice(0, 5);
+      if (!list.length) return "";
+      const day = (iso) => String(iso || "").slice(0, 10);
+      return `<div class="mb-2 flex flex-col gap-1">${list.map((r) => `
+      <div class="flex items-center gap-2 text-xs">
+        <span class="flex-1 truncate">${Html.escape(r.file || "Import")} \xB7 ${day(r.at)} \xB7 ${Number(r.entries || 0).toLocaleString("en-IN")} entries</span>
+        <button class="btn btn-ghost text-xs" onclick="window.__app.undoImport('${Html.js(r.id)}')">Undo</button>
+      </div>`).join("")}</div>`;
+    }
     /** Data: move in, export / import, reset, saved copies. */
     #data(state) {
       return `
         ${this.#driveBackup()}
-        <!-- Migrate from another app (CSV) -->
+        <!-- Migrate from another app -->
         <div class="card-muted p-3 mb-3">
           <div class="flex items-center gap-2 mb-2">
             <i data-lucide="file-down" style="width:16px;height:16px" class="text-emerald-600"></i>
             <div class="font-medium text-sm flex-1">Move in from another app</div>
           </div>
+          <button class="btn btn-primary w-full justify-center mb-1" onclick="window.__app.openModal('aiImport')">
+            <i data-lucide="sparkles"></i> Import with AI
+          </button>
+          <div class="text-xs text-zinc-500 mb-2">Any CSV or Excel file: AI works out the columns, you check a preview. ${(state.imports || []).length ? "5 AI credits per import." : "Your first import is free (up to 5,000 rows)."}</div>
+          ${this.#imports(state)}
+          <div class="text-xs text-zinc-500 mb-1">Or use Pocket's own template:</div>
           <div class="grid grid-cols-2 gap-2">
             <button class="btn btn-outline justify-center"
                     onclick="window.__app.downloadImportTemplate()">
               <i data-lucide="download"></i> Template
             </button>
-            <label class="btn btn-primary justify-center cursor-pointer">
+            <label class="btn btn-outline justify-center cursor-pointer">
               <i data-lucide="upload"></i> Import CSV
               <input type="file" accept=".csv,text/csv" class="hidden"
                      onchange="window.__app.startImport(this)">
@@ -21224,6 +21242,1479 @@ This replaces your current grouping.`
       if (type === "borrow") type = "borrowed";
       if (type === "lend" || type === "loan") type = "lent";
       return type;
+    }
+  };
+
+  // src/domain/import/CsvGrid.js
+  var CsvGrid = class _CsvGrid {
+    /**
+     * @param {string} text
+     * @returns {string[][]} rows of trimmed cells; trailing blank rows dropped
+     */
+    static parse(text) {
+      let s = String(text || "");
+      if (s.charCodeAt(0) === 65279) s = s.slice(1);
+      const sep = _CsvGrid.#separator(s);
+      const rows = [];
+      let cur = [], field = "", inQ = false;
+      for (let i = 0; i < s.length; i++) {
+        const c = s[i], nx = s[i + 1];
+        if (inQ) {
+          if (c === '"' && nx === '"') {
+            field += '"';
+            i++;
+          } else if (c === '"') inQ = false;
+          else field += c;
+        } else if (c === '"') inQ = true;
+        else if (c === sep) {
+          cur.push(field);
+          field = "";
+        } else if (c === "\n" || c === "\r") {
+          if (c === "\r" && nx === "\n") i++;
+          cur.push(field);
+          field = "";
+          rows.push(cur.map((v) => v.trim()));
+          cur = [];
+        } else field += c;
+      }
+      if (field !== "" || cur.length) {
+        cur.push(field);
+        rows.push(cur.map((v) => v.trim()));
+      }
+      while (rows.length && rows[rows.length - 1].every((v) => v === "")) rows.pop();
+      return rows;
+    }
+    /** The separator used most often outside quotes in the first few lines. */
+    static #separator(s) {
+      const head = s.slice(0, 4e3);
+      const counts = { ",": 0, ";": 0, "	": 0 };
+      let inQ = false;
+      for (const c of head) {
+        if (c === '"') inQ = !inQ;
+        else if (!inQ && c in counts) counts[c]++;
+      }
+      return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][1] > 0 ? Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0] : ",";
+    }
+  };
+
+  // src/domain/import/XlsxReader.js
+  var XlsxReader = class _XlsxReader {
+    static MAX_ROWS = 25e3;
+    /** Built-in Excel number formats that are dates. */
+    static #DATE_IDS = /* @__PURE__ */ new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 30, 36, 45, 46, 47, 50, 57]);
+    #bytes;
+    /** @type {Map<string, {offset: number, method: number, size: number}>} */
+    #entries = /* @__PURE__ */ new Map();
+    /** @param {Uint8Array} bytes */
+    constructor(bytes) {
+      this.#bytes = bytes;
+    }
+    /** @returns {Promise<{name: string, grid: string[][]}[]>} */
+    async read() {
+      this.#index();
+      if (!this.#entries.has("xl/workbook.xml")) throw new Error("This doesn't look like an Excel file.");
+      const strings = this.#sharedStrings(await this.#text("xl/sharedStrings.xml"));
+      const dateStyles = this.#dateStyles(await this.#text("xl/styles.xml"));
+      const sheets = [];
+      for (const { name, path } of this.#sheets(await this.#text("xl/workbook.xml"), await this.#text("xl/_rels/workbook.xml.rels"))) {
+        const xml = await this.#text(path);
+        if (xml) sheets.push({ name, grid: this.#grid(xml, strings, dateStyles) });
+      }
+      return sheets;
+    }
+    // ── zip ──────────────────────────────────────────────────────────────
+    #u16(o) {
+      return this.#bytes[o] | this.#bytes[o + 1] << 8;
+    }
+    #u32(o) {
+      return (this.#u16(o) | this.#u16(o + 2) << 16) >>> 0;
+    }
+    /** Reads the zip's central directory. */
+    #index() {
+      const b = this.#bytes;
+      let end = -1;
+      for (let i = b.length - 22; i >= Math.max(0, b.length - 65557); i--) {
+        if (this.#u32(i) === 101010256) {
+          end = i;
+          break;
+        }
+      }
+      if (end < 0) throw new Error("This doesn't look like an Excel file.");
+      const count = this.#u16(end + 10);
+      let p = this.#u32(end + 16);
+      const dec = new TextDecoder();
+      for (let n = 0; n < count && this.#u32(p) === 33639248; n++) {
+        const method = this.#u16(p + 10);
+        const size = this.#u32(p + 20);
+        const nameLen = this.#u16(p + 28), extraLen = this.#u16(p + 30), commentLen = this.#u16(p + 32);
+        const local = this.#u32(p + 42);
+        const name = dec.decode(b.subarray(p + 46, p + 46 + nameLen));
+        const offset = local + 30 + this.#u16(local + 26) + this.#u16(local + 28);
+        this.#entries.set(name, { offset, method, size });
+        p += 46 + nameLen + extraLen + commentLen;
+      }
+    }
+    async #text(path) {
+      const e = this.#entries.get(path);
+      if (!e) return "";
+      const raw = this.#bytes.subarray(e.offset, e.offset + e.size);
+      if (e.method === 0) return new TextDecoder().decode(raw);
+      if (e.method !== 8) throw new Error("This Excel file is compressed in a way that can't be read.");
+      const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return new TextDecoder().decode(await new Response(stream).arrayBuffer());
+    }
+    // ── XML ──────────────────────────────────────────────────────────────
+    static #decode(s) {
+      return String(s).replace(/&(lt|gt|amp|quot|apos|#\d+|#x[0-9a-f]+);/gi, (_, e) => {
+        const k = e.toLowerCase();
+        if (k === "lt") return "<";
+        if (k === "gt") return ">";
+        if (k === "amp") return "&";
+        if (k === "quot") return '"';
+        if (k === "apos") return "'";
+        return String.fromCodePoint(k[1] === "x" ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10));
+      });
+    }
+    static #attr(tag, name) {
+      const m = tag.match(new RegExp(`\\s${name}="([^"]*)"`));
+      return m ? _XlsxReader.#decode(m[1]) : null;
+    }
+    /** The text of every <t> inside a piece of XML (rich text has several). */
+    static #texts(xml) {
+      let out = "";
+      for (const m of xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) out += _XlsxReader.#decode(m[1]);
+      return out;
+    }
+    #sharedStrings(xml) {
+      return [...String(xml).matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => _XlsxReader.#texts(m[1]));
+    }
+    /** Style index → is a date format. */
+    #dateStyles(xml) {
+      const custom = /* @__PURE__ */ new Map();
+      for (const m of String(xml).matchAll(/<numFmt\s[^>]*>/g)) {
+        const id = Number(_XlsxReader.#attr(m[0], "numFmtId"));
+        const code = (_XlsxReader.#attr(m[0], "formatCode") || "").replace(/"[^"]*"|\[[^\]]*\]/g, "").toLowerCase();
+        custom.set(id, /[dy]/.test(code) || /m/.test(code) && !/[hs]/.test(code) && /\d|m{2,}/.test(code));
+      }
+      const xfs = String(xml).match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/)?.[1] || "";
+      return [...xfs.matchAll(/<xf\s[^>]*?\/?>/g)].map((m) => {
+        const id = Number(_XlsxReader.#attr(m[0], "numFmtId") || 0);
+        return _XlsxReader.#DATE_IDS.has(id) || custom.get(id) === true;
+      });
+    }
+    #sheets(workbook, rels) {
+      const targets = /* @__PURE__ */ new Map();
+      for (const m of String(rels).matchAll(/<Relationship\s[^>]*>/g)) {
+        targets.set(_XlsxReader.#attr(m[0], "Id"), _XlsxReader.#attr(m[0], "Target"));
+      }
+      return [...String(workbook).matchAll(/<sheet\s[^>]*>/g)].map((m) => {
+        const t = targets.get(_XlsxReader.#attr(m[0], "r:id")) || "";
+        const path = t.startsWith("/") ? t.slice(1) : `xl/${t.replace(/^\.\//, "")}`;
+        return { name: _XlsxReader.#attr(m[0], "name") || "Sheet", path };
+      });
+    }
+    static #col(ref) {
+      const letters = String(ref || "").match(/^[A-Z]+/i)?.[0].toUpperCase() || "";
+      let n = 0;
+      for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+      return n - 1;
+    }
+    /** An Excel day number as YYYY-MM-DD. */
+    static serialDate(serial) {
+      const ms = Math.round((Number(serial) - 25569) * 864e5);
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+    }
+    #grid(xml, strings, dateStyles) {
+      const grid = [];
+      for (const row of xml.matchAll(/<row\s([^>]*)>([\s\S]*?)<\/row>|<row\s([^>]*)\/>/g)) {
+        const r = Number(_XlsxReader.#attr(` ${row[1] || row[3]}`, "r")) - 1;
+        if (!(r >= 0) || r >= _XlsxReader.MAX_ROWS) continue;
+        const cells = [];
+        for (const c of (row[2] || "").matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+          const tag = ` ${c[1]}`;
+          const at = _XlsxReader.#col(_XlsxReader.#attr(tag, "r"));
+          if (at < 0 || at > 200) continue;
+          cells[at] = this.#value(tag, c[2] || "", strings, dateStyles);
+        }
+        grid[r] = Array.from({ length: cells.length }, (_, i) => cells[i] ?? "");
+      }
+      for (let i = 0; i < grid.length; i++) grid[i] ??= [];
+      while (grid.length && grid[grid.length - 1].every((v) => v === "")) grid.pop();
+      return grid;
+    }
+    #value(tag, inner, strings, dateStyles) {
+      const type = _XlsxReader.#attr(tag, "t");
+      const v = inner.match(/<v>([\s\S]*?)<\/v>/)?.[1];
+      if (type === "s") return (strings[Number(v)] ?? "").trim();
+      if (type === "inlineStr") return _XlsxReader.#texts(inner).trim();
+      if (type === "str" || type === "e") return _XlsxReader.#decode(v ?? "").trim();
+      if (type === "b") return v === "1" ? "TRUE" : "FALSE";
+      if (v == null || v === "") return "";
+      const num = Number(v);
+      if (!Number.isFinite(num)) return _XlsxReader.#decode(v).trim();
+      if (dateStyles[Number(_XlsxReader.#attr(tag, "s") || 0)] && num > 0 && num < 2958466) return _XlsxReader.serialDate(num);
+      return String(Math.round(num * 1e8) / 1e8);
+    }
+  };
+
+  // src/domain/import/SheetReader.js
+  var SheetReadError = class extends Error {
+  };
+  var SheetReader = class _SheetReader {
+    /** Largest file read (bytes). */
+    static MAX_BYTES = 15 * 1024 * 1024;
+    /**
+     * @param {{name: string, size?: number, text: () => Promise<string>, arrayBuffer: () => Promise<ArrayBuffer>}} file
+     * @returns {Promise<{name: string, sheets: {name: string, grid: string[][]}[]}>}
+     * @throws {SheetReadError} with a sentence for the person
+     */
+    static async read(file) {
+      const name = String(file?.name || "file");
+      if ((file?.size || 0) > _SheetReader.MAX_BYTES) throw new SheetReadError("That file is too large. Try a smaller export (under 15 MB).");
+      const ext = (name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
+      if (ext === "xlsx" || ext === "xlsm") {
+        const sheets = await new XlsxReader(new Uint8Array(await file.arrayBuffer())).read();
+        return { name, sheets: sheets.filter((s) => s.grid.length) };
+      }
+      if (ext === "xls") throw new SheetReadError("Old Excel files (.xls) can't be read. Open it in Excel or Google Sheets and save as .xlsx or .csv.");
+      if (ext === "pdf") throw new SheetReadError("Statement PDFs are coming soon. For now, please use a CSV or Excel file.");
+      if (ext && !["csv", "tsv", "txt"].includes(ext)) throw new SheetReadError("Please choose a CSV or Excel (.xlsx) file.");
+      const grid = CsvGrid.parse(await file.text());
+      return { name, sheets: grid.length ? [{ name: "Sheet1", grid }] : [] };
+    }
+  };
+
+  // src/domain/import/TableFinder.js
+  var TableFinder = class _TableFinder {
+    static #TOTAL = /^\s*(grand\s+)?(sub\s*)?totals?\b|^\s*(closing|opening)?\s*balance\b|^\s*sum\b/i;
+    /**
+     * @param {{name: string, grid: string[][]}[]} sheets
+     * @returns {{id: string, sheet: string, title: string, firstRow: number, lastRow: number,
+     *   columns: string[], head: {n: number, cells: string[]}, rows: {n: number, cells: string[]}[], skipped: {n: number, text: string}[]}[]}
+     *   firstRow / lastRow / n are the sheet's own row numbers (1 = first row)
+     */
+    static find(sheets) {
+      const tables = [];
+      for (const sheet of sheets) {
+        for (const block of _TableFinder.#blocks(sheet.grid)) {
+          const t = _TableFinder.#table(sheet.name, block);
+          if (t) tables.push({ id: `t${tables.length + 1}`, ...t });
+        }
+      }
+      return tables;
+    }
+    static #filled(v) {
+      return String(v ?? "").trim() !== "";
+    }
+    /** Runs of filled rows, each split again by fully blank columns. */
+    static #blocks(grid) {
+      const out = [];
+      let start = -1;
+      for (let r = 0; r <= grid.length; r++) {
+        const has = r < grid.length && (grid[r] || []).some(_TableFinder.#filled);
+        if (has && start < 0) start = r;
+        if (!has && start >= 0) {
+          out.push(..._TableFinder.#byColumns(grid, start, r - 1));
+          start = -1;
+        }
+      }
+      return out;
+    }
+    static #byColumns(grid, from, to) {
+      const width = Math.max(...grid.slice(from, to + 1).map((r) => (r || []).length));
+      const used = Array.from({ length: width }, (_, c) => grid.slice(from, to + 1).some((r) => _TableFinder.#filled(r?.[c])));
+      const spans = [];
+      let s = -1;
+      for (let c = 0; c <= width; c++) {
+        if (c < width && used[c] && s < 0) s = c;
+        if ((c === width || !used[c]) && s >= 0) {
+          spans.push([s, c - 1]);
+          s = -1;
+        }
+      }
+      return spans.map(([c0, c1]) => {
+        const rows = [];
+        for (let r = from; r <= to; r++) {
+          const cells = (grid[r] || []).slice(c0, c1 + 1).map((v) => String(v ?? "").trim());
+          while (cells.length < c1 - c0 + 1) cells.push("");
+          if (cells.some((v) => v !== "")) rows.push({ n: r + 1, cells });
+        }
+        return rows;
+      }).filter((rows) => rows.length);
+    }
+    static #table(sheet, block) {
+      let rows = block;
+      let title = "";
+      if (rows.length > 1 && rows[0].cells.filter(_TableFinder.#filled).length === 1 && rows[1].cells.filter(_TableFinder.#filled).length > 1) {
+        title = rows[0].cells.find(_TableFinder.#filled);
+        rows = rows.slice(1);
+      }
+      if (rows.length === 1 && rows[0].cells.filter(_TableFinder.#filled).length <= 1) {
+        return null;
+      }
+      const header = rows[0];
+      const columns = _TableFinder.#labels(header.cells);
+      const body = [], skipped = [];
+      for (const row of rows.slice(1)) {
+        const first = row.cells.find(_TableFinder.#filled) || "";
+        if (_TableFinder.#TOTAL.test(first)) skipped.push({ n: row.n, text: first });
+        else body.push(row);
+      }
+      return { sheet, title, firstRow: header.n, lastRow: rows[rows.length - 1].n, columns, head: { n: header.n, cells: header.cells }, rows: body, skipped };
+    }
+    /** Header names, with "Column B" for blanks and "(2)" for repeats. */
+    static #labels(cells) {
+      const seen = /* @__PURE__ */ new Map();
+      return cells.map((v, i) => {
+        let name = String(v || "").replace(/\s+/g, " ").trim().slice(0, 60) || `Column ${_TableFinder.letter(i)}`;
+        const k = name.toLowerCase();
+        const n = (seen.get(k) || 0) + 1;
+        seen.set(k, n);
+        if (n > 1) name = `${name} (${n})`;
+        return name;
+      });
+    }
+    /** 0 → A, 25 → Z, 26 → AA. */
+    static letter(i) {
+      let s = "";
+      for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+      return s;
+    }
+  };
+
+  // src/domain/import/ImportPrompt.js
+  var ImportPrompt = class _ImportPrompt {
+    static MAX_CHARS = 18e3;
+    static #SAMPLES = 8;
+    static #VALUES = 40;
+    static first(tables, book) {
+      return _ImportPrompt.#fit((samples, values) => `${_ImportPrompt.#rules()}
+
+${_ImportPrompt.#book(book)}
+
+${_ImportPrompt.#tables(tables, samples, values)}
+
+Reply with ONLY the JSON plan.`);
+    }
+    static change(tables, book, mapping, draft, message) {
+      const counts = draft.counts;
+      const plain = { ...mapping };
+      delete plain.reply;
+      const loose = draft.uncategorisedTop(25).map(([k, n]) => `${k} (${n})`).join("; ");
+      return _ImportPrompt.#fit((samples, values) => `${_ImportPrompt.#rules()}
+
+${_ImportPrompt.#book(book)}
+
+${_ImportPrompt.#tables(tables, samples, values)}
+
+CURRENT PLAN:
+${JSON.stringify(plain)}
+
+PREVIEW WITH THIS PLAN: ${counts.expenses} expenses, ${counts.incomes} incomes, ${counts.transfers} transfers, ${counts.budgets} budgets, ${counts.attention} rows to check, ${counts.uncategorised} entries with no category.
+New accounts: ${draft.accounts.filter((a) => !a.existing).map((a) => a.name).join(", ") || "none"}.
+${loose ? `Most used details with no category: ${loose}` : ""}
+
+THE PERSON SAYS: ${String(message).slice(0, 600)}
+
+Change the plan to do what they ask, keeping everything else. Reply with ONLY the whole updated JSON plan; in "reply", say in one or two short plain sentences what you changed (or why you couldn't).`);
+    }
+    static #rules() {
+      return `You read a money spreadsheet for Pocket, a personal money app, and write a JSON plan that Pocket's code applies to every row. Never invent rows or amounts.
+Each TABLE below is one block of the file. Decide what each is:
+- "entries": expenses and/or incomes (may include transfers);
+- "transfers": money moved between the person's own accounts (from / to);
+- "budgets": spending limits by category (no dates);
+- "skip": summaries, notes, totals, anything else.
+If a table has no header row of its own and its "columns" look like data matching an earlier table, set "sameAs" to that table's id (its columns are used).
+
+JSON plan shape (use the EXACT column names given; leave out what doesn't exist):
+{"reply":"one short sentence for the person",
+ "tables":[{"id":"t1","kind":"entries","why":"short reason",
+   "columns":{"date":"","amount":"","debit":"","credit":"","type":"","category":"","subcategory":"","account":"","to":"","payee":"","note":"","currency":"","period":""},
+   "types":{"expense":["values of the type column meaning money out"],"income":["\u2026money in"],"transfer":["\u2026between own accounts"]},
+   "sign":"negative_expense | negative_income (only when there is no type column and amounts carry a sign)",
+   "fixed":"expense | income (only when every row is one kind)",
+   "dateOrder":"DMY | MDY | YMD","account":"account name to use when there is no account column","period":"month | week | year (budgets)"}],
+ "categories":{"<a value of the category column, exactly as written>":["Pocket main category","Pocket subcategory or empty"]},
+ "accounts":{"<account value from the file>":"<account name to use>"},
+ "rules":[{"contains":"lowercase word in the details","category":["Main","Sub"]}]}
+
+Guidance:
+- "debit"/"credit": two amount columns (money out / money in) instead of one.
+- Types: copy the values from the type column exactly (e.g. "Dr", "Cr", "Expense").
+- Dates: pick dateOrder from the sample dates (e.g. 13/11/2025 means DMY).
+- Categories: map EVERY value listed for the category column (and "Category \u203A Subcategory" pairs if you need them to differ). Prefer the person's existing Pocket categories (same meaning, not just same word); otherwise keep the file's own name as a new main category.
+- When a table has no category column, write "rules" for the most common details/payees you can place with confidence.
+- Accounts: map a file account to an existing Pocket account only when it is clearly the same one (e.g. "HDFC" \u2192 "HDFC Bank"); otherwise keep the file's name.
+- "payee" is who was paid or paid you; "note" is any other description. A single "Details"/"Description" column is usually "payee".
+- Never use the words mutual funds, stock market or index; say "shares".`;
+    }
+    static #book(book) {
+      const cats = book.categories || [];
+      const mains = cats.filter((c) => !c.parentId);
+      const lines = mains.slice(0, 60).map((m) => {
+        const subs = cats.filter((c) => c.parentId === m.id).map((c) => c.name).slice(0, 25);
+        return `${m.name} (${m.type === "income" ? "income" : "spending"})${subs.length ? `: ${subs.join(", ")}` : ""}`;
+      });
+      const accounts = (book.accounts || []).filter((a) => !a.archived).map((a) => a.name).slice(0, 40);
+      return `POCKET CATEGORIES:
+${lines.join("\n") || "(none yet)"}
+
+POCKET ACCOUNTS: ${accounts.join(", ") || "(none yet)"}`;
+    }
+    static #tables(tables, samples, values) {
+      return tables.map((t) => {
+        const rows = t.rows;
+        const pick = rows.length <= samples ? rows : [...rows.slice(0, Math.ceil(samples / 2)), ...rows.slice(Math.floor(rows.length / 2), Math.floor(rows.length / 2) + Math.floor(samples / 2))];
+        const head = `TABLE ${t.id} \xB7 sheet "${t.sheet}" rows ${t.firstRow}\u2013${t.lastRow} \xB7 ${rows.length} data rows${t.title ? ` \xB7 title above it: "${t.title}"` : ""}`;
+        const cols = `columns: ${t.columns.join(" | ")}`;
+        const sample = pick.map((r) => `  ${r.cells.map((c) => String(c).slice(0, 40)).join(" | ")}`).join("\n");
+        const skipped = t.skipped.length ? `
+left out as totals: ${t.skipped.map((s) => s.text).join(", ").slice(0, 200)}` : "";
+        return `${head}
+${cols}
+sample rows:
+${sample}${skipped}
+${_ImportPrompt.#values(t, values)}`;
+      }).join("\n\n");
+    }
+    /** The most used values of each text column, and the category values to map. */
+    static #values(t, limit) {
+      const out = [];
+      t.columns.forEach((name, i) => {
+        const freq = /* @__PURE__ */ new Map();
+        let numeric = 0;
+        for (const r of t.rows) {
+          const v = String(r.cells[i] ?? "").trim();
+          if (!v) continue;
+          if (/^[-+(]?[₹$€£]?\s?[\d,.\s]+\)?\s*(dr|cr)?$/i.test(v) || /^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}$/.test(v)) numeric++;
+          freq.set(v.slice(0, 40), (freq.get(v.slice(0, 40)) || 0) + 1);
+        }
+        if (!freq.size || numeric > t.rows.length / 2) return;
+        const top = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+        out.push(`  ${name} (${freq.size} different): ${top.map(([v, n]) => `${v} (${n})`).join("; ")}`);
+      });
+      return out.length ? `values used most, by column:
+${out.join("\n")}` : "";
+    }
+    /** Shrinks samples and value lists until the prompt fits. */
+    static #fit(build) {
+      for (const [s, v] of [[_ImportPrompt.#SAMPLES, _ImportPrompt.#VALUES], [6, 25], [4, 15], [3, 8], [2, 4]]) {
+        const text = build(s, v);
+        if (text.length <= _ImportPrompt.MAX_CHARS) return text;
+      }
+      return build(1, 2).slice(0, _ImportPrompt.MAX_CHARS);
+    }
+  };
+
+  // src/domain/import/ImportMapping.js
+  var ImportMapping = class _ImportMapping {
+    static KINDS = Object.freeze(["entries", "transfers", "budgets", "skip"]);
+    static COLUMNS = Object.freeze(["date", "amount", "debit", "credit", "type", "category", "subcategory", "account", "to", "payee", "note", "currency", "period"]);
+    /**
+     * @param {string} text  the AI's answer (JSON, possibly wrapped in prose or a code fence)
+     * @param {{id: string, columns: string[]}[]} tables  from TableFinder
+     * @returns {object} a clean mapping
+     * @throws {Error} when no JSON can be found
+     */
+    static parse(text, tables) {
+      const m = String(text || "").match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("The AI didn't return a plan. Please try again.");
+      let raw;
+      try {
+        raw = JSON.parse(m[0]);
+      } catch (_) {
+        throw new Error("The AI's answer couldn't be read. Please try again.");
+      }
+      return _ImportMapping.clean(raw, tables);
+    }
+    /** Keeps only what makes sense for these tables. */
+    static clean(raw, tables) {
+      const r = raw && typeof raw === "object" ? raw : {};
+      const byId = new Map(tables.map((t) => [t.id, t]));
+      const given = new Map((Array.isArray(r.tables) ? r.tables : []).filter((t) => byId.has(t?.id)).map((t) => [t.id, t]));
+      const out = {
+        reply: _ImportMapping.#str(r.reply, 400),
+        tables: tables.map((t) => _ImportMapping.#table(given.get(t.id), t, byId)),
+        categories: {},
+        accounts: {},
+        rules: []
+      };
+      for (const [k, v] of Object.entries(r.categories && typeof r.categories === "object" ? r.categories : {})) {
+        const pair = _ImportMapping.#pair(v);
+        if (pair && k.trim()) out.categories[k.trim()] = pair;
+      }
+      for (const [k, v] of Object.entries(r.accounts && typeof r.accounts === "object" ? r.accounts : {})) {
+        const name = _ImportMapping.#str(v, 60);
+        if (name && k.trim()) out.accounts[k.trim()] = name;
+      }
+      for (const rule of (Array.isArray(r.rules) ? r.rules : []).slice(0, 300)) {
+        const contains = _ImportMapping.#str(rule?.contains, 60).toLowerCase();
+        const pair = _ImportMapping.#pair(rule?.category);
+        if (contains && pair) out.rules.push({ contains, category: pair });
+      }
+      return out;
+    }
+    static #table(g, t, byId) {
+      const a = g && typeof g === "object" ? g : {};
+      const sameAs = typeof a.sameAs === "string" && byId.has(a.sameAs) && a.sameAs !== t.id ? a.sameAs : null;
+      const cols = sameAs ? byId.get(sameAs).columns : t.columns;
+      const columns = {};
+      for (const key of _ImportMapping.COLUMNS) {
+        const v = a.columns?.[key];
+        if (typeof v === "string" && cols.includes(v)) columns[key] = v;
+      }
+      const list = (x) => (Array.isArray(x) ? x : []).map((v) => String(v).trim().toLowerCase()).filter(Boolean).slice(0, 50);
+      return {
+        id: t.id,
+        kind: _ImportMapping.KINDS.includes(a.kind) ? a.kind : "skip",
+        sameAs,
+        why: _ImportMapping.#str(a.why, 200),
+        columns,
+        types: { expense: list(a.types?.expense), income: list(a.types?.income), transfer: list(a.types?.transfer) },
+        sign: ["negative_expense", "negative_income"].includes(a.sign) ? a.sign : null,
+        fixed: ["expense", "income"].includes(a.fixed) ? a.fixed : null,
+        dateOrder: ["DMY", "MDY", "YMD"].includes(a.dateOrder) ? a.dateOrder : "DMY",
+        account: _ImportMapping.#str(a.account, 60),
+        period: ["month", "week", "year"].includes(a.period) ? a.period : "month"
+      };
+    }
+    static #pair(v) {
+      if (!Array.isArray(v)) return null;
+      const main = _ImportMapping.#str(v[0], 40);
+      return main ? [main, _ImportMapping.#str(v[1], 40)] : null;
+    }
+    static #str(v, max) {
+      return typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "";
+    }
+  };
+
+  // src/domain/import/CellValue.js
+  var CellValue = class _CellValue {
+    static #MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    /**
+     * @param {string} text
+     * @param {'DMY'|'MDY'|'YMD'} [order='DMY']
+     * @returns {string|null} YYYY-MM-DD
+     */
+    static date(text, order = "DMY") {
+      const s = String(text ?? "").trim().replace(/\s+/g, " ");
+      if (!s) return null;
+      let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?$/);
+      if (m) return _CellValue.#make(+m[1], +m[2], +m[3]);
+      m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:[ T].*)?$/);
+      if (m) {
+        const y = _CellValue.#year(m[3]);
+        const [d, mo] = order === "MDY" ? [+m[2], +m[1]] : [+m[1], +m[2]];
+        return _CellValue.#make(y, mo, d);
+      }
+      m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[ \-/.]?([a-z]{3,9})[ \-/.,]*(\d{2}|\d{4})$/i);
+      if (m) {
+        const mo = _CellValue.#month(m[2]);
+        return mo ? _CellValue.#make(_CellValue.#year(m[3]), mo, +m[1]) : null;
+      }
+      m = s.match(/^([a-z]{3,9})[ \-/.]?(\d{1,2})(?:st|nd|rd|th)?[ ,\-/.]*(\d{2}|\d{4})$/i);
+      if (m) {
+        const mo = _CellValue.#month(m[1]);
+        return mo ? _CellValue.#make(_CellValue.#year(m[3]), mo, +m[2]) : null;
+      }
+      if (/^\d{5}(\.\d+)?$/.test(s)) {
+        const n = Number(s);
+        if (n > 2e4 && n < 8e4) return new Date(Math.round((n - 25569) * 864e5)).toISOString().slice(0, 10);
+      }
+      return null;
+    }
+    /**
+     * @param {string} text
+     * @returns {{value: number, sign: -1|1, mark: 'dr'|'cr'|null}|null} value is positive (major units)
+     */
+    static amount(text) {
+      let s = String(text ?? "").trim().toLowerCase();
+      if (!s) return null;
+      let mark = null;
+      const dc = s.match(/\b(dr|cr)\.?$/);
+      if (dc) {
+        mark = dc[1];
+        s = s.slice(0, dc.index).trim();
+      }
+      let sign = 1;
+      if (/^\(.*\)$/.test(s)) {
+        sign = -1;
+        s = s.slice(1, -1);
+      }
+      s = s.replace(/^(rs\.?|inr|usd|aed|sar|gbp|eur)\s*/i, "").replace(/[₹$€£¥]/g, "").trim();
+      if (s.startsWith("-") || s.startsWith("\u2212")) {
+        sign = -1;
+        s = s.slice(1);
+      } else if (s.endsWith("-")) {
+        sign = -1;
+        s = s.slice(0, -1);
+      } else if (s.startsWith("+")) s = s.slice(1);
+      s = s.replace(/[\s,']/g, "");
+      if (!/^\d*\.?\d+$/.test(s)) return null;
+      const value = Number(s);
+      return Number.isFinite(value) ? { value, sign, mark } : null;
+    }
+    static #year(y) {
+      const n = Number(y);
+      return y.length === 2 ? n > 70 ? 1900 + n : 2e3 + n : n;
+    }
+    static #month(word) {
+      const i = _CellValue.#MONTHS.indexOf(String(word).slice(0, 3).toLowerCase());
+      return i < 0 ? 0 : i + 1;
+    }
+    static #make(y, m, d) {
+      if (!(y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1)) return null;
+      const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      if (d > days) return null;
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+  };
+
+  // src/domain/import/ImportDraft.js
+  var ImportDraft = class {
+    /** @type {object[]} */
+    entries = [];
+    /** @type {object[]} */
+    budgets = [];
+    /** @type {object[]} */
+    attention = [];
+    /** @type {{table: string, n: number, text: string}[]} */
+    skipped = [];
+    duplicates = 0;
+    /** @type {{name: string, existing: boolean}[]} */
+    accounts = [];
+    /** @type {{main: string, sub: string, type: string, existing: boolean}[]} */
+    categories = [];
+    #book;
+    #mapping;
+    #fixes;
+    #home;
+    /**
+     * @param {object} p
+     * @param {object[]} p.tables    TableFinder tables
+     * @param {object}   p.mapping   ImportMapping
+     * @param {object}   p.book      the book state (read only)
+     * @param {Object<string, object>} [p.fixes]  attention key → {skip}|{amount}|{type}|{date}|{account}
+     */
+    constructor({ tables, mapping, book, fixes = {} }) {
+      this.#book = book;
+      this.#mapping = mapping;
+      this.#fixes = fixes;
+      this.#home = book.user?.homeCurrency || "INR";
+      const byId = new Map(tables.map((t) => [t.id, t]));
+      for (const rule of mapping.tables) {
+        const t = byId.get(rule.id);
+        if (!t || rule.kind === "skip") continue;
+        const source = rule.sameAs ? byId.get(rule.sameAs) : t;
+        const effective = rule.sameAs ? { ...mapping.tables.find((x) => x.id === rule.sameAs) || rule, id: rule.id, kind: rule.kind } : rule;
+        const rows = rule.sameAs ? [t.head, ...t.rows] : t.rows;
+        for (const row of rows) this.#row(effective, source.columns, row);
+        for (const s of t.skipped) this.skipped.push({ table: t.id, n: s.n, text: s.text });
+      }
+      this.#markDuplicates();
+      this.#collectNames();
+    }
+    /** Counts for the preview. */
+    get counts() {
+      const n = (type) => this.entries.filter((e) => e.type === type).length;
+      return {
+        expenses: n("expense"),
+        incomes: n("income"),
+        transfers: n("transfer"),
+        budgets: this.budgets.length,
+        attention: this.attention.length,
+        duplicates: this.duplicates,
+        skipped: this.skipped.length,
+        uncategorised: this.entries.filter((e) => e.type !== "transfer" && !e.main).length
+      };
+    }
+    /** Details / payees with no category, most frequent first (for the AI and the preview). */
+    uncategorisedTop(limit = 30) {
+      const freq = /* @__PURE__ */ new Map();
+      for (const e of this.entries) {
+        if (e.type === "transfer" || e.main) continue;
+        const k = (e.payee || e.note || "").trim();
+        if (k) freq.set(k, (freq.get(k) || 0) + 1);
+      }
+      return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+    }
+    // ── one row ──────────────────────────────────────────────────────────
+    #cell(columns, row, key, rule) {
+      const name = rule.columns[key];
+      if (!name) return "";
+      const i = columns.indexOf(name);
+      return i < 0 ? "" : String(row.cells[i] ?? "").trim();
+    }
+    #row(rule, columns, row) {
+      const key = `${rule.id}:${row.n}`;
+      const fix = this.#fixes[key] || {};
+      if (fix.skip) return;
+      const get = (k) => this.#cell(columns, row, k, rule);
+      const base = { key, table: rule.id, n: row.n, text: row.cells.filter(Boolean).join(" \xB7 ").slice(0, 120) };
+      if (rule.kind === "budgets") return this.#budget(rule, get, base);
+      const date = fix.date || CellValue.date(get("date"), rule.dateOrder);
+      const money = this.#money(rule, get, fix);
+      const payee = rule.kind === "transfers" ? "" : get("payee");
+      const note = get("note");
+      const currency = (get("currency") || "").toUpperCase().match(/^[A-Z]{3}$/)?.[0] || this.#home;
+      if (!get("date") && !money.value && !payee && !note) return;
+      if (!date) return this.#flag(base, "date", get("date") ? `\u201C${get("date")}\u201D isn't a real date.` : "No date in this row.");
+      if (!money.value) return this.#flag(base, "amount", "No amount in this row.");
+      if (!money.type) return this.#flag(base, "type", "Can't tell if this is money in or out.", { payee, note, date, value: money.value });
+      const account = this.#account(fix.account || get("account") || rule.account);
+      if (money.type === "transfer") {
+        const to = this.#account(fix.to || get("to"));
+        if (!account || !to || account === to) return this.#flag(base, "account", "A transfer needs both a from and a to account.");
+        this.entries.push({ ...base, type: "transfer", date, amount: money.value, currency, account, to, payee: "", note: note || payee });
+        return;
+      }
+      const [main, sub] = this.#category(rule, get, payee, note, money.type);
+      this.entries.push({ ...base, type: money.type, date, amount: money.value, currency, account: account || this.#defaultAccount(), main, sub, payee, note });
+    }
+    /** The amount (major units, positive) and the kind of entry; a fix typed by the person wins. */
+    #money(rule, get, fix) {
+      let value = 0, type = rule.kind === "transfers" ? "transfer" : null;
+      if (rule.columns.debit || rule.columns.credit) {
+        const d = CellValue.amount(get("debit")), c = CellValue.amount(get("credit"));
+        if (d?.value) {
+          value = d.value;
+          type ??= "expense";
+        } else if (c?.value) {
+          value = c.value;
+          type ??= "income";
+        }
+      } else {
+        const a = CellValue.amount(get("amount"));
+        value = a?.value || 0;
+        if (!type && rule.columns.type) {
+          const t = get("type").toLowerCase();
+          if (rule.types.transfer.includes(t)) type = "transfer";
+          else if (rule.types.expense.includes(t)) type = "expense";
+          else if (rule.types.income.includes(t)) type = "income";
+        }
+        if (!type && a?.mark) type = a.mark === "dr" ? "expense" : "income";
+        if (!type && a && rule.sign) type = a.sign < 0 === (rule.sign === "negative_expense") ? "expense" : "income";
+        if (!type && rule.fixed) type = rule.fixed;
+      }
+      if (fix.amount != null) value = CellValue.amount(String(fix.amount))?.value || 0;
+      if (fix.type) type = fix.type;
+      return { value, type };
+    }
+    #budget(rule, get, base) {
+      const a = CellValue.amount(get("amount"));
+      const label = this.#categoryKey(get("category"), get("subcategory"));
+      if (!label) return;
+      if (!a?.value) return this.#flag(base, "amount", "This budget has no amount.");
+      const cat = get("category");
+      const byMain = cat && this.#mapping.categories[cat];
+      const [main, sub] = this.#mapping.categories[label] || (byMain ? [byMain[0], byMain[1] || get("subcategory")] : this.#existingPair(label));
+      const p = get("period").toLowerCase();
+      const period = /week/.test(p) ? "week" : /year|annual/.test(p) ? "year" : /month/.test(p) ? "month" : rule.period;
+      this.budgets.push({ ...base, main, sub, amount: a.value, currency: this.#home, period });
+    }
+    #flag(base, problem, why, extra = {}) {
+      this.attention.push({ ...base, problem, why, ...extra });
+    }
+    // ── names ────────────────────────────────────────────────────────────
+    #categoryKey(cat, sub) {
+      return cat && sub ? `${cat} \u203A ${sub}` : cat || sub || "";
+    }
+    #category(rule, get, payee, note, type) {
+      const cat = get("category"), sub = get("subcategory");
+      const key = this.#categoryKey(cat, sub);
+      if (key) {
+        const pair = this.#mapping.categories[key];
+        if (pair) return pair;
+        const byMain = cat && this.#mapping.categories[cat];
+        if (byMain) return [byMain[0], byMain[1] || sub];
+        return this.#existingPair(key);
+      }
+      const hay = `${payee} ${note}`.toLowerCase();
+      const hit = this.#mapping.rules.find((r) => hay.includes(r.contains));
+      return hit ? hit.category : ["", ""];
+    }
+    /** "Food › Groceries" or "Food" read as a Pocket main / sub pair. */
+    #existingPair(key) {
+      const [m, s] = key.split(" \u203A ");
+      return [m.trim(), (s || "").trim()];
+    }
+    #account(value) {
+      const v = String(value || "").trim();
+      if (!v) return "";
+      return this.#mapping.accounts[v] || v;
+    }
+    #defaultAccount() {
+      const acc = this.#book.accounts || [];
+      const def = acc.find((a) => a.id === this.#book.user?.defaultAccountId && !a.archived) || acc.find((a) => !a.archived);
+      return def?.name || "Cash";
+    }
+    // ── book comparison ──────────────────────────────────────────────────
+    #markDuplicates() {
+      const norm = (s) => String(s || "").trim().toLowerCase();
+      const factor = (c) => ["JPY", "KRW"].includes(c) ? 1 : ["KWD", "BHD", "OMR"].includes(c) ? 1e3 : 100;
+      const accName = new Map((this.#book.accounts || []).map((a) => [a.id, norm(a.name)]));
+      const have = new Set((this.#book.transactions || []).filter((t) => t.type === "expense" || t.type === "income" || t.type === "transfer" && t.transferDir === "out").map((t) => `${t.date}|${accName.get(t.accountId)}|${t.type}|${t.amount}`));
+      const kept = [];
+      for (const e of this.entries) {
+        const k = `${e.date}|${norm(e.account)}|${e.type}|${Math.round(e.amount * factor(e.currency))}`;
+        if (have.has(k)) this.duplicates++;
+        else kept.push(e);
+      }
+      this.entries = kept;
+    }
+    #collectNames() {
+      const norm = (s) => String(s || "").trim().toLowerCase();
+      const accounts = new Set((this.#book.accounts || []).filter((a) => !a.archived).map((a) => norm(a.name)));
+      const seenA = /* @__PURE__ */ new Map();
+      for (const e of this.entries) for (const n of [e.account, e.to].filter(Boolean)) {
+        if (!seenA.has(norm(n))) seenA.set(norm(n), { name: n, existing: accounts.has(norm(n)) });
+      }
+      this.accounts = [...seenA.values()];
+      const cats = this.#book.categories || [];
+      const mainOf = (name, type) => cats.find((c) => !c.parentId && norm(c.name) === norm(name) && (!type || c.type === type));
+      const seenC = /* @__PURE__ */ new Map();
+      const add = (main, sub, type) => {
+        if (!main) return;
+        const k = `${norm(main)}|${norm(sub)}|${type}`;
+        if (seenC.has(k)) return;
+        const m = mainOf(main, type) || mainOf(main);
+        const existing = !!m && (!sub || cats.some((c) => c.parentId === m.id && norm(c.name) === norm(sub)));
+        seenC.set(k, { main, sub, type, existing });
+      };
+      for (const e of this.entries) if (e.type !== "transfer") add(e.main, e.sub, e.type);
+      for (const b of this.budgets) add(b.main, b.sub, "expense");
+      this.categories = [...seenC.values()];
+    }
+  };
+
+  // src/domain/import/AiImportService.js
+  var AiImportService = class _AiImportService {
+    static FREE_ROWS = 5e3;
+    static MAX_ROWS = 2e4;
+    #ask;
+    #book;
+    /** @type {string} */
+    file = "";
+    /** @type {object[]} */
+    tables = [];
+    /** @type {object|null} */
+    mapping = null;
+    /** @type {object[]} */
+    #history = [];
+    /** @type {Object<string, object>} */
+    fixes = {};
+    /** @type {Set<string>} tables the person unticked */
+    #off = /* @__PURE__ */ new Set();
+    #session;
+    #draft = null;
+    /**
+     * @param {object} deps
+     * @param {(prompt: string, meta: {session: string, rows: number}) => Promise<string>} deps.ask
+     * @param {() => object} deps.book  the current book state
+     */
+    constructor({ ask, book }) {
+      this.#ask = ask;
+      this.#book = book;
+      this.#session = _AiImportService.#uuid();
+    }
+    get rows() {
+      return this.tables.reduce((n, t) => n + t.rows.length, 0);
+    }
+    get changes() {
+      return this.#history.length;
+    }
+    get session() {
+      return this.#session;
+    }
+    /** @returns {Promise<number>} how many tables were found */
+    async load(file) {
+      const { name, sheets } = await SheetReader.read(file);
+      this.file = name;
+      this.tables = TableFinder.find(sheets);
+      if (!this.tables.length) throw new Error("No tables found in that file.");
+      if (this.rows > _AiImportService.MAX_ROWS) {
+        throw new Error(`That file has ${this.rows.toLocaleString("en-IN")} rows. Pocket can import up to ${_AiImportService.MAX_ROWS.toLocaleString("en-IN")} at a time \u2014 please split it.`);
+      }
+      return this.tables.length;
+    }
+    async understand() {
+      const text = await this.#ask(ImportPrompt.first(this.tables, this.#book()), this.#meta());
+      this.mapping = ImportMapping.parse(text, this.tables);
+      this.#history = [];
+      this.#draft = null;
+      return this.mapping;
+    }
+    /** @returns {Promise<string>} what the AI says it changed */
+    async change(message) {
+      const msg = String(message || "").trim();
+      if (!msg || !this.mapping) return "";
+      const text = await this.#ask(ImportPrompt.change(this.tables, this.#book(), this.mapping, this.draft, msg), this.#meta());
+      const next = ImportMapping.parse(text, this.tables);
+      this.#history.push(this.mapping);
+      this.mapping = next;
+      this.#draft = null;
+      return next.reply || "Done.";
+    }
+    undoChange() {
+      if (!this.#history.length) return false;
+      this.mapping = this.#history.pop();
+      this.#draft = null;
+      return true;
+    }
+    /** Tick / untick a table on the "what we found" screen. */
+    setTable(id, on) {
+      if (on) this.#off.delete(id);
+      else this.#off.add(id);
+      this.#draft = null;
+    }
+    isOn(id) {
+      return !this.#off.has(id) && this.mapping?.tables.find((t) => t.id === id)?.kind !== "skip";
+    }
+    /** A row the person fixed by hand: { amount } | { type } | { date } | { account, to }. */
+    fix(key, value) {
+      this.fixes[key] = { ...this.fixes[key] || {}, ...value };
+      this.#draft = null;
+    }
+    skip(key) {
+      this.fix(key, { skip: true });
+    }
+    get draft() {
+      if (!this.#draft && this.mapping) {
+        const mapping = { ...this.mapping, tables: this.mapping.tables.map((t) => this.#off.has(t.id) ? { ...t, kind: "skip" } : t) };
+        this.#draft = new ImportDraft({ tables: this.tables, mapping, book: this.#book(), fixes: this.fixes });
+      }
+      return this.#draft;
+    }
+    #meta() {
+      return { session: this.#session, rows: this.rows };
+    }
+    static #uuid() {
+      return globalThis.crypto?.randomUUID?.() ?? "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
+    }
+  };
+
+  // src/ui/modals/ImportModal.js
+  var ImportModal = class {
+    #hooks;
+    /** @type {AiImportService|null} */
+    #svc = null;
+    #step = "choose";
+    #busy = "";
+    #note = "";
+    #reply = "";
+    #said = "";
+    #typed = "";
+    #result = null;
+    #pending = {};
+    /**
+     * @param {object} hooks
+     * @param {(prompt: string, meta: object) => Promise<string>} hooks.ask
+     * @param {() => object} hooks.book
+     * @param {() => boolean} hooks.firstImport  no import made in this book yet
+     * @param {(draft: object, file: string) => object|null} hooks.write  null when the entry limit stopped it
+     * @param {(id: string) => object|null} hooks.undo
+     */
+    constructor(hooks) {
+      this.#hooks = hooks;
+    }
+    onOpen() {
+      this.#svc = null;
+      this.#step = "choose";
+      this.#busy = this.#note = this.#reply = this.#said = this.#typed = "";
+      this.#result = null;
+      this.#pending = {};
+    }
+    render() {
+      const body = this.#busy ? this.#busyScreen() : ({
+        choose: () => this.#choose(),
+        tables: () => this.#tables(),
+        preview: () => this.#preview(),
+        attention: () => this.#attention(),
+        done: () => this.#done()
+      }[this.#step] ?? (() => this.#choose()))();
+      return `<div class="p-5" style="min-width:300px;max-width:520px">${body}</div>`;
+    }
+    act(action, a, b) {
+      switch (action) {
+        case "file":
+          return this.#start(a);
+        case "table":
+          this.#svc?.setTable(String(a), !!b);
+          return true;
+        case "go":
+          this.#note = "";
+          this.#step = String(a);
+          return true;
+        case "type":
+          this.#typed = String(a ?? "").slice(0, 600);
+          return false;
+        case "send":
+          return this.#send();
+        case "undoChange":
+          this.#svc?.undoChange();
+          this.#reply = "Went back to before your last change.";
+          this.#said = "";
+          return true;
+        case "pendAmount":
+          this.#pending[a] = { amount: String(b ?? "") };
+          return false;
+        case "pendDate":
+          this.#pending[a] = { date: String(b ?? "") };
+          return false;
+        case "fix": {
+          const p = this.#pending[a];
+          if (p?.amount && Number(String(p.amount).replace(/[,\s]/g, "")) > 0) this.#svc?.fix(a, { amount: p.amount });
+          else if (p?.date && /^\d{4}-\d{2}-\d{2}$/.test(p.date)) this.#svc?.fix(a, { date: p.date });
+          else {
+            this.#note = "Enter a value first, or skip the row.";
+            return true;
+          }
+          this.#note = "";
+          return true;
+        }
+        case "setType":
+          this.#svc?.fix(a, { type: String(b) });
+          return true;
+        case "skip":
+          this.#svc?.skip(a);
+          return true;
+        case "import":
+          return this.#import();
+        case "undoImport": {
+          const r = this.#result && this.#hooks.undo(this.#result.id);
+          if (r) {
+            this.#result = { ...this.#result, undone: true };
+          }
+          return true;
+        }
+        default:
+          return true;
+      }
+    }
+    // ── working ──────────────────────────────────────────────────────────
+    async #start(input) {
+      const file = input?.files?.[0];
+      if (input) input.value = "";
+      if (!file) return true;
+      this.#svc = new AiImportService({ ask: this.#hooks.ask, book: this.#hooks.book });
+      this.#note = "";
+      try {
+        this.#busy = "Reading your file\u2026";
+        window.__app?.refreshImport?.();
+        await this.#svc.load(file);
+        this.#busy = "Working out the columns\u2026";
+        window.__app?.refreshImport?.();
+        await this.#svc.understand();
+        this.#step = "tables";
+      } catch (e) {
+        this.#note = e?.code === "signed_out" ? "Please sign in to import with AI." : e?.message || "That file couldn't be read.";
+        this.#step = "choose";
+      }
+      this.#busy = "";
+      return true;
+    }
+    async #send() {
+      const text = this.#typed.trim();
+      if (!text || !this.#svc) return true;
+      this.#said = text;
+      this.#typed = "";
+      this.#busy = "Updating the plan\u2026";
+      window.__app?.refreshImport?.();
+      try {
+        this.#reply = await this.#svc.change(text);
+      } catch (e) {
+        this.#reply = `That didn't work: ${e?.message || "the AI is unavailable"}. Nothing was changed.`;
+      }
+      this.#busy = "";
+      return true;
+    }
+    #import() {
+      const draft = this.#svc?.draft;
+      if (!draft || !draft.entries.length && !draft.budgets.length) {
+        this.#note = "Nothing to import.";
+        return true;
+      }
+      const r = this.#hooks.write(draft, this.#svc.file);
+      if (!r) return false;
+      this.#result = { ...r, skipped: draft.attention.length + draft.skipped.length, duplicates: draft.duplicates };
+      this.#step = "done";
+      return true;
+    }
+    // ── screens ──────────────────────────────────────────────────────────
+    #head(title, step) {
+      return `<div class="flex items-center gap-2 mb-4">
+      ${step > 1 && step < 4 ? `<button class="btn btn-ghost" aria-label="Back" onclick="window.__app.importAction('go','${step === 3 ? "tables" : "choose"}')"><i data-lucide="chevron-left"></i></button>` : ""}
+      <h3 class="text-lg font-semibold flex-1">${Html.escape(title)}</h3>
+      <span class="text-xs text-zinc-500">${step} of 4</span>
+      <button class="btn btn-ghost" aria-label="Close" onclick="window.__app.closeModal()"><i data-lucide="x"></i></button>
+    </div>`;
+    }
+    #noteLine() {
+      return this.#note ? `<div class="mb-3 text-sm rounded-lg p-3" style="background:#fffbeb;color:#92400e">${Html.escape(this.#note)}</div>` : "";
+    }
+    #busyScreen() {
+      return `<div class="flex flex-col items-center text-center gap-3 py-10">
+      <i data-lucide="loader-2" class="animate-spin text-emerald-600" style="width:28px;height:28px"></i>
+      <div class="font-medium">${Html.escape(this.#busy)}</div>
+      <div class="text-xs text-zinc-500">Only the column names and a few sample rows go to the AI.</div>
+    </div>`;
+    }
+    #choose() {
+      const first = this.#hooks.firstImport();
+      return `${this.#head("Import with AI", 1)}
+      <p class="text-sm text-zinc-600 dark:text-zinc-400 mb-3">Bring your history from another app or a sheet you kept yourself. AI works out the columns, you check a preview, then it's imported.</p>
+      ${this.#noteLine()}
+      <label class="card-muted flex flex-col items-center text-center gap-2 p-6 mb-3 cursor-pointer" style="border:2px dashed #d4d4d8">
+        <i data-lucide="upload" class="text-emerald-600" style="width:28px;height:28px"></i>
+        <span class="font-medium">Choose a file</span>
+        <span class="text-xs text-zinc-500">CSV or Excel (.xlsx), all tabs</span>
+        <span class="btn btn-outline mt-1">Browse files</span>
+        <input type="file" class="hidden" accept=".csv,.tsv,.txt,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+               onchange="window.__app.importAction('file', this)">
+      </label>
+      <div class="card-muted p-3 mb-3 text-sm">
+        <div class="text-xs font-semibold text-zinc-500 uppercase mb-1">Works with</div>
+        Money Manager, Walnut, Spendee, Splitwise, Google Sheets, Excel, and your own sheets
+      </div>
+      <div class="card-muted p-3 mb-3 text-sm flex flex-col gap-2">
+        ${first ? `<div class="flex items-center gap-2"><span class="text-xs font-semibold rounded-full px-2 py-0.5" style="background:#ecfdf5;color:#047857">Free</span>Your first import, up to ${AiImportService.FREE_ROWS.toLocaleString("en-IN")} rows</div>` : '<div class="flex items-center gap-2"><span class="text-xs font-semibold rounded-full px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800">5 credits</span>Per import; changes you type are free</div>'}
+        <div class="flex items-center gap-2 text-zinc-500"><span class="text-xs font-semibold rounded-full px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800">Soon</span>Bank statement PDFs</div>
+      </div>
+      <p class="text-xs text-zinc-500">Only the column names, a few sample rows and the most used words go to the AI. Every row is read by Pocket on your device.</p>`;
+    }
+    #tables() {
+      const svc = this.#svc;
+      const sheets = new Set(svc.tables.map((t) => t.sheet));
+      const cards = svc.tables.map((t) => {
+        const rule = svc.mapping.tables.find((x) => x.id === t.id);
+        const label = { entries: "Expenses and incomes", transfers: "Transfers", budgets: "Budgets", skip: "Not used" }[rule.kind];
+        const cols = Object.entries(rule.columns).map(([, v]) => v);
+        const rows = rule.sameAs ? t.rows.length + 1 : t.rows.length;
+        const what = rule.kind === "budgets" ? `${rows} budget${rows === 1 ? "" : "s"}` : `${rows} row${rows === 1 ? "" : "s"}`;
+        return `<label class="card-muted p-3 mb-2 flex items-start gap-3 cursor-pointer">
+        <input type="checkbox" style="width:20px;height:20px;accent-color:#10b981;margin-top:2px" ${svc.isOn(t.id) ? "checked" : ""} ${rule.kind === "skip" ? "disabled" : ""}
+               onchange="window.__app.importAction('table','${Html.js(t.id)}', this.checked)">
+        <span class="flex flex-col gap-1 flex-1">
+          <span class="font-medium">${label}${rule.sameAs ? ' <span class="text-xs text-zinc-500">(continues the table above)</span>' : ""}</span>
+          <span class="text-sm text-zinc-500">${sheets.size > 1 ? `${Html.escape(t.sheet)} \xB7 ` : ""}Rows ${t.firstRow}\u2013${t.lastRow} \xB7 ${what}</span>
+          ${rule.kind === "skip" ? rule.why ? `<span class="text-xs text-zinc-500">${Html.escape(rule.why)}</span>` : "" : `<span class="text-xs text-zinc-500">${cols.map((c) => Html.escape(c)).join(" \xB7 ")}</span>`}
+        </span>
+      </label>`;
+      }).join("");
+      const skipped = svc.tables.flatMap((t) => t.skipped.map((s) => `row ${s.n} (\u201C${Html.escape(s.text)}\u201D)`));
+      const n = svc.tables.length;
+      return `${this.#head("Check what we found", 2)}
+      <div class="flex items-center gap-2 mb-2 text-sm"><i data-lucide="file-spreadsheet" style="width:16px;height:16px"></i><span class="font-medium">${Html.escape(svc.file)}</span></div>
+      <h4 class="text-base font-semibold mb-1">${n === 1 ? "1 table" : `${n} tables`}${sheets.size === 1 ? " in one sheet" : ` in ${sheets.size} sheets`}</h4>
+      <p class="text-sm text-zinc-500 mb-3">${n > 1 ? "They were separated by blank rows or columns. " : ""}Untick any you don't want.</p>
+      ${this.#noteLine()}
+      ${cards}
+      ${skipped.length ? `<div class="text-xs text-zinc-500 mb-3"><b>Left out:</b> ${skipped.slice(0, 6).join(", ")}${skipped.length > 6 ? ` and ${skipped.length - 6} more` : ""}: totals, not entries.</div>` : ""}
+      <button class="btn btn-primary w-full justify-center mb-2" onclick="window.__app.importAction('go','preview')">Looks right, show preview</button>
+      ${this.#askBox("Something's wrong? Tell AI\u2026")}`;
+    }
+    #askBox(placeholder) {
+      return `<div class="flex gap-2 items-center">
+      <input class="input flex-1" aria-label="Tell AI what to change" placeholder="${Html.escape(placeholder)}" value="${Html.escape(this.#typed)}"
+             oninput="window.__app.importAction('type', this.value)"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();window.__app.importAction('send')}">
+      <button class="btn btn-primary" aria-label="Send to AI" onclick="window.__app.importAction('send')"><i data-lucide="send"></i></button>
+    </div>`;
+    }
+    #money(amount, currency) {
+      try {
+        return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(amount);
+      } catch (_) {
+        return `${currency} ${amount}`;
+      }
+    }
+    #chips(c) {
+      const chip = (n, word) => n ? `<span class="text-xs font-semibold rounded-full px-2 py-1 bg-zinc-100 dark:bg-zinc-800">${n.toLocaleString("en-IN")} ${word}</span>` : "";
+      return `<div class="flex flex-wrap gap-1 mb-3">${chip(c.expenses, c.expenses === 1 ? "expense" : "expenses")}${chip(c.incomes, c.incomes === 1 ? "income" : "incomes")}${chip(c.transfers, c.transfers === 1 ? "transfer" : "transfers")}${chip(c.budgets, c.budgets === 1 ? "budget" : "budgets")}</div>`;
+    }
+    #preview() {
+      const svc = this.#svc;
+      const d = svc.draft;
+      const c = d.counts;
+      const conv = this.#said ? `
+      <div class="flex justify-end mb-2"><div class="text-sm rounded-2xl px-3 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" style="max-width:85%">${Html.escape(this.#said)}</div></div>` : "";
+      const reply = this.#reply ? `<div class="card-muted p-3 mb-3 text-sm">${Html.escape(this.#reply)}</div>` : "";
+      const first = d.entries.slice(0, 5).map((e) => {
+        const where = e.type === "transfer" ? `${Html.escape(e.account)} \u2192 ${Html.escape(e.to)}` : [e.main && `${Html.escape(e.main)}${e.sub ? ` / ${Html.escape(e.sub)}` : ""}`, Html.escape(e.account)].filter(Boolean).join(" \xB7 ");
+        const sign = e.type === "income" ? "+" : e.type === "expense" ? "\u2212" : "";
+        return `<div class="flex justify-between gap-3 py-2 border-t border-zinc-100 dark:border-zinc-800 text-sm first:border-t-0">
+        <div class="min-w-0"><div class="truncate">${Html.escape(e.payee || e.note || (e.type === "transfer" ? "Transfer" : "\u2014"))}</div><div class="text-xs text-zinc-500 truncate">${e.date} \xB7 ${where}</div></div>
+        <div class="font-semibold whitespace-nowrap ${e.type === "income" ? "text-emerald-700" : ""}">${sign}${this.#money(e.amount, e.currency)}</div></div>`;
+      }).join("");
+      const matched = d.accounts.filter((a) => a.existing).map((a) => a.name);
+      const made = d.accounts.filter((a) => !a.existing).map((a) => a.name);
+      const newCats = d.categories.filter((x) => !x.existing).length;
+      const total = d.entries.length + d.budgets.length;
+      const notes = [
+        c.duplicates ? `${c.duplicates.toLocaleString("en-IN")} already in Pocket, left out.` : "",
+        c.uncategorised ? `${c.uncategorised.toLocaleString("en-IN")} entries have no category: type a rule below, e.g. \u201CSwiggy is Eating out\u201D.` : "",
+        newCats ? `${newCats} new ${newCats === 1 ? "category" : "categories"} will be made.` : ""
+      ].filter(Boolean);
+      return `${this.#head("Preview", 3)}
+      ${conv}${reply}
+      ${this.#chips(c)}
+      ${this.#noteLine()}
+      ${first ? `<div class="card-muted p-3 mb-3"><div class="text-xs font-semibold text-zinc-500 uppercase mb-1">First entries</div>${first}</div>` : ""}
+      ${d.accounts.length ? `<div class="card-muted p-3 mb-3 text-sm flex flex-col gap-2"><div class="text-xs font-semibold text-zinc-500 uppercase">Accounts</div>
+        ${matched.length ? `<div class="flex items-center gap-2"><span class="flex-1">${matched.map(Html.escape).join(", ")}</span><span class="text-xs font-semibold rounded-full px-2 py-0.5" style="background:#ecfdf5;color:#047857">Match yours</span></div>` : ""}
+        ${made.length ? `<div class="flex items-center gap-2"><span class="flex-1">${made.map(Html.escape).join(", ")}</span><span class="text-xs font-semibold rounded-full px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800">Will be created</span></div>` : ""}
+      </div>` : ""}
+      ${notes.length ? `<div class="text-xs text-zinc-500 mb-3">${notes.join(" ")}</div>` : ""}
+      ${c.attention ? `<button class="w-full card-muted p-3 mb-3 flex items-center gap-2 text-left" style="background:#fffbeb;border:1px solid #fde68a" onclick="window.__app.importAction('go','attention')">
+        <i data-lucide="alert-triangle" style="width:18px;height:18px;color:#b45309"></i>
+        <span class="flex-1 font-medium text-sm" style="color:#78350f">${c.attention} row${c.attention === 1 ? " needs" : "s need"} your attention</span>
+        <span class="text-sm" style="color:#92400e">Review</span></button>` : ""}
+      <div class="mb-2">${this.#askBox(svc.changes ? "Anything else to change?" : "e.g. Swiggy is Eating out")}</div>
+      ${svc.changes ? `<div class="flex justify-between items-center mb-2 text-xs text-zinc-500"><span>Changes so far: ${svc.changes}</span><button class="btn btn-ghost text-xs" onclick="window.__app.importAction('undoChange')">Undo last change</button></div>` : ""}
+      <button class="btn btn-primary w-full justify-center" ${total ? "" : "disabled"} onclick="window.__app.importAction('import')">Import ${total.toLocaleString("en-IN")} ${total === 1 ? "item" : "items"}</button>`;
+    }
+    #attention() {
+      const rows = this.#svc.draft.attention;
+      const card = (r) => {
+        const k = Html.js(r.key);
+        let controls = "";
+        if (r.problem === "amount") {
+          controls = `<input class="input flex-1" inputmode="decimal" placeholder="Amount" aria-label="Amount for row ${r.n}" oninput="window.__app.importAction('pendAmount','${k}', this.value)">
+          <button class="btn btn-outline" onclick="window.__app.importAction('fix','${k}')">Save</button>`;
+        } else if (r.problem === "date") {
+          controls = `<input class="input flex-1" type="date" aria-label="Date for row ${r.n}" oninput="window.__app.importAction('pendDate','${k}', this.value)">
+          <button class="btn btn-outline" onclick="window.__app.importAction('fix','${k}')">Save</button>`;
+        } else if (r.problem === "type") {
+          controls = `<button class="btn btn-outline" onclick="window.__app.importAction('setType','${k}','expense')">Expense</button>
+          <button class="btn btn-outline" onclick="window.__app.importAction('setType','${k}','income')">Income</button>`;
+        }
+        return `<div class="card-muted p-3 mb-2">
+        <div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold rounded-full px-2 py-0.5" style="background:#fffbeb;color:#92400e">Row ${r.n}</span><span class="text-sm font-medium truncate">${Html.escape(r.text)}</span></div>
+        <div class="text-sm text-zinc-500 mb-2">${Html.escape(r.why)}</div>
+        <div class="flex gap-2 flex-wrap">${controls}<button class="btn btn-ghost" onclick="window.__app.importAction('skip','${k}')">Skip</button></div>
+      </div>`;
+      };
+      return `${this.#head("Needs your attention", 3)}
+      <p class="text-sm text-zinc-500 mb-3">Pocket won't guess these. Fix them or skip them.</p>
+      ${this.#noteLine()}
+      ${rows.length ? rows.slice(0, 50).map(card).join("") : '<div class="card-muted p-3 mb-3 text-sm">All sorted.</div>'}
+      ${rows.length > 50 ? `<div class="text-xs text-zinc-500 mb-3">and ${rows.length - 50} more. Skipped rows aren't imported.</div>` : ""}
+      <button class="btn btn-primary w-full justify-center" onclick="window.__app.importAction('go','preview')">Back to preview</button>`;
+    }
+    #done() {
+      const r = this.#result;
+      if (r.undone) {
+        return `${this.#head("Import undone", 4)}
+        <p class="text-sm mb-4">Everything this import added has been taken out. Nothing else was changed.</p>
+        <button class="btn btn-primary w-full justify-center" onclick="window.__app.closeModal()">Close</button>`;
+      }
+      const line = (label, n) => `<div class="flex justify-between py-2 border-t border-zinc-100 dark:border-zinc-800 first:border-t-0 text-sm"><span>${label}</span><span class="font-semibold">${Number(n).toLocaleString("en-IN")}</span></div>`;
+      return `${this.#head("Import", 4)}
+      <div class="flex flex-col items-start gap-3 mb-3">
+        <div style="width:56px;height:56px;border-radius:18px;background:#ecfdf5;display:grid;place-items:center"><i data-lucide="check" style="width:28px;height:28px;color:#047857"></i></div>
+        <h4 class="text-xl font-bold">${r.entries.toLocaleString("en-IN")} ${r.entries === 1 ? "entry" : "entries"} imported</h4>
+      </div>
+      <div class="card-muted p-3 mb-3">
+        ${line("Entries", r.entries)}${r.budgets ? line("Budgets set up", r.budgets) : ""}${line("Accounts created", r.accounts)}${line("Categories created", r.categories)}
+        ${r.duplicates ? line("Already in Pocket", r.duplicates) : ""}${r.skipped ? line("Rows left out", r.skipped) : ""}
+      </div>
+      <p class="text-xs text-zinc-500 mb-3">Changed your mind? Undo removes everything this import added and nothing else. You'll also find it in Settings \u2192 Data.</p>
+      <button class="btn btn-primary w-full justify-center mb-2" onclick="window.__app.closeModal();window.__app.navigate&&window.__app.navigate('transactions')">See my entries</button>
+      <button class="btn btn-outline w-full justify-center" onclick="window.__app.importAction('undoImport')">Undo this import</button>`;
+    }
+  };
+
+  // src/domain/import/ImportWriter.js
+  var ImportWriter = class _ImportWriter {
+    static #TYPE_WORDS = Object.freeze({
+      card: ["credit", "card", "visa", "mastercard", "amex", "rupay"],
+      cash: ["cash", "wallet", "paytm", "phonepe", "gpay", "google pay", "upi", "petty"],
+      savings: ["savings", "saving", "fd", "deposit", "emergency"]
+    });
+    #state;
+    #fx;
+    #hijri;
+    #look;
+    /**
+     * @param {object} deps
+     * @param {object} deps.state  the book (mutated)
+     * @param {object} deps.fx     CurrencyService (toMinor, convert)
+     * @param {object} deps.hijri  HijriCalendarService (toHijri)
+     * @param {(name: string, type: string) => {icon: string, color: string}} deps.look  a new category's icon and colour
+     */
+    constructor({ state, fx, hijri, look }) {
+      this.#state = state;
+      this.#fx = fx;
+      this.#hijri = hijri;
+      this.#look = look;
+    }
+    /**
+     * @param {import('./ImportDraft.js').ImportDraft} draft
+     * @param {{file: string, now?: string}} info
+     * @returns {{id: string, entries: number, budgets: number, accounts: number, categories: number}}
+     */
+    write(draft, { file, now = (/* @__PURE__ */ new Date()).toISOString() }) {
+      const s = this.#state;
+      s.accounts ??= [];
+      s.categories ??= [];
+      s.transactions ??= [];
+      s.budgets ??= [];
+      const id = IdGenerator.generate("imp");
+      const made = { accounts: 0, categories: 0 };
+      const accountId = (name) => this.#accountFor(name, id, made);
+      const categoryId = (main, sub, type) => this.#categoryFor(main, sub, type, id, made);
+      let entries = 0;
+      for (const e of draft.entries) {
+        const from = accountId(e.account);
+        if (e.type === "transfer") {
+          const to = accountId(e.to);
+          const outId = IdGenerator.generate("tx"), inId = IdGenerator.generate("tx");
+          s.transactions.push(this.#tx(e, from, null, id, now, { id: outId, transferPairId: inId, transferDir: "out" }));
+          s.transactions.push(this.#tx(e, to, null, id, now, { id: inId, transferPairId: outId, transferDir: "in" }));
+        } else {
+          s.transactions.push(this.#tx(e, from, categoryId(e.main, e.sub, e.type), id, now, {}));
+        }
+        entries++;
+      }
+      let budgets = 0;
+      for (const b of draft.budgets) {
+        const cat = categoryId(b.main, b.sub, "expense");
+        if (!cat) continue;
+        s.budgets.push({
+          id: IdGenerator.generate("bg"),
+          categoryIds: [cat],
+          categoryId: cat,
+          amount: this.#fx.toMinor(b.amount, b.currency),
+          currency: b.currency,
+          ...BudgetService.periodFields({ period: b.period === "month" ? "gregorian" : b.period }),
+          alerts: true,
+          importId: id
+        });
+        budgets++;
+      }
+      s.imports = [...Array.isArray(s.imports) ? s.imports : [], {
+        id,
+        at: now,
+        file: String(file || "").slice(0, 120),
+        entries,
+        budgets,
+        accounts: made.accounts,
+        categories: made.categories
+      }];
+      return { id, entries, budgets, accounts: made.accounts, categories: made.categories };
+    }
+    /**
+     * Takes an import out of the book.
+     * @returns {{entries: number, budgets: number, accounts: number, categories: number}|null} null when unknown
+     */
+    undo(importId) {
+      const s = this.#state;
+      const rec = (s.imports || []).find((r) => r.id === importId);
+      if (!rec) return null;
+      const mine = (x) => x?.importId === importId;
+      const before = (s.transactions || []).length;
+      s.transactions = (s.transactions || []).filter((t) => !mine(t));
+      const entryRows = before - s.transactions.length;
+      const budgetsBefore = (s.budgets || []).length;
+      s.budgets = (s.budgets || []).filter((b) => !mine(b));
+      const usedAcc = new Set(s.transactions.map((t) => t.accountId));
+      const accBefore = s.accounts.length;
+      s.accounts = s.accounts.filter((a) => !mine(a) || usedAcc.has(a.id));
+      const usedCat = /* @__PURE__ */ new Set([
+        ...s.transactions.map((t) => t.categoryId),
+        ...s.transactions.flatMap((t) => (t.splits || []).map((x) => x.categoryId)),
+        ...(s.budgets || []).flatMap((b) => b.categoryIds || [b.categoryId])
+      ]);
+      const catBefore = s.categories.length;
+      s.categories = s.categories.filter((c) => !(mine(c) && c.parentId && !usedCat.has(c.id)));
+      const parents = new Set(s.categories.map((c) => c.parentId).filter(Boolean));
+      s.categories = s.categories.filter((c) => !(mine(c) && !c.parentId && !usedCat.has(c.id) && !parents.has(c.id)));
+      s.imports = s.imports.filter((r) => r.id !== importId);
+      return {
+        entries: rec.entries ?? entryRows,
+        budgets: budgetsBefore - s.budgets.length,
+        accounts: accBefore - s.accounts.length,
+        categories: catBefore - s.categories.length
+      };
+    }
+    // ── rows ─────────────────────────────────────────────────────────────
+    #tx(e, accountId, categoryId, importId, now, extra) {
+      const home = this.#state.user?.homeCurrency || e.currency;
+      const minor = this.#fx.toMinor(e.amount, e.currency);
+      return {
+        id: IdGenerator.generate("tx"),
+        accountId,
+        categoryId,
+        amount: minor,
+        currency: e.currency,
+        exchangeRate: (RATES[e.currency] || 1) / (RATES[home] || 1),
+        refAmount: this.#fx.convert(minor, e.currency, home),
+        payee: e.payee || "",
+        note: e.note || "",
+        date: e.date,
+        hijriDate: this.#hijri.toHijri(e.date),
+        recordState: "cleared",
+        type: e.type,
+        transferPairId: null,
+        tags: [],
+        splits: null,
+        createdAt: now,
+        addedBy: null,
+        importId,
+        ...extra
+      };
+    }
+    #accountFor(name, importId, made) {
+      const s = this.#state;
+      const norm = String(name || "").trim().toLowerCase();
+      const have = s.accounts.find((a) => !a.archived && a.name.trim().toLowerCase() === norm) || s.accounts.find((a) => a.name.trim().toLowerCase() === norm);
+      if (have) return have.id;
+      const type = _ImportWriter.accountType(name);
+      const acc = {
+        id: IdGenerator.generate("acc"),
+        name: String(name).trim().slice(0, 60),
+        type,
+        currency: s.user?.homeCurrency || "INR",
+        openingBalance: 0,
+        balance: 0,
+        color: this.#look(name, "expense").color,
+        icon: ACCOUNT_TYPE_ICONS[type] || "wallet",
+        archived: false,
+        groupId: null,
+        importId
+      };
+      s.accounts.push(acc);
+      made.accounts++;
+      return acc.id;
+    }
+    #categoryFor(main, sub, type, importId, made) {
+      if (!main) return null;
+      const s = this.#state;
+      const norm = (x) => String(x || "").trim().toLowerCase();
+      let parent = s.categories.find((c) => !c.parentId && norm(c.name) === norm(main) && c.type === type) || s.categories.find((c) => !c.parentId && norm(c.name) === norm(main));
+      if (!parent) {
+        parent = { id: IdGenerator.generate("cat"), name: main, type, parentId: null, budgetLimit: null, ...this.#look(main, type), importId };
+        s.categories.push(parent);
+        made.categories++;
+      }
+      if (!sub) return parent.id;
+      let child = s.categories.find((c) => c.parentId === parent.id && norm(c.name) === norm(sub));
+      if (!child) {
+        child = { id: IdGenerator.generate("cat"), name: sub, type: parent.type, parentId: parent.id, budgetLimit: null, ...this.#look(sub, parent.type), importId };
+        s.categories.push(child);
+        made.categories++;
+      }
+      return child.id;
+    }
+    /** bank, card, cash or savings from an account's name. */
+    static accountType(name) {
+      const n = String(name || "").toLowerCase();
+      for (const [type, words] of Object.entries(_ImportWriter.#TYPE_WORDS)) {
+        if (words.some((w) => n.includes(w))) return type;
+      }
+      return "bank";
     }
   };
 
@@ -26662,6 +28153,8 @@ ${body}\r
     // ── Per-session UI state ──────────────────────────────────────────────────
     #reportRange = "30";
     #importPlan = null;
+    #importModal = null;
+    // ImportModal (Import with AI)
     /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
     #swipe = null;
     /** @type {SpaceRegistry} */
@@ -26830,6 +28323,21 @@ ${body}\r
       this.#modal.register("budget", new BudgetModal());
       this.#modal.register("settings", this.#settingsModal = new SettingsModal());
       this.#modal.register("csv", new CsvModal());
+      this.#importModal = new ImportModal({
+        ask: (prompt2, meta) => this.#sync.aiGateway().generate({
+          kind: "import",
+          book: this.#sync.currentUser?.id,
+          parts: [{ text: prompt2 }],
+          maxOutputTokens: 8192,
+          session: meta.session,
+          rows: meta.rows
+        }),
+        book: () => this.#store.getState(),
+        firstImport: () => !(this.#store.getState().imports || []).length,
+        write: (draft, file) => this.#writeImport(draft, file),
+        undo: (id) => this.#undoImport(id)
+      });
+      this.#modal.register("aiImport", this.#importModal);
       this.#exportModal = new ExportModal({ store: this.#store });
       this.#modal.register("export", this.#exportModal);
       this.#modal.register("debt", this.#debtModal);
@@ -27007,6 +28515,7 @@ ${body}\r
       "addRegular",
       "habit",
       "csv",
+      "aiImport",
       "reconcile",
       "family",
       "currencySetup"
@@ -32080,6 +33589,56 @@ ${last.entries.length === 1 ? "Its entry is" : `Its ${last.entries.length} entri
         emitted.add(t.id);
       });
       return rows.map((r) => r.join(",")).join("\n");
+    }
+    // ── Import with AI ────────────────────────────────────────────────────
+    /** A control on the Import with AI screens was used (ImportModal.act). */
+    importAction(action, a, b) {
+      const r = this.#importModal?.act(action, a, b);
+      if (r && typeof r.then === "function") {
+        r.then(() => this.#modal.refresh()).catch(() => this.#modal.refresh());
+      } else if (r !== false) {
+        this.#modal.refresh();
+      }
+    }
+    /** Re-draws the import screens while the AI is working. */
+    refreshImport() {
+      if (this.#modal.active === "aiImport") this.#modal.refresh();
+    }
+    /** Saves an import; null when the entry limit stopped it (the promise opens instead). */
+    #writeImport(draft, file) {
+      if (!this.#entryGate(Math.max(1, draft.entries.length))) return null;
+      const result = this.#importWriter().write(draft, { file });
+      this.#accounts.recompute();
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+      this.#render();
+      return result;
+    }
+    #undoImport(id) {
+      const r = this.#importWriter().undo(id);
+      if (!r) return null;
+      this.#accounts.recompute();
+      this.#store.persist();
+      this.#sync.schedulePush?.();
+      this.#render();
+      this.#toast.show(`Import undone: ${r.entries} ${r.entries === 1 ? "entry" : "entries"} removed`);
+      return r;
+    }
+    /** Settings → Data → Imports: "Undo". */
+    undoImport(id) {
+      const rec = (this.#store.getState().imports || []).find((x) => x.id === id);
+      if (!rec) return;
+      if (!confirm(`Undo the import of ${rec.file || "this file"}? Its ${rec.entries} entries, ${rec.budgets || 0} budgets and the accounts and categories it made (if nothing else uses them) are removed.`)) return;
+      this.#undoImport(id);
+      this.#modal.refresh();
+    }
+    #importWriter() {
+      return new ImportWriter({
+        state: this.#store.getState(),
+        fx: this.#fx,
+        hijri: this.#hijri,
+        look: (name, type) => this.#categories.guessAppearance(name, type)
+      });
     }
     downloadImportTemplate() {
       const today = DateService.todayIso();

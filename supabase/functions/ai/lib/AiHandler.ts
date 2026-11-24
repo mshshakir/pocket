@@ -6,7 +6,7 @@
  *
  * Answers are JSON: { text, chargedTo, remaining? } or { error, code } where
  * code is one of: signed_out, bad_request, no_credits, no_access, not_set_up,
- * ai_failed.
+ * too_many (Import with AI: too many calls in one import), ai_failed.
  */
 import { AiRequest, AiRequestError } from './AiRequest.ts';
 import type { AiCredits } from './AiCredits.ts';
@@ -50,9 +50,12 @@ export class AiHandler {
 
     const charge = request.kind === 'setup'
       ? await this.#credits.text(userId, request.ref)
-      : await this.#credits.spend(userId, request.book, request.ref, request.kind, request.seconds);
+      : request.kind === 'import'
+        ? await this.#credits.importUse(userId, request.session, request.rows, request.ref)
+        : await this.#credits.spend(userId, request.book, request.ref, request.kind, request.seconds);
     if (!charge.ok) {
       if (charge.reason === 'no_access') return this.#fail(403, 'no_access', 'You can\'t add entries to that shared space.');
+      if (charge.reason === 'too_many') return this.#fail(429, 'too_many', 'That\'s as many changes as one import allows. Import it and fix the rest in Pocket, or start again.');
       const need = charge.cost ?? 1, have = charge.remaining ?? 0;
       return this.#fail(402, 'no_credits', have > 0
         ? `This needs ${need} AI credit${need === 1 ? '' : 's'} and you have ${have}. Buy a pack in Settings → Your plan.`
@@ -63,7 +66,8 @@ export class AiHandler {
       const text = await this.#gemini.generate(request);
       return this.#json(200, { text, chargedTo: charge.chargedTo, cost: charge.cost ?? null, remaining: charge.remaining ?? null });
     } catch (e) {
-      if (!charge.free) await this.#credits.refund(userId, request.ref);
+      if (request.kind === 'import') await this.#credits.importRefund(userId, request.session, charge.chargeRef);
+      else if (!charge.free) await this.#credits.refund(userId, request.ref);
       const message = e instanceof GeminiError ? e.message : 'The AI service failed. Please try again.';
       if (!(e instanceof GeminiError)) console.error('[ai]', e);
       return this.#fail(502, 'ai_failed', `${message} You weren't charged.`);

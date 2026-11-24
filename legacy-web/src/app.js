@@ -107,6 +107,8 @@ import { LoanInstalments }  from './domain/services/LoanInstalments.js';
 import { BudgetModal }      from './ui/modals/BudgetModal.js';
 import { SettingsModal }    from './ui/modals/SettingsModal.js';
 import { CsvModal }         from './ui/modals/CsvModal.js';
+import { ImportModal }      from './ui/modals/ImportModal.js';
+import { ImportWriter }     from './domain/import/ImportWriter.js';
 import { DebtModal }        from './ui/modals/DebtModal.js';
 import { FamilyModal }      from './ui/modals/FamilyModal.js';
 import { ReconcileModal }   from './ui/modals/ReconcileModal.js';
@@ -275,6 +277,7 @@ export class Application {
   // ── Per-session UI state ──────────────────────────────────────────────────
   #reportRange    = '30';
   #importPlan     = null;
+  #importModal    = null;  // ImportModal (Import with AI)
   /** @type {SwipeRowController} — owns all row-swipe gesture + reveal state */
   #swipe              = null;
   /** @type {SpaceRegistry} */
@@ -477,6 +480,17 @@ export class Application {
     this.#modal.register('budget',       new BudgetModal());
     this.#modal.register('settings',     this.#settingsModal = new SettingsModal());
     this.#modal.register('csv',          new CsvModal());
+    this.#importModal = new ImportModal({
+      ask: (prompt, meta) => this.#sync.aiGateway().generate({
+        kind: 'import', book: this.#sync.currentUser?.id, parts: [{ text: prompt }], maxOutputTokens: 8192,
+        session: meta.session, rows: meta.rows,
+      }),
+      book: () => this.#store.getState(),
+      firstImport: () => !(this.#store.getState().imports || []).length,
+      write: (draft, file) => this.#writeImport(draft, file),
+      undo: (id) => this.#undoImport(id),
+    });
+    this.#modal.register('aiImport',     this.#importModal);
     this.#exportModal = new ExportModal({ store: this.#store });
     this.#modal.register('export',       this.#exportModal);
     this.#modal.register('debt',         this.#debtModal);
@@ -681,7 +695,7 @@ export class Application {
    */
   static #HOME_ONLY_MODALS = new Set([
     'account', 'budget', 'category', 'categoryMerge', 'investment', 'trade', 'holdingPrice', 'debt', 'debtPayment', 'regularItem', 'settle', 'pauseDeliveries', 'pauseRepeat', 'reimbursement', 'payBill', 'addRegular', 'habit',
-    'csv', 'reconcile', 'family', 'currencySetup',
+    'csv', 'aiImport', 'reconcile', 'family', 'currencySetup',
   ]);
 
   openModal(name, opts = {}) {
@@ -5875,6 +5889,59 @@ export class Application {
     });
 
     return rows.map((r) => r.join(',')).join('\n');
+  }
+
+  // ── Import with AI ────────────────────────────────────────────────────
+
+  /** A control on the Import with AI screens was used (ImportModal.act). */
+  importAction(action, a, b) {
+    const r = this.#importModal?.act(action, a, b);
+    if (r && typeof r.then === 'function') {
+      r.then(() => this.#modal.refresh()).catch(() => this.#modal.refresh());
+    } else if (r !== false) {
+      this.#modal.refresh();
+    }
+  }
+
+  /** Re-draws the import screens while the AI is working. */
+  refreshImport() { if (this.#modal.active === 'aiImport') this.#modal.refresh(); }
+
+  /** Saves an import; null when the entry limit stopped it (the promise opens instead). */
+  #writeImport(draft, file) {
+    if (!this.#entryGate(Math.max(1, draft.entries.length))) return null;
+    const result = this.#importWriter().write(draft, { file });
+    this.#accounts.recompute();
+    this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.#render();
+    return result;
+  }
+
+  #undoImport(id) {
+    const r = this.#importWriter().undo(id);
+    if (!r) return null;
+    this.#accounts.recompute();
+    this.#store.persist();
+    this.#sync.schedulePush?.();
+    this.#render();
+    this.#toast.show(`Import undone: ${r.entries} ${r.entries === 1 ? 'entry' : 'entries'} removed`);
+    return r;
+  }
+
+  /** Settings → Data → Imports: "Undo". */
+  undoImport(id) {
+    const rec = (this.#store.getState().imports || []).find((x) => x.id === id);
+    if (!rec) return;
+    if (!confirm(`Undo the import of ${rec.file || 'this file'}? Its ${rec.entries} entries, ${rec.budgets || 0} budgets and the accounts and categories it made (if nothing else uses them) are removed.`)) return;
+    this.#undoImport(id);
+    this.#modal.refresh();
+  }
+
+  #importWriter() {
+    return new ImportWriter({
+      state: this.#store.getState(), fx: this.#fx, hijri: this.#hijri,
+      look: (name, type) => this.#categories.guessAppearance(name, type),
+    });
   }
 
   downloadImportTemplate() {

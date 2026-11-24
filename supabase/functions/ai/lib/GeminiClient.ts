@@ -33,7 +33,7 @@ export class GeminiClient {
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.#key },
         body: JSON.stringify({
           contents: [{ parts: req.parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: req.maxOutputTokens },
+          generationConfig: { temperature: 0.1, maxOutputTokens: req.maxOutputTokens, ...(req.json ? { responseMimeType: 'application/json' } : {}) },
         }),
         signal: AbortSignal.timeout(45_000),
       });
